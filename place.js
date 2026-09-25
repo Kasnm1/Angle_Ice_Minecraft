@@ -161,7 +161,136 @@ function planPlacement ({ target, getBlock, feet, height }) {
   };
 }
 
-module.exports = { planPlacement, evaluateFace, bodyOccupies, eyeFrom, offsetLabel, AIRY, REACH, FACES, HALF_WIDTH };
+// ------------------------------------------------------------------ 站位
+
+// 从 bridge-server.js 搬来：放置和站位是同一套几何，判据只许有一份（P39）。
+
+// "她能不能站进这一格" —— 脚下的方块不能要命，头/脚两格不能是实心。
+// ⚠️ 刻意**不含** lava：上面的 `AIRY` 把岩浆当空气是为了"岩浆能当参照物"，
+//    但"她站在岩浆上"是另一回事，必须让 shelter 停下来如实报错。
+const DEADLY = /^(lava|flowing_lava|fire|soul_fire|magma_block|cactus|powder_snow)$/;
+function isStandable (block) {
+  return !!block && AIRY.test(block.name || '') && !DEADLY.test(block.name || '');
+}
+
+/**
+ * 为了够到某个 y 上的东西，她应该站到**哪一层**。
+ *
+ * ## 为什么需要（P33，2026-09-25 实机抓出）
+ *
+ * `GoalNear(x, y, z, r)` 的 `r` 是**水平**半径，但 Minecarft 的**拾取判定是 3D 的**
+ * （玩家碰撞箱与物品实体碰撞箱重叠才结算）。所以"水平走到了"不代表"拿得到"。
+ *
+ * 这个函数把"物品在哪一层"翻译成"她该站哪一层"，规则：
+ *
+ * | 物品相对她脚底 | 目标层 | 理由 |
+ * |---|---|---|
+ * | 上方（`dy > 0`） | `selfY` | 不为了够东西往天上爬 |
+ * | 同层或下一层（`-1 ≤ dy ≤ 0`） | 物品的 `y` | 1 格落差可以直接走下去，不用挖 |
+ * | 更深（`dy < -1`） | `selfY - 1` | 站到最近的可站层，靠拾取半径够 |
+ *
+ * 关键点是**绝不返回比 `selfY-1` 更低的目标** —— 寻路器 `canDig=false`
+ * 不会挖穿地形去达成目标，返回更低的值就是让它超时打转（P30 的病）。
+ *
+ * ## 两个"相邻的错"都在这条规则里被同时满足
+ *   · P30：球心用物品的 y → 她下不去 → 原地打转  ← 被"更深就夹住"修掉
+ *   · P33：球心一律用 selfY → 她永不落坑 → 够不着 ← 被"浅就跟着下去"修掉
+ *
+ * @param {number} dropY  物品所在层（可以是小数，取 floor）
+ * @param {number} selfY  她脚底所在层
+ * @returns {number} 目标层的整数 y
+ */
+function reachableStandY (dropY, selfY) {
+  const d = Math.floor(Number(dropY));
+  const s = Math.floor(Number(selfY));
+  if (!Number.isFinite(d) || !Number.isFinite(s)) return s;   // 数据不可信 → 退回她自己那层
+  const dy = d - s;
+  if (dy > 0) return s;          // 物品在上方 → 不上天
+  if (dy >= -1) return d;        // 同层或下一层 → 跟着下去（这是能捡到的关键！）
+  return s - 1;                  // 更深 → 站在最近的可站层
+}
+
+/**
+ * ★ P43（2026-09-25）：**"物品报告的 y"根本不该直接拿去当"目标站位层"。**
+ *
+ * ## 病在哪
+ *
+ * `/pickup` 原来只调 `reachableStandY(dropY, selfY)` —— 它只看**两个 y**
+ * 就算出一个答案，**完全没有访问世界**。而"物品报告的 y"和"物品所在的空间"
+ * 经常不是同一层：
+ *
+ * ```text
+ * (-7,85,-8) = grass_block  solid=True   ← 物品**报告的 y**（它是躺在方块上的）
+ * (-7,86,-8) = air          solid=False  ← 物品**真正的空间**
+ * ```
+ *
+ * 于是：`reachableStandY(85, 86)` → `dy = -1` → 返回 **85**（一格实心方块）。
+ * 后面 `standable` 检查会把 85 拦掉（这是对的），但拦掉之后退回 `GoalNear`，
+ * 球心仍在 85、而她人在 86 —— **球内包含她自己** → 判"已到达" → **一步不动**。
+ *
+ * ## 为什么这是**第三次**踩同一个坑
+ *   · P42：她被困在"1 格高的通道"里 —— 站位的语义是**空间**不是方块
+ *   · P43：物品压在方块顶面 —— 物品的语义是**空间**不是方块
+ *   · 两次都是"**方块坐标 ≠ 空间坐标**"。P42 是她的空间，P43 是物品的空间。
+ *
+ * ## 修法：把"算一个数"换成"**找一个真站得进去的层**"
+ *
+ * 候选顺序（按"离物品最近且她真的能站"排）：
+ *   ① 若物品报告层是实心（物品压在方块上）→ 先试它的**上一层**（那才是物品的空间）
+ *   ② 物品报告层本身
+ *   ③ 物品报告层下一层
+ *   ④ 物品报告层上一层
+ * 每层都要 **脚 + 头两层都可站**（`isStandable`）才算数。
+ *
+ * 硬约束（与 `reachableStandY` 一致，不能破）：
+ *   · **绝不上天**：`y > selfY` 不选（P30 的症状）
+ *   · **绝不下潜超过 1 格**：`selfY - y > 1` 不选（`canDig=false`，下去就上不来）
+ *
+ * ⚠️ 为什么把 `blockAt` 做成**参数注入**而不是直接闭包引用 `bot`：
+ *    这样这个函数仍是**纯函数**，`--selftest` 能用假世界喂它跑断言，
+ *    不必连服务器。**P43 的教训就在"纯函数输入不足"** —— 但扩输入的正确
+ *    做法是"多给一个参数"，不是"让它去读全局"。
+ *
+ * @param {number} dropY  物品报告的层（可小数，取 floor）
+ * @param {number} selfY  她脚底所在层
+ * @param {(x:number,y:number,z:number)=>?object} blockAt  读世界（返回 `{name}` 或 null）
+ * @param {number} x      物品所在格
+ * @param {number} z
+ * @returns {number} 目标层的整数 y（保证 `y ≤ selfY` 且 `selfY - y ≤ 1`）
+ */
+function findStandY (dropY, selfY, blockAt, x, z) {
+  const d = Math.floor(Number(dropY));
+  const s = Math.floor(Number(selfY));
+  if (!Number.isFinite(d) || !Number.isFinite(s)) return s;
+
+  const standableAt = (yy) => {
+    if (typeof blockAt !== 'function') return false;
+    try {
+      return isStandable(blockAt(x, yy, z)) && isStandable(blockAt(x, yy + 1, z));
+    } catch (_) { return false; }
+  };
+
+  const cand = [];
+  // ① 物品报告层是实心 → 物品的空间在它**上一层**（它躺在方块顶面上）
+  let dropBlock = null;
+  if (typeof blockAt === 'function') {
+    try { dropBlock = blockAt(x, d, z); } catch (_) { dropBlock = null; }
+  }
+  if (dropBlock && !isStandable(dropBlock)) cand.push(d + 1);
+  // ② 物品报告层本身；③ 下一层；④ 上一层
+  cand.push(d, d - 1, d + 1);
+
+  for (const yy of cand) {
+    if (yy > s) continue;             // 绝不上天
+    if (s - yy > 1) continue;         // 绝不下潜超过 1 格（canDig=false）
+    if (standableAt(yy)) return yy;
+  }
+  // 一个可站层都找不到 → 退回旧逻辑（至少保证它落在硬约束内）
+  const fallback = reachableStandY(dropY, selfY);
+  return Math.min(fallback, s);
+}
+
+module.exports = { planPlacement, evaluateFace, bodyOccupies, eyeFrom, offsetLabel, AIRY, REACH, FACES, HALF_WIDTH, DEADLY, isStandable, reachableStandY, findStandY };
 
 // ------------------------------------------------------------------ 自测
 
@@ -264,6 +393,97 @@ if (require.main === module && process.argv.includes('--selftest')) {
   console.log('\n未知坐标（掉线）时的行为');
   check('没有脚的位置时不判自身占用，也不判距离（交给服务端）',
     planPlacement({ target: T, getBlock: world(new Set(['0,63,0'])), feet: null, height: 1.8 }).ok, true);
+
+  console.log('\n站位（P43：物品报告的 y ≠ 目标站位层）');
+  // ---------------------------------------------------------------------------
+  // P43（2026-09-25）：`findStandY` —— "物品报告的 y" ≠ "目标站位层"
+  // ---------------------------------------------------------------------------
+  //
+  // 【症状】物品报告 y=85，而 (-7,85,-8) = grass_block（实心）——
+  //   物品是**躺在方块顶面上**的，它的空间在 y=86。旧代码 `reachableStandY(85,86)`
+  //   返回 85 → `standable` 拦掉 → 退回 `GoalNear(球心 85)` → 球内含她自己
+  //   → **一步不动**。她距物品只有 0.97 格，就是拿不到（"看得见摸不着"）。
+  //
+  // 【修法】`findStandY` 把候选层逐个**问世界**（注入 `blockAt`），
+  //   找出脚+头都站得进去的那一层。硬约束不变：不上天、不下潜超 1 格。
+  //
+  // ⚠️ 自测里用**假世界**（Map）喂 `blockAt`，所以纯逻辑、不连服务器。
+  const mkWorld = (spec) => (x, y, z) => {
+    const n = spec[`${x},${y},${z}`];
+    return n ? { name: n } : null;
+  };
+
+  // ★ 实机复现：物品报告 y=85 是实心，它的空间在 y=86
+  //   ⚠️ 这个假世界必须让 **86 真的站得进去**：脚层 86 = air、头层 87 = **air**。
+  //      我第一版把 87 写成 grass_block（那是"她头顶是草坪"的真地形），
+  //      于是 86 被正确排除了 —— **是自测造错了世界，不是代码错**。
+  const w1 = mkWorld({
+    '-7,85,-8': 'grass_block', '-7,86,-8': 'air', '-7,87,-8': 'air',
+  });
+  check('★ P43：★ 实机复现 —— 物品报告 y=85 是**实心** → 目标层必须是 **86**（物品的空间），不是 85',
+    findStandY(85, 86, w1, -7, -8), 86);
+  check('★ P43：同一世界，她站在 y=87（在上一层）→ 仍应落在 86（不下潜超 1 格的边界内）',
+    findStandY(85, 87, w1, -7, -8), 86);
+
+  // ★ 目标格站不进去（头被堵）→ 不能选它
+  //   ⚠️ 这正是**实机那片地形**：一条 1 格高的地道（y=87 整层实心）。
+  const w2 = mkWorld({
+    '-7,85,-8': 'grass_block', '-7,86,-8': 'air', '-7,87,-8': 'grass_block',
+  });
+  check('★ P43：★ 实机地形 —— 目标层 86 的**头层 87 是实心**（1 格高的地道）→ 站不进去，不许返回 86',
+    findStandY(85, 86, w2, -7, -8) !== 86, true);
+
+  // ★ 物品悬空在空气里（报告层本身可站）→ 就用那一层
+  const w3 = mkWorld({
+    '-3,60,-3': 'air', '-3,61,-3': 'air', '-3,59,-3': 'stone',
+  });
+  check('★ P43：物品**悬在空气格**里（报告层脚+头都可站）→ 直接用报告层',
+    findStandY(60, 61, w3, -3, -3), 60);
+
+  // ★ 硬约束：绝不上天
+  const w4 = mkWorld({
+    '-3,70,-3': 'air', '-3,71,-3': 'air',
+  });
+  check('★ P43：★ 硬约束 —— 物品在**上方**时**绝不上天**（返回她自己的层）',
+    findStandY(70, 60, w4, -3, -3), 60);
+
+  // ★ 硬约束：绝不下潜超过 1 格（canDig=false）
+  const w5 = mkWorld({
+    '-3,50,-3': 'air', '-3,51,-3': 'air',
+    '-3,59,-3': 'air', '-3,60,-3': 'air',
+  });
+  check('★ P43：★ 硬约束 —— 物品在**很深**（9 格下）→ 最多下潜 1 格，绝不追下去',
+    findStandY(50, 60, w5, -3, -3), 59);
+
+  // ★ 找不到任何可站层 → 退回旧逻辑，且不破硬约束
+  const w6 = mkWorld({ '-3,60,-3': 'stone', '-3,61,-3': 'stone' });
+  check('★ P43：全是实心（一个可站层都没有）→ 退回旧逻辑，且**不破硬约束**',
+    findStandY(59, 60, w6, -3, -3) <= 60, true);
+  check('★ P43：`blockAt` 不是函数（离线/降级）→ 不崩，且不破硬约束',
+    findStandY(85, 86, null, -7, -8) <= 86, true);
+  check('★ P43：y 非法（NaN）→ 退回她自己那层，不崩',
+    findStandY(NaN, 86, w1, -7, -8), 86);
+
+  // ★ 不变量：返回值**永不高过** selfY（上天是 P30 的病）
+  //   ⚠️ 每组的比较基准是**它自己的 selfY**，不能拿一个固定数比 ——
+  //      我第一版写 `every(v => v <= 61)`，而第一组的 selfY 是 86，
+  //      它返回 86 是**合法的**（不高过自己的 selfY），却把断言写红了。
+  //      **这又是"心算一个固定阈值"的老毛病**（P42/P43 的教训同源）。
+  const upCases = [
+    [[findStandY(85, 86, w1, -7, -8)], 86],
+    [[findStandY(70, 60, w4, -3, -3)], 60],   // 物品在上方 → 不上天
+    [[findStandY(60, 61, w3, -3, -3)], 61],
+  ];
+  check('★ P43：★ 不变量 —— 返回值永不高过**自己的 selfY**（P30 的病就是"上天"）',
+    upCases.every(([vs, s]) => vs.every(v => v <= s)), true);
+  // ★ 不变量：返回值的下潜幅度**永不**超过 1 格
+  const deepCases = [
+    [findStandY(50, 60, w5, -3, -3), 60],
+    [findStandY(85, 87, w1, -7, -8), 87],
+    [findStandY(85, 86, w6, -7, -8), 86],
+  ];
+  check('★ P43：★ 不变量 —— 下潜幅度永不超过 1 格（`canDig=false`，下去就上不来）',
+    deepCases.every(([v, s]) => s - v <= 1), true);
 
   console.log(`\n  ${pass}/${total} 通过`);
   process.exit(pass === total ? 0 : 1);

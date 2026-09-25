@@ -266,6 +266,10 @@ const S = {
   //   必须事后可核对"她到底做了什么"。**P40 的教训就是留痕救了那一轮。**
   lastSelfUnstick: null,
   pendingQuestions: [],   // 玩家问的问题（autopilot 不会答，留给 agent）
+  // ---- 让出身体给 brain.js（大脑拿着身体时，脑干只跑反射、不做决策）----------
+  // 大脑每 8s 续一次；大脑挂了，到点自动接回 —— 不会出现"两边都不管"的木头人。
+  yieldUntil: 0,
+  yieldReason: null,
   // ---- 聊天对后续行为的影响（**不打断正在做的事**）----------------------------
   // 用户明确要求：「不打断工作，只是改变后续行为」。
   // 所以这里记的不是"要被打断"，而是一个**会自然衰减的注意力偏移**：
@@ -1169,130 +1173,7 @@ if (process.argv.includes('--selftest')) {
   check('★ P34：y 非法（NaN）→ `GoalNear`，不崩',
     pickGoalKind(NaN, 87, true), 'near');
 
-  // ---------------------------------------------------------------------------
-  // P43（2026-09-25）：`findStandY` —— "物品报告的 y" ≠ "目标站位层"
-  // ---------------------------------------------------------------------------
-  //
-  // 【症状】物品报告 y=85，而 (-7,85,-8) = grass_block（实心）——
-  //   物品是**躺在方块顶面上**的，它的空间在 y=86。旧代码 `reachableStandY(85,86)`
-  //   返回 85 → `standable` 拦掉 → 退回 `GoalNear(球心 85)` → 球内含她自己
-  //   → **一步不动**。她距物品只有 0.97 格，就是拿不到（"看得见摸不着"）。
-  //
-  // 【修法】`findStandY` 把候选层逐个**问世界**（注入 `blockAt`），
-  //   找出脚+头都站得进去的那一层。硬约束不变：不上天、不下潜超 1 格。
-  //
-  // ⚠️ 自测里用**假世界**（Map）喂 `blockAt`，所以纯逻辑、不连服务器。
-  const findStandY = (dropY, selfY, blockAt, x, z) => {
-    const AIRY = /^(air|cave_air|void_air|water|flowing_water|lava|flowing_lava)$/;
-    const DEADLY = /^(lava|flowing_lava|fire|soul_fire|magma_block|cactus|powder_snow)$/;
-    const isStandable = b => !!b && AIRY.test(b.name || '') && !DEADLY.test(b.name || '');
-    const d = Math.floor(Number(dropY));
-    const s = Math.floor(Number(selfY));
-    if (!Number.isFinite(d) || !Number.isFinite(s)) return s;
-    const standableAt = (yy) => {
-      if (typeof blockAt !== 'function') return false;
-      try {
-        return isStandable(blockAt(x, yy, z)) && isStandable(blockAt(x, yy + 1, z));
-      } catch (_) { return false; }
-    };
-    const cand = [];
-    let dropBlock = null;
-    if (typeof blockAt === 'function') {
-      try { dropBlock = blockAt(x, d, z); } catch (_) { dropBlock = null; }
-    }
-    if (dropBlock && !isStandable(dropBlock)) cand.push(d + 1);
-    cand.push(d, d - 1, d + 1);
-    for (const yy of cand) {
-      if (yy > s) continue;
-      if (s - yy > 1) continue;
-      if (standableAt(yy)) return yy;
-    }
-    const reachableStandY = (dy0, sy0) => {
-      const dd = Math.floor(Number(dy0)); const ss = Math.floor(Number(sy0));
-      if (!Number.isFinite(dd) || !Number.isFinite(ss)) return ss;
-      const gap = dd - ss;
-      if (gap > 0) return ss;
-      if (gap >= -1) return dd;
-      return ss - 1;
-    };
-    return Math.min(reachableStandY(dropY, selfY), s);
-  };
-  const mkWorld = (spec) => (x, y, z) => {
-    const n = spec[`${x},${y},${z}`];
-    return n ? { name: n } : null;
-  };
-
-  // ★ 实机复现：物品报告 y=85 是实心，它的空间在 y=86
-  //   ⚠️ 这个假世界必须让 **86 真的站得进去**：脚层 86 = air、头层 87 = **air**。
-  //      我第一版把 87 写成 grass_block（那是"她头顶是草坪"的真地形），
-  //      于是 86 被正确排除了 —— **是自测造错了世界，不是代码错**。
-  const w1 = mkWorld({
-    '-7,85,-8': 'grass_block', '-7,86,-8': 'air', '-7,87,-8': 'air',
-  });
-  check('★ P43：★ 实机复现 —— 物品报告 y=85 是**实心** → 目标层必须是 **86**（物品的空间），不是 85',
-    findStandY(85, 86, w1, -7, -8), 86);
-  check('★ P43：同一世界，她站在 y=87（在上一层）→ 仍应落在 86（不下潜超 1 格的边界内）',
-    findStandY(85, 87, w1, -7, -8), 86);
-
-  // ★ 目标格站不进去（头被堵）→ 不能选它
-  //   ⚠️ 这正是**实机那片地形**：一条 1 格高的地道（y=87 整层实心）。
-  const w2 = mkWorld({
-    '-7,85,-8': 'grass_block', '-7,86,-8': 'air', '-7,87,-8': 'grass_block',
-  });
-  check('★ P43：★ 实机地形 —— 目标层 86 的**头层 87 是实心**（1 格高的地道）→ 站不进去，不许返回 86',
-    findStandY(85, 86, w2, -7, -8) !== 86, true);
-
-  // ★ 物品悬空在空气里（报告层本身可站）→ 就用那一层
-  const w3 = mkWorld({
-    '-3,60,-3': 'air', '-3,61,-3': 'air', '-3,59,-3': 'stone',
-  });
-  check('★ P43：物品**悬在空气格**里（报告层脚+头都可站）→ 直接用报告层',
-    findStandY(60, 61, w3, -3, -3), 60);
-
-  // ★ 硬约束：绝不上天
-  const w4 = mkWorld({
-    '-3,70,-3': 'air', '-3,71,-3': 'air',
-  });
-  check('★ P43：★ 硬约束 —— 物品在**上方**时**绝不上天**（返回她自己的层）',
-    findStandY(70, 60, w4, -3, -3), 60);
-
-  // ★ 硬约束：绝不下潜超过 1 格（canDig=false）
-  const w5 = mkWorld({
-    '-3,50,-3': 'air', '-3,51,-3': 'air',
-    '-3,59,-3': 'air', '-3,60,-3': 'air',
-  });
-  check('★ P43：★ 硬约束 —— 物品在**很深**（9 格下）→ 最多下潜 1 格，绝不追下去',
-    findStandY(50, 60, w5, -3, -3), 59);
-
-  // ★ 找不到任何可站层 → 退回旧逻辑，且不破硬约束
-  const w6 = mkWorld({ '-3,60,-3': 'stone', '-3,61,-3': 'stone' });
-  check('★ P43：全是实心（一个可站层都没有）→ 退回旧逻辑，且**不破硬约束**',
-    findStandY(59, 60, w6, -3, -3) <= 60, true);
-  check('★ P43：`blockAt` 不是函数（离线/降级）→ 不崩，且不破硬约束',
-    findStandY(85, 86, null, -7, -8) <= 86, true);
-  check('★ P43：y 非法（NaN）→ 退回她自己那层，不崩',
-    findStandY(NaN, 86, w1, -7, -8), 86);
-
-  // ★ 不变量：返回值**永不高过** selfY（上天是 P30 的病）
-  //   ⚠️ 每组的比较基准是**它自己的 selfY**，不能拿一个固定数比 ——
-  //      我第一版写 `every(v => v <= 61)`，而第一组的 selfY 是 86，
-  //      它返回 86 是**合法的**（不高过自己的 selfY），却把断言写红了。
-  //      **这又是"心算一个固定阈值"的老毛病**（P42/P43 的教训同源）。
-  const upCases = [
-    [[findStandY(85, 86, w1, -7, -8)], 86],
-    [[findStandY(70, 60, w4, -3, -3)], 60],   // 物品在上方 → 不上天
-    [[findStandY(60, 61, w3, -3, -3)], 61],
-  ];
-  check('★ P43：★ 不变量 —— 返回值永不高过**自己的 selfY**（P30 的病就是"上天"）',
-    upCases.every(([vs, s]) => vs.every(v => v <= s)), true);
-  // ★ 不变量：返回值的下潜幅度**永不**超过 1 格
-  const deepCases = [
-    [findStandY(50, 60, w5, -3, -3), 60],
-    [findStandY(85, 87, w1, -7, -8), 87],
-    [findStandY(85, 86, w6, -7, -8), 86],
-  ];
-  check('★ P43：★ 不变量 —— 下潜幅度永不超过 1 格（`canDig=false`，下去就上不来）',
-    deepCases.every(([v, s]) => s - v <= 1), true);
+  // P43 的 `findStandY` 断言在 place.js 自测里（测的是 bridge 真在跑的那份，不是手抄副本）
 
   // ---------------------------------------------------------------------------
   // P44（2026-09-25）：`/move` 的 `success: true` 不等于"她动了"
@@ -2863,6 +2744,12 @@ async function tick () {
     }
   }
 
+  // ---- 身体让给大脑了：反射照跑（上面已经跑过），决策和动作交给 brain.js
+  if (Date.now() < S.yieldUntil) {
+    S.action = `让给大脑（${S.yieldReason || 'brain'}）`;
+    return { ms: CFG.tickMs, mode: 'yield', factor: 1 };
+  }
+
   // ---- 决策：交给 decision.js，不再走写死的优先级链
   //
   // ⚠️ P24 补的两个入参：`nearby`（能打出"周围有几只鸡"）与 `food`（能判"她饿不饿"）。
@@ -3748,6 +3635,7 @@ const control = http.createServer((req, res) => {
         taskFailures: [...S.taskFailures.entries()].map(([sig, rec]) => ({ sig, ...rec })),
         decision: backendStatus(),      // 决策层现在实际用哪个后端、Jev 是否熔断
         pendingQuestions: S.pendingQuestions.slice(-5),
+        yield: S.yieldUntil > Date.now() ? { until: S.yieldUntil, reason: S.yieldReason } : null,
         // 自适应感知的观测面。
         // `tickDelay` 是**当前**这一拍的心跳档位 —— 挖矿时会看到 mode:"work" 且 ms 减半，
         // 有怪时是 "combat"。没有这个字段，"提高感知速度"就只是一句无法验证的话。
@@ -3873,6 +3761,14 @@ const control = http.createServer((req, res) => {
       S.taskFailures.clear();
       log(`🧹 清掉全部 ${n} 条失败记录`);
       return json(res, 200, { cleared: n });
+    }
+
+    // 大脑申请/归还身体：{"ms":20000,"reason":"brain"}；ms=0 立即归还
+    if (req.method === 'POST' && url === '/autopilot/yield') {
+      const ms = Math.min(Math.max(0, parseInt(parsed.ms) || 0), 120000);
+      S.yieldUntil = ms ? Date.now() + ms : 0;
+      S.yieldReason = ms ? String(parsed.reason || 'brain') : null;
+      return json(res, 200, { yieldUntil: S.yieldUntil, reason: S.yieldReason });
     }
 
     if (req.method === 'POST' && url === '/autopilot/stop') {

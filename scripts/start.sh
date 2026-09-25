@@ -12,6 +12,21 @@
 SKILL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 BRIDGE_PORT="${MC_BRIDGE_PORT:-3001}"
 PID_FILE="${XDG_RUNTIME_DIR:-/tmp}/minecraft-bridge-$(id -u).pid"
+LOG_FILE="$SKILL_DIR/logs/bridge.log"
+
+# node：优先 $NODE，其次 PATH，最后退到 WorkBuddy 自带的（macOS 上 PATH 里常常没有 node）
+NODE="${NODE:-$(command -v node || true)}"
+if [ -z "$NODE" ]; then
+  for c in "$HOME"/.workbuddy-ai/binaries/node/versions/*/bin/node; do
+    [ -x "$c" ] && NODE="$c"
+  done
+fi
+if [ -z "$NODE" ]; then
+  echo "找不到 node。设 NODE=/path/to/node 再跑。"
+  exit 1
+fi
+NPM="$(dirname "$NODE")/npm"
+[ -x "$NPM" ] || NPM=npm
 
 if [ -f "$PID_FILE" ]; then
   PID=$(cat "$PID_FILE")
@@ -23,9 +38,10 @@ if [ -f "$PID_FILE" ]; then
   fi
 fi
 
-if ! node -e "require('mineflayer')" 2>/dev/null; then
+# 在项目目录里检查（require 按 cwd 找 node_modules）；缺了就按 package.json 完整装，别只装三个
+if ! (cd "$SKILL_DIR" && "$NODE" -e "require('mineflayer')") 2>/dev/null; then
   echo "Installing bridge dependencies..."
-  cd "$SKILL_DIR" && npm install mineflayer mineflayer-pathfinder vec3 --silent
+  (cd "$SKILL_DIR" && PATH="$(dirname "$NODE"):$PATH" "$NPM" install --silent)
 fi
 
 echo "Starting Minecraft Bridge..."
@@ -38,18 +54,22 @@ else
 fi
 echo ""
 
-nohup node "$SKILL_DIR/bridge-server.js" > /tmp/minecraft-bridge.log 2>&1 &
+mkdir -p "$SKILL_DIR/logs"
+# ⚠️ 不要写成 `(cd … && nohup … &)`：`&` 会把整串放进子 shell，$! 记下的是子 shell 而不是 node，stop.sh 就杀不掉她
+cd "$SKILL_DIR" || exit 1
+nohup "$NODE" bridge-server.js > "$LOG_FILE" 2>&1 &
 echo $! > "$PID_FILE"
 
 for i in $(seq 1 10); do
   sleep 1
-  if curl -sf "http://localhost:${BRIDGE_PORT}/status" > /dev/null 2>&1; then
-    echo "Bridge started successfully (PID=$(cat $PID_FILE))"
-    echo "  Status: curl http://localhost:${BRIDGE_PORT}/status"
-    echo "  Logs: tail -f /tmp/minecraft-bridge.log"
+  # --noproxy：环境里的 HTTP 代理会劫持 localhost
+  if curl -sf --noproxy '*' "http://127.0.0.1:${BRIDGE_PORT}/status" > /dev/null 2>&1; then
+    echo "Bridge started successfully (PID=$(cat "$PID_FILE"))"
+    echo "  Status: curl --noproxy '*' http://127.0.0.1:${BRIDGE_PORT}/status"
+    echo "  Logs: tail -f $LOG_FILE"
     exit 0
   fi
 done
 
-echo "Bridge startup timed out. Check logs: cat /tmp/minecraft-bridge.log"
+echo "Bridge startup timed out. Check logs: cat $LOG_FILE"
 exit 1

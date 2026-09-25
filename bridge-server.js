@@ -25,6 +25,7 @@ const http = require('http');
 // 放置的几何判定（四个硬条件）住在 place.js 里 —— 它是纯函数、可离线穷举，
 // 见 `node place.js --selftest`。这里只负责"选好面 → 看过去 → 放 → 等确认"。
 const placeLogic = require('./place');
+const { DEADLY, isStandable, reachableStandY, findStandY } = placeLogic;
 // 寻路策略（"绕路优先、拆方块是最后手段"）住在 pathing.js 里 —— 同样是纯函数、
 // 可离线穷举，见 `node pathing.js --selftest`。这里只负责把它装到 Movements 上。
 const pathing = require('./pathing');
@@ -44,6 +45,8 @@ const paletteRegistry = require('./palette-registry.js');
 // 于是 /drop /equip /craft /place /collect 这些**按名字找物品**的原语全部失效。
 // 见 item-registry.js 顶部（含"为什么它比方块那条简单得多"的机制推导）。
 const itemRegistry = require('./item-registry.js');
+// 她的手：吃 / 右键 / 穿戴 / 按整合包配方合成 / 熔炉 / 任意界面（见 hands.js 开头）
+const hands = require('./hands.js');
 let mineflayer, pathfinderPlugin, Movements, goals, Vec3;
 // 三个「身体反射」插件。它们把"吃 / 换工具 / 采整片矿脉"从"要过一遍大脑"
 // 降级成"库自己会做"—— 这是本轮对标 HiyoriAI 与 Mindcraft 后最重要的一条：
@@ -396,6 +399,16 @@ if (cfg('MC_FORGE', '0') === '1') {
       state.__fml = fml.attach(client, {
         log: (...a) => console.log(...a),
         onSnapshot: (name, entries, info) => {
+          // 界面类型表：打开模组界面（厨锅、砧板…）时靠它把数字 id 翻成名字，见 hands.js
+          if (name === 'minecraft:menu') {
+            state.menuById = new Map(entries.filter(([, id]) => typeof id === 'number').map(([n, id]) => [id, n]));
+            try {
+              fs.mkdirSync(REGISTRY_DIR, { recursive: true });
+              fs.writeFileSync(path.join(REGISTRY_DIR, 'minecraft-menu.json'),
+                JSON.stringify({ capturedAt: new Date().toISOString(), registry: name, entries }, null, 1));
+            } catch (_) {}
+            return;
+          }
           if (name !== 'minecraft:block' && name !== 'minecraft:item') return;
           // 顺手更新内存里的名字表 —— 这样**同一次运行内**重连时，梯子 ID 修正
           // 立刻就能用上刚抓到的快照，不必等下一次启动。
@@ -766,6 +779,7 @@ function saveState () {
     food: state.bot?.food ?? null,
     gameTime: state.bot?.time?.timeOfDay ?? null,
     isDay: (state.bot?.time?.timeOfDay ?? 0) < 13000,
+    isSleeping: !!state.bot?.isSleeping,
     // 模组服务器上 minecraft-data 可能不认识某些物品，name 会是 'unknown'；退回数字 id
     inventory: (state.bot?.inventory?.items() || []).map(i =>
       `${(!i.name || i.name === 'unknown') ? `item#${i.type}` : i.name}x${i.count}`),
@@ -1033,6 +1047,8 @@ function createBot() {
   });
 
   state.bot.loadPlugin(pathfinderPlugin);
+  // 模组界面补丁：必须在 mineflayer 的 open_window 处理之前装上（prependListener）
+  hands.install(state.bot, state);
 
   // ---- 身体反射插件 ----------------------------------------------------------
   // 加载顺序有讲究（两边项目都是 pathfinder 打头）：
@@ -1706,122 +1722,8 @@ const sleepMs = ms => new Promise(r => setTimeout(r, ms));
  * 因为 `prismarine-entity` 自己的 `getDroppedItem()` 认的是
  * `name ∈ {item, Item, item_stack}`，两个字段在不同路径下会有一个是空的。
  */
-/**
- * 为了够到某个 y 上的东西，她应该站到**哪一层**。
- *
- * ## 为什么需要（P33，2026-09-25 实机抓出）
- *
- * `GoalNear(x, y, z, r)` 的 `r` 是**水平**半径，但 Minecarft 的**拾取判定是 3D 的**
- * （玩家碰撞箱与物品实体碰撞箱重叠才结算）。所以"水平走到了"不代表"拿得到"。
- *
- * 这个函数把"物品在哪一层"翻译成"她该站哪一层"，规则：
- *
- * | 物品相对她脚底 | 目标层 | 理由 |
- * |---|---|---|
- * | 上方（`dy > 0`） | `selfY` | 不为了够东西往天上爬 |
- * | 同层或下一层（`-1 ≤ dy ≤ 0`） | 物品的 `y` | 1 格落差可以直接走下去，不用挖 |
- * | 更深（`dy < -1`） | `selfY - 1` | 站到最近的可站层，靠拾取半径够 |
- *
- * 关键点是**绝不返回比 `selfY-1` 更低的目标** —— 寻路器 `canDig=false`
- * 不会挖穿地形去达成目标，返回更低的值就是让它超时打转（P30 的病）。
- *
- * ## 两个"相邻的错"都在这条规则里被同时满足
- *   · P30：球心用物品的 y → 她下不去 → 原地打转  ← 被"更深就夹住"修掉
- *   · P33：球心一律用 selfY → 她永不落坑 → 够不着 ← 被"浅就跟着下去"修掉
- *
- * @param {number} dropY  物品所在层（可以是小数，取 floor）
- * @param {number} selfY  她脚底所在层
- * @returns {number} 目标层的整数 y
- */
-function reachableStandY (dropY, selfY) {
-  const d = Math.floor(Number(dropY));
-  const s = Math.floor(Number(selfY));
-  if (!Number.isFinite(d) || !Number.isFinite(s)) return s;   // 数据不可信 → 退回她自己那层
-  const dy = d - s;
-  if (dy > 0) return s;          // 物品在上方 → 不上天
-  if (dy >= -1) return d;        // 同层或下一层 → 跟着下去（这是能捡到的关键！）
-  return s - 1;                  // 更深 → 站在最近的可站层
-}
-
-/**
- * ★ P43（2026-09-25）：**"物品报告的 y"根本不该直接拿去当"目标站位层"。**
- *
- * ## 病在哪
- *
- * `/pickup` 原来只调 `reachableStandY(dropY, selfY)` —— 它只看**两个 y**
- * 就算出一个答案，**完全没有访问世界**。而"物品报告的 y"和"物品所在的空间"
- * 经常不是同一层：
- *
- * ```text
- * (-7,85,-8) = grass_block  solid=True   ← 物品**报告的 y**（它是躺在方块上的）
- * (-7,86,-8) = air          solid=False  ← 物品**真正的空间**
- * ```
- *
- * 于是：`reachableStandY(85, 86)` → `dy = -1` → 返回 **85**（一格实心方块）。
- * 后面 `standable` 检查会把 85 拦掉（这是对的），但拦掉之后退回 `GoalNear`，
- * 球心仍在 85、而她人在 86 —— **球内包含她自己** → 判"已到达" → **一步不动**。
- *
- * ## 为什么这是**第三次**踩同一个坑
- *   · P42：她被困在"1 格高的通道"里 —— 站位的语义是**空间**不是方块
- *   · P43：物品压在方块顶面 —— 物品的语义是**空间**不是方块
- *   · 两次都是"**方块坐标 ≠ 空间坐标**"。P42 是她的空间，P43 是物品的空间。
- *
- * ## 修法：把"算一个数"换成"**找一个真站得进去的层**"
- *
- * 候选顺序（按"离物品最近且她真的能站"排）：
- *   ① 若物品报告层是实心（物品压在方块上）→ 先试它的**上一层**（那才是物品的空间）
- *   ② 物品报告层本身
- *   ③ 物品报告层下一层
- *   ④ 物品报告层上一层
- * 每层都要 **脚 + 头两层都可站**（`isStandable`）才算数。
- *
- * 硬约束（与 `reachableStandY` 一致，不能破）：
- *   · **绝不上天**：`y > selfY` 不选（P30 的症状）
- *   · **绝不下潜超过 1 格**：`selfY - y > 1` 不选（`canDig=false`，下去就上不来）
- *
- * ⚠️ 为什么把 `blockAt` 做成**参数注入**而不是直接闭包引用 `bot`：
- *    这样这个函数仍是**纯函数**，`--selftest` 能用假世界喂它跑断言，
- *    不必连服务器。**P43 的教训就在"纯函数输入不足"** —— 但扩输入的正确
- *    做法是"多给一个参数"，不是"让它去读全局"。
- *
- * @param {number} dropY  物品报告的层（可小数，取 floor）
- * @param {number} selfY  她脚底所在层
- * @param {(x:number,y:number,z:number)=>?object} blockAt  读世界（返回 `{name}` 或 null）
- * @param {number} x      物品所在格
- * @param {number} z
- * @returns {number} 目标层的整数 y（保证 `y ≤ selfY` 且 `selfY - y ≤ 1`）
- */
-function findStandY (dropY, selfY, blockAt, x, z) {
-  const d = Math.floor(Number(dropY));
-  const s = Math.floor(Number(selfY));
-  if (!Number.isFinite(d) || !Number.isFinite(s)) return s;
-
-  const standableAt = (yy) => {
-    if (typeof blockAt !== 'function') return false;
-    try {
-      return isStandable(blockAt(x, yy, z)) && isStandable(blockAt(x, yy + 1, z));
-    } catch (_) { return false; }
-  };
-
-  const cand = [];
-  // ① 物品报告层是实心 → 物品的空间在它**上一层**（它躺在方块顶面上）
-  let dropBlock = null;
-  if (typeof blockAt === 'function') {
-    try { dropBlock = blockAt(x, d, z); } catch (_) { dropBlock = null; }
-  }
-  if (dropBlock && !isStandable(dropBlock)) cand.push(d + 1);
-  // ② 物品报告层本身；③ 下一层；④ 上一层
-  cand.push(d, d - 1, d + 1);
-
-  for (const yy of cand) {
-    if (yy > s) continue;             // 绝不上天
-    if (s - yy > 1) continue;         // 绝不下潜超过 1 格（canDig=false）
-    if (standableAt(yy)) return yy;
-  }
-  // 一个可站层都找不到 → 退回旧逻辑（至少保证它落在硬约束内）
-  const fallback = reachableStandY(dropY, selfY);
-  return Math.min(fallback, s);
-}
+// 站位判据（`reachableStandY` / `findStandY` / `isStandable` / `DEADLY`）在 `place.js` —— 唯一一份，
+// 自测也在那里（原来 autopilot.js 的自测测的是这里的一份手抄副本，不是跑的这份）。
 
 /**
  * "这一格算不算空的/可穿过的" —— **不再另写一份，直接用 `place.js` 的 `AIRY`。**
@@ -1840,14 +1742,6 @@ function findStandY (dropY, selfY, blockAt, x, z) {
  */
 function isAiryForPlace (block) {
   return !!block && placeLogic.AIRY.test(block.name || '');
-}
-
-// "她能不能站进这一格" —— 脚下的方块不能要命，头/脚两格不能是实心。
-// ⚠️ 刻意**不含** lava：`place.js` 的 `AIRY` 把岩浆当空气是为了"岩浆能当参照物"，
-//    但"她站在岩浆上"是另一回事，必须让 shelter 停下来如实报错。
-const DEADLY = /^(lava|flowing_lava|fire|soul_fire|magma_block|cactus|powder_snow)$/;
-function isStandable (block) {
-  return !!block && isAiryForPlace(block) && !DEADLY.test(block.name || '');
 }
 
 function isDropEntity (e) {
@@ -2369,7 +2263,6 @@ function isPlayerBuilt (blockName) {
   return false;
 }
 
-const AIRY = /^(air|cave_air|void_air|water|flowing_water|lava|flowing_lava)$/;
 // 注：面名（below/above/west/…）与四个放置条件的判定都在 place.js 里。
 // 这里不要再复制一份 —— 两份实现早晚会漂移，而其中一份没人测。
 
@@ -2400,7 +2293,7 @@ function waitForBlock(bot, pos, ms = 1500) {
       try {
         const p = newBlock?.position;
         if (p && p.x === pos.x && p.y === pos.y && p.z === pos.z) {
-          if (typeof newBlock.name !== 'string' || !AIRY.test(newBlock.name)) finish(true);
+          if (typeof newBlock.name !== 'string' || !placeLogic.AIRY.test(newBlock.name)) finish(true);
         }
       } catch (_) { /* 事件里出错不该影响判定 */ }
     };
@@ -2410,7 +2303,7 @@ function waitForBlock(bot, pos, ms = 1500) {
     // 更新可能在我们挂监听之前就到了 —— 主动查一次
     try {
       const cur = bot.blockAt(pos);
-      if (cur && typeof cur.name === 'string' && !AIRY.test(cur.name)) finish(true);
+      if (cur && typeof cur.name === 'string' && !placeLogic.AIRY.test(cur.name)) finish(true);
     } catch (_) {}
   });
 }
@@ -2660,6 +2553,7 @@ const handlers = {
     oxygen: state.bot?.oxygenLevel ?? null,
     gameTime: state.bot?.time?.timeOfDay ?? null,
     isDay: (state.bot?.time?.timeOfDay ?? 0) < 13000,
+    isSleeping: !!state.bot?.isSleeping,
     inventoryCount: state.bot?.inventory?.items()?.length ?? 0,
     currentAction: state.currentAction,
     bridgeVersion: BRIDGE_VERSION,
@@ -3511,51 +3405,7 @@ const handlers = {
     };
   },
 
-  // ---------------------------------------------------------------- 吃
-  //
-  // auto-eat 是后台常驻的（阈值 minHunger=16），但它是**自动**的：
-  // 她不能在"玩家给了块面包"时说"我现在就吃"。这个端点把吃变成**主动可发起的动作**。
-  //
-  // HiyoriAI 把它做成了**反射**（food<=6 直接吃，不走 LLM），我们两条都给：
-  //   · reflex.js 负责"快饿死了自己吃"（不走大脑）
-  //   · 这个端点负责"我要吃"（走大脑，或玩家明确要求）
-  'POST /eat': async ({ itemName } = {}) => {
-    if (!state.bot.autoEat) {
-      throw new Error('auto-eat 插件没装（在 skill 目录 npm install mineflayer-auto-eat）');
-    }
-
-    // 没给名字就让她自己选：按"能回复的饥饿值"从高到低挑。
-    // ⚠️ 不能用 `isFood` —— 那是 auto-eat 内部用的字段，5.x 里有但没写进公开类型；
-    //    走 `foodPoints` 这个官方字段更稳（没有它就是不能吃）。
-    const items = state.bot.inventory.items() || [];
-    let picked = null;
-    if (itemName) {
-      picked = items.find(i => i.name === itemName || i.name.endsWith(`:${itemName}`));
-      if (!picked) throw new Error(`背包里没有 ${itemName}`);
-    } else {
-      const edible = items
-        .filter(i => i.foodPoints > 0)
-        .sort((a, b) => (b.foodPoints * b.count) - (a.foodPoints * a.count));
-      picked = edible[0];
-      if (!picked) return { ate: false, message: '背包里没有能吃的东西' };
-    }
-
-    const before = { food: state.bot.food ?? null };
-    state.currentAction = `eating ${picked.name}`;
-    try {
-      await withTimeout(state.bot.autoEat.eat(picked), 15000);
-    } finally {
-      state.currentAction = null;
-    }
-    return {
-      ate: true,
-      item: picked.name,
-      foodBefore: before.food,
-      foodAfter: state.bot.food ?? null,
-      // 饥饿值没涨不一定是失败：饱食度满时吃不下，但物品也不该被消耗。
-      note: (state.bot.food ?? 0) === before.food ? '饥饿值没变化（可能已经吃饱）' : undefined,
-    };
-  },
+// POST /eat 在 hands.js（按背包前后变化核对到底吃没吃；原来这里依赖没装的 auto-eat 插件，调用必失败）
 
   // ---------------------------------------------------------------- 主动拾取
   //
@@ -4014,10 +3864,29 @@ const handlers = {
     return { equipped: itemName, itemName, destination, changed: true };
   },
 
-  'POST /chat': async ({ message }) => {
-    if (!message) throw new Error('message field required');
-    state.bot.chat(String(message).slice(0, 256));
-    return { sent: message };
+  // 发聊天。两种用法（向后兼容）：
+  //   {message}               一条（旧调用方、危险提示都走这个 —— 不拆）
+  //   {messages:[..], gapMs}  几条短消息连发，条间有停顿（真人打字是"几条短句"，不是"一段话"，见 speech.js）
+  //   gapMs 可以是数字，也可以是 [最小,最大] 区间（每次随机 —— 固定间隔反而机械）
+  'POST /chat': async ({ message, messages, gapMs }) => {
+    if (message) {
+      state.bot.chat(String(message).slice(0, 256));
+      return { sent: 1, messages: [String(message).slice(0, 256)] };
+    }
+    if (!Array.isArray(messages) || !messages.length) throw new Error('需要 message 或 messages[]');
+    const pick = () => {
+      if (Array.isArray(gapMs)) { const [a, b] = gapMs.map(Number); return a + Math.random() * Math.max(0, b - a); }
+      return +gapMs || 450;
+    };
+    const sent = [];
+    for (const m of messages) {
+      const t = String(m || '').slice(0, 256);
+      if (!t.trim()) continue;                      // 空段跳过，不发空消息
+      if (sent.length) await sleepMs(Math.max(0, Math.min(2000, pick())));
+      state.bot.chat(t);
+      sent.push(t);
+    }
+    return { sent: sent.length, messages: sent };
   },
 
   // 放置方块。真玩家能把东西放回去 —— 在这之前接口只能挖不能放，
@@ -5876,6 +5745,14 @@ const handlers = {
     return { stopped: true, controlsCleared: true };
   },
 };
+
+// hands.js 的路由挂到同一张表上。同名会**静默覆盖** —— /eat 就这样在上面留过一份永远不会被调用的死代码，
+// 所以重名一律在启动时喊出来。
+const handRoutes = hands.routes({ state, withTimeout });
+for (const k of Object.keys(handRoutes)) {
+  if (k in handlers) console.warn(`[bridge] ⚠️ 路由重名：${k} —— hands.js 的会覆盖 bridge-server.js 的，删掉其中一份`);
+}
+Object.assign(handlers, handRoutes);
 
 // 有些客户端（curl、部分 agent 的 HTTP 封装）会把中文以原始 UTF-8 字节直接塞进 URL，
 // 而 Node 的 HTTP 解析器按 latin1 解码，于是「出货箱」变成「å‡ºè´§ç®±」，查询永远匹配不到。

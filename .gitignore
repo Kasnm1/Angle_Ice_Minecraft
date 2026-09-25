@@ -17,6 +17,9 @@ memory/events.jsonl
 # ── 私密数据（已确认公开发布，排除）──────────────────────
 # memory/journal.md 以明文累积玩家聊天与相处记录；* 覆盖 .bak-* 等备份变体。
 memory/journal.md*
+# memory/mind.json 是她自己写的记忆（mind.js / memory-store.js）：对每个玩家的印象、
+# 承诺、日记 —— 与 journal.md 同等隐私；* 覆盖 .bak。
+memory/mind.json*
 
 # ── 体积：本地保留、不入库 ──────────────────────────────
 # knowledge/_raw/ 是 extract_*.py 的中间产物；其中 quests.json 与 item-names.json
@@ -64,3 +67,14 @@ Thumbs.db
 .vscode/
 .idea/
 *.swp
+
+# 手动备份（如 PERSONA.md.bak-20260925）—— 历史交给 git
+*.bak
+*.bak-*
+
+# LLM 密钥
+.env
+
+# 从整合包本体生成的知识数据（20MB+，可用 knowledge/_tools 重新生成）
+knowledge/generated/
+.env.*
