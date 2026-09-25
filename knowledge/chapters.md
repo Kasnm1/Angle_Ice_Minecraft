@@ -1,0 +1,271 @@
+# 任务书全章节索引
+
+共 61 章 / 3878 个任务。
+
+> 这里只列**任务标题**（快速定位用）。每个任务的需求、说明、奖励在 `quests.json` 里，用 `lookup.py` 查。
+
+## 冒险之旅
+
+### 必备工具　（15 个任务）
+
+精妙背包、升级组件、储罐升级、高级拾取升级、高级虚空升级、高级压制升级、堆叠升级T1、高级磁铁升级、卸货取货、高级喂食升级、永恒升级、自然罗盘、探险家指南针、一种用竹子制作的物品。可以召唤玩家64格范围（可…、风向标
+
+### 下界探索　（47 个任务）
+
+初次造访下界，这里有着光怪陆离的景色，一望无际的…、奇怪的液体、玫瑰晶核、烈焰棒、岩浆膏、升级的开始、深藏不露   二、(无标题)、炼药的开始、耀眼方块、下界“最强”、血光蔽日，那是一片阴惨惨的血色修罗世界。全部都沾…、好像很缺水的样子，带回家看看吧！！、初见下界、灵魂沙峡谷笼罩着幽静的气氛。贫瘠的灵魂土上偶尔可…、森林以一种你可能不习惯的方式展现出下界生机勃勃的…、森林是一个值得四处游荡的奇怪地方，乍一看可以把它…、在三角洲游荡并不容易——锯齿状的景观和隐蔽的熔岩…、幽匿苗、一片剧毒蘑菇林，闪烁着诡异的光芒，似乎随时可以夺…、下界最吸引人的群系，在这片不毛之地尽情绽放着盎然…、别被它的名字所欺骗，实则是一片蓝色地带，地面铺满…、一片猩红山脉，由猪灵的血液染红。、(无标题)、(无标题)、穿越而来、凝结大量由黑冰、黑冰薄冰、黑冰冰锥构成的巨型冰刺…、在古老的传说中，来自Fabric宇宙的邪恶群系撕…、规模极小，由各种变种下界岩堆积而成，非常杂乱而不…、头好痒，要长脑子了、巨型化石营地、可疑的灵魂沙、谁的家？、带回家、小教堂、武装天使、武装天使plus、(无标题)、“圣所”、奇怪的雕像、结束了吗？、是敌是友   二、烛火、叮..  叮...  叮.、诡异疣、狡诈烛焰、发现结构：巨型化石营地
+
+### 末地涉险　（32 个任务）
+
+这里有着高耸入云的末影水晶山峰，其表面闪烁着神秘…、再来一次、末地船、龙息、(无标题)、末地的主宰、龙蛋、重见天日、千里外是什么、末地城高耸的紫珀塔在虚空中静静矗立，仿佛在等待你…、循环飞升、这群孤岛悬浮于末地虚空之上，几株紫颂植物顽强生长…、内陆、浮空岛屿上矗立着神秘的末地城，成为无数冒险者向往…、贫瘠的岩石悬浮于虚无，几乎没有任何生命迹象。没有…、幻想舱囊、(无标题)、崎岖的灰紫色高地，地表覆盖着黏稠的颂黏石，巨型粉…、诡异礁脉、鲌络克鳞、诡异船、诡异锚、珠光锭、末影螨巢穴、弹性匕首、幽仪森林由深紫色浮球菌构成奇异生态。巨型伞状菌株…、恒星残骸、不灭之石、ends_delight:roasted_dragon_steak、复刻凝胶、末地船、末地鲸刷怪蛋
+
+### 奇妙生态　（34 个任务）
+
+自然之道、紫海无垠、远在天边、秋季原野、被遗忘的、黄金树林、枫叶飘零、月桂婆娑、隔树有眼、奇幻迷离、木兰花慢、奇形怪状、姹紫嫣红、粉圆玉润、海底奇观、晶莹剔透、爱的证明、红霞满天、黑色冰川、软软弹弹、鬼斧神工、五彩斑斓、史前遗迹、闪烁之海、遇见彩虹、绽紫瀑布、将望远镜和玻璃板放入其中，并置入胶卷，记录下旅途…、暗房、相框、老照片、黑白胶卷、彩色胶卷、特别提醒：此处为Biomes we've gon…、落英缤纷
+
+### 上天入地　（17 个任务）
+
+基础部件、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、古老引擎知识、(无标题)、(无标题)、(无标题)、(无标题)、制作飞机部件，学习制造古代机器，或是驾驭不死鸟！、猩红双翼机、经济机、§d炼狱§d摇篮、淬炼灯笼
+
+## Boss料理师
+
+### I-神兵宝鉴　（51 个任务）
+
+(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、菜刀和斩切刀的配方一致，合成时可以选择产物，本武…、(无标题)、前置：制作浇汁龙腿、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、血金锭、珊瑚金锭、钛合金锭、糖钢锭、陨金锭、玫瑰金锭、玫瑰金、(无标题)、多米尼克·昆西的果酿 | §c草莓汁、获取绝酿四海一家鸡尾酒-打造中级神兵、获取银锭-打造初级神兵、获取神酒-打造高级神兵、死亡领主脊骨、寒霜君心、§e黑冰、凝结下界血、神酒酿造、(无标题)、菜刀和斩切刀的配方一致，合成时可以选择产物，本武…、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、悦灵钢锭：可通过悦灵甜酱与糖钢锭合成（悦灵甜酱可…
+
+### 逐级击破-末影龙前　（24 个任务）
+
+探险家指南针、敲钟人、沼泽巨颌怪、薄暮之锋，罗莎琳、福尔图娜女爵、凋灵、末影龙、监守者、钛之心、远古守卫者、地精之王、云傀、古老守卫者、冰冻魔像、狂生巨像、憎恶凋灵、骷髅巨龙、沙丘哨兵、熔岩食者、诡异蚊鬼、暗夜巫妖、不败黑盾、下界铁掌、虚空之花
+
+### II-厨神真谛　（54 个任务）
+
+半步厨神、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、平凡之环
+
+### 讨伐之路-末影龙后　（27 个任务）
+
+大法师甘道夫、支线Boss：科妮莉亚船长的幽灵、虚空蠕虫、支线Boss：荒野奇美拉、支线Boss：紫水晶巨蟹、试炼守护者、德天使、超级嗅探兽、下界合金巨兽、先驱者、焰魔、利维坦、远古遗魂、咒翼灵骸、末影守卫、末影使者、潜影模仿者、支线Boss：遗弃者、支线Boss：瞑煌龙、支线Boss：碎船兽、不朽者、斯库拉、黑曜巨石柱、击败超级嗅探兽、湮灭构造体以及灾变系列Boss以…、湮灭构造体、界域戍卫、魄攫圣骑(癫狂圣骑士)
+
+### Boss电话本　（33 个任务）
+
+卫城（斯库拉）、诅咒金字塔（远古遗魂）、沉没之城（利维坦）、灵魂锻造厂（下界合金巨兽）、远古工厂（先驱者）、烈焰竞技场（焰魔）、废弃堡垒（末影守卫）、苦寒监牢（咒翼灵骸）、古老高塔遗迹（末影使者）、荒废金字塔（沙丘哨兵）、废弃墓穴（魄攫圣骑(癫狂圣骑士)）、荒古要塞（古老守卫者）、覆苔神殿（狂生巨像）、浮云神殿（云傀）、霜冻神殿（冰冻魔像）、熔岩食者巢穴（熔岩食者）、灵魂要塞遗迹（憎恶凋灵）、骷髅蜥龙巢穴（骷髅巨龙）、潜影高塔（潜影模仿者）、下界铁掌竞技场（下界铁掌）、巫妖塔（暗夜巫妖）、虚空之花洞穴（虚空之花）、黑曜石浮岛（黑曜巨石柱）、幽冥教堂（大法师甘道夫）、地精王宫（地精之王）、试炼尖塔（试炼守护者）、古代城市（监守者）、要塞（末地传送门）、海底遗迹（远古守卫者）、机核哨站（界域戍卫）、Boss电话本、堡垒竞技场（不败黑盾）、湮灭空间站（湮灭构造体）
+
+## 纪念品长廊
+
+### 永恒的回忆　（21 个任务）
+
+天空即是起点、“微”生物学家（可选）、逾越时空、异界伙伴、填坑高手、拼盘大师、全家桶（可选）、小心海鸥、斩断一切羁绊、旅者之息、次元之胃、苹果大王！、图腾魔术师、弥达斯之饥、记忆中的幻想乡（可选）、汇流来世饰品、最强成长型、§6JQKA326的叉烧猪肘饭、金色盛宴、奇膳妙馔、可爱兜帽（可选）
+
+### 异界神器库　（20 个任务）
+
+(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、天顶剑、(无标题)、(无标题)、自然生成于圣剑之基结构中。圣剑之基是一种在森林、…、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)
+
+### 厨神之证　（112 个任务）
+
+黑曜符文浓汤、youkaishomecoming:flesh_feast、§6超级大骨汤、炽烤恶魂肉、战斧牛排、brewinandchewin:fiery_fondue_pot、下界炖、香芋蜗牛面包宴叶、oceanic_delight:paella_plate、菌汤火锅、§6终极至尊虾炒饭、石头滩炖菜、mynethersdelight:roast_stuffed_hoglin、荷花鸡、均衡炖汤、椰子蟹、克家菜、冷切火腿片、泰式涼拌辣肉、花蟹炒饭、锅装奶油炖肉、八宝饭、钵钵鸡、「液体龙焰」、菠萝饭、大碗哈喽哈喽刨冰、vintagedelight:century_egg、ends_delight:grilled_shulker_block、血色沙司、仰望星空派、深渊乱炖、神谕灵果派、馥郁芬芳蛋糕、嗅探兽汉堡、镀金监守者之心、黏滑神秘派、缤纷蟹黄堡组、木瓜沙拉、festive_delight:festive_chicken_block、盘状蜜恋苹果饴、油绿蚧配烤蔬菜、mynethersdelight:ghasta_with_cream、七色羊羹、ends_delight:dragon_meat_stew_block、锅装腓秀雅杂、烤洞穴角龙、水母田炖菜、彩蛋兔彩蛋三明治、星喵工艺冰激凌、炽心炒饭、§b葱烧海猪、土耳其烤肉架、酸汤翻车鱼、熔融狂魂碎块拼盘、蘑菇烤恐鹤腿饭、黄金龙鱼、§9不朽之魂意面、海之霸拼盘、一盘布里克卷、玛克洛巴炖菜、煮三叶虾、§a暴雨穆萨卡、填馅嗅探兽蛋、culturaldelights:eggplant_parmesan_block、深海烩饭、下界披萨饼、jadensnetherexpansiondelight:honey_glazed_hogham_block、丰饶角卷、荒野沙拉、白汁九头蛇肉块、§a辐射乱炖、极光雪糕、烤恐龙肉骨、千年竹、四眼丸子、下界奶油面包浓汤、芝香瓜果汁、炸虫薯条、祸乱大杂烩、雷电果炖肉、守卫者灵胶、惊吓盒子、红烩膝骨、怪物蛋糕、发光浆果凝胶块、彩虹加州卷、油泼鱼、战争面包、怨桂鸡汤锅、vefc:heart_of_pagan_stew_block、棱蕉寿司船、瓦罐烂肉炖、彩虹蛋糕、§6豪华炫彩蛋挞、清蒸帝王蟹、竹取物语、T骨肉排烩饭、填馅蒸全鳄、浇汁龙首、ends_delight:steamed_dragon_egg_block、蘑菇红烩蜈蚣、填馅烤森蚺、辣金瓦斯麦吐司、寒冽霜冠慕斯、纸包鱼、熔烬烤馕、「液体狱火」、幽匿薄荷奶绿、沁人血朵朵、鲸豚一锅鲜、蕴魔冷炙意面、天地有用
+
+## 财富宝典
+
+### 沉浸厨艺　（28 个任务）
+
+烹饪桌、refinedcooking:kitchen_station、refinedcooking:kitchen_access_point、厨锅、怪物锅、铜锅、炽铁锅、蒸锅、烹饪锅、(无标题)、(无标题)、烘焙机、宴会锅/铜汤锅/小烹饪锅、(无标题)、收集本页所有厨具并制作屠龙剑后可解锁兑换、小铁锅/矮锅/大汤锅、汤锅、(无标题)、菜板、炒锅、砧板、料理台、悦灵厨房助手、篮子、魔法厨师帽、右键打开，记录配方后潜行右键戴着魔法厨师帽的悦灵…、炸锅、灵魂锅
+
+### 模拟经营　（13 个任务）
+
+操作台、洗碗池、立牌、打单机、餐盘架、包装架、接到第一笔订单了！如何处理？、桌椅、小电驴、oTc升级箱、洗碗机、冰箱、炉灶
+
+### 钓鱼生活　（13 个任务）
+
+在主世界的岩浆中会钓上熟鱼、矿石、黑曜石等物品，…、自动捕鱼器、兑换-占星者的祈愿、兑换-珊瑚钓竿、捕星者钓竿、捕星者指南、钓鱼分为原版钓鱼（传统钓鱼）和捕星者钓鱼（有钓鱼…、(无标题)、(无标题)、鱼群雷达、下界合金升级、鱼竿皮肤、出售箱/每日商店
+
+### 刀耕火种　（11 个任务）
+
+洒水器、木制筒仓、食槽、绞肉机、incubation:hay_nest、moblassos:diamond_lasso、种地女仆、沃土、复生土、无尽沃土、苔藓图腾
+
+### 新生魔艺与农田　（21 个任务）
+
+附魔装置、农艺魔源通道、定时法术炮塔、魔源罐、抄写台、(无标题)、火山魔源通道、生死魔源通道、菌丝魔源通道、(无标题)、ars_nouveau:glyph_harvest、法师的法术书、注意：生长魔符已被禁用、ars_nouveau:glyph_aoe、仅作了解-星宝石兽、ars_nouveau:glyph_touch、仪式火盆、收获、塑云、仅作了解-风转草、仅作了解-德格米
+
+### 钱坤大挪移　（5 个任务）
+
+钱坤大挪移、polaristrading:shop_block_item_cat、polaristrading:shop_block_item_dog、polaristrading:shop_block_item_rabbit、以物易物
+
+## 作物图鉴
+
+### 主世界作物　（169 个任务）
+
+小麦、甜菜根、胡萝卜、马铃薯、卷心菜、番茄、洋葱、稻米穗、苹果、甜浆果、发光浆果、甘蔗、海带/海草、火把花、瓶子草、可可豆、西瓜片、南瓜、啤酒花、大麦、燕麦、玉米、生菜、草莓、vintagedelight:cucumber、茄子、茴香、韭菜、白菜、棉铃、甜瓜、芦笋、红/黄/绿甜椒、哈密瓜、herbalbrews:coffee_beans、辣椒、柠檬香草、韭葱、大蒜头、黑豆/斑豆、莲藕、羽衣甘蓝、海绵瓜、青金石莓、瓜拉纳果、灯笼果、欧芹、海葡萄、幻昙花、白垩玉黍、姬海棠果、棱蕉、暮光西瓜、金甜菜根、炸弹花、大漠椒、红葡萄/青提葡萄、丛林红/白葡萄、热带红/白葡萄、针叶林红/白葡萄、雷电果、蓝莓、大树莓、香草荚、柿子、荔枝、梨子、核桃、大葱、猴面包果实、云莓、橘子、橙子、柠檬、李子、山竹、杨梅、猕猴桃、无花果、巴西莓浆果、椰子、青柠/小青柠、木瓜、朽老苹果、远古水果、牛油果、榴莲、水蜜桃、芒果、香蕉、樱桃、苦心根、百香果、百香果、接骨木莓、红豆、薄荷叶、曼德拉根/曼德拉花、地衣虫草、茶叶、冰蛟果、菅米、farmersrespite:rose_hips、青苹果、凤梨、红薯、丝兰果、橙子/血橙、芦荟叶、桑葚、氧化凝胶、云蘑菇、奇异洋葱球茎、仙人掌/仙人掌果、山楂、蔓越莓、海花生、污秽浆果、洞穴萝卜、香芋、生姜、vintagedelight:peanut、vintagedelight:gearo_berry、木薯根茎、西葫芦、杜鹃莓、双孢蘑菇、门多山竹、炸弹石榴、霜木瓜、堡垒果、法师之花、古苜蓿、溪竹、蕨菜、星树果、松子、花椰菜、芜菁、黄豆、沙漠芜菁、橄榄、火龙果、甜椒、青椒、黑胡椒/白胡椒、红辣椒、霜寒椒、醋栗、棕色蘑菇/红色蘑菇、豌豆、西兰花、野莓、小麦草、腐芋、魔源浆果丛、蛋黄果、水晶果实、天体果实、神秘果、既望莲、氧葡萄、冰葡萄、黄金葡萄、弹弹莓、霜冻莓、凋灵辣椒、火爆辣椒、火爆辣椒
+
+### 下界作物　（31 个任务）
+
+绯红/诡异菌、古代作物，由嗅探兽在绯红森林概率挖出；生长时体内…、绯红/诡异海带/海草、在绯红森林生长、在下界荒地中生长、生长于灵魂沙峡谷，用其树枝合成它的树苗、果皮是很好的耐火材料，果肉有种独特的清香，原产于…、产自玄武岩三角洲，果子上落满了灰尘，黑乎乎的、菌光孢子/菌阴孢子、石榴、阴暗石榴、下界疣、诡异疣、爆弹椒、烟药竹、生长于下界，名字有点可怕，但并不危险、生长在下界各处，如魔鬼般如影随形、生长于绯红森林，研磨时会冒出呛人的红烟，味道很狂…、主要生长于诡异森林，吸收了下界的怨念，靠近时能看…、倒挂在黑石盆地的崖壁之上，数量庞大，生命力惊人，…、从炽足兽的尸体上掠夺得到，下界岩浆海的精华，可用…、含有灵魂沙中的怨念的南瓜，难过的南瓜、在下界的灵魂峡谷中自然生成，采集可获得野生迷魂果…、红色/蓝色鳞状菌、汲取头颅的养分生长而成，看到后让你不禁头皮发麻。…、红色葡萄/诡异葡萄、疖莓/髓莓、farmersrespite:coffee_beans、诡怨桂果、诡异果/绯红果、迷毒果、灵魂辣椒、烬烟杆、灵魂火把花
+
+### 末地作物　（26 个任务）
+
+紫颂果、endersdelight:amberveil、endersdelight:ethereal_saffron、endersdelight:voidpepper、ends_delight:chorus_succulent、紫颂菌、紫颂竹花、enlightened_end:elevibloom、诡异苔藓、诡异浆果、颂黏瓜片、膨生莲果、侵染紫颂果、enlightened_end:azure_berries、enlightened_end:glow_gourd_slice、enlightened_end:frost_fruit、楄兆脂、星云球果、午夜浆果、小诡异倭瓜、影翼椒、末缚椒、黑曜石洋葱、末影薄荷、梦境浆果、末影龙果
+
+### 深暗之园作物　（9 个任务）
+
+沟茎草、深暗豆、黯瓜切片、垂挂果、疱莓、青豕苔藓、披光海带、煜光珍珠、靛蓝/纱障/墨黑/浆血蘑菇
+
+### 幽邃黑暗作物　（5 个任务）
+
+deeperdarker:bloom_berries、幽匿薄荷、deeperdarker:ice_lily、幽暗仙人掌、幽匿感测器卷须
+
+### 其它作物　（3 个任务）
+
+荧光蘑菇、火炬浆果、灾厄青柠
+
+### 图鉴收集　（5 个任务）
+
+(无标题)、(无标题)、(无标题)、(无标题)、(无标题)
+
+## 食录逸闻
+
+### 臻味手记　（338 个任务）
+
+春卷、春卷拼盘、大炸饺、盘装大炸饺、炸饺、洋葱酱意面、ends_delight:ender_noodle、生意面、largemeals:pasta_with_mushroom_sauce、culturaldelights:eggplant_parmesan_block、羊排意面、肉丸意面、蔬菜面、鱿鱼墨面、蘑菇意面、面条汤、蛤蜊意面、鲜虾炒面、蟹肉面、蟹肉千层面、鸡蛋、largemeals:omurice_block、largemeals:tomato_egg_soup、largemeals:omurice、煎鸡蛋、培根鸡蛋、生羊肉、生小羊肋排、largemeals:raw_mutton_rack、石榴羊肉炖、熟小羊肋排、largemeals:cooked_mutton_rack、largemeals:roasted_mutton_rack_block、largemeals:roasted_mutton_rack、生山羊肉、熟山羊肉、烤羊排、熟羊肉、牧羊人派、盘装牧羊人派、生牛肉、牛肉馅、牛肉饼、牛排、牛排配土豆、牛肉炖、生猪排、熟猪排、培根、生培根、猪肉馅、石榴猪肉炖、炒饭、生鸡肉、鸡肉块、鸡肉汤、蜜汁青柠鸡、largemeals:chicken_curry、石榴烤鸡、火腿、烟熏火腿、culturaldelights:spicy_curry、largemeals:hearty_lunch、填馅马铃薯、生兔肉、熟兔肉、沙丘拼盘、蜜汁火腿、largemeals:mushroom_pot_pie_block、熟鸡肉、烤鸡、椰香咖喱、菲律宾酸汤、蛤蜊肉球炖、辣子仙人掌、龙虾意面、培根卷甜瓜、熟培根、沙馡裹、驮夫斑豆炖、巴西式晚餐、混合肉类、锅装豌豆青酱汤、锅装腓秀雅杂、橘子鸡、橘子酿肉、无花果炖鸡、菠萝咕唠肉、鞑靼鸡肉、甜椒意面、炸鸡、咖啡炖牛肉、quarkdelight:crab_pasta、大碗炖肉、咸味馅料、番茄浓汤、摩洛哥香料、哈利姆炖菜、塔吉锅炖鸡、vintagedelight:ghostly_chili、vintagedelight:cheese_pasta、vintagedelight:pad_thai、拜占庭香草熏猪肉、力量汤、麻婆豆腐、狮子头、鸡蛋柠檬汤、地中海千层面、长寿面、烈焰红咖喱、(无标题)、(无标题)、(无标题)、(无标题)、生菜意面、河北正宗安徽牛肉板面、brewinandchewin:cheesy_pasta、brewinandchewin:horror_lasagna、brewinandchewin:fiery_fondue_pot、brewinandchewin:fiery_fondue、鸡肉煮饭、猪排煮饭、牛肉煮饭、奶油火腿意面、奶油鸡肉意面、脆皮牛排、绯红小食、丰饶炖、brewinandchewin:vegetable_omelet、草甸杂拌、森林杂拌、碎牛肉、鞑靼牛肉、照烧鸡肉、(无标题)、香肠、猪肘、炸鸡肉、HadariYao风味烤半鸡、(无标题)、羔羊肉火腿、(无标题)、(无标题)、candlelight:khinkali、(无标题)、(无标题)、猪排丁土豆、牛肉丁土豆、鸡肉丁土豆、幻翼饺子、(无标题)、(无标题)、鸡蛋番茄丁土豆、薄饼、煎蛋卷、鸡肉沙拉、土豆沙拉、festive_delight:festive_chicken_block、festive_delight:festive_chiken、荔枝鸡球、蔬菜丸子意面、煎培根土豆卷、煎饼果子、生垂滴叶包烤、垂滴叶包烤、小份垂滴叶包烤、西冷牛排、牛肉粒、苔藓香煎小羊排、farmersrespite:blazing_chili、farmersrespite:tea_curry、腐肉碎、腐肉酸奶脆、腐肉、烂茄肉汤、酱蘸腐肉、四眼丸子、碗装四眼丸子、缤纷谷串、凤梨、凤梨片、凤梨炒饭、凤梨派、凤梨派切片、熟海鸥、烤鹦鹉腿、熟肋排、熟蝌蚪、生美西螈肉、美西螈寿司、酥脆蜜蜂、嗡嗡纸杯蛋糕、悦灵凝胶、悦悦冰淇灵、悦灵甜酱、悦灵夹心饼、饺子、炸饺、烤瓜子酱牛肉饼、松子肉丸、樱桃肉、炭烤鼻孔、熟鳄鱼肉、熟蛙腿、仙人掌果、熟仙人掌果、荧光米诺陶意面、荧光浇汁鹿排配意面、肉肉杂碎、菲式茄汁牛肉、菲式牛骨汤、鸡肉米粥、菲律宾烤鸡、菲式烤鸡饭、菲式甜烧肉、蒜炒饭配甜烧肉和煎蛋、鸡肉汤、火辣鸡腿、肉丸、肉饼、烤肉串、玛纳基什披萨、生牛肉串、牛肉串、石头炖、香肠伴燕麦饼、蔬菜牛肉饼、插棍棉花糖、烤插棍棉花糖、发光墨水面条、泰式涼拌辣肉、木瓜炒面、咖喱！乌冬！、怪物千层饼、oceanic_delight:caesar_salad、oceanic_delight:steamed_beef、oceanic_delight:fish_egg_noodle_soup、oceanic_delight:pasta_with_eyeball、填馅毒马铃薯、椰奶鸡汤、赛熊掌、八云豆包饭、竹筒蒸蛋、熟疣猪火腿意面、匈式炖尸肉、蘑菇炒蛋、辛辣肉丸、野牛肉意面、素手卷、牛肉卷饼、culturaldelights:fish_taco、culturaldelights:pork_wrap、culturaldelights:chicken_taco、羊肉卷饼、卷心菜卷、海洋卷、生鸡腿面包、炸鸡腿面包、蝙蝠卷、烧烤卷饼、煎蛋、春卷、蜂蜜煎饼、樱花煎饼、南瓜煎饼、巧克力煎饼、蔬菜煎饼、煎饼、越南黑熊酥饼、野猪排、野猪炖菜、生野牛肉、野牛肉披萨、蛋黄猪肉粽子、甜粽子、烤肉卷饼、untamedwilds:food_pachyderm_raw、土耳其烤肉架、生恐鹤腿、蘑菇烤恐鹤腿饭、骆驼肉、骆驼肉卡拉希、薯片、苹果脆片、火辣薯片、甜菜根脆片、熟獠牙兽肉、vintagedelight:stuffed_burrito、galospheric_delight:apples_in_chicken_broth、galospheric_delight:specterpillar、galospheric_delight:specterpillar_sauce、galospheric_delight:lichen_cordyceps_roll、凋灵合金意面、brewinandchewin:pizza、brewinandchewin:pizza_slice、阿尔弗雷多棘鱼意面、金蛾酱意面、aquaculturedelight:tuna_spaghetti、生熊肉、熟熊肉、生鹿肉、鹿肉炖、youkaishomecoming:flesh、youkaishomecoming:flesh_dumplings、youkaishomecoming:canned_flesh、youkaishomecoming:flesh_stew、youkaishomecoming:flesh_chocolate_mousse、猩红恶魔蛋糕、youkaishomecoming:flesh_feast、恐龙肉骨意面、板块意面、史前蛋炒饭、肉骨块炒饭、捕蝇草卷饼、特辣意面、热嗨汤、火把花咖喱饭、火把花、瓶子草荚果、荚壳汉堡肉、瓶子草烤肉、锅装豌豆青酱汤、三叶虾面条汤、匈式炖尸肉、荚壳汉堡肉、生五花肉、生羊排、生牛杂、白桦树液瓶、西兰花意面、北非蛋、温泉蛋、恶魂意面、星之恶魂意面、切叶蚁、洞穴蜈蚣腿、真正的蚂蚁上树、凝视深渊
+
+### 健康蔬果　（158 个任务）
+
+胡萝卜汤、brewinandchewin:creamy_onion_soup、土豆泥、苹果炖、土豆饺子、土豆沙拉、蔬菜拼盘、candlelight:fresh_garden_salad、酿西葫芦、蘑菇馅马铃薯、浆果馅马铃薯、玉米馅马铃薯、韭葱炖、vintagedelight:nut_milk_bottle、生菜沙拉、candlelight:tomato_mozzarella_salad、甜菜沙拉、红薯煎饼、蜜饯苹果、蜜饯李子、土豆泥、约克郡布丁、brewinandchewin:kimchi、brewinandchewin:pickled_pickles、candlelight:chocolate_mousse、普通玉米糊、黄油玉米糊、香甜玉米糊、玉米糊、大麦土豆饼、填馅南瓜、西兰花沙拉、烟熏切制茄子、番茄酱、烟熏番茄、culturaldelights:empanada、混合沙拉、水果沙拉、烘焙双孢蘑菇菌盖、largemeals:rice_pudding、马铃薯炸饼、烟熏茄子、大骨汤、Poached Eggplants、largemeals:red_soup、largemeals:potato_soup、蔬菜杂烩、豪华沙拉、填馅双孢蘑菇、双孢蘑菇炖饭、蘑菇饭、蔬菜汤、野米浓汤、法式蜗牛、热辣石榴果冻、琥珀核桃、田园沙拉、拓荒者汤、石榴红豆沙拉、仙人掌汤、章鱼足拼盘、蜜恋糖苹果、盘状蜜恋苹果饴、熟苞谷、炸木薯酪饼、烤大蒜、羽衣甘蓝配烤木薯粉、羽衣甘蓝沙拉、熟斑豆饭、熟黑豆饭、椰子冰淇淋、林木土豆泥、繁茂沙拉、竹片土豆、群英荟萃、非常美味的麦片、甜菜沙拉、行者沙拉、清新沙拉、苦力怕麦片、oceanic_delight:potato_salad、烤毒马铃薯、珍珠棱蕉南瓜派、热带沙拉、玉黍饭团、天地无用、石锅炖麦腐、蕉香蒸蛋、芜菁糕、quarkdelight:cavern_explorer_stew、quarkdelight:bowl_of_exotic_fruits、quarkdelight:lush_moss_salad、炸蘑菇、马铃薯沙拉、甜沙拉、甜椒汤、爆炒橡子卷心菜、松子粥、盛放沙拉、奶油蘑菇浓汤、竹筒粥、塔博勒沙拉、园丁汤、炖菜煲、金果沙拉、简易沙拉、苹果酱、土豆泥、南瓜汤、菠萝饭、碗装菠萝饭、冰糖雪梨、山楂串、果丹皮、果丹卷、凯撒沙拉、海洋菠萝串、菲律宾蒜炒饭、蜜渍发光浆果、苹果糖、竹筒水羊羹、甜豆沙麻薯杂煮、幻昙花羹、臭豆腐、毛血旺、七色羊羹、桃花羹、桃子八桥、vintagedelight:overnight_oats、vintagedelight:pickle_soup、vintagedelight:oatmeal、vintagedelight:cucumber_salad、古苜蓿七草粥、番茄炒蛋、秘制鲜菌煲、罗宋汤、奶油马铃薯浓汤、石狩锅、力量汤、竹取物语、豆腐蟹煲、白雪、汉宫藏娇、荒野炖菜、姬海棠茶泡饭、溪竹茶、千层面烤盘、千层面切块、鸡丁蘑菇洋葱饭、一碗鸡丁蘑菇洋葱饭、荷叶包饭、碗装荷叶包饭、驼鹿香肠煎鲑鱼、蜜汁熊肉鲑鱼宴、碗装驼鹿香肠煎鲑鱼、碗装蜜汁熊肉鲑鱼宴、炸蛛蜂、一份炸蛛蜂
+
+### 海鲜大餐　（215 个任务）
+
+鱼肉炖、熟鳕鱼、生鳕鱼片、炸鱼薯条、海岸杂拌、生鳕鱼、生鲑鱼、纸包鱼、碗装纸包鱼、熟鲑鱼、百香果汁三文鱼、热带鱼、(无标题)、(无标题)、brewinandchewin:kippers、烘焙鳕鱼炖、largemeals:cod_deluxe、柠汁腌鱼、香烤鲑鱼、生鲈鱼、abnormals_delight:perch_with_mushrooms、鱼肉炖、鲑鱼鞑靼、地中海式鲑鱼、生狗鱼、abnormals_delight:pike_with_beetroot、河豚、largemeals:pufferfish_broth、烤鱿鱼、蛤蜊杂烩、海潮蛤、鱼生拼盘、酋长蟹、酋长蟹腿、螃蟹味增汤、黄油蟹腿、生白金鲈鱼、白金鲈鱼炖、熟黑虎虾、鲜虾炖、三文鱼裹鲜虾、酋长蟹钳、酋长蟹肉、炸蟹角、酸柠腌虾、炸鱼配巴西莓、锅装莫奎卡焖鲙、熟褐虾、oceanic_delight:squid_tentacles、oceanic_delight:takoyaki、oceanic_delight:squid_salad、oceanic_delight:grilled_squid_tentacles、oceanic_delight:seafood_skewer、oceanic_delight:squid_and_pickles、oceanic_delight:glow_squid_tentacles、oceanic_delight:glow_squid_stew、oceanic_delight:sea_salad、oceanic_delight:shrimp_stew、oceanic_delight:paella_plate、oceanic_delight:shrimp_rice、oceanic_delight:stuffed_pufferfish、熔岩河豚、熟熔岩河豚片、香烤熔岩河豚、黑曜石鱼、熟黑曜石鱼片、香烤黑曜石鱼、灼热鳕鱼、灼热鳕鱼片、香烤灼热鳕鱼、魂吸鱼、熟魂吸鱼片、香烤魂吸鱼、烈焰鱼、烈焰鱼片、香烤烈焰鱼、岩浆怪鱼、熟岩浆怪鱼片、香烤岩浆怪鱼、发光沙丁鱼、熟发光沙丁鱼片、香烤发光沙丁鱼、烘焙灼热鳕鱼炖、烘焙魂吸炖、烘焙沙丁鱼炖、烘焙岩浆怪鱼炖、烘焙烈焰炖、烘焙黑曜炖、烘焙河豚炖、章鱼丸子、填馅鱿鱼、熟花蟹、渔夫乐事、仙人掌烤鱼、farmersrespite:black_cod、生鱼刺身、quarkdelight:miso_with_bamboo_sprouts、quarkdelight:cooked_whole_crab、quarkdelight:crab_bars、炸鱿鱼、填馅绿甜椒、填馅红甜椒、填馅黄甜椒、生八目鳗、烤八目鳗、鳗鱼饭、干海带、味噌汤、酱烧鱼、小鱼干、白雪、海鲜味增汤、萨亚迪耶鱼饭、炖鱼煲、凉拌海带、荧光墨囊汤、鱿鱼汁汤、帝王蟹、帝王蟹身、帝王蟹腿、清蒸帝王蟹、辣炒帝王蟹腿、翻车鱼、翻车鱼片、酸汤翻车鱼、熟白鲳鱼、香酥白鲳鱼、油炸海葵、鮟鱇鱼、加利西亚风味鮟鱇鱼、熟龙鱼、黄金龙鱼、鳞鲀、熟鳞鲀、香煎鳞鲀、鲹鱼、鲹鱼片、鲹鱼塔塔基、熟鲹鱼、芝士焗鲹鱼、生鲶鱼、熟鲶鱼、麻辣鲶鱼、白鲳鱼、龙鱼、螃蟹、蟹肉饼、熟虾、烤虾串、烤鱼柳、海陆大餐、蛤蜊大杂烩、填馅鹦鹉螺、法式贝类浓汤、海鲜秋葵浓汤、蛤蜊浓汤、虾炒饭、珊瑚脆片、鱿鱼烤串、熟蛙腿、蛙腿烤串、熟辐鳃鱼、熟三叶虾尾、熟三脚鱼、熟灯笼鱼、辐鳃鱼、生三叶虾尾、三脚鱼、灯笼鱼、oceanic_delight:elder_guardian_eye、oceanic_delight:globular_rice、生花蟹、花蟹炒饭、腌制海泡菜、菲律宾酸橘汁腌鱼、蒜炒饭配煎虱目鱼与煎蛋、烟熏鲶鱼、帝王蟹肉粥、海洋烧烤串、填馅海泡菜、炸鱼薯条、galospheric_delight:salted_fish、深海烩饭、鮟鱇鱼配氧素草汤、垂钓者之汤、浇酱焙棘鱼、鮟鱇烤肉串、aquaculturedelight:fish_and_chips、aquaculturedelight:halaszle、aquaculturedelight:fish_chorba、aquaculturedelight:bass_stew、aquaculturedelight:unusual_fish_soup、aquaculturedelight:jellyfish_jelly、aquaculturedelight:poor_fisher_chowder、aquaculturedelight:crispy_nori_kelp、大西洋鲱鱼、aquaculturedelight:buckling、绿鳕、aquaculturedelight:baked_pollock_with_carrots、熟鱼排、aquaculturedelight:large_fish_with_vegetables、aquaculturedelight:cooked_small_turtle_meat、aquaculturedelight:turtle_meat_dish、aquaculturedelight:rollmops、aquaculturedelight:catfish_barbecue、aquaculturedelight:halibut_with_tartar_sauce、aquaculturedelight:halibut_with_tartar_sauce、蔬菜奶油鲑鱼、香煎鳞鲀、刺身、§b填馅魔法海螺、烤管蠕虫、蟹膏滋补汤、蟹黄堡、荧光蟹壳蛋奶沙司
+
+### 寿司小屋　（97 个任务）
+
+culturaldelights:midori_roll_slice、culturaldelights:chicken_roll_slice、海带寿司、鸡肉寿司、culturaldelights:midori_roll、煎蛋寿司、culturaldelights:calamari_roll、热带鱼寿司、河豚寿司、鲑鱼寿司、蛤蜊寿司、海带寿司卷、鳕鱼寿司、寿司拼盘、culturaldelights:exotic_roll_medley、oceanic_delight:fish_egg_roll_slice、oceanic_delight:fish_egg_roll、oceanic_delight:sea_pickle_roll、oceanic_delight:sea_pickle_roll_slice、oceanic_delight:egg_roll、oceanic_delight:shrimp_roll、海胆寿司、下界寿司拼盘、诡异海带寿司卷、诡异海带寿司、魂吸鱼寿司、发光沙丁鱼寿司、岩浆怪鱼寿司、烈焰鱼寿司、灼热鳕鱼寿司、黑曜石鱼寿司、熔岩河豚寿司、鱿鱼寿司、红甜椒寿司、黄甜椒寿司、绿甜椒寿司、香蕉寿司卷、幽匿感测体卷须卷切片、鱼籽军舰、youkaishomecoming:flesh_roll、饭团、鲜虾寿司、大饭团、河豚寿司、樱花寿司、皇家寿司拼盘、蓑鲉寿司卷、晶化珊瑚寿司卷、棘鱼海苔卷、棘鱼海苔卷切片、渔夫面包卷、aquaculturedelight:raw_fish_fillet_roll、aquaculturedelight:fried_perch_roll、aquaculturedelight:fish_roll_medley、深海寿司卷、麻薯、咖啡麻薯、抹茶麻薯、樱饼、信州瘦马、仙贝、御烧、月见团子、生首烧、猪肉饭团、三色团子、黄豆粉团子、御手洗团子、三叶虾寿司卷、火热寿司、恶魂寿司、若鹭卷、铁火加州卷、彩虹加州卷、蕉盒鳕、蕉盒鲑、汉堡肉寿司、瓶张寿司、玉麦寿司、Alex的寿司拼盘、龙虾寿司拼盘、绿色软糖鱼寿司、红色软糖鱼寿司、黄色软糖鱼寿司、蓝色软糖鱼寿司、粉色软糖鱼寿司、辐鳃鱼寿司、龙虾寿司、香蕉寿司、鲶鱼寿司、魔鳉寿司、飞鱼寿司、弹涂鱼寿司、鲎虫籽军舰、海猪寿司、海猪寿司切片、美西螈寿司
+
+### 异界珍馐　（241 个任务）
+
+恶魂意面、辛辣面花串、盘装岩浆膏恶魂意面、恶魂沙拉、mynethersdelight:ghasta_with_cream、辛辣面条汤、疣猪兽腰肉、疣猪兽香肠、香肠配土豆、熟疣猪兽腰肉、诡蓝里脊肉排、炸疣猪兽排、烤疣猪兽香肠、早餐拼盘、热狗、火辣热狗、岩浆蛋糕、岩浆蛋糕切片、热辣鸡翅、热辣鸡翅桶、辛辣疣猪兽肉炖、焦烧肉卷、炽足兽岩壳蛋、炽足兽蛋、岩壳汤、白煮蛋、魔鬼蛋、生填馅疣猪兽、mynethersdelight:roast_stuffed_hoglin、盘装填馅疣猪兽鼻、烤疣猪兽耳、盘装填馅疣猪兽火腿、盘装填馅疣猪兽、炽足兽肉片、炽足兽肉末、渗血塔塔、mynethersdelight:striderloaf、盘装炽足兽肉卷、炽足兽肉炖、绯红菌奶油炖肉、炽足兽肉烤菌类、辛辣烤串、下界炖、碗装下界炖、草方块蛋糕、草方块蛋糕切片、一碗黏糊、粘液饭、凝胶糖果、史莱姆布丁、岩浆膏布丁、岩浆膏饭、金粘液球、粘液百奇饼干、百奇饼干盒、灵液汤、填馅星辰薯、油绿蚧卷、煜光卷、青豕肉排、浆血番茄煲、烤微深鱼配蔬菜、酿黯瓜、煜光菜肴、油绿午餐、深园蘑菇奶油汤、深暗豆沙拉、微光蚙蜒煲、垂挂果煲、阴燃煲、下界菌索沙拉、下界菌煲、诡异小食、ends_delight:ender_bamboo_rice、ends_delight:enderman_gristle_stew、ends_delight:assorted_salad、ends_delight:end_mixed_salad、ends_delight:chorus_sauce、ends_delight:roasted_dragon_steak、ends_delight:dragon_leg、ends_delight:roasted_dragon_meat_cuts、ends_delight:roasted_dragon_meat、ends_delight:smoked_dragon_leg、ends_delight:dragon_leg_with_sauce_block、ends_delight:dragon_leg_with_sauce、ends_delight:grilled_shulker_block、ends_delight:grilled_shulker、ends_delight:dragon_meat_stew_block、ends_delight:dragon_meat_stew、ends_delight:steamed_dragon_egg_block、ends_delight:steamed_dragon_egg、ends_delight:ender_sausage、ends_delight:shulker_omelette、ends_delight:shulker_omelette_mixture、ends_delight:stir_fried_shulker_meat、ends_delight:ender_noodle、ends_delight:shulker_soup、ends_delight:dragon_breath_and_chorus_soup、ends_delight:ender_congee、ends_delight:chorus_fruit_wine、ends_delight:dragon_breath_soda、ends_delight:bubble_tea、ends_delight:chorus_fruit_milk_tea、ends_delight:chorus_flower_tea、ends_delight:roasted_shulker_meat_slice、ends_delight:roasted_shulker_meat、ends_delight:half_dragon_egg_shell、ends_delight:non_hatchable_dragon_egg、ends_delight:liquid_dragon_egg、ends_delight:fried_dragon_egg、ends_delight:chorus_fruit_pie、ends_delight:chorus_flower_pie、ends_delight:stuffed_rice_cake、ends_delight:chorus_fruit_pie_slice、ends_delight:chorus_fruit_popsicle、ends_delight:end_barbecue_stick、ends_delight:chorus_cookie、绯红萝卜烩、下界沙拉、糖渍炽足兽、热淇淋填筒、热淇淋、endersdelight:stuffed_shulker、碗装填馅潜影贝、紫颂煲、扭曲麦片粥、endersdelight:amberveiled_curry、endersdelight:veil_of_flames_risotto、末影螨炖、endersdelight:chicken_curry、endersdelight:amberveil_stew、脆壳烤串、十四夜、天狗踊、水獭祭、大吟酿、farmersrespite:nether_wart_sourdough、奇异炖菜、融梦灵药瓶、传说龙角冰淇淋、幽匿感测器糖霜、幽匿脉络沙拉、幽匿汤、幽匿烧烤串、监守者心脏盘、镀金监守者之心、监守者耳炒饭、棍上烤监守者耳、疣派、利维坦鳍、熟利维坦鳍、深渊双拼、合金三明治、注能合金三明治、狂魂残块、熔融狂魂残块、熔融狂魂残块串、熔融狂魂碎块拼盘、末影之血、骸龙骨髓南瓜炖、填馅遗魂头骨、失活珊瑚巨像碎块、香烤蓑鲉、熟紫水晶蟹肉块、熟紫水晶蟹肉、紫水晶蟹肉块串、晶化珊瑚填馅马铃薯、祛能末影傀儡碎块、深渊煎蛋、焰魔之息、末影血汁浇灵骸心片、灵骸心炖、珊瑚虚空双拼、珊瑚炖、荆棘玫瑰茶、盈泪之饮、暮色山泉™、冰川冰茶、火炬浆果汁、植物素汁、火炬浆果奶昔、植物素奶昔、冰川奶昔、极光奶昔、荷花鸡、盘装荷花鸡、火炬浆果曲奇、战斧牛排、炽烤恶魂肉、浆果串、米诺陶卷、巧克力夹心薄饼、荧光煲、荧光蘑菇酱、万草煲、蛀虫精华甜菜汤、小炒肥虫、盘装炽汁蛇宴、炽汁蛇宴、暮光惠灵顿牛排、盘装暮光惠灵顿牛排、试验物品 113、试验物品 110、113蘸巧克力、恶魂脑沙拉、113蘸炼乳、113蘸荧光煲、113蘸蜂蜜、endersdelight:steak_fries、endersdelight:amberveil、endersdelight:ethereal_saffron、endersdelight:voidpepper、极光雪糕、惠灵顿牛头人肉排、迷宫寿司、巨魔莓酸辣酱、活根啤酒、火炬浆果干、垂雨饼、大红包子、猪灵踊、油绿蚧、海胆南瓜炖、海鲜沙拉、生疣猪火腿、火腿优格、疣猪兽獠牙焖肉、野蛮烤肉、星之炖肉、酸菜鱼、回魂饭、灵魂羊排、绯红菌岩浆膏炖肉、炽足兽岩壳炒肉、灵魂椒炒肉、下界猪儿虫刺身、炽足兽炖下界疣、灵魂浇汁烤肉、下界薯条拼盘、黄金烤肉、红烧炽足兽
+
+### 多元烹饪　（207 个任务）
+
+生钵钵鸡肉、生钵钵卷心菜、生钵钵土豆、钵钵鸡、爆米花、爆米花罐、甜爆米花罐、黄油爆米花罐、普通爆米花罐、香甜爆米花罐、festive_delight:creeper_cutter、festive_delight:gingerbread_man_cutter、剑形切割器、雪花形切割机、festive_delight:gingerbread_cookie_creeper、festive_delight:gingerbread_cookie_dough_creeper、festive_delight:gingerbread_man_dough、姜饼饼干、festive_delight:gingerbread_man_base、festive_delight:gingerbread_man、姜饼饼干面团、姜饼曲奇面团、姜饼饼干底部、姜饼饼干基础、姜饼曲奇、姜饼饼干、洞穴萝卜、烤洞穴萝卜、洞穴萝卜汤、纯素牛排和土豆、纯素肉饼、miners_delight:weird_caviar、调味节肢动物、蝙蝠饼干、昆虫炖菜、蝙蝠汤、简易烧烤串、深海意面、霓虹海葵拌面、石头滩炖菜、沙威玛烤肉机、沙威玛烤肉、沙威玛、嗅探兽蛋壳、烤嗅探兽蛋、填馅嗅探兽蛋、碗装填馅嗅探兽蛋、煎嗅探兽蛋、嗅探兽蛋、破碎的嗅探兽蛋、馥郁芬芳蛋糕、嗅探兽煎蛋、嗅探兽的喙、烧烤排骨、健康沙拉、药用混合物、烹饪锅、便携烹饪锅、炖肉汤、海鲜杂烩、培根煎蛋、蜜汁火腿、火鸡正餐、怪物鞑靼、花式回旋块茎、冰淇淋、芦笋汤、伏特羊肉冻、西瓜冰棍、太妃糖、发光浆果慕斯、蓬松土豆蛋奶酥、海鲜牛排、苏格兰蛋、鱼塔可、早餐锅、爆炒填馅辣椒、波兰水饺、蘑菇蛋糕、芦笋冷汤、南瓜曲奇、骨头汤、蜜汁卤肉、肉丸、海鲜秋葵汤、奶油土豆泥、辣炖肉、加州卷、潮湿黏糊、糖果、鲑鱼寿司、蔬菜鸡尾酒、果酱蜜饯、花沙拉、蔬菜杂烩、莎莎酱、酸橘汁腌鱼、炸鱼条、烤肉串、普通煎蛋、酿茄子、热带鱼汤、茶、冰茶、热可可、糖浆、粉末蛋糕、下界佳肴、炖兔子、怪物千层饼、(无标题)、菲律宾面包卷、一半菲律宾面包卷宴叶、菲律宾面包卷宴叶、绿豆霍皮饼、一半绿豆霍皮饼宴叶、绿豆霍皮饼宴叶、蜗牛面包、一半蜗牛面包宴叶、蜗牛面包宴叶、香芋霍皮饼、一半香芋霍皮饼宴叶、香芋霍皮饼宴叶、香芋菲律宾面包卷、一半菲律宾面包卷宴叶、香芋菲律宾面包卷宴叶、香芋蜗牛面包、一半香芋蜗牛面包宴叶、香芋蜗牛面包宴叶、西班牙酥饼、脆米西班牙酥饼、曲奇奶油西班牙酥饼、香芋西班牙酥饼、一半米饭宴叶、米饭宴叶、一半菲律宾蒜炒饭宴叶、菲律宾蒜炒饭宴叶、一半炒饭宴叶、炒饭宴叶、下界菌水饺、猪肉海带水饺、鳕鱼水饺、鲑鱼水饺、蘑菇水饺、茄子鸡蛋水饺、香菇鸡肉水饺、羊肉水饺、番茄鸡蛋水饺、蒲公英水饺、番茄牛肉水饺、韭菜鸡蛋水饺、鱿鱼水饺、猪肉茴香水饺、猪肉土豆水饺、白菜猪肉水饺、饺子拼盘、薯条、炸鸡腿、全家桶、地牢炉灶、怪物锅、沙粒肉、腐烂内脏、盐水肉、蜘蛛肉、黏液棒、幽匿息肉、生嗅探兽腿肉、蠹虫腹肉、恶魂触须、腐芋、(无标题)、糖渍恼鬼棒棒糖、蛛眼糖葫芦、糖渍蠹虫棒棒糖、浸泡肉串、小牛胸腺、盐水炖、蜘蛛眼杂烩、腐烂马铃薯欧蕾、酸腻羹、(无标题)、嗅探兽蛋霜、熟嗅探兽德肠、嗅探兽热狗、魔鬼风味蛋、幽匿蓝纹奶酪、恶意三明治、芋头奶茶、恶魂寿司、法式冻包、瘴鱼烧、不祥煎蛋卷、凝胶沙拉、肉汁奶酪毒薯条、盐辛、鸡骑士三明治、水果圣代、蒸火腿三明治、蛇骨汤、软糖蛋糕、发酵桶、菊、丹白鹤、河童之里、鲸息、古老温泉蛋
+
+### 糖果世界　（116 个任务）
+
+苦味糖果、酸味糖果、糖果、辛味糖果、香蕉软糖、发光浆果软糖、百香果软糖、南瓜软糖、苹果软糖、大树莓软糖、甜瓜软糖、香草软糖、西瓜软糖、石榴软糖、青柠软糖、抹茶软糖、咖啡软糖、红茶软糖、黄茶软糖、绿茶软糖、丝兰果软糖、芦荟软糖、甜菜软糖、甜浆果软糖、红豆软糖、薄荷软糖、巧克力软糖、芒果果冻、荔枝果冻、山楂果冻、西瓜果冻、哈密瓜果冻、发光浆果果冻、蓝莓果冻、苹果果冻、榴莲果冻、无花果果冻、猕猴桃果冻、杨梅果冻、紫颂果果冻、浆果果冻、山竹果冻、蔓越莓果冻、柠檬果冻、菠萝果冻、柿子果冻、梨子果冻、水蜜桃果冻、橘子果冻、蜂蜜酒瓶、绿茶瓶、红茶瓶、洋甘菊茶瓶、金银花茶瓶、风铃花茶瓶、火把花茶瓶、接骨木莓酒瓶、青金石莓酒瓶、蜜饯柠檬、蜜饯橙子、brewinandchewin:glow_berry_marmalade、brewinandchewin:sweet_berry_jam、brewinandchewin:apple_jelly、苹果酒罐、李子酒罐、朽老酒罐、糖渍苹果罐、糖渍橙子罐、糖渍柠檬罐、糖渍李子罐、糖渍朽老罐、青柠蜜饯、水母果冻、琥珀糖、泡泡糖、跳跳糖、融梦棉花糖、拐杖糖、熔岩布丁、玫瑰糖、牡丹糖、哈尔瓦酥糖、粉红色软糖鱼、蓝色软糖鱼、黄色软糖鱼、绿色软糖鱼、红色软糖鱼、粉红色明胶、蓝色明胶、黄色明胶、绿色明胶、红色明胶、焦糖、焦糖苹果、削尖的拐杖糖、口香糖堆、虹彩香精、岩浆果冻、果冻、布丁、巧克力布丁、甜浆果糖、诡异疣糖、蜜糖、棒棒糖剑、楄兆膏软糖、午夜浆果软糖、星云风味软糖、天蓝莓软糖、甜胶环软糖、紫颂果软糖、galospheric_delight:salted_caramel、galospheric_delight:apple_in_salted_caramel、星云风味棒棒糖、午夜棒棒糖、妖精糖果
+
+### 香软蛋糕　（92 个任务）
+
+石榴蛋糕、青柠蛋糕、青柠蛋糕切片、石榴蛋糕切片、挚恋巴滕堡蛋糕切片、挚恋巴滕堡蛋糕、启迪巴滕堡蛋糕、异奇巴滕堡蛋糕、启迪巴滕堡蛋糕切片、异奇巴滕堡蛋糕切片、紫颂果蛋糕、红豆味蛋糕、紫颂果蛋糕切片、红豆味蛋糕切片、薄荷味蛋糕、香蕉味蛋糕、草莓味蛋糕、甜胶环蛋糕、薄荷味蛋糕切片、香蕉味蛋糕切片、草莓味蛋糕切片、甜胶环蛋糕切片、巧克力味蛋糕、巧克力味蛋糕切片、香草蛋糕、香草蛋糕切片、甜浆果味蛋糕、甜浆果味蛋糕片、南瓜味蛋糕、南瓜味蛋糕片、甜菜味蛋糕、甜菜味蛋糕片、蛋糕、蛋糕切片、天蓝莓蛋糕、天蓝莓蛋糕切片、胡萝卜蛋糕、胡萝卜蛋糕切片、胡萝卜巧克力蛋糕、胡萝卜巧克力蛋糕切片、甜布丁、甜布丁切块、farmersrespite:coffee_cake、farmersrespite:coffee_cake_slice、樱花蛋糕、樱花蛋糕切片、巧克力抹茶蛋糕、樱花芝士蛋糕、樱花芝士蛋糕切片、糖浆芝士蛋糕、糖浆芝士蛋糕切片、香芋蛋糕、香芋蛋糕切片、玫瑰蛋糕、玫瑰蛋糕切片、冰淇淋蛋糕、冰淇淋蛋糕切片、芝士蛋糕、芝士蛋糕切片、胡萝卜蛋糕、胡萝卜蛋糕切片、甜浆果蛋糕、甜浆果蛋糕切片、发光浆果蛋糕、发光浆果蛋糕切片、紫颂果蛋糕、紫颂果蛋糕切片、虞美人籽蛋糕、虞美人籽蛋糕切片、galospheric_delight:salted_caramel_cake、galospheric_delight:salted_caramel_cake_slice、午夜浆果蛋糕、午夜浆果蛋糕切片、星云风味蛋糕、星云风味蛋糕切片、草莓蛋糕、草莓蛋糕切片、可可蛋糕、红丝绒蛋糕、红丝绒蛋糕切片、植物素蛋糕、极光蛋糕、冰川蛋糕、火炬浆果蛋糕、极光冰晶派、火炬浆果派、红魔鬼蛋糕、红魔鬼蛋糕切片、升？日、但羔、奇怪的哔哔叫切片、胡萝卜蛋糕、胡萝卜蛋糕切片
+
+### 四季甜品　（330 个任务）
+
+玉米面包、工匠面包、烤面包、面包片、brewinandchewin:cocoa_fudge、brewinandchewin:unripe_flaxen_cheese_wheel、brewinandchewin:unripe_scarlet_cheese_wheel、brewinandchewin:flaxen_cheese_wheel、brewinandchewin:scarlet_cheese_wheel、brewinandchewin:flaxen_cheese_wedge、brewinandchewin:scarlet_cheese_wedge、巧克力派、巧克力派切片、甜浆果芝士派、甜浆果芝士派切片、苹果派、苹果派切片、青柠派、青柠派切片、双孢蘑菇乳蛋派、双孢蘑菇乳蛋派切片、大树莓派、大树莓派切片、青苹果派、青苹果派切片、蓝莓派、蓝莓派切片、黯瓜派、黯瓜派切片、奶酪面包面团、奶酪面包、鸡肉锅派、鸡肉锅派切片、米纳斯奶酪、米纳斯奶酪切块、米纳斯奶酪棒、香烤米纳斯奶酪棒、布罗阿、布里加代罗冰淇淋、按谷、古斯米、生木薯酪饼、黄油苞谷、黄油炸木薯、(无标题)、无花果布丁、无花果布丁切片、蓝莓玛芬、蔓越莓玛芬、无花果挞、柠檬蛋挞、山竹糕、杨梅曲奇、蔓越莓饼干、柠檬饼干、柿饼干、菠萝派、榴莲酥、oceanic_delight:caviar_toast、糖霜面包、糖霜面包、可可牛角包、酥脆海带干面包、鲜花饼、掠夺者派、胡萝卜挞、紫颂果慕斯、甜卷、史莱姆慕斯、甜菜根可丽饼、闪耀披萨片、闪耀披萨、盛宴披萨、盛宴披萨片、地牢披萨、地牢披萨片、甜浆果挞、蛋挞、树叶生巧、(无标题)、熔岩布蕾、蜂蜜布蕾、高能布蕾、桦树汁夹心巧克力、种子烤派、香炸南瓜饼、小份史莱姆慕斯、小份紫颂果慕斯、年糕、farmersrespite:rose_hip_pie、farmersrespite:rose_hip_pie_slice、farmersrespite:green_tea_cookie、海洋菠萝包、海花生碎、海花生巧克力、樱花奶酪派、樱花奶酪派切片、奶酪轮、奶酪切片、樱花奶酪切片、爆黍花、珍珠棱蕉蛋挞、巧克力、心形巧克力、心形巧克力、心形巧克力、威化饼干、威化夹心、姜饼人、年糕、糖浆曲奇、樱花饼干、咖啡曲奇、水果贝涅饼、煎饼、蜂蜜煎饼、巧克力煎饼、樱花煎饼、蔬菜煎饼、南瓜煎饼、樱桃果酱罐、玫瑰果酱罐、橡子面包、松子蛋糕、橡子豆腐、瓜子玫瑰果酱派、瓜子吐司、瓜子酥、玫瑰果饼、玫瑰曲奇、种子蛋挞、牛奶樱桃慕斯、玫瑰果派、玫瑰果派切片、幽匿催发体派、幽匿催发体派切片、\"老布洛涅\"奶酪、酥香曲奇、戈吉纳基、神谕灵果派、盘装神谕灵果派、香芋饼干、生姜饼干、菲式焦糖布丁切片、菲式焦糖布丁、甜浆果派、苹果派、甜菜根派、毒派、煎饼、甜浆果煎饼、蜂蜜煎饼、培根煎饼、苦力派、甜浆果饼干、蜂蜜饼干、马铃薯饼、南瓜饼干、向日葵籽饼干、布朗尼、甜浆果布朗尼、巧克力、瓶子草夹心巧克力、巧克力蛋、法式吐司、土豆煎饼、披萨、布朗尼块、煎饼堆、咖喱角、扁面包、咸派、咸派切片、布里克卷、一盘布里克卷、vintagedelight:meat_pizza、vintagedelight:meat_pizza_slice、vintagedelight:cheese_pizza、vintagedelight:cheese_pizza_slice、vintagedelight:cheese_slice、vintagedelight:cheese_wheel、vintagedelight:oatmeal_cookie、vintagedelight:chocolate_nut_granola_bar、vintagedelight:fruity_granola_bar、vintagedelight:deluxe_granola_bar、galospheric_delight:allurite_cupcake、galospheric_delight:lumiere_cupcake、galospheric_delight:amethyst_cupcake、galospheric_delight:lumiere_pie、galospheric_delight:lumiere_pie_slice、galospheric_delight:amethyst_pie、galospheric_delight:amethyst_pie_slice、galospheric_delight:allurite_pie、galospheric_delight:allurite_pie_slice、深海派、午夜浆果曲奇、星云风味曲奇、起司吐司、bakery:bread_with_jam、巧克力吐司、蓝莓吐司、荧光浆果吐司、甜浆果烤面包、蜜糖烤面包、鸡蛋烤面包、奇异手指泡芙、诡异曲奇、玉米糖浆曲奇、工匠曲奇、核桃曲奇、紫颂果派、紫颂果派切片、brewinandchewin:quiche、brewinandchewin:quiche_slice、朽老派、李子派、百香果挞、柠檬派、橙子派、苹果派、甜浆果挞、青金石莓挞、发光浆果挞、接骨木莓挞、仰望星空派、仰望星空派切片、圆环蛋糕切片、林茨蛋糕切片、苹果派切片、发光浆果挞切片、巧克力挞切片、布丁切片、芝士轮、洛林乳蛋饼、洛林乳蛋饼切片、幻翼泡芙、深海派、深海派片、海味盛宴、渔夫面包卷切片、金蛾糊酱、abnormals_delight:maple_cookie、abnormals_delight:mulberry_cookie、蜂蜜曲奇、甜浆果曲奇、青柠曲奇、玉米片、玉米饼、巴克拉瓦、巴克拉瓦切片、甜瓜面包、草莓果酱包、烤棉花糖饼干、恋恋慕斯、月亮派、月亮派切片、秘仪甜甜圈、甜甜圈、秘仪巧克力、板块芝士蛋糕、板块芝士蛋糕切片、火花芥末曲奇、火把花饼、菌阴孢子奶酪蛋糕、jadensnetherexpansiondelight:nightspores_cheesecake_slice、鬼火派、jadensnetherexpansiondelight:wisp_pie_slice、紫颂派、紫颂派切片、姬海棠酸奶派、姬海棠酸奶派切片、晶化珊瑚派、硬化石榴派、魔源浆果派、珍珠棱蕉派、蜘蛛派、活化堡垒派、魔化山竹派、晶化珊瑚派切片、硬化石榴派切片、珍珠棱蕉派切片、切片魔源浆果派、蜘蛛派切片、活化堡垒派切片、魔化山竹派切片、冰焰木瓜派、冰焰木瓜派切片、牧羊人派、盘装牧羊人派、cosmopolitan:jelly_roll、蛋糕卷切片、cosmopolitan:chocolate_roll、巧克力蛋糕卷切片、cosmopolitan:ink_roll、墨汁蛋糕卷切片、行商羊驼棉花糖、微光果莱姆、红豆薄荷奶油包、草莓香草奶油包、巧克力香蕉奶油包、门多山竹挞、疱莓挞、cosmopolitan:wheatgrass_cubecake、cosmopolitan:glow_berry_cubecake、圣诞木柴蛋糕、红薯派、红薯派切片、西葫芦乳蛋饼、西葫芦乳蛋饼切片、纯素披萨、纯素披萨切片、桑葚派、Slice of Mulberry Pie、寒冽霜冠慕斯、霜冠慕斯切片、列巴切片、极巨蛋挞切块、玉黍烙切片、古苜蓿大列巴、极巨蛋挞、玉黍烙、亚波伦蛋卷、冰蛋挞、玉黍挞、玉黍锅贴、瓶子皇烧麦、菌光布丁、熔岩果冻、恶魂布丁、岩浆膏布丁
+
+### 温馨烘焙　（44 个任务）
+
+火炉、(无标题)、烘焙台、蛋糕师、混合碗、蛋糕面团、法式巧克力大蛋糕、甜浆果蛋糕、草莓蛋糕、巧克力蛋糕、草莓果酱、甜浆果果酱、发光浆果果酱、苹果酱、巧克力酱、松露巧克力、草莓纸杯蛋糕、苹果纸杯蛋糕、草莓釉面饼干、草莓曲奇、巧克力曲奇、巧克力礼盒、布丁、林茨蛋糕、圆环蛋糕、bakery:bun、bakery:braided_bread、吐司面包、bakery:baguette、bakery:bread、MissLilitu饼干、bakery:waffle、苹果派、发光浆果挞、巧克力挞、bakery:crusty_bread、牛角面包、面包篮、面包盒、蛋糕展示台、壁挂展示柜、蛋糕展示柜、纸杯蛋糕展示柜、街边招牌
+
+### 茶烟袅袅　（74 个任务）
+
+(无标题)、茶树花、herbalbrews:coffee_beans、herbalbrews:rooibos_leaf、herbalbrews:yerba_mate_leaf、绿茶叶、茶壶、绿茶、红茶、木槿茶、咖啡、薰衣草茶、牛奶咖啡、红灌木茶、马黛茶、乌龙茶、晾晒、简单制茶、草莓果茶、荨麻叶茶、车前叶茶、白桃乌龙茶、芒果茶、山楂茶、festive_delight:christmas_tea、山竹清茶、玫瑰果茶、抹茶奶昔、抹茶拿铁、浆果抹茶拿铁、ends_delight:chorus_fruit_milk_tea、ends_delight:bubble_tea、ends_delight:chorus_flower_tea、舒缓茶、mineraldelight:ivory_milk_tea、染梦花茶、荆棘玫瑰茶、冰川冰茶、大碗香芋奶茶、香芋奶茶、叶茶、樱花叶茶、花茶、farmersrespite:kettle、闲暇茶艺铺、茶壶、青汁、樱花蜜茶、矢车菊茶、意式浓缩、美式、芮斯崔朵、拿铁、阿芙佳朵、康宝蓝、卡布奇诺、玛琪雅朵、摩卡、浆果抹茶拿铁、quarkdelight:cloud_latte、热可可、抹茶拿铁、farmersrespite:long_coffee、古韵咖啡、糖浆咖啡、巧克力咖啡、牛奶咖啡、咖啡、蜂蜜咖啡、黑咖啡、热巧克力瓶、溪竹茶、归魂茶、冷宫姬
+
+### 冷饮甜点　（113 个任务）
+
+空气压缩机、龙息可乐、珊瑚可乐、蒲公英可乐、缠怨苏打水、海带苏打水、清苏打水、提基吧台、清爽果汁、甜浆果圣代、椰子圣代、小冰箱、西瓜棒冰、甜浆果冰淇淋、仙人掌棒冰、椰子棒冰、巧克力圣代、蜂蜜鸡尾酒、甜浆果奶昔、可可鸡尾酒、西瓜鸡尾酒、椰子奶昔、甜浆果鸡尾酒、巧克力奶昔、南瓜鸡尾酒、椰子鸡尾酒、奶冻、百香果奶冻、辛味奶冻、远古奶冻、可可奶冻、大树莓冰淇淋、石榴冰淇淋、青柠冰淇淋、抹茶冰淇淋、樱桃冰淇淋、风味冰淇淋、三色冰淇淋、发光冰淇淋、那不勒斯冰淇淋、甜浆果冰淇淋、巧克力冰淇淋、冰淇淋、瓜拉纳果汁、椰子汁、羽衣甘蓝藜檬饮、巴西藜檬饮、针叶林蛋奶沙司、abnormals_delight:passion_aloe_nectar、末影甘露、festive_delight:christmas_tea、荔枝樱花饮、苹果酒、格拉帕渣酿酒、丁香酊、牡丹糖浆、纯净龙息、galospheric_delight:allurite_cocktail、galospheric_delight:lumiere_cocktail、galospheric_delight:amethyst_cocktail、festive_delight:salmon_verrines、蜜酒、贝里尼鸡尾酒、松针酒、樱桃酒、儿童刨冰盖饭、蜜瓜冰沙、石榴冰沙、ubesdelight:halo_halo、凤梨冰淇淋、圣代、极光冰淇淋、火炬浆果冰淇淋、冰川冰淇淋、植物素冰淇淋、暮色冰淇淋、彩虹冰淇淋、清爽冰淇淋、星辰冰棒、双份紫颂果冰棍、双份疱莓冰棍、双份青柠冰棍、魔源浆果味甜筒、火炬浆果味甜筒、植物素味甜筒、冰川味甜筒、冰淇淋苏打、黑牛、清爽风味冰淇淋三明治、暮色风味冰淇淋三明治、彩虹风味冰淇淋三明治、季节风味冰淇淋三明治、香蕉蛞蝓果冻冰、荚壳奶酪棒、玉黍雪糕、冰蛟棍、彩虹蛋奶沙司、彩虹冰棒、巧克力冰棒、哈密瓜冰棒、西瓜冰棍、虚空冰棍、双份莓果冰棍、磁力冰棍、特斯拉冰棍、磁力史莱姆冰棍、香蕉蛞蝓蛋奶沙司、鬼火蛋奶沙司、三色浆果蛋奶沙司、蓝莓蛋奶沙司、发光浆果蛋奶沙司、石榴沙司、largemeals:sweet_berry_custard
+
+### 豪华汉堡　（90 个任务）
+
+牛肉饼、獠牙兽热狗、奶酪汉堡、鸡蛋汉堡、豪华汉堡、巨无霸、豪华芝士汉堡、海陆堡、汉堡包、双孢蘑菇堡、茄子汉堡、生蟹黄堡肉饼、煎蟹黄堡肉饼、美味蟹黄堡、迷你蟹黄堡、水母酱蟹黄堡、蓝色水母酱蟹黄堡、泡泡蟹黄堡、缤纷蟹黄堡-红、缤纷蟹黄堡-橙、缤纷蟹黄堡-黄、缤纷蟹黄堡-绿、缤纷蟹黄堡-蓝、缤纷蟹黄堡-紫、缤纷蟹黄堡组、纯素汉堡、嗅探兽汉堡、豆腐汉堡、vintagedelight:deluxe_burger、vintagedelight:cheese_burger、野猪排汉堡、九头蛇汉堡、恶魂汉堡、鸡蛋三明治、鸡肉三明治、培根三明治、坚果酱果酱三明治、羊肉三明治、鱿鱼三明治、昆虫三明治、库克太太三明治、午餐肉三明治、烧烤三明治、海花生酱水母果冻三明治、水母果冻三明治、蓝色水母果冻三明治、海花生酱蓝色水母果冻三明治、跳跃水母果冻三明治、海花生酱跳跃水母果冻三明治、肋排三明治、糖浆三明治、玫瑰果酱三明治、樱桃果酱三明治、蛙腿三明治、vintagedelight:pb_j、熊肉三明治、bakery:grilled_bacon_sandwich、鸡蛋番茄三明治、牛排三明治、猪排三明治、培根鸡蛋三明治、番茄三明治、匍匐三明治、bakery:grilled_salmon_sandwich、蔬菜三明治、三明治、brewinandchewin:ham_and_cheese_sandwich、穷小子鲜虾三明治、烟熏獠牙兽三明治、galospheric_delight:membranburger、galospheric_delight:lush_sandwich、珊瑚三明治、紫水晶蟹肉三明治、松子树脂三明治、暝煌火腿三明治、旅者帕尼尼、香蒲热狗、芝士海豹堡、海豹三明治、大王乌贼海苔三明治、下界巨无霸、软糖汉堡、鲸鱼汉堡、磁流汉堡、下界汉堡、蔬菜汉堡、西葫芦三明治、玉黍鸡腿堡、章鱼三明治、简单汉堡
+
+### 酒林诗韵　（165 个任务）
+
+木酿造站、铜酿造站、下界合金酿造站、啤酒杯、袋装烘干的小麦、小麦啤酒、袋装烘干的大麦、大麦啤酒、酒花啤酒、荨麻酒、燕麦酒、海莉啤酒、大木桶、Lilitu单一麦芽威士忌、JoJannik威士忌、CristelWalker威士忌、MaggoAllan威士忌、Carrasconlabel威士忌、§cAK珍藏、高原壁炉特调、烟弥幻想-木桶陈酿、尊美醇威士忌、brewinandchewin:keg、brewinandchewin:heating_cask、brewinandchewin:ice_crate、brewinandchewin:coaster、brewinandchewin:tankard、brewinandchewin:beer、brewinandchewin:kombucha、brewinandchewin:dread_nog、brewinandchewin:withering_dross、brewinandchewin:red_rum、brewinandchewin:bloody_mary、brewinandchewin:glittering_grenadine、brewinandchewin:steel_toe_stout、brewinandchewin:vodka、brewinandchewin:mead、brewinandchewin:rice_wine、brewinandchewin:egg_grog、brewinandchewin:strongroot_ale、brewinandchewin:saccharine_rum、brewinandchewin:pale_jane、brewinandchewin:salty_folly、啤酒桶、调酒桌、配方板套装、空啤酒杯、矿工麦酒、烈焰黑啤、烈焰牛奶黑啤、苹果拉比克、甜浆果克里克、泡沫粉红蛋酒、南瓜格瓦斯、月夜狼嚎格瓦斯、烈焰辣椒粉、干烙凛花蕾、烟熏烙凛花蕾、紫水晶黑种草草籽、黄水晶黑种草草籽、冰结薄荷、冰结广藿香、风暴碎片、烤红松松子、糖渍枸杞、干卷柏、黄金肉桂粉、银针白茶、烤山核桃仁、冻柿子、陈酿桶、葡萄藤盆、苹果压榨器、苹果泥、苹果汁、(无标题)、(无标题)、红葡萄汁、针叶林红葡萄汁、白葡萄汁、针叶林白葡萄汁、丛林红葡萄汁、丛林白葡萄汁、热带草原红葡萄汁、热带草原白葡萄汁、葡萄酒瓶、(无标题)、(无标题)、(无标题)、(无标题)、赤铁葡萄汁、诡异葡萄汁、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、酿造桶、冰镇西瓜拉格、发光浆果拉格、橡子酒、蜜酒、朗姆酒、伏特加、(无标题)、橡子酒基酒、蜜酒基酒、伏特加基酒、朗姆酒基酒、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、开一个酿酒厂！、抵达啤酒节帐篷、魔凝机、雀酒、绿茶菲士、弑龙诀、会馆菲士、烁金菲士、月莲菲士、葡萄藤、藤架、果盆、酒桶、人字梯、飞天茅台、孟买蓝宝石金酒、易货箱
+
+### 整点烧烤　（33 个任务）
+
+将主要物料置于配料盆，配菜置于副手，用木棍即可串…、烧烤架、配料盆、托盘、烤羊肉串、烤兔肉串、烤猪肉香肠、烤土豆串、烤果蔬串、烤鳕鱼肉串、烤鲑鱼肉串、烤鸡肉串、烤蘑菇串、烤牛肉串、烧烤卷饼、烧烤三明治、烤肉盖饭、恶魂烤串、灵魂炽足兽烤串、黄金烤串、烈焰烤串、绯红烤串、诡异烤串、菌光烤串、简易烧烤串、烧烤串、恐龙肉串、芜菁羊肉串、鳄鱼烤串、异兽烤串、芝士海豹串、牛肉串、辐射午餐肉肉串
+
+### 即食罐头　（18 个任务）
+
+空气压缩机、油封疣猪肉罐头、甜浆果早餐奶罐头、蜂蜜苹果罐头、牛肉土豆罐头、猪肉甜菜罐头、羊肉南瓜罐头、罐头壳、小吐司、午餐肉罐头、午餐肉三明治、煎蛋午餐肉、盘装午餐肉饭团、猪肉馅、飞鱼罐头、熊肉罐头、youkaishomecoming:canned_flesh、§a废料罐头
+
+### 腌制工艺　（21 个任务）
+
+vintagedelight:fermenting_jar、vintagedelight:kimchi、vintagedelight:pickle、vintagedelight:pickled_pepper、vintagedelight:pickled_pitcher_pod、vintagedelight:century_egg、vintagedelight:pickled_egg、vintagedelight:salt_bucket、vintagedelight:evaporator、vintagedelight:sweet_berry_mason_jar、vintagedelight:apple_sauce_mason_jar、vintagedelight:glow_berry_mason_jar、vintagedelight:honey_mason_jar、vintagedelight:nut_mash_mason_jar、vintagedelight:pepper_jam_mason_jar、vintagedelight:gearo_berry_mason_jar、vintagedelight:relish_mason_jar、vintagedelight:vinegar_mason_jar、极地腌海鸥、沿海腌海鸥、腌海鸥
+
+### 下矿必备　（46 个任务）
+
+铜杯、铜锅、南瓜汤杯、鱼肉炖杯、鸡肉汤杯、牛肉炖杯、面条汤杯、烘焙鳕鱼炖杯、野米浓汤炖杯、蘑菇煲杯、甜菜汤杯、蔬菜汤杯、骨头煮汤杯、洞穴汤杯、蝙蝠汤杯、昆虫炖菜杯、辛辣疣猪兽肉炖杯、炽足兽肉炖杯、辛辣面条汤杯、岩壳汤、昆虫卷、纯素卷、纯素牛排和土豆、蝙蝠汤、洞穴萝卜汤、昆虫炖菜、仙人掌汤杯、鹿肉炖杯、青酱奶油炖菜杯、果冻沙拉杯、繁茂炖菜杯、miners_delight:egg_soup_cup、§b渊底汤、蠕虫炖、§4恐惧之杯、兔肉煲杯、火龙果炖杯、蛋黄果冷汤炖杯、蛤蜊肉球炖杯、鲜虾炖杯、白金鲈鱼炖杯、解毒汤杯、洞穴蜈蚣汤杯、驱蚊炖菜杯、蟑螂蛋白汤杯、猴儿汤杯
+
+### 烹燃心动　（36 个任务）
+
+黏液饭、翻糖派、东坡肉、翻糖蛛眼、荷包紫颂烧、红烧鱼、黄金沙拉、辣子鸡、烧鸟串、香煎骑士牛排、仰望星空派、珍珠咕噜肉、水晶羊排、烈焰羊排、凛冬羊排、下界风味刺身、末地风味刺身、沙漠风味刺身、苔原风味刺身、寒带风味刺身、鱼香肉丝、田园杂蔬、糖醋里脊、青椒炒肉、红烧牛肉、河豚汤、罗宋汤、牛丸汤、小鸡炖蘑菇、番茄牛腩汤、野菌兔肉汤、土豆炖牛肉、萝卜羊肉汤、恐惧浓汤、大骨汤、海鲜味噌汤
+
+### 妖怪归家　（140 个任务）
+
+youkaishomecoming:flesh、关于“半妖怪化”与“妖怪化”、怪肉与血液的真正来源、露米娅、弹幕的获取、由于本整合包定位为养老包，妖归战斗内容已设置为可…、食物、妖怪们的归家（Youkai's Homecomi…、琪露诺、月下三妖精与蝴蝶、博丽灵梦、雾雨魔理沙、东风谷早苗、八云紫、古明地恋、蕾米莉亚·斯卡蕾特、米斯蒂娅·萝蕾拉、满足的灵梦、海草军舰、缤纷太卷切片、秘仪甜甜圈、白茶、甜甜圈、赛熊掌、蟹籽加州卷切片、绿茶、力量汤、麻婆豆腐、新香细卷切片、天狗踊、白葡萄汁、饭团、纳豆军舰、樱饼、黄茶、大吟酿、青汁、摩卡茶、小鱼干、彩虹加州卷切片、蜜酒、淇酒、麻薯、红葡萄汁、地中海千层面、樱花蜜茶、七色羊羹、河童细卷切片、香槟气泡甜白葡萄酒、茄汁鳕鱼、诗礼银杏、碗装惊吓大冒险、加州卷切片、臭豆腐、蜜渍黄瓜、奶油马铃薯浓汤、月见团子、鱼籽军舰、白桦森林半干白葡萄酒、御烧、鲸息、妖精糖果、蒲烧鳗鱼烤串、埃及糖茶、鲑鱼太卷切片、金枪鱼大腹握寿司、汉宫藏娇、夜雀的手握、甜豆沙麻薯杂煮、玄米茶、丹白鹤、玉子烧握寿司、经典红葡萄酒、狮子头、包子、乌龙茶、竹筒蒸蛋、金枪鱼握寿司、黑葡萄汁、铁火加州卷切片、粉蒸肉、八云豆包饭、三色团子、生首烧、儿童刨冰盖饭、风祝、牛奶冰棍、苹果糖、铁火卷切片、蔬菜奶油鲑鱼、菊、矢车菊茶、烈焰红咖喱、秘制鲜菌煲、豆腐汉堡、奶油蘑菇浓汤、鳗鱼饭、长寿面、鸡蛋柠檬汤、十四夜、白雪、拜占庭香草熏猪肉、味噌汤、若鹭卷切片、红茶、大冰棍儿、酱烧鱼、坎伯兰猪腰、罗宋汤、仙贝、御手洗团子、河童之里、水獭祭、黄豆粉团子、幻昙花羹、猪肉饭团、冷奴豆腐、玉子太卷切片、豆腐蟹煲、雀酒、恋恋慕斯、范艾伦干红葡萄酒、勃艮第干红葡萄酒、信州瘦马、黑茶、秘仪巧克力、竹筒水羊羹、发酵桶、工作台、木盆、茶壶、咖啡麻薯、抹茶麻薯、竹筒粥、竹取物语、蒲烧鳗鱼、石狩锅、海鲜味增汤、发带便宜卖、克劳恩皮丝
+
+## 闲情雅致
+
+### 毛绒玩偶　（3 个任务）
+
+玩偶抽奖机、电脑、指指点点
+
+### 装饰家居　（25 个任务）
+
+tanukidecor:diy_workbench、扭蛋机、tanukidecor:red_wall_tarp、cozy_home:oak_mirror、cozy_home:oak_mirror_stand、cozy_home:oak_grandfather_clock、cozy_home:telescope、淡色灯、海宝石灯笼、花朵台灯、古董落地灯、蒸汽朋克灯、美人鱼珍珠、蒸汽朋克地球仪、泰迪熊、古董缝纫机、月球天文台地球仪、柠檬扶手椅、糕点展示柜、缝纫桌、缝纫杂物、尖刺弃物桶、粉色荧光菇生态缸、红蘑菇电视、木质鸟屋
+
+### 纸鸢庄园　（56 个任务）
+
+用剪刀右击对应的物块来把他们变成各式各样的纸块！、剪纸台、木工台、木工台折纸、水黑纸、木青纸、生黄纸、金白纸、明红纸、竹露络、棉绢纸、折纸老虎、木桶书架折纸、铺布矮桌折纸、镶边黑板折纸、长矮柜折纸、碗盘柜折纸、陈旧的管风琴折纸、大晚宴餐桌折纸、红丝绒躺椅剪纸、壁炉装饰折纸、湖底的钥匙、水黑纸块、金白纸块、明红纸块、木青纸块、生黄纸块、棉绢纸块、竹露络块、铜酒保、外交官咖啡、恶魔玛格丽特、血腥玛丽、配方-血腥玛丽、配方-恶魔玛格丽特、配方-外交官咖啡、酿造台、燃-威士忌、舟-威士忌、飞天-威士忌、幸运仙人掌、丧钟-黑朗姆、一打廣式、壹号天地、生的漫画肉、生的怪物肉排、生的裹粉鸡肉、生的狼牙棒火腿肠、巨大三文鱼、大理石守护天使、地生咖啡果、狼牙棒火腿肠、漫画肉、大肉排、厚切烟熏三文鱼、炸鸡桶
+
+### 塔罗秘法　（2 个任务）
+
+星尘占卜、(无标题)
+
+## 异界故事
+
+### 暮色森林　（18 个任务）
+
+到访暮色森林、暮色指南针、娜迦奖杯、巫妖奖杯、雪怪首领奖杯、米诺菇奖杯、幻影骑士奖杯、九头蛇奖杯、暮初恶魂奖杯、冰雪女王奖杯、谜题羊奖杯、炽铁锅、魔豆、(无标题)、击杀巨人矿工掉落、用巨人镐挖开巨魔洞窟中的巨大黑曜石，开箱获取、暮色旅程的尾声、重要提醒
+
+### 幽邃黑暗　（8 个任务）
+
+深渊之心、灵魂水晶、(无标题)、(无标题)、幽匿传讯器、幽匿卷须、deeperdarker:resonarium_plate、异界伙伴！
+
+### 深暗之园　（25 个任务）
+
+这是一个隐藏在主世界深处的地下世界，仿佛是被遗忘…、(无标题)、粗霜钢、粗扼塞、御腐破片、贵豪水晶、遗忆锭、(无标题)、(无标题)、(无标题)、疱莓炸弹、油绿蚧、蚙蜒黏浆球、粗野兽牙、浆血珠、渊邃石床、渊邃卵石、深鱼与微深鱼、卖货的、菇菇嘎嘎、熟深鱼、困跳者大腿、居存者肉、青豕苔藓、致毒混合物
+
+### 蜜蜂领域　（38 个任务）
+
+蜂巢内部，敬畏生命吧。、(无标题)、(无标题)、此指南针激活时，将指引你前往离激活位置最近的巢室…、(无标题)、(无标题)、(无标题)、抵达王座尖柱、嗡嗡战士套装！、(无标题)、糖水瓶与育幼块、(无标题)、女王的愿望-教程、蜜蜂女王16任务-1、蜜蜂女王16任务-2、蜜蜂女王16任务-3、蜜蜂女王16任务-4、蜜蜂女王16任务-5、蜜蜂女王16任务-6、蜜蜂女王16任务-7、蜜蜂女王16任务-8、蜜蜂女王16任务-9、蜜蜂女王16任务-10、蜜蜂女王16任务-11、蜜蜂女王16任务-12、蜜蜂女王16任务-13、蜜蜂女王16任务-14、蜜蜂女王16任务-15、蜜蜂女王16任务-16、蜜蜂女王交易教程、探访永恒圣所的准备、白色永恒圣所、紫色永恒圣所、红色永恒圣所、绿色永恒圣所、蓝色永恒圣所、黄色永恒圣所、蓝色-平静精华-使得怪物对玩家的仇恨降低，玩家疾…
+
+### 梦域奇旅　（98 个任务）
+
+阅读染梦裂隙笔记后即可穿过染梦裂隙进入染梦世界。、在灯影之下收集材料后，即可自行制作暮影长床以进入…、前往风之旅途、奇怪的裂隙传送门、寻找染梦世界结构、染梦宝藏！、染梦世界树、开启灯影世界的钥匙、侵染教堂、阴影中的潜藏者、在染梦世界寻找萦风教堂，获取并阅读寻梦者笔记"无…、阴影书架、逐梦列车、做出你的选择、吹影镂尘、研究台、暗影高炉核心、研究笔记、黑金属锭、笔记残页获取、锈蚀金属碎屑获取、搭建暗影高炉、精神值 (San）：、萦风教堂、(无标题)、击败Boss熔岩食者任务获取、击败Boss狂生巨像任务获取、击败Boss远古守卫者任务获取、完成任务米达斯之饥获取、可以在融梦水晶箱作为三级奖励开出。、精铸工厂、制作原胚：、花园解密-迷梦冶梦莲、西北的风吹过叮铃作响、食用后获得5分钟迷梦效果，在主世界使用奇异炖菜获…、花园解密-凛冽雪绒花、北方的大树抵挡了刺骨寒风、花园解密-九尾狐、朝霞如梦似幻，熠熠生辉、染梦园丁、染梦第三教堂、染梦实验室、暮影之笼、染梦深海秘宝、深海秘宝、风之旅途世界加入了风向设定。、用你的实力证明自己、非酋，我来助你！、世界树的馈赠、蓄梦池、染梦草方块、pasterdream:roots_pale_boneneedle、探险者指南针搜索结构:Meltdream Liq…、一种粉色的晶芽生长在温暖区域的地下。、染梦冰洋、裂阴影石砖、灯影世界为阴影覆盖，建议将光影关掉并自备夜视手段…、阴影地牢自然生成于灯影之下世界的暗影地牢传送门框…、暗影地牢墙壁、暗影地牢墙壁、再次挺进暗影地牢！、我恨你是个木头,但我依旧爱你、云顶上的矿工、使用一个风行者水晶，三个凝风铁锭构建破风骑士的身…、集齐所有材料、自然生成于染梦世界树的内部房间，用于制作法术物品…、制作闪电法术、逆风行者、召唤悦灵、高级-深海秘宝、高级-染梦深海秘宝、占星者的馈赠、换取融梦灵药、换取凤梨爱情汁、染梦套件、以'影'铸灯、染梦裹身、兑换时之沙、以'梦'铸剑、§d融梦星币、开发者名单、染梦裂隙、染梦世界、粉红史莱姆、苍白雪莲、苍白骨针、衍梦肥泥、蓄梦池、无翼鸟也有展翅的梦、阴影中的潜藏者、侵染教堂、?、沉淀阴影、阴影游记、蓝图-暗影高炉、暗影地牢、恐惧、钥匙兑换
+
+### Alex的洞穴　（50 个任务）
+
+深渊礁石、翠砷铜铀、女巫糖果、始祖原矿、异教徒圆章、方铅磁铁、Alex洞穴维度、这是什么，阔鼻迅猛龙？看一下、这是什么，辐鳃鱼？看一下、这是什么，洞穴角龙？看一下、这是什么，口香糖蠕虫？看一下、这是什么， 地底翼龙？看一下、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、核弹爆炸的破坏性不受任何保护措施控制，请不要在家…、(无标题)、(无标题)、(无标题)、可以使用焦糖苹果驯服，装备上鞍之后可以骑乘、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、(无标题)、借助一些手段令异教徒们抓住幽暗蛾，随后异教徒会开…、借助一些手段令异教徒们抓住夜行蝠，随后异教徒会开…、(无标题)、(无标题)、它不会攻击你，会帮你扫描一下全身、(无标题)、(无标题)、(无标题)、在水底，是一种粉色的小型生物、有时会“站”在水底、(无标题)、深潜者、深潜者法师、深潜者骑士可能会跟在你身后，…、深潜者、深潜者法师、深潜者骑士可能会跟在你身后，…、深潜者、深潜者法师、深潜者骑士可能会跟在你身后，…、(无标题)、如未自然刷新，可以尝试驾驶渊海陷窟水底找到的潜水…、如果对你来说仪式太难了...
+
+## 其它
+
+### 更多异兽　（41 个任务）
+
+异兽图鉴、圆面包虫、圆面堡虫、雪花蜘蛛、缚网袋、尖啸蝙蝠、尖啸蝙蝠汤、绽花怕、绽放花丛、弹弹蜥蜴、雷刺鱼、气球鼠、诡异陷鳄、闪光飞蝶、猛菇、炸弹水母(大型)、避鱼、铁足虫、饱脂鱼、害带、航蠕、弹弹莓三明治、more_critters:tazegun、纸杯蛋糕与恶毒版、(无标题)、闪光蛹、展示型远古化石、水母鱼雷、(无标题)、(无标题)、熟饱脂鱼、害带卷、(无标题)、森胞胎、虚空神经、怪异飞镖、爆裂神经混合物、滴水石面具、more_critters:grave_brush、滴水石猴、掘墓兽
+
+### 难度调节　（3 个任务）
+
+怪物伤害自定义、Boss血量自定义、怪物血量自定义
+
+## 特别鸣谢页
+
+### 致谢名单　（38 个任务）
+
+感谢ta们和广大玩家对于香草纪元：食旅纪行的支持和贡献！！、程序、技术支持、建筑支持、美术、资源包支持、任务、攻略支持、社区支持、CALLKLAS、tantantana、FN5577、森川集Mori、Yv328、alikeshelf3137、ko_yo_ri、CLOTLIU、Yi_kpbF、Kotori0629、muchangge、starless_night87、dIT8Zv、BF_Meow_、starjumpXY2334、raw_chicken__、HUACAI114、Nan2uu、诗与炸鸡、腾迎天、BOBOboluo、LemonMaKoTo、LastSunney、WoodFeather_VI、在掐饭的小禾、HCl_Cat、china_wejen、lIlOvOlIl、蛋挞、xiaoyi1117、Wymhhswdhmod、Ling_Yi_aaa
+
+## (未分组)
+
+### 新手礼包and游玩须知　（9 个任务）
+
+新手小屋、必看提示、新手礼包！、经济系统、七咒之戒修复、次元之胃、抱起物品卡住修复、关于备份、查看整合包版本号
+
+### ⭐指引-主线任务⭐　（64 个任务）
+
+初来乍到、钻石、精致存储、棱彩解药桶、以太矿石、高级附魔台、强化回响碎片、龙鳞、传送卷轴、(无标题)、幽邃锭、维伦合金锭、寰宇锭、进阶高级附魔台、铱锭、下界合金锭、财大气粗、沃野千里、钟鸣鼎食、白手起家、致富之路、如任务界面过大/过小，可通过按住Ctrl键时滚动…、厨神证章、虚空合金锭、聚电锭、地狱合金锭、传说中的金属、冥河夜神骑士套装、异维术士套装、尊神圣堂武士套装、结束了吗？、灌注合成（厨神献祭）、挖掘等级：(炽炎)下界合金+2、完全掌控！创造之心！、挖掘等级：(铱)下界合金+1、炉火纯青、富甲一方、§l§a香§b草§c之§d心、我即永恒、无尽财富、无限战力、挖掘等级：(最终)下界合金+3、挖掘等级：下界合金、挖掘等级：钻石、赛博空间固定终端、移动空间终端、末影箱果、悬赏板、第一次灌注合成：学习制作无暇宝石、矿物探测仪、后日谈、！⸮无法破坏？！、荒古系列、收割姬蛋、以太合金锭/幻灭结晶、以太合金套装、幻灭套装、远古锻造台、进化源质、进化的力量、狂野生长精华、回响之锭、永恒燃料、寻宝仪

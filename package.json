@@ -1,0 +1,11 @@
+{
+  "name": "minecraft-bridge-skill",
+  "private": true,
+  "version": "1.11.0",
+  "dependencies": {
+    "mineflayer": "^4.39.0",
+    "mineflayer-pathfinder": "^2.4.5",
+    "prismarine-registry": "^1.12.0",
+    "vec3": "^0.1.10"
+  }
+}

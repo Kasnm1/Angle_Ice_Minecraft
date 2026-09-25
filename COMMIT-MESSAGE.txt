@@ -1,0 +1,94 @@
+chore: 首次提交 —— Minecraft-AIcompanion 自主生存 AI 伴侣
+
+项目概述
+--------
+让一个 mineflayer bot 在 Minecraft 服务器上被 LLM 驱动的决策层自主操作，
+目标是自己建立庇护所并持续发育。三层架构：
+
+  bridge-server.js   手和眼 —— HTTP 127.0.0.1:3001，52 个 REST 端点，
+                     mineflayer 封装、方块扫描、寻路、放置、合成、容器交互
+  autopilot.js       脑干  —— 控制面 127.0.0.1:3002/autopilot，
+                     目标调度、动作执行、失败退避、事件订阅
+  decision.js        决策  —— 评分表，把感知能力映射成动作，输出选择理由
+
+另有支撑模块：
+  pathing.js         寻路策略（canDig 三态、unstick 自救、卡住检测）
+  place.js           放置几何（面向判定、站立空间、可达性）
+  reflex.js          反射层（低血量、危险方块、坠落等即时反应）
+  reconnect.js       断线重连
+  events.js          事件总线
+  journal.js         行为日志
+  item-registry.js   物品语义（是否可吃、是否工具、是否建筑材料）
+  block-palette.js   方块调色板（可站立 / 可挖掘 / 可替换的语义分类）
+  palette-registry.js / registry-probe.js / fml-handshake.js
+  knowledge/         整合包知识库（任务书、物品中英名、模组表、工具提示）
+  references/        API 规格、依赖指南、FML 握手协议、故障排查
+  scripts/           运维与诊断脚本
+
+本轮（2026-09-25 之后）修复 10 条
+-------------------------------
+P44 · 架构级根因 —— 路由层无条件贴 success: true
+      该行语义只是「handler 没抛异常」，但所有调用方都读成「动作在世界里生效了」。
+      同一个 bug 因此长出了四次（P32 pickup / P35 gather / P41 shelter / P44 move）。
+      修法三处：
+        1. 路由层新增否决机制 —— 仅当 handler 显式 `ok === false` 时返回 success:false
+           （严格 === 判据：ok:undefined / 0 / null 一律不否决，避免误伤大多数 handler）
+        2. `/mine` 与 `/shelter` 补上 `ok` 判据，让「挖不动 / 一块没放下」能真正否决
+        3. autopilot.js 的 call() 判据收紧为 `!res.ok || (success===false && error)`，
+           否则上一步会让合法否决被误判成异常抛出（不做就会立刻回归）
+P45 · /scan 真瓶颈是「看不见远处」而非「慢」
+      旧实现有排序开销（11.80ms vs 纯循环 0.82ms），且配额口径算错。
+      改为洋葱遍历 + dy 放外层 + 配额改按「非空气方块」计。
+      MAX_SCAN_BLOCK_POSITIONS 1536 -> 6000，新增 MAX_SCAN_VISITS = 18513。
+      实测 reach.maxDistance 从恒定 7.16 变为真实的 9.6。
+P47 · 见上（P44 架构级）
+P49 · /craft 报错混淆「没配方」与「缺材料」
+      原报错 "No recipe for X (or missing crafting table)" 把三种情况混成一句，
+      排查时我本人被它带着连续误判三次。
+      新增 GET /recipes 诊断端点，用 recipesAll（只查配方不查背包）
+      与 recipesFor（查背包）配对，一刀切开：
+        RECIPES_NOT_LOADED / RECIPE_MISSING / MISSING_MATERIALS / OK
+      并重写 /craft 的报错文案，直接列出材料缺口。
+P42 · 三级自救（POST /unstick + trySelfUnstick + pickEscapeTarget）
+      单次放行 allowDig，finally 强制恢复策略。
+      注意：canDig=false 只解决「方块挡路」，不解决「重力」。
+P43 · findStandY —— 站立高度搜索修正
+P46 · 事件订阅补全
+P48 · 已定位未实现：她不会「持续发育」
+      needShelter 只在夜间为真；needMaterials 只看背包堆数（阈值 8），
+      21 个土就停止采集；没有工具链目标；forage 与 hasFoodSource 存在循环依赖。
+      方案已批准（徒手采木 -> 木镐 -> 采石 -> 石镐/石剑 -> 打猎 -> 食物 -> 升级庇护所，
+      每步只做「下一个能做的」），留待后续实现。
+P50 · 已定位未修：place.js 的 AIRY 判据不含植物
+      她站在 grass 上被判为「不在地面」。AIRY 被两处使用且口径不同
+      （放置目标 / 她站位），建议拆成 REPLACEABLE + STANDABLE。
+
+验证状态
+--------
+全仓自测 774/774 全绿：
+  pathing 351 · autopilot 263 · decision 120 · reconnect 59 ·
+  item-registry 54 · block-palette 51 · journal 41 · palette-registry 39 ·
+  place 23 · reflex 20 · events 17
+bridge-server.js 无自测（一 require 就连服务器），以 node --check 通过。
+
+P44 架构修复做了双向实机验证：
+  挖 bedrock      -> {"success":false,"mined":0,"ok":false,...}
+  挖 andesite     -> {"success":true,"ok":true,"mined":1}
+
+文档
+----
+HANDOVER.md  交接报告：架构、启动方式与三个环境坑、本轮修复明细、接手阅读顺序
+STATUS.md    现状报告：她能做什么 / 做不到什么 / 已知缺陷 / 排查中的失误复盘
+memory/field-log.md  问题台账 P1–P50，共 49 条，含证据 / 根因 / 修复 / 验证
+
+版本
+----
+统一到 1.11.0（package.json 与 bridge-server.js 的 BRIDGE_VERSION 对齐）。
+
+已知未完成
+----------
+- P48 工具链（方案已批准，未实现）
+- P50 AIRY 拆分
+- SKILL.md / README.md 内容滞后于代码，待同步
+- package.json 的 name 为 minecraft-bridge-skill，与项目名不一致
+- P17 血量趋势、P19 深挖掉落物

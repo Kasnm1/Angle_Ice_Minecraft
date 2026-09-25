@@ -1,0 +1,66 @@
+# ── 依赖 ────────────────────────────────────────────────
+# node_modules 约 461 MB，且可由 package.json 完整还原，绝不入库。
+node_modules/
+
+# ── 运行时日志 ──────────────────────────────────────────
+*.log
+logs/
+
+# ── 本机生效配置 ────────────────────────────────────────
+# config.json 含本机绝对路径与服务器地址；对外用 config.example.json。
+config.json
+
+# ── 运行时状态（每次启动都会重写，无历史价值）────────────
+memory/state.json
+memory/events.jsonl
+
+# ── 私密数据（已确认公开发布，排除）──────────────────────
+# memory/journal.md 以明文累积玩家聊天与相处记录；* 覆盖 .bak-* 等备份变体。
+memory/journal.md*
+
+# ── 体积：本地保留、不入库 ──────────────────────────────
+# knowledge/_raw/ 是 extract_*.py 的中间产物；其中 quests.json 与 item-names.json
+# 跟 knowledge/ 顶层那份**字节完全相同**（md5 已核对），重复约 5.2 MB。
+# 顶层那份才是 build_kb.py 的输出、lookup.py 真正读的文件，所以排除 _raw/ 零损失。
+knowledge/_raw/
+
+# 调色板修复前的备份目录
+.angleice-backup-*/
+
+# FML 注册表快照（服务端专属，本地生成、不入库）
+# 每次登录 onSnapshot 都会覆盖重写，且会把服务器地址写回 host 字段 ——
+# 入库等于把「脱敏」变成一次性动作。它们是机器生成产物，登录时自动重建。
+registry/minecraft-block.json
+registry/minecraft-item.json
+
+# ── 临时调试产物（2026-09-25 首次提交前清理时补上）────────
+#
+# 排查问题时习惯把 API 响应 `curl > xx.json` 存下来逐字段核对 ——
+# 这本身是有用的手法（P40/P43/P45 都靠它翻案），但**存完必须清**。
+# 首次提交前发现根目录积了 16 个这类快照（`e3.json` / `m2.json` /
+# `sc.json` / `pk.json` …），全是 `{"success":true,...}` 的响应体，无长期价值。
+#
+# ⚠️ 用白名单式的精确排除，**不要**写 `*.json` —— 那会把
+# `package.json` / `package-lock.json` / `config.example.json` / `_meta.json`
+# 一起吃掉，直接毁掉仓库。
+#
+# 命名约定：调试快照必须写成下面这些前缀之一（都容易识别、不会与正经文件撞名）。
+/m[0-9]*.json
+/mine[0-9]*.json
+/s[0-9]*.json
+/sc*.json
+/e[0-9]*.json
+/ent[0-9]*.json
+/pk*.json
+/_pids.txt
+/_probe*.js
+/_bench*.js
+/_dbg*.js
+/_test*.js
+
+# ── 编辑器 / 系统 ───────────────────────────────────────
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
