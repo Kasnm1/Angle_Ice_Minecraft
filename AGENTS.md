@@ -1,4 +1,6 @@
-# angleice（Minecraft-AIcompanion）—— 项目入口
+# Angle_Ice_Minecraft —— 项目入口
+
+> 仓库：<https://github.com/Kasnm1/Angle_Ice_Minecraft> · 本地目录名仍是 `angleice/`（旧名 Minecraft-AIcompanion / minecraft-bridge）
 
 Minecraft 陪伴型 AI。游戏内 ID 固定 **`Angel_ICE`**，跑在 Forge 1.20.1 模组服（516 模组，离线认证）。
 她不是工具，是**一起玩的人** —— 替她说话前必读 [`PERSONA.md`](PERSONA.md)。

@@ -1,4 +1,4 @@
-# Minecraft-AIcompanion
+# Angle_Ice_Minecraft
 
 把任意 agent 接到**活着的 Minecraft Java 世界**上的本地 HTTP 桥 —— 支持 Forge/FML 模组服。
 它同时是一个**有人格的陪玩**：游戏内 ID 固定 `Angel_ICE`，有自己的情绪、自己的记忆

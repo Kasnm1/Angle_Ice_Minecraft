@@ -15,7 +15,7 @@
 ## 1. 交接对象是什么
 
 一个 Minecraft 陪伴型 AI bot 的三层实现。名字 `Angel_ICE`（bot 身份，固定），
-项目名 `minecraft-bridge`，外部仓库名 `Minecraft-AIcompanion`。
+项目名 `minecraft-bridge`，外部仓库名 `Minecraft-AIcompanion`（2026-09-25 起改名 `Angle_Ice_Minecraft`）。
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
