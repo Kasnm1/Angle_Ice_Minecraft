@@ -17,6 +17,7 @@ description: angleice ④ 区「意识 / 人格」专家 —— mind.js（:3003 
 | `memory-store.js` | `memory/mind.json`：`people` / `memories`（lesson·promise·intention·fact·relation·feeling）/ `journal` / `episodes` / `skills` / `ambition` / `homes`。强化、遗忘（半衰期 14 天）、按此刻涉及的人/物 `recall` |
 | `speech.js` | 发送前把一段话拆成 2–4 条短消息；**只拆不改字**（保真校验）；危险提示不拆；括号小动作不发 |
 | `ambition.js` | 《食录逸闻》食物清单与进度；`candidates()` 只给可能性，不替她决定 |
+| `llm-codex.js` / `llm-workbuddy.js` | 中转站全挂时的本机兜底（Codex gpt-6-luna xhigh → WorkBuddy）。对话翻译只在 `llm-workbuddy.js` 里有一份，Codex 复用它 |
 | `brain.js` | 旧版快脑/主脑 + `/autopilot/yield` 仲裁。已被 `mind.js` 取代，**同端口，不能同时跑** |
 | `PERSONA.md` | 她本人。默认闭嘴：只在「被问 / 真实危险 / 她自己出事 / 你先搭话」时开口 |
 
@@ -41,6 +42,7 @@ description: angleice ④ 区「意识 / 人格」专家 —— mind.js（:3003 
 ```bash
 $NODE mind.js --selftest; $NODE brain.js --selftest; $NODE memory-store.js --selftest
 $NODE speech.js --selftest; $NODE ambition.js --selftest; $NODE --check body.js
+$NODE llm-codex.js --selftest; $NODE llm-workbuddy.js --selftest
 ```
 `$NODE mind.js --sim "安琪你好" "给你7个鸡蛋"` 用假身体 + **真模型**跑一遍（会消耗 API 额度，跑之前告诉用户）。
 

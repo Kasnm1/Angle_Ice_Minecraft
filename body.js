@@ -46,6 +46,14 @@ const CFG = {
   actionTimeoutMs: 60000,
 };
 
+// 中转站整条线路都不通时的本机兜底，按顺序试（LOCAL_FALLBACKS=codex,workbuddy；设成空串 = 不兜底）
+//   codex      本机 Codex 命令行，ChatGPT 账号跑 gpt-6-luna（默认 xhigh）—— 实测 13–21 秒，最稳
+//   workbuddy  本机 WorkBuddy AI 命令行（deepseek-v4.1-flash）—— 实测 8–10 秒
+const LOCAL = { codex: require('./llm-codex.js'), workbuddy: require('./llm-workbuddy.js') };
+const LOCAL_TIMEOUT = { codex: 45000, workbuddy: 30000 };
+const localFallbacks = () => (process.env.LOCAL_FALLBACKS ?? 'codex,workbuddy').split(',').map(s => s.trim())
+  .filter(n => LOCAL[n] && !(n === 'workbuddy' && process.env.WORKBUDDY_FALLBACK === '0'));   // 旧开关仍然有效
+
 const hooks = { onSay: () => {}, beforeSay: async () => {} };
 
 // ------------------------------------------------------------------ HTTP
@@ -203,6 +211,24 @@ let llm = async function (opts) {
       if (m === model && F) breaker.set(model, Date.now() + BREAKER_MS);
       if (Date.now() - t0 > 40000) break;   // 别让她为一句话等太久
       await new Promise(r => setTimeout(r, 300 * (i + 1)));
+    }
+  }
+  // susu 整条线路都不通（两个模型都在它上面）：按顺序找本机的命令行兜底（另一家后端，慢，10–20 秒）
+  if (last?.message !== 'aborted' && last?.retryable !== false) {
+    for (const name of localFallbacks()) {
+      const L = LOCAL[name];
+      if (!L.available()) continue;
+      try {
+        const r = await L.chat({ messages: opts.messages, tools: opts.tools, timeoutMs: LOCAL_TIMEOUT[name], signal: opts.signal });
+        recent.push({ t: Date.now(), route: name, model: L.MODEL, raw: r.raw }); if (recent.length > 8) recent.shift();
+        usage.calls++;
+        const bm = usage.byModel[`${name}:${L.MODEL}`] ||= { calls: 0, inTok: 0, outTok: 0 };
+        bm.calls++;
+        return r.message;
+      } catch (e) {
+        if (e.message === 'aborted') throw e;
+        last = new Error(`${last.message}；${name} 兜底也没成：${e.message}`); last.retryable = true;
+      }
     }
   }
   throw last;

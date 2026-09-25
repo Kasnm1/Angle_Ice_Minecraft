@@ -40,7 +40,7 @@ Minecraft 陪伴型 AI。游戏内 ID 固定 **`Angel_ICE`**，跑在 Forge 1.20
 | **① 桥 / 协议 / 注册表**（手+眼） | `bridge-server.js` `hands.js` `fml-handshake.js` `registry-probe.js` `block-palette.js` `palette-registry.js` `item-registry.js` `reconnect.js` | [`registry/`](registry/) [`references/`](references/) | `mc-bridge` |
 | **② 寻路 / 放置 / 站位**（几何） | `pathing.js` `place.js` | — | `mc-pathing` |
 | **③ 脑干**（规则自主循环） | `autopilot.js` `decision.js` `reflex.js` `events.js` `journal.js` | — | `mc-autopilot` |
-| **④ 意识 / 人格**（LLM 层） | `mind.js` `body.js` `memory-store.js` `speech.js` `ambition.js` `brain.js`(旧) `PERSONA.md` | [`memory/`](memory/) | `mc-mind` |
+| **④ 意识 / 人格**（LLM 层） | `mind.js` `body.js` `memory-store.js` `speech.js` `ambition.js` `llm-codex.js` `llm-workbuddy.js` `brain.js`(旧) `PERSONA.md` | [`memory/`](memory/) | `mc-mind` |
 | **⑤ 知识库**（整合包真值） | `knowledge.js` | [`knowledge/`](knowledge/) | `mc-knowledge` |
 | **⑥ 运维 / 诊断 / 台账** | `scripts/start.sh` `stop.sh` `probe-*.js` | [`scripts/`](scripts/) `logs/` [`memory/field-log.md`](memory/field-log.md) | 主会话自己做 |
 
@@ -70,6 +70,8 @@ NODE=/Users/starwish/.workbuddy-ai/binaries/node/versions/22.22.2-2/bin/node
 - 访问本地端口一律 `curl --noproxy '*'`（环境里可能有代理劫持 localhost）。
 - 长驻进程（bridge / autopilot / mind）用后台方式起，日志写 `logs/`。
 - LLM 配置在 `.env`（`LLM_BASE_URL` / `LLM_API_KEY` / `MIND_MODEL` / …）—— **不要打印、不要提交**。
+- 模型调用链（`body.js` 的 `llm()`）：susu 主模型 ⇄ 备用模型 → 都不通时按 `LOCAL_FALLBACKS`（默认 `codex,workbuddy`）走本机命令行兜底：
+  `llm-codex.js`（ChatGPT 账号，`CODEX_MODEL` 默认 gpt-6-luna、`CODEX_EFFORT` 默认 xhigh，实测 13–21s）→ `llm-workbuddy.js`（实测 8–10s）。
 
 ---
 
@@ -92,6 +94,7 @@ $NODE events.js --selftest; $NODE journal.js --selftest; $NODE scripts/jev-contr
 # ④ 意识
 $NODE mind.js --selftest; $NODE brain.js --selftest; $NODE memory-store.js --selftest
 $NODE speech.js --selftest; $NODE ambition.js --selftest; $NODE --check body.js
+$NODE llm-codex.js --selftest; $NODE llm-workbuddy.js --selftest   # --live 会真调一次（花额度）
 # ⑤ 知识
 $NODE knowledge.js --selftest
 ```
