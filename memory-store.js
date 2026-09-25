@@ -366,6 +366,8 @@ function selftest () {
   const zh = (id) => ({ 'minecraft:cooked_chicken': '熟鸡肉', 'minecraft:bread': '面包' })[id] || id;
   check('按中文名想起：鸡肉在食物箱，二十来个，两小时前看的', /熟鸡肉：二十来个，在食物箱\(1,64,1\)（2 小时前看的）/.test(renderHomeStock('鸡肉', zh)), renderHomeStock('鸡肉', zh));
   check('没有的东西', /没有/.test(renderHomeStock('钻石', zh)));
+  check('单字也能想起："鸡在哪" → 熟鸡肉', homeHas('鸡在哪', zh).some(x => x.id === 'minecraft:cooked_chicken'));
+  check('虚字不乱配："在哪呢" → 什么都不算', homeHas('在哪呢', zh).length === 0);
   check('总览', /食物箱\(1,64,1\)：熟鸡肉二十来个、面包几个/.test(renderHomeStock(null, zh)), renderHomeStock(null, zh));
   check('数量说成人话', [roughly(1), roughly(70), roughly(200)].join('|') === '一个|一组多|3 组多', [roughly(1), roughly(70), roughly(200)]);
 
@@ -512,19 +514,46 @@ function since (t, now = Date.now()) {
 }
 
 /** 家里有没有某样东西（按 id / 关键词），返回 [{id, count, box, at}] */
+// 单独一个字没意义的（"铁在哪"里的 在/哪）不拿来比
+const STOP_CHARS = new Set('在哪有吗的了呢吧啊呀你我他她它是个把给要去来还都也就和跟说里下上个些点么什么怎样找拿放做家箱子'.split(''));
+
+/** 从一句话里挑出可能是东西名字的片段：中文连续字的 1–4 字子串（单字排除虚字）+ 英文词 */
+function nameFragments (text) {
+  const out = new Set();
+  for (const m of String(text || '').matchAll(/[\u4e00-\u9fff]+/g)) {
+    const w = m[0];
+    for (let L = Math.min(4, w.length); L >= 1; L--) {
+      for (let i = 0; i + L <= w.length; i++) {
+        const f = w.slice(i, i + L);
+        if (L === 1 && STOP_CHARS.has(f)) continue;
+        if (L > 1 && [...f].every(c => STOP_CHARS.has(c))) continue;
+        out.add(f);
+      }
+    }
+  }
+  for (const m of String(text || '').toLowerCase().matchAll(/[a-z][a-z0-9_]{2,}/g)) out.add(m[0]);
+  return [...out];
+}
+
 function homeHas (query, labelOf = (x) => x) {
   const h = getHome();
   if (!h || !h.stock) return [];
+  // 以前按"两个字一组"比，单独一个"铁"对不上"铁锭"—— 她想不起来，就把箱子挨个翻了一遍（实测）
+  // 现在按"名字里包含这个词"比：铁 → 铁锭 / 粗铁 / 铁块
+  const frags = nameFragments(query);
   const qk = keys(query);
   const out = [];
   for (const [box, b] of Object.entries(h.stock)) {
     for (const [id, n] of Object.entries(b.items || {})) {
-      const name = labelOf(id);
-      const hit = qk.has(id.toLowerCase()) || qk.has(id.split(':')[1]) || [...keys(name)].some(k => qk.has(k));
-      if (hit) out.push({ id, count: n, box, cats: (h.storage || {})[box] || [], at: b.at });
+      const name = String(labelOf(id));
+      const path = id.split(':')[1] || id;
+      let score = 0;
+      if (qk.has(id.toLowerCase()) || qk.has(path)) score = 10;
+      for (const f of frags) if (name.includes(f) || path.includes(f)) score = Math.max(score, f.length);
+      if (score) out.push({ id, count: n, box, cats: (h.storage || {})[box] || [], at: b.at, score });
     }
   }
-  return out.sort((a, b) => b.count - a.count);
+  return out.sort((a, b) => b.score - a.score || b.count - a.count);
 }
 
 /** 家里的存货：总览（每类大概有什么）或某样东西在哪、多少 */

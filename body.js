@@ -214,6 +214,121 @@ function parseArgs (s) {
   try { return JSON.parse(s); } catch (_) { return { _unparsed: String(s).slice(0, 200) }; }
 }
 
+// ------------------------------------------------------------------ 做出某样东西（整条链）
+
+/**
+ * 玩家说"把羊肉做好"：真人会想 熟羊肉 ← 生羊肉 ← 家里食物箱有 → 去拿 → 烤 → 递过去。
+ * 这些零件她都有（查配方、查家里存货、烧、给），但靠模型一步步自己串，中间哪步想歪就卡住或乱问。
+ * 这里把整条链交给身体跑完；模型只需要把话理解成"做熟羊肉，做好给 Ka_sum1"。
+ */
+const HOW = {   // 配方类型 → 用哪只手做
+  'minecraft:crafting_shaped': 'craft', 'minecraft:crafting_shapeless': 'craft',
+  'minecraft:smelting': 'smelt', 'minecraft:smoking': 'smelt', 'minecraft:blasting': 'smelt',
+  'farmersdelight:cooking': 'pot',
+};
+
+async function makeItem (itemName, count = 1, deliverTo = null, depth = 0, log = []) {
+  const K = knowledge.load();
+  const id = knowledge.resolve(itemName, 1)[0];
+  if (!id) return { ok: false, error: `不认识「${itemName}」` };
+  const invNow = async () => {
+    const r = await bridge.get('/inventory').catch(() => ({ items: [] }));
+    const m = new Map(); for (const i of r.items || []) { const k = i.name.includes(':') ? i.name : `minecraft:${i.name}`; m.set(k, (m.get(k) || 0) + i.count); }
+    return m;
+  };
+  const inTag = (tag, x) => K.tags.get(`item:${tag}`)?.has(x);
+  let inv = await invNow();
+  // 已经有了：直接给
+  if ((inv.get(id) || 0) >= count) {
+    log.push(`身上就有 ${knowledge.label(id)}`);
+  } else {
+    const rs = (K.byOutput.get(id) || []).map(i => K.recipes[i]).filter(r => HOW[r.type] && r.in.length)
+      .sort((a, b) => knowledge.recipeRank(a) - knowledge.recipeRank(b));
+    if (!rs.length) {
+      const how = knowledge.obtain(id).split('\n').slice(1, 4).join('；');
+      return { ok: false, error: `${knowledge.label(id)} 做不出来（没有我能用的配方）`, howToGet: how, log };
+    }
+    const home = mem.getHome();
+    const stockOf = (x) => {
+      if (!home?.stock) return [];
+      return Object.entries(home.stock).filter(([, b]) => (b.items || {})[x] > 0).map(([box, b]) => ({ box, n: b.items[x] }));
+    };
+    // 背在身上的背包：比回家拿近（里面有什么是上次打开时记下的）
+    const bp = (await bridge.get('/equipment').catch(() => null))?.backpack?.items || {};
+    let chosen = null; const why = [];
+    for (const r of rs) {
+      const per = r.out.find(o => o.item === id)?.count || 1;
+      const times = Math.ceil((count - (inv.get(id) || 0)) / per);
+      const plan = []; let ok = true;
+      for (const sl of r.in) {
+        const need = sl.count * times;
+        const cands = sl.alts.flatMap(a => (a.item ? [a.item] : [...(K.tags.get(`item:${a.tag}`) || [])].slice(0, 200)));
+        // 身上 > 家里记得的 > 能再做出来的
+        const onMe = cands.find(x => (inv.get(x) || 0) >= need);
+        if (onMe) { plan.push({ item: onMe, need, from: 'inv' }); continue; }
+        const inPack = cands.find(x => (bp[x] || 0) + (inv.get(x) || 0) >= need);
+        if (inPack) { plan.push({ item: inPack, need, from: 'backpack' }); continue; }
+        const atHome = cands.map(x => ({ x, where: stockOf(x) })).find(c => c.where.reduce((a, w) => a + w.n, 0) + (inv.get(c.x) || 0) >= need);
+        if (atHome) { plan.push({ item: atHome.x, need, from: 'home', where: atHome.where }); continue; }
+        const craftable = depth < 2 && cands.find(x => (K.byOutput.get(x) || []).some(i => HOW[K.recipes[i].type]));
+        if (craftable) { plan.push({ item: craftable, need, from: 'make' }); continue; }
+        ok = false; why.push(`缺 ${sl.alts.slice(0, 2).map(a => knowledge.label(a.item || '#' + a.tag)).join(' 或 ')}×${need}`); break;
+      }
+      if (ok) { chosen = { r, times, plan }; break; }
+    }
+    if (!chosen) return { ok: false, error: `凑不齐 ${knowledge.label(id)} 的材料：${[...new Set(why)].slice(0, 3).join('；')}`, log };
+    log.push(`${knowledge.label(id)}：用 ${chosen.r.type.split(':')[1]} 做，要 ${chosen.plan.map(p => `${knowledge.label(p.item)}×${p.need}${p.from === 'home' ? '（家里拿）' : p.from === 'backpack' ? '（背包里拿）' : p.from === 'make' ? '（先做）' : ''}`).join(' + ')}`);
+    // 凑材料
+    for (const p of chosen.plan) {
+      inv = await invNow();
+      const lack = p.need - (inv.get(p.item) || 0);
+      if (lack <= 0) continue;
+      if (p.from === 'backpack') {
+        await bridge.post('/backpack/open', {}, 20000);
+        const r = await bridge.post('/container/withdraw', { items: [{ item: p.item, count: lack }] }, 30000).catch(e => ({ took: {}, error: e.message }));
+        await bridge.post('/container/close').catch(() => {});
+        const got = (r.took || {})[p.item] || 0;
+        log.push(`从背包里拿了 ${knowledge.label(p.item)}×${got}`);
+        if (got < lack) return { ok: false, error: `背包里的 ${knowledge.label(p.item)} 不够（还差 ${lack - got}）`, log };
+      } else if (p.from === 'home') {
+        let left = lack;
+        for (const w of p.where.sort((a, b) => b.n - a.n)) {
+          if (left <= 0) break;
+          const [x, y, z] = w.box.split(',').map(Number);
+          await bridge.post('/container/open', { x, y, z }, 120000);
+          const r = await bridge.post('/container/withdraw', { items: [{ item: p.item, count: left }] }, 30000).catch(e => ({ took: {}, error: e.message }));
+          await bridge.post('/container/close').catch(() => {});
+          left -= (r.took || {})[p.item] || 0;
+          log.push(`去 (${w.box}) 拿了 ${knowledge.label(p.item)}×${(r.took || {})[p.item] || 0}`);
+        }
+        if (left > 0) return { ok: false, error: `家里的 ${knowledge.label(p.item)} 不够（还差 ${left}，记得的可能过时了）`, log };
+      } else if (p.from === 'make') {
+        const sub = await makeItem(p.item, lack, null, depth + 1, log);
+        if (!sub.ok) return { ...sub, error: `先做 ${knowledge.label(p.item)} 没成：${sub.error}`, log };
+      }
+    }
+    // 做
+    const how = HOW[chosen.r.type];
+    const want = count - (inv.get(id) || 0);
+    let res;
+    try {
+      if (how === 'craft') res = await bridge.post('/craft2', { itemName: id, count: want }, 120000);
+      else if (how === 'smelt') res = await bridge.post('/smelt', { itemName: chosen.plan[0].item, count: chosen.times }, 180000);
+      else res = await bridge.post('/cook_pot', { itemName: id, count: chosen.times }, 300000);
+    } catch (e) { return { ok: false, error: `${how === 'craft' ? '合成' : how === 'smelt' ? '烧' : '下锅'}没成：${e.message}`, log }; }
+    log.push(`做好了：${JSON.stringify(res.got || res.crafted || res.cooked || res).slice(0, 80)}`);
+  }
+  if (deliverTo && depth === 0) {
+    inv = await invNow();
+    // 同一个配方可能做出别的变种（本包配方冲突常见）—— 按实际拿到的给
+    const give = (inv.get(id) || 0) > 0 ? id : null;
+    if (!give) return { ok: false, error: `做完了但身上没有 ${knowledge.label(id)}（可能做出来的是别的东西）`, log };
+    const g = await bridge.post('/give', { itemName: give, count, player: deliverTo }, 60000).catch(e => ({ success: false, error: e.message }));
+    log.push(g.confirmed ? `递给 ${deliverTo}，他接到了` : `递了，${g.error || g.note || '没看到他接'}`);
+  }
+  return { ok: true, made: id, count, log };
+}
+
 // ------------------------------------------------------------------ 工具
 
 /**
@@ -365,6 +480,12 @@ const TOOLS = {
     params: { steps: { type: 'array', items: { type: 'object' } } }, required: ['steps'],
     run: async ({ steps }) => bridge.post('/motor', { steps }, 40000),
   },
+  wiggle: {
+    kind: 'action',
+    desc: '卡住了就跳一跳、前后左右晃一晃（会避开岩浆和高的地方），挪开了就停。',
+    params: { rounds: { type: 'number' } }, required: [],
+    run: async (a) => bridge.post('/wiggle', a),
+  },
   nudge: {
     kind: 'action',
     desc: '微调身位：蹲着小步挪到一格里的精确位置（x、z 可以带小数，比如 34.7, -135.3），每步核对，不会从边上掉下去。卡在边上、要对准梯子/洞口/门缝、要站到方块某一侧时用。',
@@ -426,9 +547,15 @@ const TOOLS = {
   },
   wear: {
     kind: 'action',
-    desc: '穿戴装备：盔甲、模组装备、饰品。会自己判断该放哪个槽，放不进就试右键穿上。',
+    desc: '穿戴装备：盔甲、模组装备、饰品（戒指、项链；背包会背到背饰格上）。会自己判断该放哪个槽，放不进就试右键穿上。',
     params: { itemName: { type: 'string' } }, required: ['itemName'],
     run: async ({ itemName }) => bridge.post('/wear', { itemName }),
+  },
+  open_backpack: {
+    kind: 'action',
+    desc: '打开身上的背包（背在背饰上的或者背包栏里的，相当于按 B）。打开后用 store_items / take_items 存取，做完 container_close。身上满了、东西多了可以先装进去。',
+    params: {}, required: [],
+    run: async () => bridge.post('/backpack/open', {}),
   },
   open_container: {
     kind: 'action',
@@ -494,6 +621,24 @@ const TOOLS = {
     desc: '探险时用：把附近（家以外的）箱子里的东西尽量都装到身上带回家。装不下先拿值钱的（工具装备→矿物→食物→其他…）。家里的箱子不碰；exclude 写不能拿的箱子位置（比如别人家的）。',
     params: { radius: { type: 'number' }, exclude: { type: 'array', items: { type: 'string' } } }, required: [],
     run: async (a) => bridge.post('/storage/loot', { ...a, home: mem.getHome() }, 300000),
+  },
+  farm: {
+    kind: 'action',
+    desc: '种地：把附近（radius 格内）熟了的庄稼收了、捡起掉的东西、用背包里的种子补种；空着的耕地也播上种子（seed 可以指定用什么种）。',
+    params: { radius: { type: 'number' }, seed: { type: 'string' }, replant: { type: 'boolean' }, plantEmpty: { type: 'boolean' } }, required: [],
+    run: async (a) => bridge.post('/farm', a, 600000),
+  },
+  cook_pot: {
+    kind: 'action',
+    desc: '用农夫乐事的厨锅做菜：按本整合包的真实配方，从背包里挑凑得齐的材料放进锅（碗放碗的格子），等煮好拿出来。材料不够会告诉你缺什么。',
+    params: { itemName: { type: 'string' }, count: { type: 'number' } }, required: ['itemName'],
+    run: async (a) => bridge.post('/cook_pot', a, 300000),
+  },
+  make_item: {
+    kind: 'action',
+    desc: '做出某样东西，整条链自己跑完：看本整合包的配方 → 凑材料（背包里有就用；没有就去家里记得的箱子拿；能合成的先做出来）→ 合成/烧/下锅 → 给了 deliverTo 就递给那个人。玩家说"把羊肉做好""给我做把铁镐""来点面包"，就用这个（itemName 写做好之后的东西，比如 熟羊肉、铁镐）。做不到会说缺什么、去哪弄。',
+    params: { itemName: { type: 'string' }, count: { type: 'number' }, deliverTo: { type: 'string' } }, required: ['itemName'],
+    run: async ({ itemName, count = 1, deliverTo }) => makeItem(itemName, count, deliverTo),
   },
   sleep_in_bed: {
     kind: 'action',

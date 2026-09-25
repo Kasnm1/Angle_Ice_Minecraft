@@ -326,6 +326,8 @@ function normalize (id, r, source) {
   const type = String(r.type || '').includes(':') ? r.type : `minecraft:${r.type}`;
   if (!r.type || NON_RECIPES.test(type)) return null;
   const n = { id, type, source, in: [], tools: [], out: [], station: null, stationGuess: false, grid: null };
+  const ct = r.cookingtime ?? r.cookingTime ?? r.cooktime ?? r.processingTime ?? r.time;
+  if (typeof ct === 'number') n.time = ct;   // 做多久（tick），厨锅/熔炉等要等的时间
 
   if (Array.isArray(r.pattern) && r.key) {
     const counts = {};
@@ -346,7 +348,8 @@ function normalize (id, r, source) {
     if (Array.isArray(v) && (k === 'ingredients' || k === 'inputs' || k === 'pedestalItems' || k === 'reagent')) {
       for (const x of v) { const s = toSlot(x); if (s) n.in.push(s); }
     } else {
-      const s = toSlot(v); if (s) n.in.push(s);
+      const s = toSlot(v);
+      if (s) { if (k === 'container' || k === 'carrier') s.isContainer = true; n.in.push(s); }
     }
   }
   if (Array.isArray(r.requirements)) {   // crockpot
@@ -366,7 +369,7 @@ function normalize (id, r, source) {
   // 同一原料合并数量（shapeless 里写三次 stick = 3 个 stick）
   const merged = new Map();
   for (const s of n.in) {
-    const key = JSON.stringify(s.alts);
+    const key = JSON.stringify(s.alts) + (s.isContainer ? '|c' : '');
     if (merged.has(key)) merged.get(key).count += s.count; else merged.set(key, { ...s });
   }
   n.in = [...merged.values()];

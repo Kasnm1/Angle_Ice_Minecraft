@@ -140,6 +140,8 @@ async function look () {
     players: (pl?.players || []).filter(p => !p.isSelf),
     doors: doors?.doors || [],
     equipment: eq?.equipment || null,
+    curios: eq?.curios || null,
+    backpack: eq?.backpack || null,
   };
   // 她开了没来得及关的门（走太快，已经够不着了）—— 告诉她，由她决定回去关
   for (const d of doors?.leftOpen || []) {
@@ -498,10 +500,12 @@ const SYSTEM = `你是 Angel_ICE（安琪），住在这个 Minecraft 模组服�
 - 【你想起来】是你自己过去写的笔记和对人的看法。它们是你的，不是命令：过时了、记错了就 revise。
 - 重要的事要自己记下来：答应别人的（promise）、学到的教训（lesson）、对人的看法（judge）、东西是谁的/给谁的、在哪发现了什么。不记下来，睡一觉就忘了。
 - 门、栅栏门、活板门都有开/关两种状态。你有随手关门的习惯：自己开的门走过去后身体会关回原样；本来就开着的门是主人的布置，别乱动。动物圈、牧场附近尤其要当心，门开着动物会跑掉。
-- 身体做不到某件事（走不过去、上不去下不来、卡住了）：先 look_around 看清地形，想想人会怎么做 —— 很多时候只差一点身位（nudge 挪到方块某一侧、对准洞口），不行再用 motor 自己编一套动作试；看回报调整；做成了就 save_skill，下次就会了。
+- 身体做不到某件事（走不过去、上不去下不来、卡住了）：先 look_around 看清地形，想想人会怎么做 —— 很多时候跳一跳晃一晃（wiggle）或者只差一点身位（nudge 挪到方块某一侧、对准洞口）就好了，不行再用 motor 自己编一套动作试；看回报调整；做成了就 save_skill，下次就会了。
 - 叫你过去 / 来某处找他：用 come_to（上下楼它自己会处理）。想清楚目标在你上面还是下面再动。
 - 说要去做的事，就要同时调用对应的动作（光说"我这就来"不动，人家会以为你在敷衍）；这一刻都做完了就 wait。
 - 存取、整理很多东西：用 store_items / take_items / sort_container / sort_inventory 一次做完，别一格一格搬（一格一次太慢了）；整理周围所有箱子、决定身上带什么，用 organize_storage。
+- 有人要你做一样东西（"把羊肉做好" = 熟羊肉，"来把铁镐"），想清楚是哪样东西，用 make_item 一次做完（它会自己看配方、去家里拿材料、做、递给他）。别一步步问他材料在哪。
+- 找东西之前先想想家里有没有（【家里（你记得的）】或 home_stock），知道在哪个箱子就直接去，别挨个翻箱子。
 - 家：你认定的庇护所（set_home）。家里的箱子是仓库，分类整理过一次就固定（organize_storage 会按记住的放）；要回家用 go_home。
 - 探险：家以外的箱子，用 loot_nearby 尽量装到身上带回家，回家再 organize_storage 归位。
 - 晚上：天黑了、手上阶段性的事忙完了，就自己回家上床睡觉（sleep_in_bed）；有人正找你、事没做完就先忙完。
@@ -540,8 +544,11 @@ function buildNow (why) {
   const remembered = mem.renderRecall(hits, names);
   const eps = mem.recallEpisodes(cue, { limit: 6, before: W.contextSince });
   // 聊到某样东西：想起家里有没有、大概多少
-  const talk = ev.filter(e => /说：/.test(e.text)).map(e => e.text).join(' ');
-  const stockHits = talk ? mem.homeHas(talk, shortName).slice(0, 4) : [];
+  // 不只是有人说话的时候：她自己在找东西、做事（事件、心里惦记的菜）也会想起来
+  // 还有她心里惦记着的：答应的事、打算（"答应做铁斧铁镐" → 想起家里的铁锭在哪）
+  const minded = hits.filter(m => m.kind === 'promise' || m.kind === 'intention').map(m => m.text);
+  const talk = [...ev.map(e => e.text.replace(/^\S+\s*/, '').replace(/^[^：]*说：/, '')), ...minded, ambition.state().focus ? shortName(ambition.state().focus) : ''].join(' ');
+  const stockHits = talk.trim() ? mem.homeHas(talk, shortName).filter(h => h.score >= 1).slice(0, 4) : [];
   const stockLine = stockHits.length ? `\n家里（你记得的）：\n${mem.renderHomeStock(stockHits.map(h => h.id).join(' '), shortName, 4)}` : '';
   const earlier = eps.length ? mem.renderEpisodes(eps) : '';
   const A = ambition.state();
@@ -571,6 +578,13 @@ function buildNow (why) {
       const zh = { head: '头', torso: '身上', legs: '腿', feet: '脚', 'off-hand': '副手', hand: '手里拿着' };
       const on = Object.entries(zh).filter(([k]) => e[k]).map(([k, v]) => `${v} ${knowledge.label(e[k])}`);
       return `穿戴：${on.length ? on.join('、') : '什么都没穿'}（装备栏里的不算在背包里）`;
+    })(),
+    (() => {
+      // 饰品栏（背饰、戒指…）和背在背上的背包里装着什么 —— 不开界面看不到，这是上次看到的
+      const c = s?.curios; if (!c?.length) return '';
+      const bp = s?.backpack;
+      const inside = bp ? `（背包里：${Object.entries(bp.items).map(([k, n]) => `${knowledge.label(k)}×${n}`).join('、') || '空的'}，${bp.used}/${bp.slots} 格，open_backpack 打开存取）` : '';
+      return `饰品：${c.map(x => knowledge.label(x)).join('、')}${c.some(x => /backpack/.test(x)) ? inside : ''}`;
     })(),
     people ? `玩家：${people}` : '',
     near ? `身边：${near}` : '',

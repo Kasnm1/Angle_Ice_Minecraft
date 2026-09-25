@@ -104,7 +104,10 @@ function equipChanges (a, b) {
  * 让它建出一个通用界面；等 `window_items` 到了（它带着全部格子），再把界面**原地**改成真实大小。
  * 原地改是关键：mineflayer 在 prepareWindow 的闭包里拿着同一个对象，换对象它就对不上了。
  */
+let HSTATE = null;   // 给 approach 这类不带 state 的函数用（跨楼层要走路线规划）
+
 function install (bot, state) {
+  HSTATE = state;
   const pw = require('prismarine-windows')(bot.registry);
   const lastItems = new Map();   // windowId → 最近一次 window_items 的格子数（有的界面先发格子后开窗）
 
@@ -113,7 +116,8 @@ function install (bot, state) {
     const w = bot.currentWindow;
     // 是不是我们刚建的通用界面：看 open_window 时留的记号（windowOpen 要等格子同步完才触发，那时就晚了）
     const generic = w && (w.__generic || state.__pendingGeneric?.id === packet.windowId);
-    if (generic && w.id === packet.windowId && w.slots.length !== packet.items.length) {
+    // 精妙背包的格子已经由它自己的通道同步过（带真实格数和"自己的 36 格在哪"）：原版包晚到时不能再按"最后 36 格"改回去（实测：背包界面变成 0 格）
+    if (generic && w.id === packet.windowId && !w.__sophisticated && w.slots.length !== packet.items.length) {
       resize(w, packet.items.length);
     }
   });
@@ -188,6 +192,36 @@ function install (bot, state) {
   };
   bot.once('login', guardShapes);
   bot.once('spawn', guardShapes);
+  // 醒来先摸一下自己身上：戴着什么饰品、背包里装了什么（像人起床会知道自己背着包）
+  bot.once('spawn', () => setTimeout(async () => {
+    try {
+      if (bot.currentWindow) return;
+      const c = await curiosList(bot, state);
+      if (!c.worn.some(x => /backpack/.test(x.item)) || bot.currentWindow) return;
+      await sleep(500);
+      const r = await backpackOpen(bot, state);
+      if (bot.currentWindow?.id === r.id) bot.closeWindow(bot.currentWindow);
+    } catch (_) {}
+  }, 6000));
+
+  // 走路时卡住（寻路器在带她走，但 2.5 秒几乎没挪动）：跳一下、左右晃一下，再让寻路器接着走
+  bot.once('spawn', () => {
+    let last = null; let lastAt = Date.now(); let busy = false;
+    setInterval(async () => {
+      if (!bot.entity || busy || !bot.pathfinder?.isMoving?.()) { last = bot.entity?.position.clone(); lastAt = Date.now(); return; }
+      if (last && bot.entity.position.distanceTo(last) > 0.3) { last = bot.entity.position.clone(); lastAt = Date.now(); return; }
+      if (Date.now() - lastAt < 2500) return;
+      busy = true;
+      try {
+        state.stuckWiggles = (state.stuckWiggles || 0) + 1;
+        bot.setControlState('jump', true); await sleep(250); bot.setControlState('jump', false);
+        const side = Math.random() < 0.5 ? 'left' : 'right';
+        if (safeToward(bot, bot.entity.yaw + (side === 'left' ? Math.PI / 2 : -Math.PI / 2))) { bot.setControlState(side, true); await sleep(200); bot.setControlState(side, false); }
+      } finally { busy = false; last = bot.entity.position.clone(); lastAt = Date.now(); }
+    }, 500);
+  });
+
+  installModProtocols(bot, state);
 
   bot.on('windowOpen', (w) => {
     if (state.__pendingGeneric?.id === w.id) {
@@ -316,6 +350,178 @@ async function setDoor (bot, state, { x, y, z, open }) {
   return { done: true, open, name: b.name };
 }
 
+// ------------------------------------------------------------------ 模组协议：精妙背包（sophisticatedcore）、Curios 饰品栏
+
+/**
+ * 精妙背包的格子内容不走原版同步（一格能堆超过 64，原版的 byte 装不下），走自己的通道
+ * sophisticatedcore:channel（Forge SimpleChannel，首字节是消息序号）：
+ *   2 = SyncContainerStacksMessage：byte 窗口号 | varint stateId | short 格数 | 每格 PacketHelper.writeItemStack | 手上拿的（原版格式）
+ *   3 = SyncSlotStackMessage：      byte 窗口号 | varint stateId | short 格号 | PacketHelper.writeItemStack
+ *   PacketHelper.writeItemStack：bool 有没有 | varint 物品 id | int 数量（4 字节）| NBT（可能是 0 = 没有）
+ * 这些是从 sophisticatedcore-1.20.1-1.2.83 的 class 文件里反汇编出来的（javap）。
+ */
+function readVarInt (buf, o) {
+  let n = 0; let shift = 0; let b;
+  do { b = buf[o.i++]; n |= (b & 0x7f) << shift; shift += 7; } while (b & 0x80);
+  return n;
+}
+
+function readNbt (buf, o) {
+  if (buf[o.i] === 0) { o.i++; return null; }
+  const nbt = require('prismarine-nbt');
+  const r = nbt.protos.big.parsePacketBuffer('nbt', buf.subarray(o.i));
+  o.i += r.metadata.size;
+  return r.data;
+}
+
+function readSophItem (bot, buf, o) {
+  if (!buf[o.i++]) return null;
+  const id = readVarInt(buf, o);
+  const count = buf.readInt32BE(o.i); o.i += 4;
+  const tag = readNbt(buf, o);
+  const Item = require('prismarine-item')(bot.registry);
+  return new Item(id, count, 0, tag || undefined);
+}
+
+/** 背包界面里哪一段是她自己的 36 格：拿身上的东西去比对（背包界面还可能带升级格，不能简单按"最后 36 格"算） */
+function locatePlayerInv (bot, items) {
+  const mine = bot.inventory.slots.slice(9, 45).map(x => (x ? `${x.type}:${x.count}` : '-'));
+  if (mine.every(x => x === '-')) return Math.max(0, items.length - 36);
+  let best = -1; let bestScore = -1;
+  for (let k = 0; k + 36 <= items.length; k++) {
+    let sc = 0;
+    for (let j = 0; j < 36; j++) { const x = items[k + j]; if ((x ? `${x.type}:${x.count}` : '-') === mine[j] && mine[j] !== '-') sc++; }
+    if (sc > bestScore) { bestScore = sc; best = k; }
+  }
+  return best < 0 ? Math.max(0, items.length - 36) : best;
+}
+
+function installModProtocols (bot, state) {
+  bot._client.on('custom_payload', (p) => {
+    if (p.channel !== 'sophisticatedcore:channel') return;
+    const buf = Buffer.isBuffer(p.data) ? p.data : Buffer.from(p.data || []);
+    const kind = buf[0];
+    if (kind !== 2 && kind !== 3) return;
+    try {
+      const o = { i: 1 };
+      const windowId = buf[o.i++];
+      readVarInt(buf, o);   // stateId
+      const w = bot.currentWindow;
+      if (!w || w.id !== windowId) return;
+      if (kind === 2) {
+        const n = buf.readInt16BE(o.i); o.i += 2;
+        const items = [];
+        for (let k = 0; k < n; k++) items.push(readSophItem(bot, buf, o));
+        if (w.slots.length !== n) { const old = w.slots; w.slots = new Array(n).fill(null); for (let k = 0; k < Math.min(old.length, n); k++) w.slots[k] = old[k]; }
+        for (let k = 0; k < n; k++) w.slots[k] = items[k];
+        const start = locatePlayerInv(bot, items);
+        w.inventoryStart = start; w.inventoryEnd = start + 36; w.hotbarStart = start + 27;
+        w.__sophisticated = true;
+        state.lastSophSync = { windowId, slots: n, playerInvAt: start, at: Date.now() };
+      } else {
+        const slot = buf.readInt16BE(o.i); o.i += 2;
+        const it = readSophItem(bot, buf, o);
+        if (slot >= 0 && slot < w.slots.length) w.slots[slot] = it;
+      }
+    } catch (e) { state.lastSophError = e.message; }
+  });
+}
+
+/** 打开 Curios 饰品栏：curios:main 的 0 号消息（CPacketOpenCurios），内容 = 手上拿的物品（空 = 一个 0 字节） */
+async function curiosOpen (bot, state) {
+  if (bot.currentWindow) { bot.closeWindow(bot.currentWindow); await sleep(200); }
+  const opened = new Promise((resolve) => {
+    const t = setTimeout(() => { bot.removeListener('windowOpen', on); resolve(null); }, 4000);
+    function on (w) { clearTimeout(t); resolve(w); }
+    bot.once('windowOpen', on);
+  });
+  bot._client.write('custom_payload', { channel: 'curios:main', data: Buffer.from([0, 0]) });
+  const w = await opened;
+  if (!w) throw new Error('饰品栏没打开（服务器没回应 curios:main）');
+  await sleep(300);
+  return w;
+}
+
+/** 饰品栏界面：0 合成结果、1–4 合成格、5–8 盔甲、9–44 背包、45 副手、46 起是饰品格 */
+const CURIO_FIRST = 46;
+
+/** 饰品栏不开界面看不到 —— 每次开过就记下戴着什么，给 /equipment 用（她得知道自己背着背包、戴着戒指） */
+function noteCurios (state, w) {
+  state.curiosWorn = w.slots.slice(CURIO_FIRST).filter(Boolean).map(x => fullId(x.name));
+  state.curiosAt = Date.now();
+}
+
+/** 背包里有什么：开过就记下（背在背上的背包不开也看不到） */
+function noteBackpack (state, w) {
+  if (!w || state.backpackWindowId !== w.id) return;
+  const items = {};
+  for (let i = 0; i < w.inventoryStart; i++) { const it = w.slots[i]; if (it) items[fullId(it.name)] = (items[fullId(it.name)] || 0) + it.count; }
+  state.backpackSeen = { items, slots: w.inventoryStart, used: w.slots.slice(0, w.inventoryStart).filter(Boolean).length, at: Date.now() };
+}
+
+async function curiosEquip (bot, state, { itemName } = {}) {
+  const want = itemName ? fullId(itemName) : null;
+  const w = await curiosOpen(bot, state);
+  try {
+    const src = [...Array(36).keys()].map(k => 9 + k).find(i => w.slots[i] && fullId(w.slots[i].name) === want);
+    if (src == null) throw new Error(`背包里没有 ${itemName}`);
+    const before = w.slots.slice(CURIO_FIRST).filter(Boolean).map(x => fullId(x.name));
+    await bot.clickWindow(src, 0, 1);   // Shift+点：服务器按 Curios 的规则放进合适的饰品格
+    await sleep(600);
+    const after = w.slots.slice(CURIO_FIRST).map((x, k) => (x ? { slot: CURIO_FIRST + k, item: fullId(x.name) } : null)).filter(Boolean);
+    const worn = after.find(x => x.item === want) && before.filter(x => x === want).length < after.filter(x => x.item === want).length;
+    if (!worn) throw new Error(`${itemName} 放不进饰品栏（可能没有合适的饰品格，或者已经戴满了）`);
+    return { worn: want, slot: after.find(x => x.item === want).slot, curios: after.map(x => x.item) };
+  } finally { noteCurios(state, w); bot.closeWindow(w); }
+}
+
+async function curiosList (bot, state) {
+  const w = await curiosOpen(bot, state);
+  try {
+    const worn = w.slots.slice(CURIO_FIRST).map((x, k) => (x ? { slot: CURIO_FIRST + k, item: fullId(x.name), count: x.count } : null)).filter(Boolean);
+    return { slots: Math.max(0, w.slots.length - CURIO_FIRST), worn };
+  } finally { noteCurios(state, w); bot.closeWindow(w); }
+}
+
+async function curiosUnequip (bot, state, { itemName } = {}) {
+  const want = fullId(itemName);
+  const w = await curiosOpen(bot, state);
+  try {
+    const i = w.slots.findIndex((x, k) => k >= CURIO_FIRST && x && fullId(x.name) === want);
+    if (i < 0) throw new Error(`饰品栏里没有 ${itemName}`);
+    await bot.clickWindow(i, 0, 1);
+    await sleep(500);
+    if (w.slots[i] && fullId(w.slots[i].name) === want) throw new Error('拿不下来（背包满了？）');
+    return { removed: want };
+  } finally { noteCurios(state, w); bot.closeWindow(w); }
+}
+
+/**
+ * 打开身上的背包 = 按 B（精妙背包的快捷键）：
+ * sophisticatedbackpacks:channel 的 0 号消息 BackpackOpenMessage：int 格号 | string 标识 | string 处理器名。
+ * 客户端按 B 时发的是默认值（-1, "", ""）—— 服务器自己按顺序找第一个背包（手上/背包栏/饰品栏背饰）打开。
+ * 所以背包戴在背饰上也能打开，打开后就是普通的界面，存取用 /container/deposit、/container/withdraw。
+ * （从 sophisticatedbackpacks-1.20.1-3.23.5 的 SBPPacketHandler / BackpackOpenMessage 反汇编得到）
+ */
+async function backpackOpen (bot, state, retry = true) {
+  if (bot.currentWindow) { bot.closeWindow(bot.currentWindow); await sleep(400); }
+  const syncBefore = state.lastSophSync?.at || 0;
+  bot._client.write('custom_payload', { channel: 'sophisticatedbackpacks:channel', data: Buffer.from([0, 0xff, 0xff, 0xff, 0xff, 0, 0]) });
+  // 不等 windowOpen 事件：mineflayer 要等原版 window_items 才发它，精妙背包的格子走自己的通道，事件可能永远不来（实测）
+  let w = null;
+  for (let k = 0; k < 40 && !w; k++) { await sleep(100); w = bot.currentWindow; }
+  if (!w) throw new Error('背包没打开（身上、背饰上都没有背包？）');
+  // 格子内容走精妙背包自己的同步，等它到了再读
+  for (let k = 0; k < 20 && !((state.lastSophSync?.at || 0) > syncBefore && w.__sophisticated); k++) await sleep(100);
+  await sleep(200);
+  state.openContainerPos = null;   // 不是家里的箱子，不记进"家里有什么"
+  state.backpackWindowId = w.id;
+  // 刚关完别的界面马上开，偶尔格子同步对不上（界面 0 格）：关掉等一下再开一次
+  if (!(w.__sophisticated && w.inventoryStart > 0) && retry) { bot.closeWindow(w); await sleep(800); return backpackOpen(bot, state, false); }
+  noteBackpack(state, w);
+  return { backpack: true, synced: (state.lastSophSync?.at || 0) > syncBefore, ...summarizeWindow(bot, state) };
+}
+
 // ------------------------------------------------------------------ 吃
 
 const FOOD_RE = /(cooked|baked|roast|grilled|fried|_stew|_soup|salad|bread|pie|cake_slice|sandwich|burger|dumpling|rice|noodle|pasta|kebab|skewer|apple|carrot|potato|beetroot|melon_slice|berries|cookie|chicken|beef|porkchop|mutton|rabbit|cod|salmon|_meat|steak|bacon|ham|sausage|jerky|sushi|onigiri|pudding|jam|toast|pancake|waffle|donut|muffin|fruit|_juice)/;
@@ -430,8 +636,10 @@ async function wear (bot, state, { itemName } = {}) {
       tried.push(`equip→${dest} 服务器没认`);
     } catch (e) { tried.push(`equip→${dest}：${e.message}`); }
   }
+  // 背包（精妙背包等）拿在手上右键是"打开它"，不是穿上 —— 直接放进饰品栏的背饰格
+  const isPack = /backpack/.test(it.name);
   // 名字看不出槽位 / 直接放没成功：原版逻辑是"拿在手上右键就穿上"，模组盔甲和很多饰品（Curios）也支持
-  const again = findItem(bot, itemName);
+  const again = isPack ? null : findItem(bot, itemName);
   if (again) {
     await bot.equip(again, 'hand');
     bot.activateItem(false);
@@ -447,6 +655,11 @@ async function wear (bot, state, { itemName } = {}) {
     }
     tried.push('右键：没反应');
   }
+  // 饰品（戒指、项链…）：打开 Curios 饰品栏放进去
+  try {
+    const r = await curiosEquip(bot, state, { itemName: it.name });
+    return { worn: it.name, slot: `饰品栏第 ${r.slot} 格`, via: 'curios', tried };
+  } catch (e) { tried.push(`饰品栏：${e.message}`); }
   const e = new Error(`穿不上 ${it.name}：${tried.join('；')}。可能要打开饰品栏（Curios）手动放`);
   e.data = { tried };
   throw e;
@@ -474,6 +687,11 @@ async function approach (bot, block) {
   const { goals } = require('mineflayer-pathfinder');
   const p = block.position;
   const t0 = Date.now();
+  // 不在同一层（锅在一楼厨房、她在三楼仓库）：用会爬梯子、开门的路线走过去
+  if (Math.abs(p.y - bot.entity.position.y) >= 2.5 && HSTATE) {
+    await go(bot, HSTATE, { x: p.x, y: p.y, z: p.z, range: 2 });
+    if (eyeDist(bot, block) <= REACH) return { walked: true, ms: Date.now() - t0, via: 'route' };
+  }
   try {
     await Promise.race([
       bot.pathfinder.goto(new goals.GoalNear(p.x, p.y, p.z, 2)),
@@ -788,7 +1006,8 @@ async function stepInto (bot, x, y, z) {
   }
   for (let i = 0; i < 8 && !inCell(); i++) {
     await bot.lookAt(new Vec3(x + 0.5, bot.entity.position.y + 1.6, z + 0.5), true);
-    await holdControls(bot, ['forward'], 250);
+    await holdControls(bot, i % 3 === 2 ? ['forward', 'jump'] : ['forward'], 250);   // 隔几下跳一跳，别只是往墙上顶
+    if (i === 4 && !inCell()) await wiggle(bot, { rounds: 1 }).catch(() => {});
   }
   return inCell();
 }
@@ -842,7 +1061,13 @@ async function climbColumn (bot, state, col) {
     const y = bot.entity.position.y;
     if (y - lastY < 0.05) stalled++; else stalled = 0;
     lastY = y;
+    if (stalled === 3 && !state.__climbWiggled) {
+      state.__climbWiggled = true;
+      await holdControls(bot, ['jump'], 300); await align();          // 跳一下、重新贴好梯子再爬
+      stalled = 0; continue;
+    }
     if (stalled >= 3) {
+      state.__climbWiggled = false;
       const h = bot.blockAt(hatchPos);
       if (!opened && h && /trapdoor/.test(h.name) && !isOpen(h)) {
         await bot.activateBlock(h, new Vec3(0, -1, 0), new Vec3(0.5, 0, 0.5));
@@ -1020,7 +1245,7 @@ async function climbDown (bot, state, { targetY, maxLadders = 4 } = {}) {
  *   ④ 放宽"旁边"的范围，尽量靠近；再不行先朝目标走一段，换个位置重新找路
  *   ⑤ 到不了：如实报还差多远、试过什么，附上周围地形，让她自己想办法（motor）
  */
-async function pathTo (bot, pos, range, ms) {
+async function pathTo (bot, pos, range, ms, { retry = true } = {}) {
   const { goals } = require('mineflayer-pathfinder');
   try {
     await Promise.race([
@@ -1030,6 +1255,11 @@ async function pathTo (bot, pos, range, ms) {
     return null;
   } catch (e) {
     bot.pathfinder.setGoal(null);
+    // 走不通：先跳一跳晃一晃，换个站位再试一次（很多"找不到路"只是被卡在方块边上）
+    if (retry) {
+      const w = await wiggle(bot, { rounds: 1 }).catch(() => null);
+      if (w?.freed) return pathTo(bot, pos, range, ms, { retry: false });
+    }
     return e.message || String(e);
   }
 }
@@ -1057,6 +1287,44 @@ async function offLadder (bot, state, targetY) {
   }
   const r = await climbColumn(bot, state, col);
   return `从梯子上爬上去、迈到了 (${r.at.x},${r.at.y},${r.at.z})`;
+}
+
+// ------------------------------------------------------------------ 晃一晃脱困
+
+/**
+ * 卡住的时候像真人一样：跳一跳，前后左右晃一晃 —— 很多时候就出来了，不用马上换办法或放弃。
+ * 往哪个方向晃之前先看一眼：那边是岩浆、或者脚下是 3 格以上的空（会摔），就不往那边晃。
+ */
+function safeToward (bot, yaw) {
+  const p = bot.entity.position;
+  const dx = -Math.sin(yaw); const dz = -Math.cos(yaw);
+  const nx = Math.floor(p.x + dx * 0.9); const nz = Math.floor(p.z + dz * 0.9); const y = Math.floor(p.y);
+  for (let k = 0; k <= 1; k++) { const b = bot.blockAt(new Vec3(nx, y + k, nz)); if (b && /lava|fire/.test(b.name)) return false; }
+  let drop = 0;
+  for (let k = 1; k <= 4; k++) { const b = bot.blockAt(new Vec3(nx, y - k, nz)); if (!b || b.boundingBox === 'empty' || /water/.test(b.name)) drop++; else break; if (/lava/.test(b?.name)) return false; }
+  return drop < 3;
+}
+
+async function wiggle (bot, { rounds = 2 } = {}) {
+  const start = bot.entity.position.clone();
+  const moved = () => bot.entity.position.distanceTo(start) > 0.6;
+  const yaw0 = bot.entity.yaw;
+  const dirs = [['forward', 0], ['back', Math.PI], ['left', Math.PI / 2], ['right', -Math.PI / 2]];
+  const tried = [];
+  try {
+    for (let r = 0; r < rounds && !moved(); r++) {
+      await holdControls(bot, ['jump'], 250);                      // 先原地跳一下
+      if (moved()) break;
+      for (const [key, off] of dirs) {
+        if (!safeToward(bot, yaw0 + off)) { tried.push(`${key}(危险，跳过)`); continue; }
+        await holdControls(bot, [key, 'jump'], 300);
+        tried.push(key);
+        if (moved()) break;
+      }
+      if (!moved()) { await bot.look(yaw0 + Math.PI / 4 * (r + 1), 0, true); }   // 转个角度再来一轮
+    }
+  } finally { bot.clearControlStates(); }
+  return { freed: moved(), moved: +bot.entity.position.distanceTo(start).toFixed(2), tried };
 }
 
 // ------------------------------------------------------------------ 路线规划：梯子、门本来就是路
@@ -1549,18 +1817,25 @@ async function deposit (bot, state, { items, all = false, keep = [] } = {}) {
   if (!w) throw new Error('没有打开的箱子（先 open_container）');
   const want = all ? () => true : anyOf(bot, items);
   const keepM = anyOf(bot, keep);
-  const moved = []; const stuck = [];
+  // 结果按"她自己那几格前后差多少"算，而且等同步回来再算 —— 模组箱子（精妙背包）的格子是自己的封包同步的，
+  // 点完立刻看会以为没放进去（实测：其实放进去了，却报"放不进"）
+  const mine = () => { const m = {}; for (let i = w.inventoryStart; i < w.inventoryEnd; i++) { const x = w.slots[i]; if (x) m[fullId(x.name)] = (m[fullId(x.name)] || 0) + x.count; } return m; };
+  const before = mine(); const tried = {};
   for (let i = w.inventoryStart; i < w.inventoryEnd; i++) {
     const it = w.slots[i];
     if (!it || !want(it) || (keep.length && keepM(it))) continue;
-    const before = it.count;
+    tried[fullId(it.name)] = true;
     await click(bot, i, 0, 1);   // shift+左键：整组送进箱子
-    const after = w.slots[i];
-    if (after && fullId(after.name) === fullId(it.name) && after.count === before) stuck.push(it);
-    else moved.push({ name: it.name, count: before - (after?.count || 0) });
   }
-  await sleep(300);
-  return { stored: tally(moved), notStored: stuck.length ? { reason: '箱子满了或放不进', items: tally(stuck) } : null, stacks: moved.length };
+  await sleep(w.__sophisticated ? 700 : 300);
+  const after = mine();
+  const stored = {}; const notStored = {};
+  for (const k of Object.keys(tried)) {
+    const d = (before[k] || 0) - (after[k] || 0);
+    if (d > 0) stored[k] = d;
+    if (after[k] > 0) notStored[k] = after[k];
+  }
+  return { stored, notStored: Object.keys(notStored).length ? { reason: '箱子满了或放不进', items: notStored } : null, stacks: Object.keys(stored).length };
 }
 
 /** 从当前箱子拿：items=[名字/分类] 或 [{item, count}]；all=true 全拿 */
@@ -1947,6 +2222,160 @@ async function sleepInBed (bot, state, { home = null } = {}) {
   throw new Error(`睡不了：${why.join('；')}`);
 }
 
+// ------------------------------------------------------------------ 种地：收成熟的、补种、给空耕地播种
+
+/** 作物：有 age 属性、长在耕地（或灵魂沙）上的；熟没熟看 age 到没到最大值（模组作物的最大值从调色板的属性表里读） */
+function cropInfo (bot, b) {
+  if (!b) return null;
+  const props = b.getProperties?.() || {};
+  const ageKey = Object.keys(props).find(k => k.toLowerCase() === 'age');
+  if (!ageKey) return null;
+  const below = bot.blockAt(b.position.offset(0, -1, 0));
+  const onSoil = below && /farmland|soul_sand|rich_soil/.test(below.name);
+  if (!onSoil && !/berr/.test(b.name)) return null;      // 仙人掌、甘蔗、火这些也有 age，不算
+  const st = (bot.registry.blocksByName[b.name]?.states || []).find(x => String(x.name).toLowerCase() === 'age');
+  const max = st ? (st.num_values ?? st.values?.length ?? 8) - 1 : 7;
+  const age = +props[ageKey];
+  return { age, max, mature: age >= max, soil: below };
+}
+
+const SEED_OF = { wheat: 'wheat_seeds', carrots: 'carrot', potatoes: 'potato', beetroots: 'beetroot_seeds', nether_wart: 'nether_wart', torchflower_crop: 'torchflower_seeds', pitcher_crop: 'pitcher_pod' };
+
+/** 这个作物用背包里哪样东西种回去（原版查表；模组作物看掉落表：收它会掉的、名字像种子的那样） */
+function seedFor (bot, cropName) {
+  const items = bot.inventory.items();
+  const bare = botName(cropName);
+  if (SEED_OF[bare]) return items.find(i => botName(i.name) === SEED_OF[bare]) || null;
+  const KB = K().load();
+  const cropId = fullId(cropName);
+  const cands = items.filter(i => (KB.drops.get(fullId(i.name)) || []).some(d => d.from === 'block' && d.id === cropId));
+  return cands.sort((a, b) => /seed/.test(b.name) - /seed/.test(a.name))[0] || null;
+}
+
+async function collectDrops (bot, radius = 6) {
+  let n = 0;
+  for (let k = 0; k < 12; k++) {
+    const drop = Object.values(bot.entities).filter(e => e.name === 'item' && e.position.distanceTo(bot.entity.position) <= radius)
+      .sort((a, b) => a.position.distanceTo(bot.entity.position) - b.position.distanceTo(bot.entity.position))[0];
+    if (!drop) break;
+    await pathTo(bot, drop.position.floored(), 0.6, 6000, { retry: false });
+    await sleep(250); n++;
+  }
+  return n;
+}
+
+async function farm (bot, state, { radius = 12, replant = true, plantEmpty = true, seed = null } = {}) {
+  const t0 = Date.now();
+  const inv0 = invCounts(bot);
+  // 只找"有生长阶段（age）属性"的方块种类 —— 以前是把周围所有非空气方块都拿来筛，上限 2000 个全是房子的墙
+  const ageIds = Object.values(bot.registry.blocksByName)
+    .filter(b => (b.states || []).some(x => String(x.name).toLowerCase() === 'age') && !/cactus|sugar_cane|fire|kelp|bamboo|vine|chorus|frosted_ice|twisting|weeping|cave_vines|sapling/.test(b.name))
+    .map(b => b.id);
+  const pts = bot.findBlocks({ matching: ageIds, maxDistance: radius, count: 1500 })
+    .map(p => bot.blockAt(p)).filter(b => b && cropInfo(bot, b));
+  const crops = pts.map(b => ({ b, info: cropInfo(bot, b) }));
+  const mature = crops.filter(c => c.info.mature);
+  let harvested = 0; let replanted = 0; let planted = 0; const notes = [];
+  for (const { b } of mature.sort((a, c) => bot.entity.position.distanceTo(a.b.position) - bot.entity.position.distanceTo(c.b.position))) {
+    const cur = bot.blockAt(b.position);
+    if (!cur || cur.name !== b.name || !cropInfo(bot, cur)?.mature) continue;
+    if (eyeDist(bot, cur) > REACH) { const err = await pathTo(bot, cur.position, 2, 15000); if (err && eyeDist(bot, cur) > REACH) { notes.push(`走不到 ${b.name}(${doorKey(b.position)})`); continue; } }
+    try { await bot.dig(cur, true); harvested++; } catch (e) { notes.push(`收不了 ${b.name}：${e.message}`); continue; }
+    await sleep(150);
+    if (replant) {
+      const sd = seedFor(bot, b.name);
+      const soil = bot.blockAt(b.position.offset(0, -1, 0));
+      if (sd && soil && /farmland|soul_sand|rich_soil/.test(soil.name)) {
+        try { await bot.equip(sd, 'hand'); await bot.activateBlock(soil, new Vec3(0, 1, 0)); replanted++; } catch (e) { notes.push(`补种失败：${e.message}`); }
+      }
+    }
+    if (harvested % 8 === 0) await collectDrops(bot, 5);
+  }
+  if (harvested) await collectDrops(bot, 8);
+  // 空着的耕地：播种
+  if (plantEmpty) {
+    const lands = bot.findBlocks({ matching: (b) => !!b && /farmland/.test(b.name), maxDistance: radius, count: 400 })
+      .filter(p => { const up = bot.blockAt(p.offset(0, 1, 0)); return up && up.name === 'air'; }).map(p => bot.blockAt(p));
+    const sdItem = () => (seed ? bot.inventory.items().find(i => fullId(i.name) === fullId(seed)) : bot.inventory.items().find(i => /seed|^carrot$|^potato$/.test(botName(i.name))));
+    for (const land of lands) {
+      const sd = sdItem();
+      if (!sd) { if (lands.length) notes.push(`还有 ${lands.length - planted} 块空地，背包里没种子了`); break; }
+      if (eyeDist(bot, land) > REACH) { const err = await pathTo(bot, land.position, 2, 12000); if (err && eyeDist(bot, land) > REACH) continue; }
+      try { await bot.equip(sd, 'hand'); await bot.activateBlock(land, new Vec3(0, 1, 0)); planted++; await sleep(100); } catch (_) {}
+    }
+  }
+  const d = delta(inv0, invCounts(bot));
+  return { crops: crops.length, mature: mature.length, harvested, replanted, plantedEmpty: planted, got: d.gained, used: d.lost, notes: notes.slice(0, 6), seconds: Math.round((Date.now() - t0) / 1000),
+    note: crops.length ? null : `附近 ${radius} 格内没有庄稼` };
+}
+
+// ------------------------------------------------------------------ 厨锅做菜（农夫乐事）
+
+/**
+ * 农夫乐事的厨锅：格子 0–5 放原料，6 是"正在做的菜"（不能放），7 放容器（碗），8 取成品。锅下面要有热源（炉灶/火）。
+ * 按整合包里的真实配方挑一个背包里凑得齐的，一样一格放进去，等它煮好拿出来。
+ */
+async function cookInPot (bot, state, { itemName, count = 1 } = {}) {
+  const k = K(); const KB = k.load();
+  const id = k.resolve(itemName, 1)[0];
+  if (!id) throw new Error(`不认识 ${itemName}`);
+  const recs = (KB.byOutput.get(id) || []).map(i => KB.recipes[i]).filter(r => r.type === 'farmersdelight:cooking');
+  if (!recs.length) throw new Error(`${k.label(id)} 不是厨锅做的（查 recipe 看它在哪做）`);
+  const have = invCounts(bot);
+  const inTag = (tag, x) => KB.tags.get(`item:${tag}`)?.has(x);
+  let plan = null; const why = [];
+  for (const r of recs) {
+    const left = new Map(have); const picks = []; let container = null; let ok = true;
+    for (const sl of r.in) {
+      const cand = sl.alts.flatMap(a => (a.item ? [a.item] : [...left.keys()].filter(x => inTag(a.tag, x))));
+      const got = cand.find(x => (left.get(x) || 0) >= count * sl.count);
+      if (!got) { ok = false; why.push(`缺 ${sl.alts.map(a => k.label(a.item || '#' + a.tag)).slice(0, 2).join('或')}`); break; }
+      left.set(got, left.get(got) - count * sl.count);
+      if (sl.isContainer) container = got; else for (let n = 0; n < sl.count; n++) picks.push(got);
+    }
+    if (ok && picks.length <= 6) { plan = { r, picks, container }; break; }
+  }
+  if (!plan) throw new Error(`背包里凑不齐 ${k.label(id)} 的材料：${[...new Set(why)].slice(0, 3).join('；')}`);
+  const pot = await findAndApproach(bot, ['farmersdelight:cooking_pot']);
+  if (!pot) throw new Error('附近 16 格内没有厨锅');
+  await containerOpen(bot, state, pot.position);
+  const w = bot.currentWindow;
+  try {
+    // 锅里原来的原料先拿出来（别跟这道菜混了）
+    for (let i = 0; i <= 5; i++) if (w.slots[i]) await click(bot, i, 0, 1);
+    if (w.slots[8]) await click(bot, 8, 0, 1);
+    const reg = bot.registry;
+    const put = async (itemId, slot, n) => {
+      const it = w.slots.slice(w.inventoryStart, w.inventoryEnd).find(x => x && fullId(x.name) === itemId);
+      if (!it) throw new Error(`背包里没找到 ${itemId}`);
+      await bot.transfer({ window: w, itemType: it.type, metadata: null, count: n, sourceStart: w.inventoryStart, sourceEnd: w.inventoryEnd, destStart: slot, destEnd: slot + 1 });
+    };
+    for (let i = 0; i < plan.picks.length; i++) await put(plan.picks[i], i, count);
+    if (plan.container) await put(plan.container, 7, count);
+    void reg;
+    const secs = ((plan.r.time || 200) / 20) * count + 10;
+    let deadline = Date.now() + secs * 1000;
+    let started = false; const t0 = Date.now();
+    while (Date.now() < deadline) {
+      await sleep(1000);
+      if (w.slots[6] && !started) { started = true; deadline = Math.max(deadline, Date.now() + 60000); }   // 开始煮了：多给点时间
+      if ((w.slots[8]?.count || 0) >= count) break;
+      if (!started && Date.now() - t0 > 12000) break;   // 12 秒都没开始：多半没火
+    }
+    const out = w.slots[8];
+    if (!out) {
+      throw new Error(started ? '在煮了，但还没好（等等再来拿）' : '原料放进去了但没开始煮：锅下面可能没有热源（炉灶/火），或者少了碗');
+    }
+    const before = invCounts(bot);
+    await click(bot, 8, 0, 1);
+    await sleep(400);
+    const d = delta(before, invCounts(bot));
+    return { cooked: id, got: d.gained, recipe: plan.r.id, used: plan.picks, container: plan.container };
+  } finally {
+    noteSeen(bot, state, w, pot.position); bot.closeWindow(w);
+  }
+}
+
 // ------------------------------------------------------------------ 路由
 
 function routes ({ state, withTimeout }) {
@@ -1964,6 +2393,7 @@ function routes ({ state, withTimeout }) {
     'GET /look_around': async (_, q) => lookAround(bot(), { r: q?.r, below: q?.below, above: q?.above }),
     'POST /motor': async (b = {}) => motor(bot(), state, b),
     'POST /nudge': async (b = {}) => nudge(bot(), b),
+    'POST /wiggle': async (b = {}) => wiggle(bot(), b),
     'GET /doors': async (_, q) => ({ doors: doorsNear(bot(), Math.min(+(q?.radius || 8), 16)), iOpened: [...(state.doorsIOpened || new Map()).values()].map(d => ({ ...d, pos: doorKey(d.pos) })), leftOpen: (state.doorsLeftOpen || []).slice(-5), lastClosed: state.lastDoorClosed || null }),
     'POST /door': async (b = {}) => {
       const r = await setDoor(bot(), state, b);
@@ -1976,19 +2406,22 @@ function routes ({ state, withTimeout }) {
     'GET /container': async () => summarizeWindow(bot(), state) || { open: false, lastWindowInfo: state.lastWindowInfo || null },
     'POST /container/put': async (b = {}) => containerPut(bot(), state, b),
     'POST /container/take': async (b = {}) => containerTake(bot(), state, b),
-    'POST /container/deposit': async (b = {}) => { const r = await deposit(bot(), state, b); noteSeen(bot(), state, bot().currentWindow, state.openContainerPos); return r; },
-    'POST /container/withdraw': async (b = {}) => { const r = await withdraw(bot(), state, b); noteSeen(bot(), state, bot().currentWindow, state.openContainerPos); return r; },
+    'POST /container/deposit': async (b = {}) => { const r = await deposit(bot(), state, b); noteBackpack(state, bot().currentWindow); noteSeen(bot(), state, bot().currentWindow, state.openContainerPos); return r; },
+    'POST /container/withdraw': async (b = {}) => { const r = await withdraw(bot(), state, b); noteBackpack(state, bot().currentWindow); noteSeen(bot(), state, bot().currentWindow, state.openContainerPos); return r; },
     'POST /container/sort': async () => { const r = await sortContainer(bot()); noteSeen(bot(), state, bot().currentWindow, state.openContainerPos); return r; },
     // 最近看过的箱子里有什么（since：只要这之后看的）
     'GET /containers/seen': async (_, q) => ({ seen: [...(state.seenContainers || new Map()).values()].filter(c => c.at > (+q?.since || 0)) }),
     'POST /storage/organize': async (b = {}) => organizeStorage(bot(), state, b),
     'POST /storage/loot': async (b = {}) => lootNearby(bot(), state, b),
     'POST /sleep': async (b = {}) => sleepInBed(bot(), state, b),
+    'POST /farm': async (b = {}) => farm(bot(), state, b),
+    'POST /cook_pot': async (b = {}) => cookInPot(bot(), state, b),
     'POST /wake': async () => { if (bot().isSleeping) await bot().wake(); return { awake: true }; },
     'POST /inventory/sort': async () => sortInventory(bot()),
     'POST /container/close': async () => {
       const w = bot().currentWindow;
       if (w && state.openContainerPos) noteSeen(bot(), state, w, state.openContainerPos);
+      noteBackpack(state, w);
       if (w) bot().closeWindow(w);
       return { closed: !!w };
     },
@@ -2008,7 +2441,14 @@ function routes ({ state, withTimeout }) {
       return { took_off: eq0[dest], slot: dest, nowInInventory: true };
     },
     'GET /debug/shape-fixes': async () => ({ fixes: state.shapeFixes || 0, blocks: [...(state.shapeFixNames || [])] }),
-    'GET /equipment': async () => ({ equipment: equipment(bot()), food: bot().food, health: bot().health }),
+    'GET /curios': async () => curiosList(bot(), state),
+    'POST /curios/equip': async (b = {}) => curiosEquip(bot(), state, b),
+    'POST /curios/unequip': async (b = {}) => curiosUnequip(bot(), state, b),
+    'POST /backpack/open': async () => backpackOpen(bot(), state),
+    // 调试：原样发一个模组消息（逆向模组协议时用）{ channel, hex }
+    'POST /debug/payload': async (b = {}) => { bot()._client.write('custom_payload', { channel: b.channel, data: Buffer.from(b.hex || '', 'hex') }); await sleep(b.waitMs || 1500); return { sent: b, window: summarizeWindow(bot(), state) }; },
+    'GET /debug/soph': async () => ({ lastSync: state.lastSophSync || null, error: state.lastSophError || null }),
+    'GET /equipment': async () => ({ equipment: equipment(bot()), food: bot().food, health: bot().health, curios: state.curiosWorn || null, backpack: state.backpackSeen || null }),
   };
 }
 
