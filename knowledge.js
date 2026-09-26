@@ -126,11 +126,13 @@ function load () {
   };
 
   // ---- 名字
-  for (const [id, n] of Object.entries(gd.names || {})) K.names.set(id, { zh: n.zh_cn, en: n.en_us });
+  // 汉化包的名字里常带颜色代码（§e 金色、§5 紫色…），游戏里显示成颜色，她说出来就是乱码 —— 去掉
+  const plain = (x) => (typeof x === 'string' ? x.replace(/§./g, '').trim() : x);
+  for (const [id, n] of Object.entries(gd.names || {})) K.names.set(id, { zh: plain(n.zh_cn), en: plain(n.en_us) });
   for (const kind of ['item', 'block', 'entity']) {
     for (const [id, name] of Object.entries(zh[kind] || {})) {
       const cur = K.names.get(id) || {};
-      K.names.set(id, { ...cur, zh: name });   // 整合包汉化优先
+      K.names.set(id, { ...cur, zh: plain(name) });   // 整合包汉化优先
     }
   }
 
@@ -251,6 +253,15 @@ function load () {
     }
   }
 
+  // ---- 对着东西右键拿到的（掉落表里没有）
+  // 掉落表只记"挖/打/钓/开箱子"。舀水、挤奶、接蜂蜜、捡鸡蛋这些是**交互**，不在任何表里 ——
+  // 以前问她牛奶桶怎么来，她只知道"去某些结构的箱子里翻"（2026-09-26 发现：路线图里 552 道菜卡在这类原料上）
+  // 排在最前面：很多地方只取前几条来源（导出取前 12 条时，牛奶桶的交互来源被一堆"结构箱子"挤掉了 —— 2026-09-26 实测）
+  for (const [item, how, target, needs] of INTERACT_SOURCES) {
+    if (!K.drops.has(item)) K.drops.set(item, []);
+    K.drops.get(item).unshift({ from: 'interact', id: target, how, needs, when: [] });
+  }
+
   // ---- 任务奖励 / 物品提示
   const quests = readJson(path.join(DIR, 'quests.json'), { chapters: [] });
   for (const ch of quests.chapters || []) {
@@ -322,6 +333,15 @@ const IN_KEYS = ['ingredient', 'ingredients', 'input', 'inputs', 'inputItem', 'r
 const TOOL_KEYS = ['tool'];
 const OUT_KEYS = ['result', 'results', 'output', 'outputs', 'outputItem'];
 
+/** 液体 → 装它的桶（牛奶 → 牛奶桶；模组液体按"名字_bucket"猜，猜不到就留液体 id） */
+function fluidBucket (fid) {
+  const [ns, name] = fid.split(':');
+  const known = { 'minecraft:water': 'minecraft:water_bucket', 'minecraft:lava': 'minecraft:lava_bucket', 'minecraft:milk': 'minecraft:milk_bucket', 'forge:milk': 'minecraft:milk_bucket' };
+  if (known[fid]) return known[fid];
+  const guess = `${ns}:${name}_bucket`;
+  return K && (K.names.has(guess) || K.byOutput.has(guess)) ? guess : fid;
+}
+
 function normalize (id, r, source) {
   const type = String(r.type || '').includes(':') ? r.type : `minecraft:${r.type}`;
   if (!r.type || NON_RECIPES.test(type)) return null;
@@ -353,7 +373,30 @@ function normalize (id, r, source) {
     }
   }
   if (Array.isArray(r.requirements)) {   // crockpot
-    for (const q of r.requirements) if (q.ingredient) { const s = toSlot(q.ingredient); if (s) { s.count = q.quantity || 1; n.in.push(s); } }
+    // 要求可以嵌套（COMBINATION_OR / AND）：OR 取第一条能落成原料的路，AND 两边都要。按类别的要求（"肉度 ≥ 1"）表达不了，记下来
+    const walk = (q) => {
+      if (!q || typeof q !== 'object') return [];
+      if (q.ingredient) { const s = toSlot(q.ingredient); if (s) { s.count = q.quantity || 1; return [s]; } return []; }
+      if (/COMBINATION_AND/.test(q.type)) return [...walk(q.first), ...walk(q.second)];
+      if (/COMBINATION_OR/.test(q.type)) { const a = walk(q.first); return a.length ? a : walk(q.second); }
+      if (/CATEGORY/.test(q.type)) { (n.notes ||= []).push(`${q.type} ${q.category || ''} ${q.value ?? ''}`.trim()); }
+      return [];
+    };
+    for (const q of r.requirements) n.in.push(...walk(q));
+  }
+  if (r.content && Array.isArray(r.content.recipe)) {   // kitchenkarrot 酿酒桶
+    for (const x of r.content.recipe) { const s = toSlot(x); if (s) n.in.push(s); }
+    if (typeof r.content.craftingtime === 'number') n.time = r.content.craftingtime;
+  }
+  if (Array.isArray(r.items) && !n.in.length) {   // 冰柜等："items": ["", "minecraft:ice", …]
+    for (const x of r.items) { if (!x) continue; const s = toSlot(typeof x === 'string' ? { item: x } : x); if (s) n.in.push(s); }
+  }
+  // 液体原料（酒桶倒出、冰柜…）：玩家实际是拿桶倒进去 —— 换成对应的桶，数量按 1000mB 一桶
+  const fluid = typeof r.fluid === 'string' ? r.fluid : r.fluid?.fluid || r.fluid?.id;
+  if (fluid) {
+    const fid = fluid.includes(':') ? fluid : `minecraft:${fluid}`;
+    const amount = r.amount ?? r.fluid_amount ?? r.fluid?.amount ?? 1000;
+    n.in.push({ alts: [{ item: fluidBucket(fid) }], count: Math.max(1, Math.round(amount / 1000)), fluid: fid, fluidAmount: amount });
   }
   if (Array.isArray(r.__kubejsArgs)) {   // 未专门处理的 KubeJS 类型：第一个像产物的当产物，其余当原料
     const a = r.__kubejsArgs;
@@ -364,6 +407,12 @@ function normalize (id, r, source) {
   for (const k of OUT_KEYS) {
     if (r[k] == null) continue;
     n.out.push(...toOut(r[k], k === 'outputItem' ? r.outputAmount : undefined));
+  }
+  // 产物写在顶层 "item"（+ "count"）里的：Let's Do 的灶台（farm_and_charm:stove，农夫面包就在这）。
+  // 以前没认 → 没有产物 → 整条配方被丢掉（路线图里 83 道菜卡在"农夫面包查不到来源"）。
+  // 只在"有原料列表、又没有别的产物字段"时认，免得把发电燃料、调料效果里的 item 当成产物
+  if (!n.out.length && r.item != null && n.in.length && (Array.isArray(r.ingredients) || Array.isArray(r.inputs))) {
+    n.out.push(...toOut(typeof r.item === 'string' ? { item: r.item, count: r.count || 1 } : r.item));
   }
   if (!n.out.length) return null;
   // 同一原料合并数量（shapeless 里写三次 stick = 3 个 stick）
@@ -598,12 +647,35 @@ function harvestTool (blockId) {
   return { tool, tier, text: tier ? `${tierZh}${toolZh}或更好` : `用${toolZh}挖最快` };
 }
 
+/** [物品, 怎么弄, 对着什么, 要拿着什么] —— 原版 1.20.1 的交互来源 */
+const INTERACT_SOURCES = [
+  ['minecraft:water_bucket', '拿空桶右键水源方块', 'minecraft:water', 'minecraft:bucket'],
+  ['minecraft:lava_bucket', '拿空桶右键岩浆源', 'minecraft:lava', 'minecraft:bucket'],
+  ['minecraft:powder_snow_bucket', '拿空桶右键细雪', 'minecraft:powder_snow', 'minecraft:bucket'],
+  ['minecraft:milk_bucket', '拿空桶右键牛（哞菇、山羊也行）', 'minecraft:cow', 'minecraft:bucket'],
+  ['minecraft:potion', '拿玻璃瓶右键水，装一瓶水（水瓶）', 'minecraft:water', 'minecraft:glass_bottle'],
+  ['minecraft:honey_bottle', '拿玻璃瓶右键装满蜜的蜂巢/蜂箱', 'minecraft:beehive', 'minecraft:glass_bottle'],
+  ['minecraft:honeycomb', '拿剪刀右键装满蜜的蜂巢/蜂箱', 'minecraft:beehive', 'minecraft:shears'],
+  ['minecraft:egg', '鸡隔几分钟会下一个蛋，在鸡旁边捡', 'minecraft:chicken', null],
+  ['minecraft:white_wool', '拿剪刀剪羊（掉的颜色和羊一样，白羊最多）', 'minecraft:sheep', 'minecraft:shears'],
+  ['minecraft:mushroom_stew', '拿碗右键哞菇', 'minecraft:mooshroom', 'minecraft:bowl'],
+  ['minecraft:sweet_berries', '右键成熟的甜浆果丛', 'minecraft:sweet_berry_bush', null],
+  ['minecraft:glow_berries', '右键结果的洞穴藤蔓', 'minecraft:cave_vines', null],
+  // 模组的（2026-09-26 WorkBuddy 路线图缺口清单 A 类，逐条在 jar 里核实过）
+  ['aquamirae:golden_moth_in_a_jar', '拿玻璃瓶右键金蛾（深海附近发光的飞蛾）装起来', 'aquamirae:golden_moth', 'minecraft:glass_bottle'],   // 成就 catch_golden_moth：用瓶子捉住一只闪耀的飞蛾
+  ['collectorsreap:chieftain_crab_bucket', '拿水桶右键酋长蟹装起来（和装鱼一样）', 'collectorsreap:chieftain_crab', 'minecraft:water_bucket'],   // ChieftainCrab implements Bucketable
+  ['beachparty:coconut_open', '手拿椰子右键扔出去，砸中东西就裂开，掉出打开的椰子', 'beachparty:coconut', 'beachparty:coconut'],   // CoconutEntity.onHit 掉 COCONUT_OPEN
+  ['netherexp:wisp_bottle', '拿玻璃瓶右键小鬼火（下界灵魂沙谷的小幽灵）装起来', 'netherexp:wisp', 'minecraft:glass_bottle'],   // Wisp.mobInteract → Bottleable.bottleMobPickup（判断玻璃瓶）
+  ['autumnity:sap_bottle', '拿玻璃瓶右键流着树液的枫木原木接树液', 'autumnity:sappy_maple_log', 'minecraft:glass_bottle'],
+];
+
 function obtain (q) {
   const id = resolveOne(q);
   if (!id) return `没找到「${q}」这个物品。`;
   load();
   const lines = [];
   const drops = K.drops.get(id) || [];
+  for (const d of drops.filter(x => x.from === 'interact')) lines.push(`${d.how}${d.needs ? `（要${label(d.needs)}）` : ''}`);
   const blocks = drops.filter(d => d.from === 'block');
   if (blocks.length) {
     const self = blocks.find(d => d.id === id);
@@ -622,7 +694,9 @@ function obtain (q) {
     }
   }
   const ents = drops.filter(d => d.from === 'entity');
-  if (ents.length) lines.push(`打这些生物掉：${ents.slice(0, 6).map(d => `${label(d.id)}${d.when.length ? `[${d.when.join(',')}]` : ''}`).join('、')}${ents.length > 6 ? ` 等 ${ents.length} 种` : ''}`);
+  // 同一个生物可能来自好几处（掉落表 + 各个模组的掉落修改器）—— 按"生物+条件"去重再列
+  const entTxt = [...new Set(ents.map(d => `${label(d.id)}${d.when.length ? `[${[...new Set(d.when)].join(',')}]` : ''}`))];
+  if (ents.length) lines.push(`打这些生物掉：${entTxt.slice(0, 6).join('、')}${entTxt.length > 6 ? ` 等 ${entTxt.length} 种` : ''}`);
   const fish = drops.filter(d => d.from === 'fishing');
   if (fish.length) lines.push('钓鱼能钓到');
   const chests = drops.filter(d => d.from === 'chest');
@@ -721,7 +795,8 @@ function materialTree (q, count = 1, inventory = []) {
       const self = d.find(x => x.from === 'block' && x.id === k);
       const blk = self ? k : d.find(x => x.from === 'block')?.id;
       const ht = blk && harvestTool(blk);
-      const how = blk ? `挖${nameOf(blk)}${ht ? `（${ht.text}）` : ''}` : d.find(x => x.from === 'entity') ? `打${nameOf(d.find(x => x.from === 'entity').id)}` : '查 obtain';
+      const act = d.find(x => x.from === 'interact');
+      const how = act ? act.how : blk ? `挖${nameOf(blk)}${ht ? `（${ht.text}）` : ''}` : d.find(x => x.from === 'entity') ? `打${nameOf(d.find(x => x.from === 'entity').id)}` : '查 obtain';
       lines.push(`  · ${label(k)}×${v} ← ${how}`);
     }
   }
@@ -792,6 +867,14 @@ function selftest () {
   check('英文：iron ingot → minecraft:iron_ingot', resolveOne('iron ingot') === 'minecraft:iron_ingot', resolve('iron ingot'));
   check('裸 id：oak_log → minecraft:oak_log', resolveOne('oak_log') === 'minecraft:oak_log');
   check('模组 id 原样', resolveOne('farmersdelight:cooking_pot') === 'farmersdelight:cooking_pot');
+
+  console.log('\n交互来源');
+  check('牛奶桶：拿空桶右键牛', /右键牛/.test(obtain('minecraft:milk_bucket')), obtain('minecraft:milk_bucket'));
+  check('水桶排在箱子前面', obtain('minecraft:water_bucket').split('\n')[1].includes('水源'), obtain('minecraft:water_bucket'));
+
+  check('灶台做农夫面包（产物写在顶层 item 里）', (K.byOutput.get('farm_and_charm:farmers_bread') || []).some(i => K.recipes[i].type === 'farm_and_charm:stove'));
+  check('名字里的颜色代码去掉了（§e装在罐中的金蛾）', !/§/.test(nameOf('aquamirae:golden_moth_in_a_jar')), nameOf('aquamirae:golden_moth_in_a_jar'));
+  check('交互来源排在最前（导出只取前几条也不会丢）', K.drops.get('minecraft:milk_bucket')[0].from === 'interact');
 
   console.log('\n配方');
   check('木镐能在工作台做', /工作台/.test(recipesFor('minecraft:wooden_pickaxe')), recipesFor('minecraft:wooden_pickaxe'));

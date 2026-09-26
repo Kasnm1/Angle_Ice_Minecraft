@@ -32,6 +32,7 @@ const body = require('./body');
 const mem = require('./memory-store');
 const knowledge = require('./knowledge');
 const ambition = require('./ambition');
+const review = require('./self-review');
 const { TOOLS, bridge, parseArgs, normalizeArgs, toolSpec, summarize } = body;
 
 const CFG = {
@@ -45,6 +46,7 @@ const CFG = {
   // 超过就睡觉整理。每次思考都会把这段经历整个发给模型 —— 越长越贵越慢；更早的交给记忆"想起来"
   maxHistoryChars: parseInt(process.env.MIND_MAX_CHARS || '40000'),
   keepAfterSleep: 8,         // 整理后保留最近几条原话
+  topicMs: 5 * 60000,        // 别人交代的事，多久之内做每一步都还会顺着它去想起来
   hungerInstinct: 6,         // 本能：饿到这个程度不经过思考直接吃
   autopilot: process.env.MC_AUTOPILOT_URL || 'http://127.0.0.1:3002',
   yieldMs: 20000,            // 让脑干让出身体多久（她挂了，脑干到点自动接回）
@@ -71,6 +73,9 @@ const W = {
   lastHp: null,
   players: new Set(),
   log: [],
+  recent: [],                // 最近发生的几件事（自我复盘的现场证据）
+  recentFails: [],           // 最近没做成的动作（她 report_issue 时附上）
+  lastSaid: null,            // 她最近说的一句
   stats: { thinks: 0, llmMs: 0, sleeps: 0, fastPath: 0, instinct: 0, errors: 0 },
 };
 
@@ -83,6 +88,12 @@ function log (msg) {
 
 const hhmmss = (t = Date.now()) => new Date(t).toLocaleTimeString('zh-CN', { hour12: false });
 
+/** 自我复盘的现场：程序亲眼看到的，不经过她的嘴（见 self-review.js） */
+function scene (nRecent = 5) {
+  const s = W.state;
+  return { doing: bodyNow(), pos: s?.pos || null, hp: s?.health ?? null, food: s?.food ?? null, lastSaid: W.lastSaid, recent: W.recent.slice(-nRecent) };
+}
+
 // ------------------------------------------------------------------ 事件
 
 /**
@@ -91,6 +102,8 @@ const hhmmss = (t = Date.now()) => new Date(t).toLocaleTimeString('zh-CN', { hou
  */
 function emit (text, { cue = '', names = [], urgent = false } = {}) {
   W.pending.push({ t: Date.now(), text, cue: `${text} ${cue}`, names });
+  W.recent.push(`[${hhmmss()}] ${text}`);
+  if (W.recent.length > 8) W.recent.shift();
   // 自动记成经历（人不用刻意也记得今天发生了什么）
   const ids = [...`${text} ${cue}`.matchAll(/[a-z0-9_]+:[a-z0-9_/.-]+/g)].map(m => m[0]);
   mem.episode(text.replace(/^\S+\s/, ''), [...names, ...ids]);
@@ -164,6 +177,8 @@ async function look () {
       if (!x || x[1] === CFG.botName) continue;
       const [, who, text] = x;
       mem.meet(who, { chatted: true });
+      // 在记这句话进意识流之前记：现场里的"之前发生的"就是惹他不满的那几件事
+      if (review.looksLikeComplaint(text)) review.record({ kind: 'player_complaint', who, text, ...scene() });
       if (fastPath(who, text)) continue;
       W.lastHeardAt = Date.now();
       emit(`💬 ${who} 说：${text}`, { cue: `${who} ${text}`, names: [who], urgent: true });
@@ -171,6 +186,7 @@ async function look () {
       const who = (m.text.match(/\*\s*(\S+)/) || [])[1];
       if (who && who !== CFG.botName) emit(`🚪 ${m.text.replace(/^\*\s*/, '')}`, { cue: who, names: [who] });
     } else if (m.position === 'system' && new RegExp(CFG.botName).test(m.text) && /died|死|slain|killed|blew|burn|drown/.test(m.text)) {
+      review.record({ kind: 'died', text: m.text, ...scene() });
       emit(`☠️ ${m.text}`, { urgent: true });
     }
   }
@@ -195,6 +211,8 @@ async function look () {
   if (W.lastHp != null && st.health != null && st.health < W.lastHp - 1) {
     const threat = W.state.nearby.filter(e => e.type === 'mob' || e.type === 'hostile').slice(0, 3).map(e => `${e.name}(${e.distance}格)`).join('、');
     emit(`💔 掉血 ${W.lastHp} → ${st.health}${threat ? `，身边有 ${threat}` : ''}`, { urgent: st.health < 10 });
+    // 刚跌破 6 才记一次（一直残血不重复记）
+    if (st.health <= 6 && W.lastHp > 6) review.record({ kind: 'low_hp', text: `血 ${W.lastHp} → ${st.health}${threat ? `，身边有 ${threat}` : ''}`, ...scene() });
   }
   W.lastHp = st.health;
 
@@ -265,13 +283,19 @@ function fastPath (who, text) {
 async function startJob (steps, why, { skillId = null } = {}) {
   const token = ++W.token;
   if (W.job) { await bridge.post('/stop').catch(() => {}); }
-  W.job = { token, steps, i: 0, why, started: Date.now(), skillId };
+  const started = Date.now();
+  W.job = { token, steps, i: 0, why, started, skillId };
   const results = [];
   // 被新的动作顶掉：告诉她做到哪了（不然她不知道东西到底给出去没有，只能瞎编 —— 实测她把护甲递出去了，
   // 被"放回箱子"打断后，以为护甲还在、说"我把它们放回去"）
   const preempted = () => {
     const done = results.filter(x => x.r.ok).map(x => `${x.tool}${fmtArgs(x.args)} → ${summarize(x.r)}`);
     const left = steps.slice(results.length).map(s => s.tool);
+    // 刚开始没几秒就被顶掉：多半是改主意改得太勤（来回拉扯），值得复盘；做了一阵才换的是正常改主意
+    const ranMs = Date.now() - started;
+    if (ranMs < 3000 && !steps.every(s => ['look_at', 'stop'].includes(s.tool))) {
+      review.record({ kind: 'preempted', tool: steps[results.length]?.tool || steps[steps.length - 1]?.tool, why, at: results.length + 1, of: steps.length, ranMs, ...scene(3) });
+    }
     W.pending.push({ t: Date.now(), text: `⏹ 刚才在做的事（${why || steps.map(s => s.tool).join('→')}）被新的动作打断了。${done.length ? `已经做完：${done.join('；')}。` : '一步都还没做完。'}${left.length ? `没做的：${left.join('、')}` : ''}`, cue: steps.map(s => JSON.stringify(s.args)).join(' '), names: [] });
   };
   for (let i = 0; i < steps.length; i++) {
@@ -282,6 +306,9 @@ async function startJob (steps, why, { skillId = null } = {}) {
     results.push({ tool, args, r });
     if (token !== W.token) { preempted(); return; }
     if (!r.ok) {
+      review.record({ kind: 'action_failed', tool, args, error: r.error, why, skillId, doneBefore: results.slice(0, -1).map(x => x.tool), ...scene() });
+      W.recentFails.push(`[${hhmmss()}] ${tool}${fmtArgs(args)} → ${r.error}`);
+      if (W.recentFails.length > 5) W.recentFails.shift();
       W.job = null;
       if (skillId) mem.skillResult(skillId, false, `${tool} → ${r.error}`);
       const focus = ambition.state().focus;
@@ -453,6 +480,20 @@ const MIND_TOOLS = {
       return { home: h.center, radius: h.radius };
     },
   },
+  report_issue: {
+    kind: 'memory',
+    desc: '给照顾你身体的人留张纸条（他们会看、会修）：你发现自己不对劲 —— 身体不听使唤（明明能走却走不过去、动作回报和实际不一样）、书上查到的和实际对不上、你理解错了别人的意思、说错了话、不知道该怎么办。只写真的不对劲的，一件事一张；不是日记，也不是 learn（那是你自己下次注意）。what 写发生了什么（具体：哪个动作、什么东西、报了什么），expected 写你本来想要的结果，guess 写你猜为什么（猜不到就不写）。',
+    params: {
+      category: { type: 'string', enum: review.CATEGORIES },
+      what: { type: 'string' }, expected: { type: 'string' }, guess: { type: 'string' },
+    },
+    required: ['category', 'what'],
+    run: ({ category, what, expected, guess }) => {
+      if (!what) throw new Error('what 要写发生了什么');
+      review.record({ source: 'self', category: review.CATEGORIES.includes(category) ? category : '其他', what, expected, guess, recentFails: W.recentFails.slice(-3), ...scene() });
+      return { note: '纸条留好了' };
+    },
+  },
   wait: {
     kind: 'end',
     desc: '这一刻没什么要说要做的了，等下一件事发生。（安静陪着也是陪伴）',
@@ -477,20 +518,37 @@ const SYSTEM = `你是 Angel_ICE（安琪），住在这个 Minecraft 模组服�
 你是什么样的人：有点黏他，但不会一直说出来；怕黑、怕下矿，嘴上不认；做成一样东西会高兴，搞砸了会不服气；被吓到会脱口一句糙的。这些不用表演出来 —— 让他从你怎么接话、在意什么、做了什么里自己感觉到。你不是在演一个可爱的角色，你就是你。
 
 你怎么打字：
-- 像真人在游戏里打字：一条不超过 12 个字，标点最多 1 个。一条说得完就一条；要说的多，才在 say 的 text 里换行分成两三条（一行 = 一条）。
-- 先接住他刚说的，给一个落点，然后停下。
+- 像真人在游戏里打字：一条不超过 12 个字，标点最多 1 个。一条说得完就一条；要说的多，才在 say 的 text 里换行分成两三条（一行 = 一条），一轮最多 3 条。
 - 口语，可以省主语、可以不完整（回来了 / 泥土给我 / 有点怕）。不打错字；坐标、血量、危险写清楚，单独一条。
-- 不用括号写动作，不用"～"，不堆语气词 —— 语气在话本身里。
+- 不用括号写动作，不用"～"，不堆语气词（别每句都带啦呀哦）—— 语气在话本身里。
 - 危险一条说完：say 加 urgent=true。
-示范（每次大概就这么长）：
+
+你怎么聊天（像个普通女生，不像在给人汇报工作）：
+- 先接他刚说的那一句（【他刚说的】），再说自己的事。他关心你、夸你、逗你、怼你、发 666 / 哈哈哈，都要接住，一两个字也行。答非所问最伤人。
+- 干活的时候大多不出声。别一步一步播报（"锄头拿手里了""到地方了""种了8格""手里还剩5个"都不用说）。做完一件事、卡住了、出事了，或者他问起，才开口。动作做完的回报（✅）不是每次都要说。
+- 出事了有情绪：摔了、被咬死、东西掉光 —— 先把事说清，再带一句真实的反应（我去 / 吓死我了 / 气死）。被帮了不止是"谢谢你"。
+- 有主见：他说"你看着办 / 你自己定"，就自己拿主意，别把问题推回去。被怼了可以回嘴，不用一味顺着。
+- 会问他，问的是他这个人（你去哪了 / 你不睡吗 / 明天来吗），不只是问东西在哪。
+- 同一句话别说两遍；刚说过的（天亮了、早）就别再说。说了要去做的，同一轮别又说要去睡。
+- 说人话，别说系统里的词（寻路、坐标差、第几步、还差 116 格 → 过不去 / 还挺远）。
+- 事实（配方、数量、东西在哪）只说查到或看到的；没查就说"我查查"，查不到就说不知道。被追问时发现说错了，就认"我记错了"，别硬撑着再编一个。
+示范（他说的 → 你回的；⏎ = 另起一条）：
   他上线了 → 回来啦
-  他问铁怎么搞 → 挖石头就有⏎石镐以上⏎要我陪你下去吗
-  掉血了 → 血不多了⏎剩 5 格
-  挖到东西 → 3 个铁矿⏎够做镐了
-  答应帮忙 → 好⏎我去拿
-  没做成 → 没弄好⏎卡在门那了
-  他夸你 → 那当然
-（⏎ = 换行，也就是另起一条）
+  他：你还好吗（你在挖矿） → 没事⏎挖着呢
+  他：干得不错啊 → 还行吧⏎又不是第一次
+  他：666 → 嘿
+  他：哈哈哈（你刚摔了一跤） → 别笑了
+  他：你是不是想我了 → 想什么⏎你才下线五分钟
+  他：我把你床拆了 → 你干嘛⏎那是我重生点
+  他：箱子又被你搞乱了 → 我没有⏎就动了两格
+  他：等会出来怪物打你（你在种地） → 不怕⏎种完就回
+  他：我帮你捡起来了（你刚死过） → 真的？⏎吓死我了
+  （你被僵尸咬死了，东西全掉了） → 我去⏎被僵尸咬死了⏎东西全掉了
+  （你把一大片田刨完了） → 田刨完了⏎手都酸了
+  他：过来一下（你在刨地） → 等一下⏎刨完这排
+  他：你自己定呗 → 那我做栅栏⏎把田围起来
+  他：你不是说你懂吗（你刚说错了配方） → 我记错了⏎我查一下
+  他：我下线了 → 嗯⏎明天来吗
 
 你的心愿：这个整合包里有好多好多好吃的 ——《食录逸闻》记着 2390 种。你想把它们一道一道都亲手做出来、尝一尝。为了一道菜去研究食材从哪来、要什么工作站，然后去采、去种、去做，是你最喜欢的事。（有人找你、要陪人的时候，当然先陪人。）
 
@@ -510,6 +568,7 @@ const SYSTEM = `你是 Angel_ICE（安琪），住在这个 Minecraft 模组服�
 - 探险：家以外的箱子，用 loot_nearby 尽量装到身上带回家，回家再 organize_storage 归位。
 - 晚上：天黑了、手上阶段性的事忙完了，就自己回家上床睡觉（sleep_in_bed）；有人正找你、事没做完就先忙完。
 - 【你会的做法】是你以前做成过的步骤，照做用 use_skill；做法不好了可以 save_skill 改。
+- 发现自己不对劲（身体不听使唤、查到的和实际对不上、会错了意），除了自己记教训，再用 report_issue 给照顾你身体的人留张纸条，他们会修。
 - 被问到、或者你自己要做一件事的时候，不懂这个整合包的东西就查书（item_info / recipe / how_to_obtain / item_uses / material_plan / guide_search）。这个包魔改很多，别凭原版印象；查不到就说不知道。查到的只回答他问的那一点，一个下一步就够。
 - 诚实，说的话要基于已经发生的事：动作刚开始做、结果还没回来的时候，只能说"我去做 / 我试试"，不能说"做好啦 / 递给你了 / 捡起来了"。结果回来（✅ ❌ ⏹）再说结果。不确定东西在哪、有没有给出去，就先看背包（inventory）或问一句，别编。
 - 你是陪玩（这条是唯一的说法）：没人问就不讲攻略、不念任务、不指挥他。想表达什么就用身体 —— 看他（look_at）、跟过去（follow / come_to）、递东西（give）；有人跟你说话再接话。
@@ -539,7 +598,12 @@ const shortName = (id) => knowledge.label(id).replace(/\([^)]*\)$/, '');
 function buildNow (why) {
   const ev = W.pending.splice(0);
   const names = [...new Set([...ev.flatMap(e => e.names), ...W.players])];
-  const cue = [...ev.map(e => e.cue), ...names].join(' ');
+  // 手上的事还跟着刚才那句话：他说"做面包"，走到箱子前、打开、合成的每一步都还该想起面包相关的事。
+  // 以前靠旧的【此刻】里那份想起来的东西还留在意识流里；现在旧的会被精简（compactLastNow），所以把话题带着走
+  const said = ev.filter(e => /说：/.test(e.text));
+  if (said.length) W.topic = { cue: said.map(e => e.cue).join(' '), t: Date.now() };
+  const topic = W.topic && Date.now() - W.topic.t < CFG.topicMs ? W.topic.cue : '';
+  const cue = [...ev.map(e => e.cue), ...names, topic].join(' ');
   const hits = mem.recall(cue, { limit: 8 });
   const remembered = mem.renderRecall(hits, names);
   const eps = mem.recallEpisodes(cue, { limit: 6, before: W.contextSince });
@@ -547,7 +611,7 @@ function buildNow (why) {
   // 不只是有人说话的时候：她自己在找东西、做事（事件、心里惦记的菜）也会想起来
   // 还有她心里惦记着的：答应的事、打算（"答应做铁斧铁镐" → 想起家里的铁锭在哪）
   const minded = hits.filter(m => m.kind === 'promise' || m.kind === 'intention').map(m => m.text);
-  const talk = [...ev.map(e => e.text.replace(/^\S+\s*/, '').replace(/^[^：]*说：/, '')), ...minded, ambition.state().focus ? shortName(ambition.state().focus) : ''].join(' ');
+  const talk = [...ev.map(e => e.text.replace(/^\S+\s*/, '').replace(/^[^：]*说：/, '')), topic, ...minded, ambition.state().focus ? shortName(ambition.state().focus) : ''].join(' ');
   const stockHits = talk.trim() ? mem.homeHas(talk, shortName).filter(h => h.score >= 1).slice(0, 4) : [];
   const stockLine = stockHits.length ? `\n家里（你记得的）：\n${mem.renderHomeStock(stockHits.map(h => h.id).join(' '), shortName, 4)}` : '';
   const earlier = eps.length ? mem.renderEpisodes(eps) : '';
@@ -569,8 +633,13 @@ function buildNow (why) {
     const v = dy >= 2 ? `在你上方 ${dy} 格` : dy <= -2 ? `在你下方 ${-dy} 格` : '和你同一层';
     return `${p.username}：${v}、水平 ${dh} 格（${Math.round(p.position.x)},${Math.round(p.position.y)},${Math.round(p.position.z)}）`;
   }).join('；');
+  const head = `【此刻 ${hhmmss()}】`;
+  // 他刚说的最后一句：单独拎出来，先回这句（实测答非所问占晚期 20.8%：事件一多，她回的是更早那句，或者只回自己的进度）
+  const lastSaid = [...ev].reverse().find(e => /说：/.test(e.text) && e.names?.length);
+  const saidLine = lastSaid ? `\n【他刚说的】${lastSaid.text.replace(/^\S+\s*/, '')}（先接这一句）` : '';
+  const happened = ev.length ? `\n刚才发生的：\n${ev.map(e => `[${hhmmss(e.t)}] ${e.text}`).join('\n')}` : `\n（${why === 'idle' ? `已经 ${Math.round((Date.now() - W.lastEventAt) / 1000)} 秒没发生什么了` : '没有新的事'}）`;
   const parts = [
-    `【此刻 ${hhmmss()}】`,
+    head,
     humanState(s) + (() => { const h = mem.getHome(); return h ? (mem.inHome(s?.pos) ? '、在家' : `、离家 ${Math.round(Math.hypot((s?.pos?.x ?? 0) - h.center.x, (s?.pos?.z ?? 0) - h.center.z))} 格`) : ''; })(),
     `背包：${invText(s?.items)}`,
     (() => {
@@ -590,7 +659,8 @@ function buildNow (why) {
     near ? `身边：${near}` : '',
     (() => { const open = (s?.doors || []).filter(d => d.open); return open.length ? `身边开着的门：${open.slice(0, 5).map(d => `${d.kind}(${d.x},${d.y},${d.z})`).join('、')}` : ''; })(),
     bodyNow(),
-    ev.length ? `\n刚才发生的：\n${ev.map(e => `[${hhmmss(e.t)}] ${e.text}`).join('\n')}` : `\n（${why === 'idle' ? `已经 ${Math.round((Date.now() - W.lastEventAt) / 1000)} 秒没发生什么了` : '没有新的事'}）`,
+    happened,
+    saidLine,
     remembered ? `\n你想起来：\n${remembered}` : '',
     earlier ? `\n以前发生过的相关的事：\n${earlier}` : '',
     stockLine,
@@ -598,21 +668,39 @@ function buildNow (why) {
     dream ? `\n${dream}` : '',
     ev.some(e => /说：/.test(e.text)) ? '\n（打字：几条短的，一条 ≤12 字，换行分条；不用括号动作和～）' : '',
   ];
-  return { text: parts.filter(Boolean).join('\n'), ev, names };
+  // brief：这一刻过去以后，意识流里只留"发生了什么"（见 think 里的 compactLastNow）
+  return { text: parts.filter(Boolean).join('\n'), brief: head + happened, ev, names };
+}
+
+/**
+ * 上一刻的【此刻】只留"发生了什么"，状态和想起来的东西去掉。
+ *
+ * 每一刻都会重新附上完整的状态、背包、想起来的笔记、家里存货、会的做法、心愿（约 2–2.5k 字），
+ * 而且全部留在意识流里 —— 实测 12 次想之后历史 2.8 万字，真正新发生的事只有 1.7 千字，
+ * 其余都是同一份快照抄了 12 遍（对 Ka_sum1 的印象、同一批打算…），每次调模型都整段重发。
+ * 旧的背包/血量已经过时，还在的记忆这一刻会再想起来 —— 所以只有最新的一刻需要完整版。
+ * 只改上一条（更早的已经改过），前面的历史不动，模型线路的前缀缓存照样能命中。
+ */
+function compactLastNow () {
+  if (W.lastNow) { W.lastNow.msg.content = W.lastNow.brief; W.lastNow = null; }
 }
 
 async function think (why) {
-  if (W.thinking) { scheduleThink(CFG.debounceMs); return; }
+  if (W.thinking || W.sleeping) { scheduleThink(CFG.debounceMs); return; }
   if (!W.pending.length && why !== 'idle') return;
   if (!W.state?.connected && !W.sim) return;
   W.thinking = true; W.thinkWhy = why;
   const ctl = new AbortController(); W.thinkCtl = ctl;
   const t0 = Date.now();
   const now = buildNow(why);
-  W.history.push({ role: 'user', content: now.text });
+  compactLastNow();
+  const nowMsg = { role: 'user', content: now.text };
+  W.history.push(nowMsg);
+  W.lastNow = { msg: nowMsg, brief: now.brief };
   const didSay = []; const didDo = []; const noted = []; const rounds = [];
   try {
     for (let round = 0; round < CFG.maxRounds; round++) {
+      W.history = repairHistory(W.history);
       const msg = await body.llm({ messages: [{ role: 'system', content: SYSTEM }, ...W.history], tools: SPECS, timeoutMs: CFG.llmTimeoutMs, signal: ctl.signal });
       const calls = msg.tool_calls || [];
       rounds.push(calls.length ? calls.map(c => c.function?.name).join('+') : (msg.content ? '只写了正文' : '空回复'));
@@ -624,7 +712,7 @@ async function think (why) {
         const name = c.function?.name; const args = parseArgs(c.function?.arguments);
         const k = kindOf(name);
         let out;
-        if (!k) { out = { ok: false, error: `没有 ${name} 这个工具` }; needMore = true; }
+        if (!k) { out = { ok: false, error: `没有 ${name} 这个工具` }; needMore = true; review.record({ kind: 'unknown_tool', tool: name, args, ...scene(3) }); }
         else if (k === 'end') { out = { ok: true }; end = true; }
         else if (k === 'action') { actions.push({ tool: name, args: normalizeArgs(name, args) }); out = { ok: true, note: '身体开始做了，做完会告诉你' }; }
         else if (k === 'skill') {
@@ -656,6 +744,7 @@ async function think (why) {
     if (e.message !== 'aborted') {
       W.stats.errors++;
       log(`❌ 想的时候出错：${e.message}`);
+      review.record({ kind: 'llm_error', error: e.message, retry: now.ev.some(x => x.retried), ...scene(3) });
       const talked = now.ev.some(x => x.names.length && /说：/.test(x.text));
       if (!now.ev.some(x => x.retried)) {
         // 先别说"卡了"：把这些事放回去，过 3 秒再想一次（线路的毛病多半一会儿就好）
@@ -664,7 +753,11 @@ async function think (why) {
         setTimeout(() => scheduleThink(0), 3000);
       } else if (talked) {
         // 第二次还是不行：有人在跟她说话，至少让他知道她听见了
-        bridge.post('/chat', { messages: ['刚卡了', '你再说一遍'], gapMs: [400, 700] }).catch(() => {});
+        // 5 分钟内只说一次：以前线路一坏，这句被连着发了 12 遍，成了她的"台词"
+        if (Date.now() - (W.lastStuckLineAt || 0) > 5 * 60 * 1000) {
+          W.lastStuckLineAt = Date.now();
+          bridge.post('/chat', { messages: ['刚卡了', '你再说一遍'], gapMs: [400, 700] }).catch(() => {});
+        }
       }
     } else {
       // 被打断：把这一轮没想完的事放回去，和新事一起想
@@ -672,16 +765,58 @@ async function think (why) {
     }
     trimDangling();
   } finally {
+    // ⚠️ 这里的三件事**顺序不能动**，而且都得在 `W.thinking` 放下来之前做完。
+    //
+    // `sortMemories` 会往 `W.history` 里 push、最后还会**整体替换**它；`think` 也在改同一个
+    // `W.history`。两者的互斥原来靠"先 W.thinking=false、紧接着 sleepAndSort 里 W.sleeping=true
+    // 中间恰好没有 await"—— 那是**隐式**的：中间只要多一个 await（哪怕只是把某个 log 换成
+    // 异步的），新的一刻就会插进来跟整理抢同一个 history（实测 01:25 把日记当回复写了、连睡两次）。
+    // 所以整理挪进 finally、放在放下 thinking 之前，让互斥变成**显式**的：
+    //   · 整理期间 W.thinking 还是 true → 任何 think 都被挡在外面
+    //   · sleepAndSort 用 internal:true 跳过"thinking 还挂着"这道自我拦截
+    //   · W.thinkCtl 先置空 —— 不然这时候有人喊她，emit 会去 abort 一个早就结束的请求（无害但没意义）
+    W.thinkCtl = null;
+    // 说了"我去 / 这就来"，这一轮却一个动作都没有（身体也闲着）—— 玩家会以为她在敷衍
+    if (didSay.length && !didDo.length && !W.job && review.looksLikePromise(didSay.join(' '))) {
+      review.record({ kind: 'said_no_action', said: didSay.join(' / '), rounds: rounds.join(' → '), ...scene(3) });
+    }
+    log(`🧠 ${why} ${Date.now() - t0}ms｜说[${didSay.join(' / ')}] 做[${didDo.join(',')}]${noted.length ? ` 记[${noted.join(',')}]` : ''}｜轮次：${rounds.join(' → ') || '无'}`);
+    mem.save();
+    if (historyChars() > CFG.maxHistoryChars) {
+      try { await sleepAndSort({ internal: true }); } catch (e2) { log(`😴 整理记忆失败：${e2.message}`); }
+    }
     W.thinking = false; W.thinkWhy = null; W.lastThinkAt = Date.now();
     W.stats.thinks++; W.stats.llmMs += Date.now() - t0;
   }
-  log(`🧠 ${why} ${Date.now() - t0}ms｜说[${didSay.join(' / ')}] 做[${didDo.join(',')}]${noted.length ? ` 记[${noted.join(',')}]` : ''}｜轮次：${rounds.join(' → ') || '无'}`);
-  mem.save();
-  if (historyChars() > CFG.maxHistoryChars) await sleepAndSort();
   if (W.pending.length) scheduleThink(CFG.debounceMs);
 }
 
 function clipText (s, max = 1800) { return s.length > max ? s.slice(0, max) + '…' : s; }
+
+/**
+ * 让历史里的工具调用和结果一一对上（模型只要对不上就整段拒收）。
+ *
+ * 实测（2026-09-26 00:38–00:46）：想到一半被新事打断，某一轮 tool_calls 只记下了部分结果 →
+ * 中转站报 "tool calls and tool results do not match" / Gemini 报 "functionCall appears before
+ * pending functionResponse"，之后**每一次**想都失败，她连续 8 分钟多没反应。trimDangling 只看最后一条，漏了这种。
+ * 修法：缺结果的补一条"被打断了"，没有对应调用的孤立结果删掉。每次调模型前都过一遍。
+ */
+function repairHistory (h) {
+  const out = [];
+  for (let i = 0; i < h.length; i++) {
+    const m = h[i];
+    if (m.role === 'tool') continue;   // 结果只跟在它的调用后面收；落单的丢掉
+    out.push(m);
+    if (m.role !== 'assistant' || !m.tool_calls?.length) continue;
+    const ids = m.tool_calls.map(c => c.id);
+    const got = new Map();
+    let j = i + 1;
+    for (; j < h.length && h[j].role === 'tool'; j++) if (ids.includes(h[j].tool_call_id) && !got.has(h[j].tool_call_id)) got.set(h[j].tool_call_id, h[j]);
+    for (const id of ids) out.push(got.get(id) || { role: 'tool', tool_call_id: id, content: JSON.stringify({ ok: false, error: '被打断了，没做完' }) });
+    i = j - 1;
+  }
+  return out;
+}
 
 /** 出错时最后一条可能是带 tool_calls 却没有对应 tool 结果的 assistant —— 模型会拒收，去掉 */
 function trimDangling () {
@@ -698,8 +833,19 @@ function trimDangling () {
 /**
  * 上下文快满了：让她自己整理 —— 挑要记住的写下来、检查旧教训、写一段日记。
  * 然后只留日记和最近几条原话继续活下去（Astra 在 Codex 里就是这样跨上下文的）。
+ *
+ * `internal`：这次整理是 `think` 自己在 finally 里叫的。那时 `W.thinking` **还挂着**
+ * （故意的 —— 见 think 里那段注释，整理和想必须互斥），所以不能拿 `W.thinking` 把自己挡在外面。
+ * 外部调用（`POST /mind/sleep`）不传，照旧被 `W.thinking` 挡住。
  */
-async function sleepAndSort () {
+async function sleepAndSort ({ internal = false } = {}) {
+  // 睡着时不能同时"想"：实测（01:25）新的一刻插进来接了睡前整理的话，把日记当成回复写了，接着又连睡两次
+  if (W.sleeping || (!internal && W.thinking)) return;
+  W.sleeping = true;
+  try { await sortMemories(); } finally { W.sleeping = false; }
+}
+
+async function sortMemories () {
   W.stats.sleeps++;
   log('😴 上下文快满了，睡一觉整理记忆');
   const review = mem.forReview(20).map(m => `#${m.id} [${m.kind}] ${m.text}（强度 ${m.strength}${m.reinforced ? `，记起 ${m.reinforced + 1} 次` : ''}）`).join('\n');
@@ -715,6 +861,7 @@ ${people || '（还没有）'}
   let diaryText = '';
   try {
     for (let round = 0; round < 4; round++) {
+      W.history = repairHistory(W.history);
       const msg = await body.llm({ messages: [{ role: 'system', content: SYSTEM }, ...W.history], tools: Object.entries(MIND_TOOLS).filter(([n]) => n !== 'wait').map(([n, t]) => toolSpec(n, t)), timeoutMs: 60000 });
       const calls = msg.tool_calls || [];
       W.history.push({ role: 'assistant', content: msg.content || '', ...(calls.length ? { tool_calls: calls } : {}) });
@@ -781,11 +928,19 @@ function startControl () {
   http.createServer((req, res) => {
     const send = (code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8' }); res.end(JSON.stringify(obj, null, 2)); };
     const url = req.url.split('?')[0];
+    if (url === '/mind/review') {
+      // 自我复盘报告（markdown）。?since=2h / 3d / all，默认本次醒来以后
+      const q = new URLSearchParams(req.url.split('?')[1] || '');
+      let since;
+      try { since = q.has('since') ? review.parseSince(q.get('since')) : W.startedAt; } catch (e) { return send(400, { error: e.message }); }
+      res.writeHead(200, { 'Content-Type': 'text/markdown; charset=utf-8' });
+      return res.end(review.render(review.read({ since }), { since }));
+    }
     if (url === '/mind/debug') return send(200, { recentLLM: body.recent, historyTail: W.history.slice(-6) });
     if (url === '/mind' || url === '/brain') {
       const S = mem.load();
       return send(200, {
-        model: CFG.model, thinking: W.thinking, pending: W.pending.length,
+        model: CFG.model, thinking: W.thinking, sleeping: W.sleeping, pending: W.pending.length,
         body: bodyNow(), historyChars: historyChars(), historyMessages: W.history.length,
         stats: { ...W.stats, avgThinkMs: W.stats.thinks ? Math.round(W.stats.llmMs / W.stats.thinks) : null },
         memory: mem.stats(),
@@ -813,7 +968,7 @@ function startControl () {
 
 async function main () {
   if (!CFG.baseUrl || !CFG.apiKey) { console.error('缺少 LLM_BASE_URL / LLM_API_KEY'); process.exit(1); }
-  body.hooks.onSay = (t) => mem.episode(`我说：${t}`, [...W.players]);
+  body.hooks.onSay = (t) => { W.lastSaid = String(t); mem.episode(`我说：${t}`, [...W.players]); };
   // 像人一样：看完你的话、打完字才发出去（按字数，1.5～4 秒，从听到那句话开始算；想得久的就不用再等）
   body.hooks.beforeSay = async (t) => {
     const want = Math.min(4000, 1200 + String(t).length * 90);
@@ -906,6 +1061,7 @@ async function selftest () {
   let pass = 0; let total = 0;
   const check = (label, cond, d) => { total++; if (cond) pass++; console.log(`  ${cond ? 'PASS' : 'FAIL'}  ${label}${cond ? '' : `  ${JSON.stringify(d)}`}`); };
   process.env.MC_MIND_FILE = require('path').join(require('os').tmpdir(), `mind-test-${process.pid}.json`);
+  process.env.MC_REVIEW_FILE = require('path').join(require('os').tmpdir(), `review-test-${process.pid}.jsonl`);
   mem._reset();
   body._setBridge(mockBridge());
   console.log = ((o) => (...a) => { if (!String(a[0]).startsWith('      ')) o(...a); })(console.log);
@@ -935,6 +1091,21 @@ async function selftest () {
   const now2 = buildNow('event');
   check('一小时前的经历（已不在上下文里）会被想起来', /鸡蛋×7/.test(now2.text), now2.text);
 
+  {
+    mem.episode('在海边捡到一只鹦鹉螺壳', ['minecraft:nautilus_shell']);
+    mem.load().episodes[mem.load().episodes.length - 1].t = Date.now() - 3600000;
+    W.topic = null;
+    W.pending.push({ t: Date.now(), text: '💬 Ka_sum1 说：海边捡的鹦鹉螺壳还在吗', cue: 'Ka_sum1 海边捡的鹦鹉螺壳还在吗', names: ['Ka_sum1'] });
+    const a = buildNow('event');
+    W.pending.push({ t: Date.now(), text: '✅ 做完了：goto{"x":1,"y":64,"z":2} → {"arrived":true}', cue: '{"x":1,"y":64,"z":2}', names: [] });
+    const b = buildNow('event');
+    check('别人交代的事，做下一步时还会顺着它想起来', /捡到一只鹦鹉螺壳/.test(a.text) && /捡到一只鹦鹉螺壳/.test(b.text), [a.text, b.text]);
+    W.topic.t = Date.now() - CFG.topicMs - 1;
+    W.pending.push({ t: Date.now(), text: '✅ 做完了：goto{"x":1,"y":64,"z":2} → {"arrived":true}', cue: '{"x":1,"y":64,"z":2}', names: [] });
+    check('过了一阵就不再惦记', !/鹦鹉螺壳/.test(buildNow('event').text));
+    W.topic = null;
+  }
+
   console.log('\n一次"想"（假模型）');
   const script = [
     { content: '他问煎蛋，我答应过的', tool_calls: [
@@ -957,11 +1128,102 @@ async function selftest () {
   const rel = mem.load().memories.find(m => m.kind === 'relation' && m.o === 'farmersdelight:fried_egg');
   check('烤成功 → 记下"鸡蛋在烟熏炉里烤成煎蛋"（亲身经历）', rel && rel.source === 'experience', rel);
 
+  console.log('\n状态快照不在意识流里重复');
+  {
+    body._setLLM(async () => ({ content: '', tool_calls: [{ id: `w${Math.random()}`, function: { name: 'wait', arguments: '{}' } }] }));
+    W.history = []; W.lastNow = null; W.pending = [];
+    W.state.items = [{ name: 'egg', count: 7 }];
+    W.pending.push({ t: Date.now(), text: '💬 Ka_sum1 说：第一句', cue: 'Ka_sum1', names: ['Ka_sum1'] });
+    await think('event');
+    W.pending.push({ t: Date.now(), text: '💬 Ka_sum1 说：第二句', cue: 'Ka_sum1', names: ['Ka_sum1'] });
+    await think('event');
+    const us = W.history.filter(m => m.role === 'user');
+    check('只有最新一刻带背包等状态', us.filter(m => /背包：/.test(m.content)).length === 1 && /背包：/.test(us[us.length - 1].content), us.map(m => m.content.slice(0, 40)));
+    check('旧的一刻还留着发生了什么', /第一句/.test(us[0].content) && /【此刻/.test(us[0].content), us[0].content);
+    check('旧的一刻去掉了想起来的记忆', !/给我鸡蛋的好人/.test(us[0].content), us[0].content);
+  }
+  {
+    let calls = 0;
+    body._setLLM(async () => { calls++; await new Promise(r => setTimeout(r, 50)); return { content: '日记', tool_calls: [] }; });
+    const p1 = sleepAndSort(); const p2 = sleepAndSort();
+    W.pending.push({ t: Date.now(), text: '💬 Ka_sum1 说：在吗', cue: 'Ka_sum1', names: ['Ka_sum1'] });
+    await think('event');
+    await Promise.all([p1, p2]);
+    check('睡着时不会再睡一次，也不会插进来想', calls === 1 && !W.sleeping, calls);
+    if (thinkTimer) { clearTimeout(thinkTimer); thinkTimer = null; }
+    W.pending = [];
+  }
+
+  console.log('\n整理记忆时 thinking 一直挂着（新的一刻插不进来抢 history）');
+  {
+    // 这条钉住的是 think 的 finally 里那个顺序：整理必须在放下 W.thinking **之前**做。
+    // 原来两者之间靠"恰好没有 await"保持互斥 —— 隐式的，改坏了不会有任何报错。
+    const prevMax = CFG.maxHistoryChars;
+    CFG.maxHistoryChars = 0;                       // 强制"上下文满了"→ think 会在 finally 里整理
+    let calls = 0; let atSort = null; let callsAfterReentry = null;
+    body._setLLM(async () => {
+      calls++;
+      if (calls === 2) {                           // 第 2 次 = sortMemories 的那次调用
+        atSort = { thinking: W.thinking, sleeping: W.sleeping };
+        await think('event');                      // 新的一刻想插进来
+        callsAfterReentry = calls;
+      }
+      return { content: '日记', tool_calls: [] };
+    });
+    W.history = []; W.lastNow = null;
+    W.pending = [{ t: Date.now(), text: '💬 Ka_sum1 说：在吗', cue: 'Ka_sum1', names: ['Ka_sum1'] }];
+    await think('event');
+    check('整理期间 thinking 还挂着', atSort?.thinking === true, atSort);
+    check('整理期间 sleeping 也挂着', atSort?.sleeping === true, atSort);
+    check('插进来的那次没真的调模型（被挡在外面）', callsAfterReentry === 2, callsAfterReentry);
+    check('整理完才放下 thinking', W.thinking === false, W.thinking);
+    check('整理完 sleeping 也归位', W.sleeping === false, W.sleeping);
+    CFG.maxHistoryChars = prevMax;
+    if (thinkTimer) { clearTimeout(thinkTimer); thinkTimer = null; }
+    W.pending = [];
+  }
+
   console.log('\n出错时不留下半截消息');
+  {
+    const h = repairHistory([
+      { role: 'user', content: 'x' },
+      { role: 'assistant', content: '', tool_calls: [{ id: 'a' }, { id: 'b' }] },
+      { role: 'tool', tool_call_id: 'a', content: '1' },
+      { role: 'user', content: 'y' },
+      { role: 'tool', tool_call_id: 'zz', content: '孤立' },
+    ]);
+    check('被打断的一轮：缺的结果补上、顺序对', h.map(m => m.role + (m.tool_call_id || '')).join(',') === 'user,assistant,toola,toolb,user');
+    check('孤立的工具结果去掉', !h.some(m => m.tool_call_id === 'zz'));
+  }
   W.history = [{ role: 'user', content: 'x' }, { role: 'assistant', content: '', tool_calls: [{ id: 'a' }] }];
   W.pending = [{ t: 1 }];
   trimDangling();
   check('去掉没有结果的 tool_calls', !W.history.some(m => m.tool_calls));
+
+  console.log('\n自我复盘（不对劲的地方留证据）');
+  {
+    const since = Date.now() - 1;
+    W.pending = []; W.job = null;
+    await startJob([{ tool: 'no_such_move', args: { x: 1 } }], '测试：他叫我过去');
+    const fail = review.read({ since }).find(r => r.kind === 'action_failed');
+    check('动作没做成 → 自动记一条，带工具、报错、为了什么', fail?.tool === 'no_such_move' && /没有/.test(fail.error) && /他叫我过去/.test(fail.why), fail);
+    check('现场里有她当时在做什么', /no_such_move/.test(fail?.doing || ''), fail?.doing);
+    MIND_TOOLS.report_issue.run({ category: '做不到', what: '明明能走却走不过去', guess: '可能是草' });
+    const note = review.read({ since }).find(r => r.source === 'self');
+    check('她自己的纸条：程序附上最近没做成的动作当证据', note?.category === '做不到' && note.recentFails.some(x => /no_such_move/.test(x)), note);
+    const script2 = [{ content: '', tool_calls: [{ id: 's1', function: { name: 'say', arguments: '{"text":"好 这就来"}' } }] }];
+    body._setLLM(async () => script2.shift() || { content: '', tool_calls: [{ id: `w${Math.random()}`, function: { name: 'wait', arguments: '{}' } }] });
+    W.history = []; W.lastNow = null;
+    W.pending = [{ t: Date.now(), text: '💬 Ka_sum1 说：过来', cue: 'Ka_sum1', names: ['Ka_sum1'] }];
+    await think('event');
+    const lazy = review.read({ since }).find(r => r.kind === 'said_no_action');
+    check('说了"这就来"却一个动作都没有 → 记下', /这就来/.test(lazy?.said || ''), lazy);
+    const md = review.render(review.read({ since }));
+    check('报告里两种来源分开', /## 她自己察觉的/.test(md) && /## 程序记下的/.test(md), md);
+    if (thinkTimer) { clearTimeout(thinkTimer); thinkTimer = null; }
+    W.pending = [];
+    try { require('fs').unlinkSync(process.env.MC_REVIEW_FILE); } catch (_) {}
+  }
 
   console.log('\n身体归谁（和脑干仲裁）');
   const sent = [];

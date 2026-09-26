@@ -20,6 +20,8 @@ memory/journal.md*
 # memory/mind.json 是她自己写的记忆（mind.js / memory-store.js）：对每个玩家的印象、
 # 承诺、日记 —— 与 journal.md 同等隐私；* 覆盖 .bak。
 memory/mind.json*
+# memory/self-review.jsonl 是自我复盘（self-review.js）：现场证据里有玩家聊天原文，同等隐私。
+memory/self-review.jsonl*
 
 # ── 体积：本地保留、不入库 ──────────────────────────────
 # knowledge/_raw/ 是 extract_*.py 的中间产物；其中 quests.json 与 item-names.json

@@ -576,7 +576,8 @@ function renderHomeStock (query = null, labelOf = (x) => x, limit = 8) {
 }
 
 function renderEpisodes (eps) {
-  return eps.map(e => `· ${when(e.t)}：${e.text}`).join('\n');
+  // 同一分钟里一模一样的事只说一次（走远又走近，"看到 Ka_sum1 了"会连记两条）
+  return [...new Set(eps.map(e => `· ${when(e.t)}：${e.text}`))].join('\n');
 }
 
 if (require.main === module && process.argv.includes('--selftest')) selftest();

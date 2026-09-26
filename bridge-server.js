@@ -634,6 +634,7 @@ function importPalette (file) {
     anchorMissing: inject.anchorMissing,
     cleared: inject.cleared,
     samples: inject.samples,
+    shapeStats: shapeStatsOf(inject),
     reason: inject.reason,
   };
   if (!inject.ok) {
@@ -646,6 +647,28 @@ function importPalette (file) {
     state.paletteInject = { ...inject, committed: true, botRegistry: true };
   }
   return { ok: true, meta };
+}
+
+/**
+ * 从注入报告里挑出"形状列到底带来多少真实碰撞箱"这几个数。
+ *
+ * 单独一个函数是因为 `/config` 有两条分支（本次 bot 已注入 / 只有离线预检），
+ * 两处必须报**同一组字段** —— 否则看哪条分支不同就会得到不同的结论。
+ *
+ * ⚠️ `shapeDynamic` 与 `shapeDynamicGuessed` **必须分开**：前者是原版反汇编出的
+ *    6 类 `dynamicShape()`（有权威依据），后者是模组方块名字后缀撞上的（按名字猜）。
+ *    混成一个数就没法解释 —— 实测整合包里"猜的"比"真的"还多。
+ */
+function shapeStatsOf (rep) {
+  if (!rep) return null;
+  return {
+    blocks: rep.shapeBlocks ?? 0,          // 填上了真实形状的方块数
+    states: rep.shapeStates ?? 0,          // 覆盖的 state 数
+    absent: rep.shapeAbsent ?? 0,          // 旧 dump：没导这一列
+    unusable: rep.shapeUnusable ?? 0,      // 导了但不可用（条数对不上 / 有 state 读不到）
+    dynamic: rep.shapeDynamic ?? 0,        // 形状静态决定不了：原版、有权威依据
+    dynamicGuessed: rep.shapeDynamicGuessed ?? 0,  // 模组名字撞上的，按名字猜
+  };
 }
 
 /** 启动时自动找一份 dump 导入（找不到就安静地跳过）。 */
@@ -668,6 +691,16 @@ function autoImportPalette () {
           + `原版校验 ${inj.vanillaChecked} 条，对不上 ${inj.vanillaMismatches?.length ?? 0} 条；`
           + `F3 锚点校验 ${inj.anchorsChecked} 个，违规 ${inj.anchorViolations?.length ?? 0} 个）`
           + ' —— 现在 b.type / b.name / 属性都是真的了，地图识别已接入');
+      }
+      if (inj.shapeBlocks || inj.shapeAbsent || inj.shapeUnusable) {
+        const s = shapeStatsOf(inj);
+        console.log(`[palette]   碰撞形状：${s.blocks} 个方块带真实形状（${s.states} 个 state）`
+          + `；没导这一列 ${s.absent} 个，导了但不可用 ${s.unusable} 个`
+          + `；形状静态决定不了的：原版 ${s.dynamic} 个（有依据）、模组按名字撞上 ${s.dynamicGuessed} 个（只是猜的）`);
+        if (!s.blocks) {
+          console.log('[palette]   ⚠ 一个形状都没填上 —— 模组方块会继续按名字猜碰撞箱'
+            + '（薄方块白名单 / `_bed` 9/16 / 其余整块实心）。用 registry/README 里的 v4 脚本重导一次。');
+        }
       }
       if (inj.anchorMissing?.length) {
         console.log(`[palette]   ⚠ 有 ${inj.anchorMissing.length} 个锚点在这次 dump 里没找到对应方块`
@@ -1180,6 +1213,8 @@ function createBot() {
         + '导入办法见 GET /palette 的 hint。');
     }
 
+    // 开着的门当成能走的格子（寻路器原本把所有门都当墙，门里面就成了死路，见 pathing.applyOpenDoors）
+    state.pfOpenDoors = pathing.applyOpenDoors(mv);
     state.bot.pathfinder.setMovements(mv);
 
     // ---- collectblock / auto-eat 的运行时配置 ------------------------------------
@@ -1281,6 +1316,14 @@ function createBot() {
         : '')
       + (state.pfUnknown.passableStateIds.length ? `；可穿过白名单 stateId=[${state.pfUnknown.passableStateIds.join(', ')}]` : '')
       + (state.pfUnknown.nameResolver ? `；名字解析器已接（调色板${state.palette ? `已加载，${state.paletteMeta.entries} 个方块` : '未加载'}）` : '；没有名字解析器'));
+
+    console.log(`[pathing] 开着的门：${state.pfOpenDoors?.installed
+      ? '放行（关着的门/活板门照旧当墙）'
+      : `未启用（${JSON.stringify(state.pfOpenDoors)}）`}`
+      // 计数是**运行期**才有的（寻路器每问一次记一笔），启动时都是 0。
+      // 真正有用的是跑起来以后从 GET /config 看：refused 大 → 说明"门板两侧都通"的门不少，
+      // 那些门被保守当墙、她会绕路；noFacing 大 → 模组门的属性名和原版不一样，得看 /debug/mvblock。
+      + '；两侧都通被保守当墙的、读不到 facing 的，都在 GET /config 的 pathing.openDoors 里计数');
 
     // 审计每一次挖方块。寻路器拆方块走的是 bot.dig，所以包一层就能抓到
     // "不是挖掘任务、却把方块拆了"的情况 —— 这正是玩家房子被拆那次没留痕的原因。
@@ -2406,6 +2449,7 @@ const handlers = {
                 states: state.paletteInject.states,
                 vanillaExpanded: state.paletteInject.vanillaExpanded,
                 vanillaStateEnd: state.paletteInject.vanillaStateEnd,
+                shapes: shapeStatsOf(state.paletteInject),
               }
             : (state.paletteMeta.inject
               ? {
@@ -2416,6 +2460,7 @@ const handlers = {
                   states: state.paletteMeta.inject.states,
                   vanillaExpanded: state.paletteMeta.inject.vanillaExpanded,
                   vanillaStateEnd: state.paletteMeta.inject.vanillaStateEnd,
+                  shapes: shapeStatsOf(state.paletteMeta.inject),
                 }
               : null),
           anchors: {
@@ -2476,7 +2521,17 @@ const handlers = {
           registryNameTable: { loaded: BLOCK_NAME_TO_ID ? BLOCK_NAME_TO_ID.size : 0 },
           // 未映射方块（模组方块）的认知策略。patched=false 时 skipped 说明原因。
           // 这条修的是"客户端把模组方块当空气 ⇒ 走进去被服务端推回来 ⇒ 原地抖动"。
+          //   stats.thinExempt  按名字豁免成可穿过的次数
+          //   stats.whitelisted 白名单**盖过**已知形状的次数（调色板导了真实碰撞箱之后，
+          //                     她自己打开的那扇门仍然要能穿过 —— 这条以前会失效）
+          //   ⚠️ 形状已知的方块**不进**这个补丁的改形状分支：dump 里的真实碰撞箱
+          //      就是权威，一个字都不改。只有 needsShapeFallback 命中才按名字猜。
           unknownBlockPolicy: state.pfUnknown ?? null,
+          // 开着的门：installed=true 表示补丁装上了。stats 是**活计数**（寻路器每问一次记一笔）：
+          //   passed   放行了多少格（开着的门被当成能走）
+          //   refused  "门板两侧都是通路"→ 保守当墙、她会绕（说明这种独立门不少）
+          //   noFacing 读不到 facing（模组门属性名不同）→ 保持放行，但记一笔
+          openDoors: state.pfOpenDoors ? { ...state.pfOpenDoors, stats: { ...(state.pfOpenDoors.stats || {}) } } : null,
           // 运行时"可穿过"白名单：她自己打开、并且**实测穿得过去**的 state。
           // 只有验证通过的才会留在这里 —— 猜错的会被 /climb 撤回。
           passableStateIdsRuntime: [...state.passableStateIdsRuntime],
@@ -5185,9 +5240,8 @@ const handlers = {
     if (!playerName) throw new Error('playerName required');
     const target = state.bot.players[playerName]?.entity;
     if (!target) throw new Error(`Player ${playerName} not found or too far away`);
-    state.currentAction = `following ${playerName}`;
-    state.bot.pathfinder.setGoal(new goals.GoalFollow(target, 2), true);
-    return { following: playerName };
+    // 先对齐楼层再贴着走（玩家上楼了她不能还在一楼转，见 hands.startFollow）
+    return hands.startFollow(state.bot, state, playerName, 2);
   },
 
   // ================== 原始控制层：直接按键，不经过寻路器 ==================
@@ -5741,6 +5795,10 @@ const handlers = {
     // ⚠️ 控制位也必须清 —— 否则"急停"停不住一个按住的 W。
     // 这是原始控制层引入后必须补的一环：看门狗的危险急停走的就是这个端点。
     state.bot.clearControlStates();
+    // ⚠️ `currentAction = null` 还是**跟随循环的退出条件**（hands.startFollow 的 alive() 就认这个）：
+    // 光清 goal 停不住一条在途路线 —— go() 会接着走下一步、把 goal 重新设回去。
+    // 所以 go() 里每一步之后都会问一次 abort 谓词，而这个谓词读的正是 currentAction。
+    // 改这里之前先看 hands.startFollow 的注释。
     state.currentAction = null;
     return { stopped: true, controlsCleared: true };
   },

@@ -41,6 +41,8 @@ LOOT_RE = re.compile(r'^data/([^/]+)/loot_tables/(blocks|entities|chests|gamepla
 LANG_RE = re.compile(r'^assets/([^/]+)/lang/(zh_cn|en_us)\.json$')
 # assets/<ns>/patchouli_books/<book>/<lang>/(entries|categories)/...json   （新式，1.20 主流）
 # data/<ns>/patchouli_books/<book>/<lang>/...                              （老式）
+LOOT_ANY_RE = re.compile(r'^data/([^/]+)/loot_tables/(.+)\.json$')   # 被修改器引用的表可能不在 blocks/entities/chests 下
+GLM_RE = re.compile(r'^data/([^/]+)/loot_modifiers/(.+)\.json$')
 PATCH_RE = re.compile(r'^(?:assets|data)/([^/]+)/patchouli_books/([^/]+)/(zh_cn|en_us)/(entries|categories)/(.+)\.json$')
 
 
@@ -256,6 +258,82 @@ def loot_summary(table):
     return uniq
 
 
+def apply_loot_modifiers(loot, glm, active, mods, loot_refs=None):
+    """Forge 全局掉落修改器（GLM）并进掉落表。
+
+    很多模组的掉落不写在生物/方块的掉落表里，而是用修改器加：疣猪兽掉的猪排换成疣猪兽里脊、
+    用刀杀炽足兽多掉肉片、往堡垒宝箱里塞东西（农夫乐事系列大量用这个）。以前只读掉落表，
+    这些全看不到 —— 路线图里疣猪兽里脊（15 道菜）、炽足兽生肉（12 道菜）只查到宝箱来源（2026-09-26）。
+    只收启用清单里登记过的；按条件换算成"哪张掉落表多掉了什么"。"""
+    st = {'active': 0, 'applied': 0, 'noTarget': 0, 'noItem': 0}
+    def tid_of_entity(e):
+        if not isinstance(e, str) or e.startswith('#') or ':' not in e:
+            return None
+        ns, p = e.split(':', 1)
+        return f'{ns}:entities/{p}'
+    for mid in dict.fromkeys(active):
+        d = glm.get(mid)
+        if not isinstance(d, dict) or not conditions_ok(d, mods):
+            continue
+        st['active'] += 1
+        targets, when = [], []
+        if d.get('entity'):
+            targets.append(tid_of_entity(d['entity']))
+        if isinstance(d.get('loot_table_id'), str):   # kaleidoscope / 东方小女仆：顶层写目标表
+            targets.append(d['loot_table_id'])
+        for c in d.get('conditions', []) or []:
+            if not isinstance(c, dict):
+                continue
+            ct = str(c.get('condition', '')).split(':')[-1]
+            if ct == 'loot_table_id' and isinstance(c.get('loot_table_id'), str):
+                targets.append(c['loot_table_id'])
+            elif ct == 'entity_properties':
+                targets.append(tid_of_entity((c.get('predicate') or {}).get('type')))
+            elif ct == 'block_state_property' and isinstance(c.get('block'), str) and ':' in c['block']:
+                ns, bp = c['block'].split(':', 1)   # 用刀切蛋糕/派/披萨：对着这个方块
+                targets.append(f'{ns}:blocks/{bp}')
+            elif ct == 'match_tool':
+                pred = c.get('predicate', {}) or {}
+                if pred.get('tag'):
+                    when.append('需要工具 #' + pred['tag'])
+                elif pred.get('items'):
+                    when.append('需要工具 ' + ','.join(pred['items']))
+                else:
+                    when.append('需要特定工具')
+            elif ct == 'killed_by_player':
+                when.append('玩家击杀')
+            elif ct in ('random_chance', 'random_chance_with_looting'):
+                when.append('概率')
+        targets = [t for t in targets if t]
+        if not targets:
+            st['noTarget'] += 1
+            continue
+        items = []
+        ref = d.get('lootTable') or d.get('loot_table') or d.get('loot_table_add')
+        if isinstance(ref, str):
+            src = loot.get(ref) or (loot_refs or {}).get(ref) or []
+            items = [dict(x, when=(x.get('when') or []) + when) for x in src if x.get('item') or x.get('tag')]
+        for k in ('item', 'addition', 'result', 'slice', 'added_item'):
+            v = d.get(k)
+            if isinstance(v, dict):
+                v = v.get('item') or v.get('id')
+            if isinstance(v, str):
+                items.append({'item': v, 'count': d.get('count', 1), 'when': list(when)})
+                break
+        if not items:
+            st['noItem'] += 1
+            continue
+        for t in targets:
+            lst = loot.setdefault(t, [])
+            rep_item = d.get('replaces') or d.get('removed_item')
+            if isinstance(rep_item, str):   # "把 A 换成 B"：原来的 A 从这张表里去掉
+                lst[:] = [x for x in lst if x.get('item') != rep_item]
+            lst.extend(items)
+        st['applied'] += 1
+    print(f"全局掉落修改器：启用 {st['active']} 个，并进掉落表 {st['applied']} 个（找不到目标 {st['noTarget']}、没有物品 {st['noItem']}）")
+    return st
+
+
 # ------------------------------------------------------------------ 说明书文本
 
 FMT_RE = re.compile(r'\$\(([^)]*)\)')
@@ -281,6 +359,7 @@ def main():
     recipes, rec_src = {}, {}
     tags = {'items': {}, 'blocks': {}, 'entity_types': {}}
     loot = {}
+    glm, glm_active, loot_refs = {}, [], {}   # 全局掉落修改器：定义 / 启用清单（forge/loot_modifiers/global_loot_modifiers.json）
     lang = {'zh_cn': {}, 'en_us': {}}
     patch_raw = {}   # (ns, book, kind, path) → {lang: obj}
     dropped_by_cond = 0
@@ -329,6 +408,21 @@ def main():
                 if isinstance(d, dict):
                     loot[f'{m.group(1)}:{m.group(2)}/{m.group(3)}'] = loot_summary(d)
                 continue
+            m = LOOT_ANY_RE.match(name)
+            if m:
+                d = jload(read())
+                if isinstance(d, dict):
+                    loot_refs[f'{m.group(1)}:{m.group(2)}'] = loot_summary(d)
+                continue
+            m = GLM_RE.match(name)
+            if m:
+                d = jload(read())
+                if isinstance(d, dict):
+                    if m.group(1) == 'forge' and m.group(2) == 'global_loot_modifiers':
+                        glm_active.extend(x for x in d.get('entries', []) or [] if isinstance(x, str))
+                    else:
+                        glm[f'{m.group(1)}:{m.group(2)}'] = d
+                continue
             m = LANG_RE.match(name)
             if m:
                 d = jload(read())
@@ -342,6 +436,8 @@ def main():
                     key = (m.group(1), m.group(2), m.group(4), m.group(5))
                     patch_raw.setdefault(key, {})[m.group(3)] = d
                 continue
+
+    glm_stats = apply_loot_modifiers(loot, glm, glm_active, mods, loot_refs)
 
     # 说明书：优先中文，没有就英文
     guide = []
@@ -390,7 +486,7 @@ def main():
             'counts': {
                 'recipes': len(recipes), 'droppedByCondition': dropped_by_cond,
                 'itemTags': len(tags['items']), 'blockTags': len(tags['blocks']),
-                'lootTables': len(loot), 'guideEntries': len(guide), 'names': len(names),
+                'lootTables': len(loot), 'lootModifiers': glm_stats, 'guideEntries': len(guide), 'names': len(names),
             },
         },
         'recipes': recipes,

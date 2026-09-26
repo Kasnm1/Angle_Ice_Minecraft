@@ -46,7 +46,7 @@
  *     LLM_BASE_URL       OpenAI 兼容端点（…/v1）
  *     LLM_API_KEY
  *     BRAIN_FAST_MODEL   默认 gemini-3.8-flash
- *     BRAIN_PLAN_MODEL   默认 opus5.5
+ *     BRAIN_PLAN_MODEL   默认 gemini-3.8-flash
  *     BRAIN_AUTONOMY     false = 不自己找事做，只听指令
  *     BRAIN_PORT         控制面端口，默认 3003
  */
@@ -83,10 +83,10 @@ const CFG = {
   baseUrl: (process.env.LLM_BASE_URL || '').replace(/\/+$/, ''),
   apiKey: process.env.LLM_API_KEY || '',
   fastModel: process.env.BRAIN_FAST_MODEL || 'gemini-3.8-flash',
-  planModel: process.env.BRAIN_PLAN_MODEL || 'opus5.5',
+  planModel: process.env.BRAIN_PLAN_MODEL || 'gemini-3.8-flash',
   // 中转站会报 503 Overloaded / 429。先原模型重试，再换备用模型 —— 别因为一次拥堵就放弃玩家的事。
-  fastFallback: process.env.BRAIN_FAST_FALLBACK || 'gpt-6-luna',
-  planFallback: process.env.BRAIN_PLAN_FALLBACK || 'fable5.1',
+  fastFallback: process.env.BRAIN_FAST_FALLBACK || 'deepseek-v4.1-flash',
+  planFallback: process.env.BRAIN_PLAN_FALLBACK || 'deepseek-v4.1-flash',
   llmRetries: 2,
 
   // 耳朵：本机 HTTP 读一个数组切片，250ms 一次几乎零成本。

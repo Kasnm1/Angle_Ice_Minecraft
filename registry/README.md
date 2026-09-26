@@ -16,7 +16,7 @@ state 会给 `shapes=[] / boundingBox='empty'`，客户端以为能穿过去，�
 |---|---|---|
 | `minecraft-block.json` | 服务端**全部 20217 个方块**的 `名字 → 注册表id`。⚠️ **本地生成、不入库** —— 每次登录都会覆盖写，且会把服务器地址写进 `host` | Forge FML 握手 `S2CRegistry` 快照，自动落盘 |
 | `minecraft-item.json` | 服务端**全部 30729 个物品**的 `名字 → 注册表id`；启动时由 `item-registry.js` 注入 `bot.registry`（见下文「物品」一节）。⚠️ **本地生成、不入库** | 同上 |
-| `angel_block_palette.txt` | `blockId\|firstStateId\|count\|名字\|属性规格` 的**完整** dump（含整合包实际原版扩展和模组段） | **需要手动导一次**：客户端重启 → `node scripts/angelpal-to-palette.js`（见下） |
+| `angel_block_palette.txt` | `blockId\|firstStateId\|count\|名字\|属性规格\|形状列` 的**完整** dump（含整合包实际原版扩展和模组段）。v4 起带第 6 列**逐 state 碰撞箱** | **需要手动导一次**：客户端进一次世界 → `node scripts/angelpal-to-palette.js`（见下） |
 | `vanilla-palette-1.20.1.txt` | 只覆盖 `minecraft-data` 的原版基线 `0..24134`，不是当前整合包的最终布局 | `node scripts/make-vanilla-palette.js` |
 | `_vanilla-blocks-1.20.1.json` | 1003 个原版方块的 `id/minStateId/maxStateId` | 从 `minecraft-data` 导出，供脚本参考 |
 | `block-palette.json` | （历史）从模组 jar 反推的调色板，**已证明不可靠**：连续 + 原版正确，但模组段偏 27~28 万位 | 见文末"死路"；导入会被 F3 锚点拒绝 |
@@ -55,18 +55,28 @@ stateId = 本地整合包中前面所有方块的 state 数之和
 
 ## 怎么导出（一次就够）
 
-把 `zz_angel_dump_block_palette.js`（就在本目录里）复制到整合包的
-`kubejs/startup_scripts/src/`，然后**重启一次客户端**（或游戏里执行
-`/kubejs reload startup_scripts`）。
+把 `zz_angel_dump_block_palette.js`（就在本目录里，**v4**）复制到整合包的
+`kubejs/client_scripts/src/`，然后启动客户端并**进一次世界**。
+
+> ⚠️ **v4 必须是 client script，不能再放 `startup_scripts/`。**
+> 逐 state 的碰撞形状只能问 `BlockState.getCollisionShape(BlockGetter, BlockPos)`，
+> 那需要一个 `BlockGetter`；唯一能拿到的绑定是 `Client`（= `Minecraft.getInstance()`），
+> 而 `Client` 这个绑定**只在客户端脚本里注册**（反汇编
+> `BuiltinKubeJSClientPlugin.registerBindings` 实测）。放回 startup_scripts 只会得到
+> 一个 `ReferenceError`。
+>
+> 为什么是"进一次世界"而不是"加载即跑"：客户端脚本在**主菜单**就加载了，那时
+> `Client.level` 还是 `null`。v4 装上定时器后每 50ms 看一次，进了世界才开始导。
 
 输出**只走日志**：每行前缀 `ANGELPAL|`，格式
 
 ```
-<注册序号>|<state个数>|<注册表数字id>|<方块名>|<属性规格>
+<注册序号>|<state个数>|<注册表数字id>|<方块名>|<属性规格>|<形状列>
 ```
 
-外加三行自检：`ANGELPAL-HEADER|rows=…|zeroCount=…|noRid=…|badName=…`、
-`ANGELPAL-DONE|rows=…`、失败时 `ANGELPAL-ERROR|…`。**先 grep 这几行**就知道成没成。
+外加四种非数据行：`ANGELPAL-HEADER|rows=…|probeOk=…|probe=…`（**排在所有数据行前面**）、
+`ANGELPAL-PROGRESS|…`、`ANGELPAL-DONE|rows=…|shapeFail=…|blockFail=…`、
+失败时 `ANGELPAL-ERROR|…`。**先 grep 这几行**就知道成没成。
 
 > **故意不输出 base state id。** 客户端那边取 state id 只有
 > `Block.BLOCK_STATE_REGISTRY`（private）或 `Block.getId`（会被 KubeJS 的
@@ -76,32 +86,130 @@ stateId = 本地整合包中前面所有方块的 state 数之和
 > 做名字→服务端 id 映射，缺任何名字就拒绝猜测。
 
 ```bash
-node scripts/angelpal-to-palette.js --selftest      # 24 条断言
+node scripts/angelpal-to-palette.js --selftest      # 48 条断言
 node scripts/angelpal-to-palette.js                 # 读日志 + minecraft-block.json → angel_block_palette.txt
 ```
 
-它会做三道检查，任何一道不过就拒绝出表：
+它会做这些检查，任一不过就拒绝出表：
 
 | 检查 | 抓什么 |
 |---|---|
-| 日志序号连续 `0..n-1` | 日志被轮转截断或 dump 行缺失 |
+| HEADER 的 `rows=` 与实际抽到的行数一致 | 日志被轮转截断（前缀和会整体偏移） |
+| HEADER 的 `probeOk=true` | 形状探针没过 ⇒ 整列形状不可信 |
+| 日志序号连续 `0..n-1` | dump 行缺失 |
 | 名字映射到 Forge S2C id 且 id 完整连续 | 防止把 KubeJS entrySet 序号误当服务端 registry id |
 | 原版 1003 个方块按 id 对齐 | 名字错、first 未按累计扩容漂移、count 小于基线 |
+| 形状列能解回 `count` 项（`block-palette.decodeShapes`） | 形状列被截断 / 两端编码不一致 |
 | F3 锚点预演 | 模组段累计偏移错了 |
 
-> 把脚本放到 `<整合包目录>/kubejs/startup_scripts/src/`，删掉那个文件即可撤销。
+> `shapeFail` / `blockFail` 大于 0 **不拒绝**，只打警告：那些方块退回按名字猜
+> （= 改造前的行为，没有回归），其余方块不受影响。结构性失败由探针负责拦。
+> 把脚本放到 `<整合包目录>/kubejs/client_scripts/src/`，删掉那个文件即可撤销。
+
+### 形状这一列（v4 新增）
+
+**为什么必须多导这一列。** 名字和属性只能告诉 `pathing.js`「这是什么方块」，
+**告诉不了它「这一格挡不挡人」**。没有形状时只能按名字猜：
+
+```
+薄方块白名单（`THIN_BLOCK_SUFFIXES`）→ 可穿过
+`_bed` 结尾 → 9/16 格高
+其余 → 整块实心
+```
+
+整合包里大量非整格方块（家具、模组台阶/楼梯/栅栏/地毯、路径块…）全被猜错 ——
+**这才是"卡在门口出不去"那类问题的根**，`pathing.lowBlockHeight` 只是补丁。
+
+**形状不可能从模组 jar 反推**（同 state 数那件事：blockstates 的 variants 允许省属性
+当通配符，`glass_trapdoor` 真值 64 态只数得出 16 态）。唯一精确来源还是那个跑着的客户端。
+
+**采样位置在世界高度之外**（`y = 1000`）。形状函数拿到的 `BlockGetter` 只有"问邻格是什么"
+这一个用途；我们要的是**孤立形状**。`Level.getBlockState` 对界外坐标走
+`isOutsideBuildHeight` 分支**直接返回 `VOID_AIR`**（反汇编 `Level.m_8055_` 证实），于是
+邻格 ±1 也都在界外 → 全返回空气 → 等价 `CollisionContext.empty()`；而且**完全不碰区块**
+（那个分支在取 chunk 之前就 return），结果与玩家站在哪、地形长什么样无关，可复现。
+
+**编码**（与 `block-palette.js` 的 `encodeShapes` **逐字节一致**，两边各钉一份自测，
+改一边必须改另一边）：
+
+| 串 | 含义 |
+|---|---|
+| `<def0>;<def1>;…~<索引>` | **表形态**：def 表 + 逐 state 索引（索引字符 `0-9a-zA-Z`，62 个） |
+| 单个 def（如 `.`） | 压缩形态：**所有 state 同形**（绝大多数方块） |
+| `.` | 整格 `[[0,0,0,1,1,1]]` |
+| `-` | **没有碰撞**（空气、草、火把…）—— 与"读不到"是两回事 |
+| `?` | 这个 state **读不到**（索引里的 `?` 也是这个意思） |
+| `x1:x2:…:z2` | 6 个数字，单位是**格**（1.20.1 高度用 24 = 1.5 格） |
+| `a+b` | 多个箱子（栅栏/楼梯那种）用 `+` 连 |
+| `!…` | 兜底：形状种类比索引字母表还多（原版只有 `chorus_plant`），逐 state 直接列 |
+
+分隔符选 `,`/`;`/`+`/`:`/`~`/`!` 而**不含 `|`**：整行本来就是 `|` 分列，用 `|` 会撑坏列数。
+数字按二进制小数存（1/16、13/32 都是精确二进制小数，`String()` 能原样写回）。
+
+**体积**：实测原版 24135 个 state 编码后 **167 KB**（平均 7.08 字符/state）。
+全表 826504 个 state 约 5–6 MB 的日志。
+
+**向后兼容**：旧 5 列 dump 照旧工作 —— `entry.shapes === null` → 一个形状字段都不填
+→ `needsShapeFallback` 命中 → 走原来的按名字猜。
+
+#### 形状"不能由单个 state 静态决定"的方块
+
+逐 state 导出对**绝大多数**方块是完整的，包括看起来最像"要看邻居"的那几类：
+栅栏 / 墙 / 铁栏 / 玻璃板的连接状态**本身就是 block state 属性**
+（`north`/`south`/`east`/`west`/`up`）。实测 `oak_fence` 32 state → 16 种形状、
+`cobblestone_wall` 324 state → 32 种（含一种空碰撞）。**这几类不存在"邻居读不到"的问题。**
+
+真正静态决定不了的，原版用 `BlockBehaviour.Properties.dynamicShape()` 标出来。
+反汇编客户端 srg jar 的 `Blocks.<clinit>`（`dynamicShape()` 的 SRG 名是 `m_60988_`），
+1.20.1 **全表只有 6 个调用点**，共 22 个方块：
+
+| 方块 | 为什么静态决定不了 |
+|---|---|
+| `shulker_box`（含 16 色，共 17 个） | 开合由**方块实体**驱动，开着时碰撞会缩 |
+| `moving_piston` | 只在活塞推动的**那一瞬**存在，形状跟着方块实体走 |
+| `bamboo` | 形状要看**下面那格**（是不是竹子） |
+| `scaffolding` | `bottom` 属性由**下面那格**推导 |
+| `powder_snow` | 碰撞取决于**踩上去的实体**（人会陷进去） |
+| `pointed_dripstone` | 形状要看**上方/下方**的滴水石 |
+
+处理办法：**照导不误，并标记出来**（原版记录带 `angelShapeDynamic: true`）。理由是静态
+采样得到的是**保守的那一侧**：关着的潜影盒 / 未伸出的活塞 / 单根竹子 / 未连接的脚手架 /
+没被踩入的细雪 / 孤立的滴水石，碰撞都不小于动态时的最小值。宁可多绕一步，也不要穿模。
+
+> ⚠️ `potted_bamboo` 名字以 `_bamboo` 结尾，但它的形状来自 `FlowerPotBlock`（**静态**），
+> **不在**那 6 个调用点里。判据里用 `(?!potted_)` 显式排除 —— 端到端演练实测被误标过一次。
+
+> ⚠️ **模组方块拿不到权威依据**：模组不会把 `dynamicShape()` 导出来。名字后缀撞上的
+> （`kaleidoscope_cookery:chair_bamboo`、`sophisticatedstorage:iron_shulker_box`…）只记进
+> `angelShapeDynamicGuessed`。实测整合包里撞上 **21 个**，全是普通家具/箱子，形状其实是静态的。
+> **这两个数必须分开报**（`/config` 的 `shapes.dynamic` / `shapes.dynamicGuessed`）——
+> 混成一个就没法解释：猜的（21）跟真的（22）几乎一样多。
+
+#### 兜底还留不留
+
+`pathing.lowBlockHeight`（`_bed` → 9/16）**保留，但降级为兜底**：它只在
+`needsShapeFallback` 命中时才可能生效，也就是"旧 5 列 dump"或"形状列读不到"的情况。
+有了真实形状以后，模组床走的是 dump 里的真实形状，不再走名字规则。
+
+判据的**顺序**（`applyUnknownBlockPolicy` 里，一处）：
+`运行时白名单` → `已有权威形状（needsShapeFallback 不命中）→ 一个字都不改` →
+`薄方块白名单` → `矮方块（床）` → `整块实心`。
 
 ### 🔴 KubeJS 脚本的四条铁律（前三版全踩了，客户端直接被弹窗挡住）
 
 `common.properties` 里 `startupErrorGUI=true` ⇒ **任何 startup script 错误都会弹一个
-阻断式窗口**。所以诊断脚本必须按下面写。每条都有字节码证据（`javap`）：
+阻断式窗口**。（v4 已搬到 `client_scripts/`，那里的错误不阻断进游戏，但同样会让脚本
+整段不跑，一样要遵守。）每条都有字节码证据（`javap`）：
 
 | 铁律 | 为什么 |
 |---|---|
 | **绝不写 `const`，用 `let`** | Rhino 的 `Interpreter.doSetConstVar` 在**运行期**抛 `msg.var.redecl`（`redeclaration of var X`）。本包里所有**能正常跑**的脚本（`effect.js` / `vefcblocks.js` / `vefcfoods.js`）**一个 `const` 都没有**，全用 `let`。出问题的那版就是写了 `const` |
-| **整个函数体都放进 `try`** | 只要有一句在 `try` 外面（比如 `const OUT_NAME = …`），抛出来就是未捕获的 startup 错误 → 弹窗 |
+| **整个函数体都放进 `try`** | 只要有一句在 `try` 外面（比如 `const OUT_NAME = …`），抛出来就是未捕获的错误 → 弹窗 |
 | **只用 `console.info`，不用 `console.error`/`warn`** | KubeJS 把这两个级别记成脚本错误 → 同样弹窗。坏掉的诊断脚本最多只该留一行 INFO |
 | **不调 `Java.loadClass`** | `JavaWrapper` 只有 `loadClass / tryLoadClass / createConsole`，**没有 `Java.from`**；而且 `const X = Java.loadClass('…X')` 正好踩第一条。改用 KubeJS 绑定：`Utils.getRegistry(Utils.id('minecraft','block'))` → `RegistryInfo.entrySet()` |
+
+> ⚠️ **client script 里 v4 顶层的三个 `var` 是故意的，不是笔误。** 客户端脚本会被
+> F3+T 重载，而 `var` 重声明合法、顶层 `let` 重声明会抛。函数声明同理。
 
 **实际存在的绑定**（`BuiltinKubeJSPlugin.registerBindings` 全表）：
 `global, Platform, console, JavaMath, ResourceLocation, Duration, settings, onEvent, java,
@@ -112,15 +220,41 @@ SECOND, MINUTE, HOUR, Color, BlockStatePredicate, Vec3d, Vec3i, Vec3f, Vec4f, Ma
 Matrix4f, Quaternionf, RotationAxis, BlockPos, DamageSource, SoundType, BlockProperties`
 + 所有事件组。
 
-> ⚠️ **`BuiltInRegistries` 不在这个表里。** 有一版以为它是预绑定的全局名而直接引用
+**客户端脚本**额外注册（`BuiltinKubeJSClientPlugin.registerBindings`）：
+`Client`（= `Minecraft.getInstance()`）、`Painter`、`setTimeout`、`clearTimeout`、
+`setInterval`、`clearInterval`。**`Client` 只在这里有** —— 这就是 v4 必须放
+`client_scripts/` 的原因。`setInterval` 由 `MinecraftClientMixin` 在客户端线程上 tick。
+
+> ⚠️ **`BuiltInRegistries` 不在任何绑定表里。** 有一版以为它是预绑定的全局名而直接引用
 > —— 那是 `ReferenceError`，结果是"脚本没报错但一行数据都没出"。
 
 **可读方法名是安全的**：KubeJS 的 Rhino 通过 `mm.jsmappings`（gzip，781 KB，
 在 `rhino-forge-*.jar` 里）做成员重映射。已核对存在：`getStateDefinition`(`m_49958_`)、
 `getPossibleStates`(`m_61092_`)、`getProperties`、`getPossibleValues`(`m_6908_`)、
-`getName`(`m_6940_`)、`entrySet`(`m_6579_`)、`location`(`m_135782_`)。
+`getName`(`m_6940_`)、`entrySet`(`m_6579_`)、`location`(`m_135782_`)，
+以及 v4 新用到的 `getCollisionShape`、`toAabbs`、`iterator`、`hasNext`、`next`、
+`getVanillaRegistry`、`getId`、`minX`…`maxZ`。
 
 **`Utils` 绑定的是 `UtilsWrapper`，它没有 `getPath`**（`getPath` 在未绑定的 `UtilsJS` 上）。
+
+**`getCollisionShape` 选的是两参重载** `(BlockGetter, BlockPos)` —— 它的字节码就是
+`CollisionContext.empty()` 再转发到三参版，正好是我们要的"孤立形状"，而且绕开了
+拿不到的 `CollisionContext`。
+
+### 探针：让"形状列整列不可信"在第一秒暴露
+
+`HEADER` 里的 `probe=` 会用三个已知答案的方块试一遍整条链
+（`getCollisionShape` → `toAabbs` → AABB 字段名 → 编码）：
+
+| 方块 | 期望 |
+|---|---|
+| `stone` | `.`（整格） |
+| `air` | `-`（无碰撞） |
+| `ladder` | `0:0:0:0.8125:1:1`（3/16 厚） |
+
+这一串里任何一个可读名没被 `jsmappings` 接上，都会在**每个 state 上**抛异常 ——
+结果是"导出了一份形状全是 `?` 的 dump"，看起来跑完了、其实白跑，还得多重启一次客户端。
+探针让这件事在第一秒就暴露：`probeOk=false` → 脚本自己停下并报 `ANGELPAL-ERROR`。
 
 导入：
 
@@ -175,6 +309,16 @@ node scripts/palette-guard-test.js   # 12 条断言：演示前两道放行、�
 所以**调色板是梯子问题的前置条件**，光配 `MC_CLIMBABLE_BLOCK_NAME` 不会生效。
 `POST /registry/import-palette` 现在必须注入成功才算导入成功；
 `GET /palette` 的 `injectedIntoRegistry` 才是该看的指标（不是 `loaded`）。
+
+注入成功之后，**模组方块的碰撞形状也是真的了** —— `palette-registry.js` 会把 dump 第 6 列
+填进记录的 `shapes` / `stateShapes` / `boundingBox`，于是 `pathing.needsShapeFallback`
+不再命中，`applyUnknownBlockPolicy` 一个字都不改地放行。想确认这件事真的发生了，看
+`GET /config` → `palette.injectedIntoRegistry.shapes`（字段含义见 `AGENTS.md`）。
+
+> ⚠️ **这是一次契约反转。** 老契约是"注入的记录**故意不填** `boundingBox`，让兜底策略
+> 按名字猜"。现在填了，因为 dump 里有**真实**形状。兜底的判据本身没变
+> （仍然只看 `boundingBox === undefined`），只是现在只有"旧 5 列 dump"和"形状列读不到"
+> 两种情况才会命中。`palette-registry.js` 与 `pathing.js` 两边都有断言钉住新契约。
 
 ## 物品：同一个根因，但规则**刻意不同**（别"统一"它）
 

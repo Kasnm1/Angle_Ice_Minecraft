@@ -40,7 +40,13 @@ function catalog () {
     for (const qq of c.quests || []) {
       for (const t of qq.tasks || []) {
         if (t.type !== 'item' || !t.item || items.has(t.item)) continue;
-        items.set(t.item, { id: t.item, chapter: c.title, quest: qq.title, zh: t.itemZh || null });
+        // 任务书里的名字带游戏颜色代码（§e…），去掉；有 311 道菜任务书没给中文名（itemZh 就是物品 id）—— 从名字表补
+        let zh = t.itemZh ? t.itemZh.replace(/§./g, '').trim() : null;
+        if (!zh || zh === t.item || /^[a-z0-9_]+:[a-z0-9_/]+$/.test(zh) || zh.includes('%')) {   // "烤%1$s" 这种带格式占位符的也不算名字
+          const n = knowledge.label(t.item).replace(/\([^)]*\)$/, '');
+          zh = n && n !== t.item && !n.includes('%') ? n : null;   // "%1$s" 这种是格式占位符，不是名字
+        }
+        items.set(t.item, { id: t.item, chapter: c.title, quest: qq.title, zh });
         ids.push(t.item);
       }
     }

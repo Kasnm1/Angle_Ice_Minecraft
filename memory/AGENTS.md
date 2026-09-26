@@ -7,6 +7,7 @@
 | `mind.json` (+`.bak`) | `memory-store.js`（她自己写的记忆：对人的看法、教训、承诺、知识图谱、心愿进度、每个世界的家） | ❌ 忽略（隐私：含对每个玩家的印象，与 `journal.md` 同等对待） | **`mind.js` 在跑时不许手改**（它整份重写，会覆盖你的改动）。先停进程，改完保留 `.bak` |
 | `journal.md` | `journal.js` / `mind.js` —— 事件与聊天明文 | ❌ 忽略（隐私） | 只追加。压缩重复条目用 `scripts/journal-compact.js` |
 | `state.json` | `autopilot.js` 每次存盘整份覆盖 | ❌ 忽略 | 只读。是"停机时她在哪、血量几、背包有什么"的最快来源 |
+| `self-review.jsonl` | `self-review.js` —— 自我复盘：程序在异常点自动记 + 她用 `report_issue` 留的纸条 | ❌ 忽略（现场里有玩家聊天原文） | 只追加。读报告用 `node self-review.js`；确认是 bug 的再按下面格式整理进 `field-log.md` |
 | `events.jsonl` | `events.js` 决策留痕，一行一个 JSON | ❌ 忽略 | 只读。查"她为什么做了这个决定"用它 |
 | **`field-log.md`** | **开发者**（人或 agent） | ✅ | 见下 —— 项目最有价值的资产 |
 | `issues-report.md` | 开发者，阶段性汇总 | ✅ | 历史快照（P1–P21 阶段），新问题不往这里写 |

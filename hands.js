@@ -1289,6 +1289,101 @@ async function offLadder (bot, state, targetY) {
   return `从梯子上爬上去、迈到了 (${r.at.x},${r.at.y},${r.at.z})`;
 }
 
+// ------------------------------------------------------------------ 跟随（先对齐楼层）
+
+/** 跟随循环的节奏：每秒看一眼 */
+const FOLLOW_TICK_MS = 1000;
+/** 看不见玩家多久之后放弃（下线 / 走出视野）—— 够久到"他只是跑远了"，又不至于永远挂着 */
+const FOLLOW_LOST_MS = 15000;
+
+/**
+ * 跟着一个玩家。
+ *
+ * 原来只是 GoalFollow（按直线距离追）：玩家上了楼，她就跑到玩家**正下方**站着 ——
+ * 水平距离对上了，高度差 5 格，寻路器不会从梯子上楼，于是一直在一楼（玩家指出）。
+ * 真人跟人是先上同一层楼，再往他身边走。所以：
+ *   · 高度差 ≥ 2.5 格（不在同一层）：走带梯子和门的路线（go()）到他那一层
+ *   · 同一层：交给 GoalFollow 贴着走
+ * 每秒看一次；停止（/stop 清掉 currentAction）或换了跟随对象就退出。
+ *
+ * ⚠️ 退出这件事有三条路，缺一条就会"看起来还在跟，其实早就跟丢了"：
+ *   ① `/stop` / 别的动作改了 `currentAction` → `alive()` 变 false
+ *   ② 换了跟随对象 → `followSeq` 变了 → 旧循环退出（新旧两个循环同时驱动寻路器会打架）
+ *   ③ 玩家下线 / 走出视野 → `bot.players[name]` 会被 mineflayer **整个删掉**，
+ *      `?.entity` 恒为 undefined → 旧写法只会每秒空转、永远不退（`/status` 一直显示在跟随）。
+ * 另外：**循环体抛错不能被最外层 `.catch(() => {})` 静默吞掉** —— 吞掉之后循环直接结束，
+ * 外面完全看不出来（只有 /debug/follow 里的 lastFollowRoute 停在旧时间戳）。所以内层要 try。
+ */
+function startFollow (bot, state, playerName, dist = 2, opts = {}) {
+  const tag = `following ${playerName}`;
+  const id = (state.followSeq = (state.followSeq || 0) + 1);
+  state.currentAction = tag;
+  // 两个节奏值集中在这里（"同一判据只写一处"）。自测会把它们调小，跑真代码但不用等 15 秒。
+  const tickMs = opts.tickMs || FOLLOW_TICK_MS;
+  const lostMs = opts.lostMs || FOLLOW_LOST_MS;
+  const { goals } = require('mineflayer-pathfinder');
+  const alive = () => state.followSeq === id && state.currentAction === tag;
+  const setFollow = (e) => { if (!(bot.pathfinder.goal instanceof goals.GoalFollow) || bot.pathfinder.goal.entity !== e) bot.pathfinder.setGoal(new goals.GoalFollow(e, dist), true); };
+  // 退出时清掉**我们这一轮**留下的 GoalFollow。
+  // 两道闸：① `followSeq` 变了说明换了跟随对象 —— 新循环的 goal 不归我们管；
+  //        ② 只清 GoalFollow —— 别的动作（`/move` 的 GoalNear…）刚设的 goal 不能动，
+  //           否则跟随循环晚一秒醒来会把那条路线清掉，看起来就是"/move 没反应"。
+  const dropGoal = () => {
+    if (state.followSeq !== id) return;
+    try {
+      if (bot.pathfinder.goal instanceof goals.GoalFollow) bot.pathfinder.setGoal(null);
+    } catch (_) { /* 断线时 pathfinder 可能整个没了 */ }
+  };
+  (async () => {
+    let routing = false;
+    let lostSince = 0;
+    try {
+      while (alive()) {
+        const e = bot.players[playerName]?.entity;
+        if (!e) {
+          // 看不见人：可能只是走远了，也可能下线了（后者 mineflayer 会删掉 bot.players[name]）。
+          // 给一段缓冲，还看不见就退出并如实记下原因 —— 不能每秒空转到天荒地老。
+          if (!lostSince) lostSince = Date.now();
+          if (Date.now() - lostSince >= lostMs) {
+            state.lastFollowStop = { at: Date.now(), reason: `看不见 ${playerName}（下线或走远了）` };
+            break;
+          }
+        } else {
+          lostSince = 0;
+          if (!routing) {
+            const dy = e.position.y - bot.entity.position.y;
+            if (Math.abs(dy) >= 2.5) {
+              routing = true;
+              bot.pathfinder.setGoal(null);
+              try {
+                const r = await go(bot, state, { player: playerName, range: dist, maxMs: 45000, abort: () => !alive() });
+                state.lastFollowRoute = { at: Date.now(), dy: +dy.toFixed(1), arrived: r.arrived, tried: (r.tried || []).slice(-4) };
+              } catch (err) {
+                // 被叫停不算错：`/stop`、换跟随对象都会走到这里
+                state.lastFollowRoute = { at: Date.now(), dy: +dy.toFixed(1), ...(err.aborted ? { aborted: true } : { error: err.message }) };
+              }
+              routing = false;
+              if (!alive()) break;   // 路上被叫停了（/stop 清掉了 currentAction）或换了跟随对象
+            } else setFollow(e);
+          }
+        }
+        await sleep(tickMs);
+      }
+    } catch (err) {
+      // 循环体抛错：记下来（/debug/follow 看得见），别让它静默结束
+      state.lastFollowStop = { at: Date.now(), reason: `跟随循环出错：${err.message}` };
+    } finally {
+      routing = false;
+      dropGoal();
+    }
+  })().catch(err => {
+    // 兜底：内层 try 没拦住的（比如 finally 里的 dropGoal 又抛了）也不能静默消失。
+    // 旧写法是 `.catch(() => {})` —— 循环一死外面完全看不出来。
+    state.lastFollowStop = { at: Date.now(), reason: `跟随循环兜底捕获：${err.message}` };
+  });
+  return { following: playerName };
+}
+
 // ------------------------------------------------------------------ 晃一晃脱困
 
 /**
@@ -1425,9 +1520,21 @@ async function followRoute (bot, state, target, range, tried, t0, maxMs) {
   return false;
 }
 
-async function go (bot, state, { x, y, z, player, range = 1.8, maxMs = 90000 } = {}) {
+/** 被叫停（`/stop`、换了跟随对象）时抛这个：`aborted` 让调用方能和"走不通"分开处理 */
+function abortError () {
+  const e = new Error('被叫停了');
+  e.aborted = true;
+  return e;
+}
+
+async function go (bot, state, { x, y, z, player, range = 1.8, maxMs = 90000, abort } = {}) {
   const t0 = Date.now();
   const tried = [];
+  // `abort` 是"还要不要继续"的谓词（见 startFollow）。没有它的时候 `/stop` 停不住一条在途路线：
+  // pathTo 里的 goto 会被 setGoal(null) 打断，但 go 会接着走下一步、**重新把 goal 设回去** ——
+  // 于是"急停"之后她还在走。所以每个 await 之后都要问一次。
+  const stopped = () => { try { return typeof abort === 'function' && !!abort(); } catch (_) { return false; } };
+  const checkStop = () => { if (stopped()) throw abortError(); };
   const target = () => {
     if (player) {
       const e = bot.players[player]?.entity;
@@ -1443,15 +1550,20 @@ async function go (bot, state, { x, y, z, player, range = 1.8, maxMs = 90000 } =
   const startDist = dist();
   if (near()) return { arrived: true, already: true, distance: +startDist.toFixed(1) };
   try { const o = await offLadder(bot, state, target().y); if (o) tried.push(o); } catch (e) { tried.push(`挂在梯子上，想下来没成：${e.message}`); }
+  checkStop();
 
   // 同一层：先直接走（最常见、最快）；跨层或者直接走不通：规划一条带梯子和门的路线
   const sameFloor = Math.abs(target().y - Math.floor(bot.entity.position.y + 0.01)) < 2;
   if (sameFloor) {
     const err0 = await pathTo(bot, target(), range, eta());
-    if (!err0 || near()) return { arrived: true, distance: +dist().toFixed(1), tried, ms: Date.now() - t0 };
-    tried.push(`直接走：${err0}`);
+    checkStop();
+    // 只信实际距离：寻路器有时一步没走就"完成"了（实测 45ms 返回、还差 3 格，却报了到达）
+    if (near()) return { arrived: true, distance: +dist().toFixed(1), tried, ms: Date.now() - t0 };
+    tried.push(`直接走：${err0 || '寻路器说走完了，其实还差 ' + dist().toFixed(1) + ' 格'}`);
   }
-  if (await followRoute(bot, state, target, range, tried, t0, maxMs) && near()) {
+  const routed = await followRoute(bot, state, target, range, tried, t0, maxMs);
+  checkStop();
+  if (routed && near()) {
     return { arrived: true, distance: +dist().toFixed(1), tried, ms: Date.now() - t0 };
   }
 
@@ -1462,15 +1574,19 @@ async function go (bot, state, { x, y, z, player, range = 1.8, maxMs = 90000 } =
       const r = dy > 0 ? await climbUp(bot, state, { targetY: target().y }) : await climbDown(bot, state, { targetY: target().y });
       tried.push(`${dy > 0 ? '上楼' : '下楼'}：${r.fromY}→${r.toY}`);
     } catch (e) { tried.push(`${dy > 0 ? '上楼' : '下楼'}没成：${e.message}`); }
+    checkStop();
   }
 
   // ② 走到旁边
   let err = await pathTo(bot, target(), range, eta());
-  if (!err || near()) return { arrived: true, distance: +dist().toFixed(1), tried, ms: Date.now() - t0 };
+  checkStop();
+  if (near()) return { arrived: true, distance: +dist().toFixed(1), tried, ms: Date.now() - t0 };
+  err ||= `寻路器说走完了，其实还差 ${dist().toFixed(1)} 格`;
   tried.push(`寻路：${err}`);
 
   // ③ 开挡路的门（往目标那边的、关着的）
   for (let n = 0; n < 3 && Date.now() - t0 < maxMs; n++) {
+    checkStop();
     const me = bot.entity.position; const tg = target();
     const doors = doorsNear(bot, 10).filter(d => !d.open && !/iron/.test(d.name))
       .map(d => ({ ...d, toTarget: Math.hypot(d.x + 0.5 - tg.x, d.z + 0.5 - tg.z) }))
@@ -1483,13 +1599,16 @@ async function go (bot, state, { x, y, z, player, range = 1.8, maxMs = 90000 } =
       tried.push(`开了挡路的${d.kind}(${d.x},${d.y},${d.z})`);
     } catch (e) { tried.push(`想开${d.kind}(${d.x},${d.y},${d.z})没开成：${e.message}`); break; }
     err = await pathTo(bot, target(), range, eta());
-    if (!err || near()) return { arrived: true, distance: +dist().toFixed(1), tried, ms: Date.now() - t0 };
+    checkStop();
+    if (near()) return { arrived: true, distance: +dist().toFixed(1), tried, ms: Date.now() - t0 };
   }
 
   // ④ 放宽范围 / 先走一段
   for (const r2 of [3, 5]) {
     if (Date.now() - t0 > maxMs) break;
+    checkStop();
     err = await pathTo(bot, target(), r2, eta());
+    checkStop();
     if (!err) { tried.push(`放宽到 ${r2} 格：走到了`); break; }
     tried.push(`放宽到 ${r2} 格：${err}`);
   }
@@ -1498,10 +1617,13 @@ async function go (bot, state, { x, y, z, player, range = 1.8, maxMs = 90000 } =
     const k = Math.min(1, 8 / dist());
     const mid = new Vec3(Math.floor(me.x + (tg.x - me.x) * k), Math.floor(me.y), Math.floor(me.z + (tg.z - me.z) * k));
     const e2 = await pathTo(bot, mid, 3, 20000);
+    checkStop();
     tried.push(e2 ? `先往目标走一段：${e2}` : `先往目标走了一段到 (${mid.x},${mid.z})`);
     if (!e2) {
       err = await pathTo(bot, target(), range, eta());
-      if (!err || near()) return { arrived: true, distance: +dist().toFixed(1), tried, ms: Date.now() - t0 };
+      checkStop();
+      // 只信实际距离（第四处，和上面三处同一个判据）
+      if (near()) return { arrived: true, distance: +dist().toFixed(1), tried, ms: Date.now() - t0 };
     }
   }
 
@@ -2447,9 +2569,182 @@ function routes ({ state, withTimeout }) {
     'POST /backpack/open': async () => backpackOpen(bot(), state),
     // 调试：原样发一个模组消息（逆向模组协议时用）{ channel, hex }
     'POST /debug/payload': async (b = {}) => { bot()._client.write('custom_payload', { channel: b.channel, data: Buffer.from(b.hex || '', 'hex') }); await sleep(b.waitMs || 1500); return { sent: b, window: summarizeWindow(bot(), state) }; },
+    // 调试：寻路器眼里这一格是什么（safe=能站进去、physical=实心）
+    'GET /debug/mvblock': async (_, q = {}) => {
+      const mv = bot().pathfinder.movements;
+      const out = [];
+      for (const dy of [-1, 0, 1]) {
+        const b = mv.getBlock(new Vec3(+q.x, +q.y, +q.z), 0, dy, 0);
+        let props = null; try { props = b?.getProperties?.(); } catch (e) { props = 'ERR ' + e.message; }
+        out.push({ y: +q.y + dy, name: b?.name, props, hasGP: typeof b?.getProperties, stateId: b?.stateId, safe: b?.safe, physical: b?.physical, height: b?.height, bbox: b?.boundingBox, shapes: b?.shapes?.length });
+      }
+      return { patched: !!mv.__openDoorsPatched, blocks: out };
+    },
+    'GET /debug/follow': async () => ({
+      currentAction: state.currentAction,
+      followSeq: state.followSeq || 0,
+      lastFollowRoute: state.lastFollowRoute || null,
+      // 跟随循环退出的原因（看不见人 / 循环体抛错）—— 不记下来就只能看到"她不动了"
+      lastFollowStop: state.lastFollowStop || null,
+    }),
     'GET /debug/soph': async () => ({ lastSync: state.lastSophSync || null, error: state.lastSophError || null }),
     'GET /equipment': async () => ({ equipment: equipment(bot()), food: bot().food, health: bot().health, curios: state.curiosWorn || null, backpack: state.backpackSeen || null }),
   };
 }
 
-module.exports = { install, routes, slotByName, foodScore, fullId, botName };
+// ------------------------------------------------------------------ 自测
+
+/**
+ * ⚠️ 这个文件以前**没有** `--selftest`（AGENTS.md 第 4 节写着"这两个没有 --selftest"）。
+ * 顶层只 `require('vec3')`，其余全是函数内 require —— 所以 require 本文件**没有副作用**
+ * （不连服务器、不装 bridge 路由），可以安全地直接跑。
+ *
+ * 驱动的是**真实的 startFollow**（不是复制一份逻辑），用假 bot / 假 state。
+ * 覆盖它退出的几条路：`/stop`、换跟随对象、玩家下线、循环体抛错。
+ */
+if (require.main === module && process.argv.includes('--selftest')) {
+  let pass = 0, total = 0;
+  const check = (label, got, expect) => {
+    total++;
+    const ok = JSON.stringify(got) === JSON.stringify(expect);
+    if (ok) pass++;
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${label}${ok ? '' : `\n        实得 ${JSON.stringify(got)}，期望 ${JSON.stringify(expect)}`}`);
+  };
+  const wait = (ms) => new Promise(r => setTimeout(r, ms));
+  const { goals } = require('mineflayer-pathfinder');
+
+  /** 假 bot：startFollow 只用到 pathfinder.goal / setGoal、players、entity.position */
+  const rig = () => {
+    const players = {};
+    const setGoalCalls = [];
+    const pathfinder = { goal: null, setGoal (g) { setGoalCalls.push(g); this.goal = g; } };
+    const bot = { players, pathfinder, entity: { position: { x: 0, y: 64, z: 0 } } };
+    players.Ann = { entity: { position: { x: 1, y: 64, z: 0 } } };   // 同层
+    players.Bob = { entity: { position: { x: 2, y: 64, z: 0 } } };
+    return { bot, players, pathfinder, setGoalCalls };
+  };
+  // 跑真循环，但把节奏调小 —— 不用为了测"看不见人之后退出"真等 15 秒
+  const TICK = { tickMs: 5, lostMs: 40 };
+
+  /**
+   * 假 bot，够 `go()` 跑到"同一层先直接走"那一步：
+   * `blockAt` 一律给岩浆 → `wiggle` 会跳过所有试探方向（省掉几秒等待）；`goto` 立刻失败。
+   */
+  const mkGoBot = (goto) => ({
+    entity: { position: new Vec3(0, 64, 0), yaw: 0 },
+    players: { Ann: { entity: { position: new Vec3(8, 64, 0) } } },
+    registry: { blocksByName: {} },
+    blockAt: () => ({ name: 'minecraft:lava', boundingBox: 'block' }),
+    findBlocks: () => [],
+    setControlState: () => {},
+    clearControlStates: () => {},
+    look: async () => {},
+    pathfinder: { goal: null, setGoal () {}, goto },
+  });
+
+  (async () => {
+    console.log('\n[1/8] 同层 → 交给 GoalFollow 贴着走');
+    {
+      const { bot, pathfinder, setGoalCalls } = rig();
+      const state = {};
+      startFollow(bot, state, 'Ann', 2, TICK);
+      await wait(30);
+      check('设的是 GoalFollow', pathfinder.goal instanceof goals.GoalFollow, true);
+      check('追的是 Ann 的实体', pathfinder.goal?.entity === bot.players.Ann.entity, true);
+      check('currentAction 标着在跟随', state.currentAction, 'following Ann');
+      check('同层只设了一次 goal（没在反复重设）', setGoalCalls.length, 1);
+      state.currentAction = null;                                   // 模拟 /stop，别让它一直跑
+    }
+
+    console.log('\n[2/8] /stop（清掉 currentAction）→ 循环退出并清掉 GoalFollow');
+    {
+      const { bot, pathfinder, setGoalCalls } = rig();
+      const state = {};
+      startFollow(bot, state, 'Ann', 2, TICK);
+      await wait(30);
+      state.currentAction = null;                                   // /stop 就是这么做的
+      const n = setGoalCalls.length;
+      await wait(40);
+      // 注意：退出时会**主动** setGoal(null) 收尾，所以 setGoal 的调用数会 +1。
+      // 真正要钉住的是"不再设 GoalFollow"—— 否则就是循环没停。
+      const refollows = setGoalCalls.slice(n).filter(g => g instanceof goals.GoalFollow).length;
+      check('退出后不再设 GoalFollow（循环真的停了）', refollows, 0);
+      check('把残留的 GoalFollow 清掉了', pathfinder.goal, null);
+    }
+
+    console.log('\n[3/8] 玩家下线（mineflayer 会删掉 bot.players[name]）→ 退出并记下原因');
+    {
+      const { bot, players, pathfinder } = rig();
+      const state = {};
+      startFollow(bot, state, 'Ann', 2, TICK);
+      await wait(30);
+      delete players.Ann;
+      await wait(120);
+      check('记下"看不见 Ann"', /看不见 Ann/.test(state.lastFollowStop?.reason || ''), true);
+      check('清掉追鬼的 GoalFollow', pathfinder.goal, null);
+    }
+
+    console.log('\n[4/8] 换跟随对象 → 旧循环退出，但不清新的 goal');
+    {
+      const { bot, pathfinder } = rig();
+      const state = {};
+      startFollow(bot, state, 'Ann', 2, TICK);
+      await wait(30);
+      startFollow(bot, state, 'Bob', 2, TICK);                      // 换人
+      await wait(40);
+      check('goal 追的是新对象 Bob', pathfinder.goal?.entity === bot.players.Bob.entity, true);
+      check('旧循环没有把新的 goal 清掉', pathfinder.goal instanceof goals.GoalFollow, true);
+      check('followSeq 递增（旧循环据此退出）', state.followSeq, 2);
+    }
+
+    console.log('\n[5/8] 循环体抛错 → 记下来，不静默死掉');
+    {
+      const { bot } = rig();
+      // 读 goal 就抛 —— setFollow 第一步就是读它
+      bot.pathfinder = { get goal () { throw new Error('boom'); }, setGoal () {} };
+      const state = {};
+      startFollow(bot, state, 'Ann', 2, TICK);
+      await wait(30);
+      check('记下循环体出错', /跟随循环出错：boom/.test(state.lastFollowStop?.reason || ''), true);
+    }
+
+    console.log('\n[6/8] 别的动作的 goal 不能被我清掉');
+    {
+      const { bot, pathfinder } = rig();
+      const state = {};
+      startFollow(bot, state, 'Ann', 2, TICK);
+      await wait(30);
+      // 模拟 /move：先改 currentAction，再把 goal 换成 GoalNear
+      state.currentAction = 'moving to 1,64,1';
+      const near = new goals.GoalNear(1, 64, 1, 1);
+      pathfinder.goal = near;
+      await wait(40);
+      check('跟随退出时没有动 /move 的 GoalNear', pathfinder.goal === near, true);
+    }
+
+    console.log('\n[7/8] go：被叫停时立刻抛 aborted（`/stop` 要停得住在途路线）');
+    {
+      let aborted = false;
+      const bot = mkGoBot(async () => { aborted = true; throw new Error('GoalChanged'); });
+      let err = null;
+      try { await go(bot, {}, { player: 'Ann', range: 1.8, abort: () => aborted }); } catch (e) { err = e; }
+      check('goto 失败后 abort 变真 → 抛 aborted', err?.aborted, true);
+      check('错误信息是"被叫停了"', err?.message, '被叫停了');
+    }
+
+    console.log('\n[8/8] go：abort 一直为假 → 不误报"被叫停"');
+    {
+      const bot = mkGoBot(async () => { throw new Error('GoalChanged'); });
+      let err = null;
+      // maxMs: 1 → 跳过"规划路线"和"放宽范围"两段，让这条用例跑得快
+      try { await go(bot, {}, { player: 'Ann', range: 1.8, maxMs: 1, abort: () => false }); } catch (e) { err = e; }
+      check('走不通就如实报走不通（不是 aborted）',
+        !!(err && !err.aborted && /走不到/.test(err.message)), true);
+    }
+
+    console.log(`\n  ${pass}/${total} 通过`);
+    process.exit(pass === total ? 0 : 1);
+  })();
+}
+
+module.exports = { install, routes, slotByName, foodScore, fullId, botName, startFollow };

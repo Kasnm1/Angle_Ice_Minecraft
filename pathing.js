@@ -326,6 +326,117 @@ function resolveClimbableBlockIds (nameToId, names) {
  *
  * 补丁**只包一次**（`__climbablePatched`），重连时只替换集合，不重复套娃。
  */
+/**
+ * 开着的门当成能走的格子。
+ *
+ * mineflayer-pathfinder 判"能不能走进去"只看 `boundingBox === 'block'`（movements.js getBlock），
+ * 门（不管开没开）都是 'block' —— 于是在它眼里**开着的门也是一堵墙**，
+ * 门里面就成了死路：`POST /move` 到门外 → `No path found`（2026-09-26 实测：
+ * 厨房出口那扇被踏板顶开的 dark_oak_door，open=true，她在门里出不来）。
+ * 真实碰撞：开着的门只剩贴在门框一侧的一块薄板，顺着门洞方向走过去不受影响。
+ *
+ * 只放行**开着的**门（名字以 _door / door 结尾，不含活板门 trapdoor）；关着的门仍是墙，
+ * 由 hands.js go() 的"开挡路的门"那一步去开（真人也是先开门再走）。
+ *
+ * ## ⚠️ 整格放行会**沿着门板方向**误放行 —— 这里按门板法线轴收窄
+ *
+ * 寻路器是**按格**判断的（`getBlock` 只有位置、没有方向），说不出"这一格只许从某个方向进"。
+ * 而开着的门板是**一块薄板**：它只挡**门板法线那根轴**（= 与 `facing` 垂直的轴），
+ * 顺着门洞方向走过去不挡。于是"整格放行"等于把门板也一起放行了：
+ *
+ *   · 门**嵌在墙里**（常态）——法线轴两侧是墙，本来就不可能横穿，放行无害 ✓
+ *   · 门**独立站着 / 双开门外侧没墙**——寻路器会规划出"从一侧进来、穿过门板、从另一侧出去"
+ *     的路径，服务端有真实碰撞把她推回来 → 橡皮筋。
+ *
+ * 所以加一道**可证伪的闸**：读出门板法线轴，只有该轴**两侧都走得进去**时才不放行
+ * （那时当墙 —— 绕过去就行，两侧都是通路所以一定绕得开），其余一律放行。
+ * 判据是"从世界读出来的邻格"，不是猜。
+ *
+ * 读不到 `facing` 时（模组门可能用别的属性名）**保持放行**：这是这一版修好的那个 bug，
+ * 不能因为拿不到属性就退回"门里出不去"；但记一笔（`stats.noFacing`），
+ * `GET /debug/mvblock` 里看得见 —— "读不到"要报出来，别混进"没有"。
+ */
+const DOOR_NAME_RE = /(^|_)door$/;
+
+/** 方块的属性表。`getProperties()` 优先，退回 `_properties`。读不到返回 null。 */
+function blockProps (b) {
+  try {
+    const p = typeof b.getProperties === 'function' ? b.getProperties() : (b._properties || b.properties);
+    return p || null;
+  } catch (_) { return null; }
+}
+
+/** 方块的 open 属性（服务器发来的值是字符串，有时大写 —— 一律按字符串比） */
+function isOpenBlock (b) {
+  const props = blockProps(b);
+  const v = props && Object.entries(props).find(([k]) => k.toLowerCase() === 'open')?.[1];
+  return String(v).toLowerCase() === 'true';
+}
+
+/**
+ * 开着的门板在**哪根轴**上挡人。
+ *
+ * 门板法线 = 与 `facing` 垂直的那根轴：`facing=north/south` → 门板法线是 X（挡东西向），
+ * `facing=east/west` → 是 Z（挡南北向）。这是 MC 的 `DoorBlock.getShape` 的分支表：
+ * 关着时门板垂直于 facing（挡门洞方向），开着时转过 90° → 垂直于 facing 的那根轴。
+ *
+ * 读不到 facing 返回 **null**（"不知道"，不是"没有"）—— 调用方据此保持放行并计数。
+ */
+function doorPlateAxis (b) {
+  const props = blockProps(b);
+  const f = props && Object.entries(props).find(([k]) => k.toLowerCase() === 'facing')?.[1];
+  const v = String(f || '').toLowerCase();
+  if (v === 'north' || v === 'south') return 'x';
+  if (v === 'east' || v === 'west') return 'z';
+  return null;
+}
+
+/**
+ * 这一格她走不走得进去。判据与 `movements.getBlock` 的 `safe` **同源**（没有碰撞即可走），
+ * 但**故意不看**门那条豁免 —— 否则"双开门"里两个门格会互相证明对方可走，
+ * 闸门就形同虚设。取的是保守那一侧。
+ */
+function isWalkableCell (b) {
+  return !!b && (b.boundingBox === 'empty' || b.climbable === true);
+}
+
+function applyOpenDoors (mv) {
+  if (!mv || typeof mv.getBlock !== 'function') throw new Error('applyOpenDoors: 需要 Movements 实例');
+  if (mv.__openDoorsPatched) return { installed: true, already: true, stats: mv.__openDoorsStats };
+  const orig = mv.getBlock.bind(mv);
+  // `stats` 是**活对象**：调用方拿到的引用会一直更新（和 applyUnknownBlockPolicy 的 stats 同理）。
+  const stats = { passed: 0, refused: 0, noFacing: 0, refusedAt: [] };
+  mv.getBlock = function (pos, dx, dy, dz) {
+    const b = orig(pos, dx, dy, dz);
+    if (!b || !b.name || !DOOR_NAME_RE.test(bareName(b.name)) || !isOpenBlock(b)) return b;
+    const axis = doorPlateAxis(b);
+    if (!axis) {
+      stats.noFacing++;
+    } else if (pos) {
+      const nx = axis === 'x' ? 1 : 0;
+      const nz = axis === 'z' ? 1 : 0;
+      const a = orig(pos, dx - nx, dy, dz - nz);
+      const c = orig(pos, dx + nx, dy, dz + nz);
+      if (isWalkableCell(a) && isWalkableCell(c)) {
+        stats.refused++;
+        if (stats.refusedAt.length < 8) {
+          stats.refusedAt.push({ x: pos.x + dx, y: pos.y + dy, z: pos.z + dz, name: b.name, axis });
+        }
+        return b;   // 门板两侧都是通路 → 保守当墙（绕得开），不猜
+      }
+    }
+    // 放行：`height` 取本格地板高度（= "没有碰撞"时 movements.getBlock 自己会算出的值）
+    b.safe = true;
+    b.physical = false;
+    b.height = pos.y + dy;
+    stats.passed++;
+    return b;
+  };
+  mv.__openDoorsPatched = true;
+  mv.__openDoorsStats = stats;
+  return { installed: true, stats };
+}
+
 function applyClimbables (mv, registry, stateIds = CLIMBABLE_STATE_IDS, opts = {}) {
   if (!mv || typeof mv.getBlock !== 'function' || !mv.climbables) {
     throw new Error('applyClimbables: 需要 Movements 实例');
@@ -643,6 +754,24 @@ const THIN_BLOCK_SUFFIXES = [
   'bud', 'crop', 'bush', 'cane', 'vine', 'vines',
 ];
 
+/**
+ * 矮方块：有碰撞但不到一格高。模组的床（handcrafted、touhou_little_maid…）和原版一样是 9/16 高。
+ * 返回高度（0–1），不是矮方块返回 0。
+ *
+ * ⚠️ 2026-09-26 之后这条**只是兜底**，不再是主力：调色板导出逐 state 碰撞箱之后，
+ *    床的真实高度（9/16）直接来自注册表，`needsShapeFallback` 不命中、这里根本走不到。
+ *    它现在只为两种方块服务：**旧 dump**（没有形状列）和**没进调色板的方块**。
+ *    保留它的理由也正是这两种：形状数据缺席时，按名字猜 9/16 比猜"整块实心"好得多
+ *    （后者会把她"埋"进方块里，往哪都动不了）。
+ */
+const LOW_BLOCKS = [[/(^|_)bed$/, 0.5625]];
+function lowBlockHeight (name) {
+  if (typeof name !== 'string' || !name) return 0;
+  const short = name.includes(':') ? name.split(':').pop() : name;
+  for (const [re, h] of LOW_BLOCKS) if (re.test(short)) return h;
+  return 0;
+}
+
 /** 名字像薄方块、其实是整块立方体的反例。 */
 const THIN_BLOCK_DENY = new Set([
   'chorus_flower',    // 命中 `_flower`，实心
@@ -686,7 +815,7 @@ function isUnknownBlock (b) {
 /**
  * 判"这个方块还需要实心策略兜底形状"。
  *
- * 比 `isUnknownBlock` 宽一条：**调色板注入过的方块也算**。
+ * 比 `isUnknownBlock` 宽一条：**调色板注入过、但没拿到形状的方块也算**。
  *
  * 为什么必须宽这一条：`palette-registry.js` 把调色板写回注册表之后，模组方块的
  * `b.type` / `b.name` 都有值了，`isUnknownBlock` 就不再命中 —— 可是这个补丁还兼着
@@ -695,16 +824,26 @@ function isUnknownBlock (b) {
  *
  * 判据为什么用 `boundingBox === undefined`：这就是"**我们不知道它的碰撞箱**"的
  * 精确表示。实测原版 `blocksByStateId` 里 24135 个 state **无一缺 boundingBox**
- * （0 个缺失），而 `palette-registry.js` 注入的记录**故意不填**它
- * （调色板对方块身份权威，对碰撞箱不权威 —— 见该模块"刻意不做的事"）。
- * 所以：
+ * （0 个缺失）。所以：
  *   · 原版方块 → 有 boundingBox → 不动它；
  *   · 无调色板时的模组方块 → `type === undefined`，同时 boundingBox 也没有；
- *   · 注入后的模组方块 → `type` 有值、boundingBox 没有 → 走兜底。
+ *   · 注入过、但 dump **没导形状列**（旧 dump）的模组方块 → `type` 有值、
+ *     boundingBox 没有 → 走兜底；
+ *   · 注入过、**dump 导了形状列**的模组方块 → 有 boundingBox → 不走兜底，
+ *     真实碰撞箱直接生效（这是 2026-09-26 之后的**新**契约）。
  *
- * ⚠️ 这是一条**契约**：谁要是给注入的记录填上 `boundingBox`，
- *    模组方块就会瞬间全部变成"已知形状"、白名单静默失效。
- *    `palette-registry.js` 的自测里有一条断言钉住它（"注入的记录不带 boundingBox"）。
+ * ⚠️ **契约已经反转过一次，别再按老说法读代码。**
+ *    老契约（`palette-registry.js` 早期版本）："注入的记录**故意不填** boundingBox，
+ *    谁填了模组方块就全变成'已知形状'、白名单静默失效"。
+ *    新契约："**有形状就填、没形状才不填**"。判据本身没变（还是这一行），
+ *    变的只是"什么时候会出现 undefined"。
+ *    `palette-registry.js` 的自测里两条都钉住了：
+ *      · 没导形状列 → `mod.boundingBox === undefined`；
+ *      · 导了形状列 → `mod.boundingBox === 'block'` 且 `stateShapes` 逐 state 生效。
+ *
+ * ⚠️ 白名单**不再依赖这个判据**：`applyUnknownBlockPolicy` 现在先算白名单，
+ *    再分"要不要兜底"两条路走 —— 形状已知的方块若在白名单里，照样放行。
+ *    所以"填了 boundingBox 白名单就失效"这件事**已经不会发生**了。
  *
  * ⚠️ 判据仍然**不能**带上 `name === ''` —— 见上面 `isUnknownBlock` 的说明：
  *    名字会被补丁自己填上，而 `world.getBlock` 返回的是缓存里的同一个对象。
@@ -737,6 +876,9 @@ function needsShapeFallback (b) {
  *   `runtimePassable` 是一个**会被后续写入的活 Set**（不是快照）。用来放"运行时
  *   实测确认能穿过去"的 state —— 例如她刚自己打开的那扇活板门。
  *   必须在补丁里**按引用读取**，不能在安装时拷一份，否则后来加进去的没用。
+ *   ⚠️ 白名单**同时**管两种方块：形状未知的（兜底那条路）和形状已知的
+ *     （调色板导出了真实碰撞箱那条路）。后者以前放不了行 —— 形状一已知，
+ *     白名单就整条失效。现在两条路都先算白名单，见 `needsShapeFallback` 的说明。
  *
  *   `nameOf` 是可选的**真实方块名解析器**（来自 `block-palette.js` 的调色板索引）。
  *   给了它，未映射方块会被填上真名（`upgrade_aquatic:glass_trapdoor` 而不是空串）。
@@ -762,7 +904,7 @@ function applyUnknownBlockPolicy (world, opts = {}) {
   const thinPassable = opts.thinPassable !== undefined ? !!opts.thinPassable : THIN_BLOCK_PASSABLE;
   // `stats` 是**活对象**：补丁每被调用一次就累加一次，调用方拿到的引用会一直更新。
   // 这是"薄方块豁免到底有没有生效"的正面证据 —— 只看 `patched: true` 说明不了什么。
-  const stats = { thinExempt: 0, thinNames: [] };
+  const stats = { thinExempt: 0, thinNames: [], whitelisted: 0 };
   const report = {
     enabled,
     passableStateIds: [...passable],
@@ -794,6 +936,14 @@ function applyUnknownBlockPolicy (world, opts = {}) {
   const orig = world.getBlock.bind(world);
   world.getBlock = function (pos) {
     const b = orig(pos);
+    if (!b) return b;
+    // ⚠️ 白名单必须在"要不要兜底"**之前**算。理由：调色板导出真实碰撞箱之后，
+    //    模组方块有了 boundingBox、`needsShapeFallback` 不再命中 —— 可白名单里那些
+    //    是**实测确认能穿过去**的人工结论（她自己打开的那扇门/活板门），
+    //    必须能盖过"形状看起来是墙"这一层。以前白名单嵌在兜底分支里，
+    //    形状一已知它就整条失效。
+    const whitelisted = passable.has(b.stateId) ||
+      !!(runtimePassable && runtimePassable.has(b.stateId));
     if (needsShapeFallback(b)) {
       // ⚠️ 名字必须在**判形状之前**解析好 —— 薄方块那条豁免用的就是名字。
       //    这段以前排在形状判定**之后**，于是"按名字豁免"永远看不到名字。
@@ -808,8 +958,6 @@ function applyUnknownBlockPolicy (world, opts = {}) {
           }
         } catch (_) {}
       }
-      const whitelisted = passable.has(b.stateId) ||
-        !!(runtimePassable && runtimePassable.has(b.stateId));
       if (whitelisted) {
         // 白名单：一个字都不改 —— 保持 `prismarine-block` else 分支给的
         // `shapes = []` / `boundingBox = 'empty'`，那才是"可穿过"。
@@ -824,11 +972,27 @@ function applyUnknownBlockPolicy (world, opts = {}) {
         if (stats.thinNames.length < 32 && !stats.thinNames.includes(b.name)) {
           stats.thinNames.push(b.name);
         }
+      } else if (lowBlockHeight(b.name)) {
+        // 矮方块（床）：补成整块会把站在上面的她"埋"进方块里 —— 物理层认为她在实心里，往哪都动不了
+        // （2026-09-26 实测：站在 handcrafted:oak_fancy_bed 上，y=69.56，寻路和走路全失败）
+        // ⚠️ 这是**兜底中的兜底**：调色板导了形状列之后，床的真实 9/16 高碰撞箱直接来自
+        //    注册表，根本走不到这里。留着是为了旧 dump（没形状列）和没进调色板的方块。
+        b.boundingBox = 'block';
+        b.shapes = [[0, 0, 0, 1, lowBlockHeight(b.name), 1]];
+        b.lowBlock = true;
       } else {
         // 名字空 / 名字不像薄方块 / 豁免关掉了 → 保守当实心（安全的那一侧）
         b.boundingBox = 'block';
         b.shapes = FULL_CUBE;
       }
+    } else if (whitelisted) {
+      // 形状**已知**（调色板导出了真实碰撞箱），但在白名单里 → 白名单说了算。
+      // 这里必须**主动**写成空碰撞：上面那条分支靠的是 else 分支的默认值，
+      // 而这一条下面已经有一个真形状了，"什么都不做"等于不放行。
+      b.boundingBox = 'empty';
+      b.shapes = EMPTY_SHAPES;
+      b.whitelisted = true;
+      stats.whitelisted++;
     }
     return b;
   };
@@ -1986,6 +2150,59 @@ if (require.main === module && process.argv.includes('--selftest')) {
       w9.getBlock({ x: 1, y: 1, z: 1 }).boundingBox, 'block');
   }
 
+  // ---- 形状**已知**（调色板导出了真实碰撞箱）之后的三种走法 ----
+  //     这是 2026-09-26 契约反转带来的新分支：以前"注入过 ⇒ 一定没 boundingBox"，
+  //     现在"导了形状列 ⇒ 一定有 boundingBox"。白名单必须两条路都能用。
+  {
+    // 真实形状：3/16 厚的模组梯子（从 dump 里解出来的那种）
+    const mkShaped = (stateId) => ({
+      stateId, type: 18811, name: 'quark:spruce_ladder', angelInjected: true,
+      angelShape: 'static', boundingBox: 'block', shapes: [[0, 0, 0, 0.8125, 1, 1]],
+    });
+
+    // ① 形状已知 + 不在白名单 → 一个字都不改（真实形状生效，不再被补成整块）
+    const ws1 = mkWorld({ '1,1,1': mkShaped(24135) });
+    const rep1 = applyUnknownBlockPolicy(ws1, { passableStateIds: [] });
+    const s1 = ws1.getBlock({ x: 1, y: 1, z: 1 });
+    check('形状已知：不再被补成整块实心（兜底让位）',
+      JSON.stringify(s1.shapes), JSON.stringify([[0, 0, 0, 0.8125, 1, 1]]));
+    check('形状已知：没有被标成 thinBlock / lowBlock',
+      `${s1.thinBlock || false}/${s1.lowBlock || false}`, 'false/false');
+    check('形状已知：白名单放行计数保持 0', rep1.stats.whitelisted, 0);
+
+    // ② 形状已知 + 在白名单里 → **主动**写成空碰撞（不是"什么都不做"）
+    const ws2 = mkWorld({ '1,1,1': mkShaped(24135) });
+    const rep2 = applyUnknownBlockPolicy(ws2, { passableStateIds: [24135] });
+    const s2 = ws2.getBlock({ x: 1, y: 1, z: 1 });
+    check('形状已知但在白名单里：被放行', s2.boundingBox, 'empty');
+    check('形状已知但在白名单里：碰撞箱被清空（主动写的，不是靠默认值）',
+      JSON.stringify(s2.shapes), '[]');
+    check('形状已知但在白名单里：留了 whitelisted 痕迹', s2.whitelisted, true);
+    check('形状已知但在白名单里：计数上报', rep2.stats.whitelisted, 1);
+
+    // ③ 形状已知 + 运行时白名单（她自己开的门）→ 同样放行，且按引用读
+    const ws3 = mkWorld({ '1,1,1': mkShaped(24135) });
+    const rt3 = new Set([24135]);
+    applyUnknownBlockPolicy(ws3, { passableStateIds: [], runtimePassable: rt3 });
+    check('形状已知 + 运行时白名单：放行', ws3.getBlock({ x: 1, y: 1, z: 1 }).boundingBox, 'empty');
+    rt3.delete(24135);
+    check('形状已知 + 运行时白名单：移出后立刻恢复真实形状',
+      JSON.stringify(ws3.getBlock({ x: 1, y: 1, z: 1 }).shapes), JSON.stringify([[0, 0, 0, 0.8125, 1, 1]]));
+
+    // ④ 形状已知 + 名字像薄方块 → **不**因为名字再动一次（形状比名字权威）
+    const ws4 = mkWorld({
+      '1,1,1': {
+        stateId: 24135, type: 18811, name: 'autumnity:maple_pressure_plate',
+        angelInjected: true, angelShape: 'static', boundingBox: 'block',
+        shapes: [[0, 0, 0, 1, 0.0625, 1]],
+      },
+    });
+    const rep4 = applyUnknownBlockPolicy(ws4, { passableStateIds: [] });
+    check('形状已知时不再按名字猜薄方块（真实形状更权威）',
+      JSON.stringify(ws4.getBlock({ x: 1, y: 1, z: 1 }).shapes), JSON.stringify([[0, 0, 0, 1, 0.0625, 1]]));
+    check('形状已知时不记薄方块豁免', rep4.stats.thinExempt, 0);
+  }
+
   // 名字只补空缺：注册表已经有名字（调色板注入）时，旁路解析器不许覆盖
   {
     const w10 = mkWorld({ '1,1,1': mkInjected(24135) });
@@ -2569,6 +2786,111 @@ if (require.main === module && process.argv.includes('--selftest')) {
     });
   };
 
+  check('模组床是矮方块（9/16 高）', lowBlockHeight('handcrafted:oak_fancy_bed'), 0.5625);
+  check('床头柜之类不是', lowBlockHeight('handcrafted:oak_nightstand'), 0);
+  // ---- 开着的门能走、关着的门和活板门不变；门板两侧都通时**不当能穿门板放行** ----
+  // ⚠️ 用一个**按坐标取方块**的假世界。上一版把 `dx` 当字典键用，所以"读邻格"那条判据
+  //    根本走不到（邻格恒为 undefined）—— 自测测不到真代码，等于没测。
+  {
+    const key = (x, y, z) => `${x},${y},${z}`;
+    const makeMv = (cells) => {
+      const map = new Map(cells);
+      return {
+        map,
+        getBlock (pos, dx, dy, dz) {
+          const d = map.get(key(pos.x + dx, pos.y + dy, pos.z + dz));
+          const name = d ? d.name : 'minecraft:air';
+          const solid = d ? d.solid !== false : false;
+          const props = { open: d && d.open ? 'TRUE' : 'false' };
+          if (d && d.facing !== undefined) props.facing = d.facing;
+          const b = {
+            name,
+            getProperties: () => props,
+            boundingBox: solid ? 'block' : 'empty',
+            safe: !solid,
+            physical: solid,
+            height: pos.y + dy,
+          };
+          return b;
+        },
+      };
+    };
+    const door = (facing, open = true) => ({ name: 'minecraft:dark_oak_door', open, facing, solid: true });
+    const wall = { name: 'minecraft:stone', solid: true };
+    const air = { name: 'minecraft:air', solid: false };
+    const at = (mv) => mv.getBlock({ x: 0, y: 64, z: 0 }, 0, 0, 0);
+
+    // ⚠️ `stats` 只在 `getBlock` **真的被调用**时才累加（寻路器问一次才记一笔）。
+    //    所以凡是断言计数的用例，都必须先自己调一次 `at(mv)` 触发，且**只调一次** ——
+    //    写成 `${at(mv).safe}/${at(mv).physical}` 会把同一条断言算成两次，计数对不上。
+    {
+      // 门嵌在墙里（facing=south → 门板法线是 X → 看 (0,64,±1)）：常态，必须放行
+      const mv = makeMv([['0,64,0', door('south')], ['1,64,0', wall], ['-1,64,0', wall]]);
+      const rep = applyOpenDoors(mv);
+      const b = at(mv);
+      check('门嵌在墙里：开着的门放行（safe/physical）', `${b.safe}/${b.physical}`, 'true/false');
+      check('门嵌在墙里：放行计数 1、拒绝 0', `${rep.stats.passed}/${rep.stats.refused}`, '1/0');
+    }
+    {
+      // 独立门：门板法线轴两侧都是通路 → 寻路器会规划出"穿门板"，保守当墙
+      const mv = makeMv([['0,64,0', door('south')], ['1,64,0', air], ['-1,64,0', air]]);
+      const rep = applyOpenDoors(mv);
+      const b = at(mv);
+      check('门板两侧都通：不放行（还是墙）', `${b.safe}/${b.physical}`, 'false/true');
+      check('门板两侧都通：记下拒绝与轴', `${rep.stats.refused}/${rep.stats.refusedAt[0]?.axis}`, '1/x');
+    }
+    {
+      // 只有一侧是墙 → 横穿不可能 → 放行
+      const mv = makeMv([['0,64,0', door('south')], ['1,64,0', air], ['-1,64,0', wall]]);
+      applyOpenDoors(mv);
+      check('只有一侧是墙：放行（横穿不可能）', at(mv).safe, true);
+    }
+    {
+      // facing=east → 门板法线是 Z：X 两侧通也不该拦
+      const mv = makeMv([
+        ['0,64,0', door('east')], ['1,64,0', air], ['-1,64,0', air],
+        ['0,64,1', wall], ['0,64,-1', wall],
+      ]);
+      applyOpenDoors(mv);
+      check('facing=east：看法线轴 Z，X 两侧通不拦', at(mv).safe, true);
+    }
+    {
+      // 同一个门把 Z 两侧也打通 → 该拦
+      const mv = makeMv([
+        ['0,64,0', door('east')], ['1,64,0', air], ['-1,64,0', air],
+        ['0,64,1', air], ['0,64,-1', air],
+      ]);
+      const rep = applyOpenDoors(mv);
+      const b = at(mv);
+      check('facing=east：Z 两侧都通 → 拦下', `${b.safe}/${b.physical}/${rep.stats.refused}`, 'false/true/1');
+    }
+    {
+      const mv = makeMv([
+        ['0,64,0', door('south', false)],                                                     // 关着的门
+        ['2,64,0', { name: 'minecraft:oak_trapdoor', open: true, facing: 'south', solid: true }],
+        ['4,64,0', { name: 'mcwdoors:garage_door', open: true, facing: 'south', solid: true }],
+        ['5,64,0', wall], ['3,64,0', wall],
+      ]);
+      applyOpenDoors(mv);
+      check('关着的门：还是墙', `${at(mv).safe}/${at(mv).physical}`, 'false/true');
+      check('活板门不归它管',
+        mv.getBlock({ x: 2, y: 64, z: 0 }, 0, 0, 0).physical, true);
+      check('模组的门（名字以 _door 结尾）也认',
+        mv.getBlock({ x: 4, y: 64, z: 0 }, 0, 0, 0).safe, true);
+      const g1 = mv.getBlock;
+      const again = applyOpenDoors(mv);
+      check('重复装不会套娃', mv.getBlock === g1, true);
+      check('重复装时把原来的 stats 一起报回来', again.stats === mv.__openDoorsStats, true);
+    }
+    {
+      // 读不到 facing（模组门可能用别的属性名）：保持放行 —— 不能退回"门里出不去"
+      const mv = makeMv([['0,64,0', { name: 'mod:odd_door', open: true, solid: true }], ['1,64,0', air], ['-1,64,0', air]]);
+      const rep = applyOpenDoors(mv);
+      check('读不到 facing：保持放行', at(mv).safe, true);
+      check('读不到 facing：单独计数（"读不到"不混进"没有"）', rep.stats.noFacing, 1);
+    }
+  }
+
   scenarioWrong()
     .then(scenarioRight)
     .then(() => {
@@ -2597,6 +2919,8 @@ module.exports = {
   resolveClimbableIds,
   resolveClimbableBlockIds,
   applyClimbables,
+  applyOpenDoors,
+  lowBlockHeight,
   probeClimbables,
   installLadderFix,
   UNKNOWN_BLOCK_SOLID,

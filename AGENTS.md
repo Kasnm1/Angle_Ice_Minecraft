@@ -40,7 +40,7 @@ Minecraft 陪伴型 AI。游戏内 ID 固定 **`Angel_ICE`**，跑在 Forge 1.20
 | **① 桥 / 协议 / 注册表**（手+眼） | `bridge-server.js` `hands.js` `fml-handshake.js` `registry-probe.js` `block-palette.js` `palette-registry.js` `item-registry.js` `reconnect.js` | [`registry/`](registry/) [`references/`](references/) | `mc-bridge` |
 | **② 寻路 / 放置 / 站位**（几何） | `pathing.js` `place.js` | — | `mc-pathing` |
 | **③ 脑干**（规则自主循环） | `autopilot.js` `decision.js` `reflex.js` `events.js` `journal.js` | — | `mc-autopilot` |
-| **④ 意识 / 人格**（LLM 层） | `mind.js` `body.js` `memory-store.js` `speech.js` `ambition.js` `llm-codex.js` `llm-workbuddy.js` `brain.js`(旧) `PERSONA.md` | [`memory/`](memory/) | `mc-mind` |
+| **④ 意识 / 人格**（LLM 层） | `mind.js` `body.js` `memory-store.js` `speech.js` `ambition.js` `self-review.js` `llm-codex.js` `llm-workbuddy.js` `brain.js`(旧) `PERSONA.md` | [`memory/`](memory/) | `mc-mind` |
 | **⑤ 知识库**（整合包真值） | `knowledge.js` | [`knowledge/`](knowledge/) | `mc-knowledge` |
 | **⑥ 运维 / 诊断 / 台账** | `scripts/start.sh` `stop.sh` `probe-*.js` | [`scripts/`](scripts/) `logs/` [`memory/field-log.md`](memory/field-log.md) | 主会话自己做 |
 
@@ -70,7 +70,8 @@ NODE=/Users/starwish/.workbuddy-ai/binaries/node/versions/22.22.2-2/bin/node
 - 访问本地端口一律 `curl --noproxy '*'`（环境里可能有代理劫持 localhost）。
 - 长驻进程（bridge / autopilot / mind）用后台方式起，日志写 `logs/`。
 - LLM 配置在 `.env`（`LLM_BASE_URL` / `LLM_API_KEY` / `MIND_MODEL` / …）—— **不要打印、不要提交**。
-- 模型调用链（`body.js` 的 `llm()`）：susu 主模型 ⇄ 备用模型 → 都不通时按 `LOCAL_FALLBACKS`（默认 `codex,workbuddy`）走本机命令行兜底：
+- 模型调用链（`body.js` 的 `llm()`）：**只用 susu 上的 `gemini-3.8-flash`（主）⇄ `deepseek-v4.1-flash`（备）**。
+  本机命令行兜底默认关闭（`LOCAL_FALLBACKS` 默认空）；显式设 `LOCAL_FALLBACKS=codex,workbuddy` 才会启用：
   `llm-codex.js`（ChatGPT 账号，`CODEX_MODEL` 默认 gpt-6-luna、`CODEX_EFFORT` 默认 xhigh，实测 13–21s）→ `llm-workbuddy.js`（实测 8–10s）。
 
 ---
@@ -85,7 +86,9 @@ $NODE item-registry.js --selftest;  $NODE block-palette.js --selftest
 $NODE palette-registry.js --selftest; $NODE reconnect.js --selftest
 $NODE scripts/fml-snapshot-test.js; $NODE scripts/palette-guard-test.js
 $NODE scripts/angelpal-to-palette.js --selftest
-$NODE --check bridge-server.js && $NODE --check hands.js   # ⚠️ 这两个没有 --selftest
+$NODE scripts/angelpal-encoder-parity-test.js               # KubeJS 侧与 Node 侧的形状编码必须逐字节一致
+$NODE hands.js --selftest                                  # 假 bot 驱动真实的 startFollow / go
+$NODE --check bridge-server.js                             # ⚠️ 这个**只能 --check**
 # ② 寻路
 $NODE pathing.js --selftest; $NODE place.js --selftest
 # ③ 脑干
@@ -93,7 +96,7 @@ $NODE autopilot.js --selftest; $NODE decision.js --selftest; $NODE reflex.js --s
 $NODE events.js --selftest; $NODE journal.js --selftest; $NODE scripts/jev-contract-test.js
 # ④ 意识
 $NODE mind.js --selftest; $NODE brain.js --selftest; $NODE memory-store.js --selftest
-$NODE speech.js --selftest; $NODE ambition.js --selftest; $NODE --check body.js
+$NODE speech.js --selftest; $NODE ambition.js --selftest; $NODE self-review.js --selftest; $NODE --check body.js
 $NODE llm-codex.js --selftest; $NODE llm-workbuddy.js --selftest   # --live 会真调一次（花额度）
 # ⑤ 知识
 $NODE knowledge.js --selftest
@@ -144,6 +147,7 @@ $NODE knowledge.js --selftest
 | 现状一页纸 | `STATUS.md` |
 | 架构 / 本轮修复 / 环境坑 | `HANDOVER.md` |
 | 某个具体问题的证据与根因（P1–P50） | `memory/field-log.md` |
+| 她玩的时候自己察觉 / 程序记下的不对劲（新问题的线索） | `node self-review.js [--since 2h\|--all]` 或 `GET :3003/mind/review` |
 | 技术手册（方块/物品认知、输入层、调色板、寻路、autopilot 机制） | `SKILL.md`（1500 行，按标题跳读） |
 | HTTP 接口 | `references/api-spec.md` |
 | 版本变更 | `_meta.json` |

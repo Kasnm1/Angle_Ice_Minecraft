@@ -38,7 +38,7 @@ const CFG = {
   baseUrl: (process.env.LLM_BASE_URL || '').replace(/\/+$/, ''),
   apiKey: process.env.LLM_API_KEY || '',
   model: process.env.MIND_MODEL || process.env.BRAIN_FAST_MODEL || 'gemini-3.8-flash',
-  fallback: process.env.MIND_FALLBACK || 'gpt-6-luna',
+  fallback: process.env.MIND_FALLBACK || 'deepseek-v4.1-flash',
   // 备用线路：主线路（比如 Gemini 免费额度）被限流/过载时，换到另一家（比如中转站）
   fallbackBaseUrl: (process.env.LLM_FALLBACK_BASE_URL || '').replace(/\/+$/, ''),
   fallbackApiKey: process.env.LLM_FALLBACK_API_KEY || '',
@@ -46,13 +46,16 @@ const CFG = {
   actionTimeoutMs: 60000,
 };
 
-// 中转站整条线路都不通时的本机兜底，按顺序试（LOCAL_FALLBACKS=codex,workbuddy；设成空串 = 不兜底）
+// 中转站整条线路都不通时的本机兜底，按顺序试（LOCAL_FALLBACKS=codex,workbuddy）。
+// 默认空 = 不兜底：只用 susu 上的 gemini + deepseek 两个模型
 //   codex      本机 Codex 命令行，ChatGPT 账号跑 gpt-6-luna（默认 xhigh）—— 实测 13–21 秒，最稳
 //   workbuddy  本机 WorkBuddy AI 命令行（deepseek-v4.1-flash）—— 实测 8–10 秒
 const LOCAL = { codex: require('./llm-codex.js'), workbuddy: require('./llm-workbuddy.js') };
 const LOCAL_TIMEOUT = { codex: 45000, workbuddy: 30000 };
-const localFallbacks = () => (process.env.LOCAL_FALLBACKS ?? 'codex,workbuddy').split(',').map(s => s.trim())
+const localFallbacks = () => (process.env.LOCAL_FALLBACKS ?? '').split(',').map(s => s.trim())
   .filter(n => LOCAL[n] && !(n === 'workbuddy' && process.env.WORKBUDDY_FALLBACK === '0'));   // 旧开关仍然有效
+
+const saidRecently = [];   // 她最近 3 分钟说过的话（say 去重用）
 
 const hooks = { onSay: () => {}, beforeSay: async () => {} };
 
@@ -156,7 +159,8 @@ async function callLLM ({ model, messages, tools, timeoutMs, signal, maxTokens =
         return callLLM({ model, messages, tools, timeoutMs, signal, maxTokens, route });
       }
       const e = new Error(`模型报错 ${res.status}：${JSON.stringify(data.error || data).slice(0, 200)}`);
-      e.retryable = res.status === 429 || res.status >= 500 || /overload/i.test(text);
+      // 中转站排队 / 高负载有时回 400（"当前模型高负载队列排队中，请稍候重试"）—— 是一时的，要重试、换备用
+      e.retryable = res.status === 429 || res.status >= 500 || /overload|负载|排队|稍候重试|busy|capacity/i.test(text);
       throw e;
     }
     const msg = data.choices?.[0]?.message;
@@ -378,7 +382,16 @@ const TOOLS = {
     run: async ({ text, urgent }) => {
       const t = String(text || '').trim().slice(0, 400);
       if (!t) return { ok: false, error: 'empty' };
-      const parts = urgent ? [t.replace(/\n+/g, ' ').slice(0, 256)] : speech.segment(t);
+      let parts = urgent ? [t.replace(/\n+/g, ' ').slice(0, 256)] : speech.segment(t, { maxSegments: 3 });
+      // 同一句 3 分钟内不再说（实测：连着两轮"天亮了/早呀"、一轮里"好/来啦"说两遍）。危险提示不拦
+      if (!urgent) {
+        const now = Date.now();
+        while (saidRecently.length && now - saidRecently[0].t > 3 * 60 * 1000) saidRecently.shift();
+        const seen = new Set(saidRecently.map(r => r.k));
+        parts = parts.filter(x => { const k = speech.wordsOnly(x); if (!k || seen.has(k)) return false; seen.add(k); return true; });
+        if (!parts.length) return { ok: true, sent: [], note: '这些刚刚都说过了，没再发' };
+        for (const x of parts) saidRecently.push({ k: speech.wordsOnly(x), t: now });
+      }
       await hooks.beforeSay(parts[0]);   // 像人一样要点时间打字（见 mind.js）
       if (parts.length === 1) await bridge.post('/chat', { message: parts[0] });
       else {

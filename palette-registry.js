@@ -59,25 +59,111 @@
  * 注入之后 `b.type` 有值了，`pathing.js` 里那个补丁的判据 `type === undefined`
  * 就不再命中 —— 但补丁还负责**可穿过白名单**（她自己开的门/活板门），不能停。
  *
- * 模组注入记录**故意不填 `boundingBox` / `shapes`**，而 `pathing.js` 的
- * `needsShapeFallback` 正是用 `boundingBox === undefined` 判"我们不知道它的碰撞箱"。
- * 原版 overlay 会保留 minecraft-data 的碰撞字段；扩展 state 没有权威形状时仍走
- * 实心兜底。行为目标是：身份和属性不再未知，碰撞未知时宁可多绕也不穿模。
+ * ## 碰撞形状：dump 给了就填，没给才退回按名字猜
  *
- * ⚠️ 这是一条**契约**，不是巧合：谁给注入的记录填上 `boundingBox`，
- *    模组方块就会全部变成"已知形状"、白名单静默失效。自测里有断言钉住它。
- * 记录上另带 `angelInjected: true`，只用于 `clearInjected` 认自己的东西 + 调试。
+ * 名字和属性告诉不了 `pathing.js`「这一格挡不挡人」。调色板最初只有名字和属性，
+ * 于是模组方块只能**按名字猜**形状（薄方块白名单 → 可穿过；`_bed` → 9/16；
+ * 其余 → 整块实心），整合包里大量非整格方块（家具、模组台阶/楼梯/栅栏/地毯/路径块…）
+ * 全被猜错 —— 那才是"卡在门口出不去"的根，`lowBlockHeight` 只是补丁。
+ *
+ * 现在 dump 多导一列**逐 state 碰撞箱**（`block-palette.js` 的 `encodeShapes`）。
+ * 有这一列、且整块都能用的时候，注入的记录带三个字段：
+ *
+ *   · `shapes`      = 默认 state 的形状（`minecraft-data` 的同一约定）
+ *   · `stateShapes` = 逐 state 形状，`prismarine-block` 用 `metadata` 索引它
+ *   · `boundingBox` = 有任一 state 有碰撞 → `'block'`，否则 → `'empty'`
+ *     （实测 `minecraft-data` 的 1003 个原版方块里，这条规则只对 `snow` 有 1 处例外）
+ *
+ * 于是 `pathing.js` 的 `needsShapeFallback` 不再命中，`applyUnknownBlockPolicy`
+ * 只做它真正该做的事（白名单），**按名字猜形状的那几条自动退居兜底**。
+ *
+ * ⚠️ 旧的 5 列 dump（没有形状列）**照旧工作**：`entry.shapes === null` →
+ *    一个形状字段都不填 → `needsShapeFallback` 命中 → 走原来的按名字猜。
+ *    向后兼容是硬要求：没有形状数据时，宁可保守，也不要假装知道。
+ *
+ * ⚠️ **条数对不上 `count`、或有一个 state 读不到 → 整块不填。**
+ *    错位一格比"没有"更糟；"有一个 state 不知道"意味着这一块不能当权威。
+ *
+ * ⚠️ 这是**原契约的反转**。老契约是"注入的记录故意不填 `boundingBox`，
+ *    谁填了白名单就静默失效"。新契约是"**有形状就填、没形状才不填**"。
+ *    兜底的判据本身没变（`needsShapeFallback` 仍然只看 `boundingBox === undefined`），
+ *    变的只是"什么时候会出现 `undefined`"。
+ *
+ * 记录上另带 `angelInjected: true`（`clearInjected` 认自己的东西）、
+ * `angelShape`（`'static'` 有形状 / `'absent'` 没导 / `'unusable'` 导了但不可用 /
+ * `'base'` 沿用 minecraft-data），都只用于调试与上报，判据里**没有**它们。
+ *
+ * ## 形状"不能由单个 state 静态决定"的方块
+ *
+ * 逐 state 导出对**绝大多数**方块是完整的 —— 包括看起来最像"要看邻居"的那几类：
+ * 栅栏 / 墙 / 铁栏 / 玻璃板的连接状态**本身就是 block state 属性**
+ * （`north`/`south`/`east`/`west`/`up`）。实测 `oak_fence` 32 个 state → 16 种形状、
+ * `iron_bars` 32 → 16、`cobblestone_wall` 324 → 32（其中一种就是**空碰撞**：
+ * 孤立的一根柱子）。所以这几类不存在"邻居读不到"的问题。
+ *
+ * 真正静态决定不了的，原版用 `BlockBehaviour.Properties.dynamicShape()` 标出来。
+ * 反汇编客户端 srg jar 的 `Blocks.<clinit>`，1.20.1 只有 **6 处**注册：
+ *
+ * | 方块 | 类 | 为什么静态决定不了 |
+ * |---|---|---|
+ * | `shulker_box`（含 16 色） | `ShulkerBoxBlock` | 开合由**方块实体**驱动，开着时碰撞会缩 |
+ * | `moving_piston` | `MovingPistonBlock` | 只在活塞推动的**那一瞬**存在，形状跟着方块实体走 |
+ * | `bamboo` | `BambooStalkBlock` | 形状要看**下面那格**（是不是竹子） |
+ * | `scaffolding` | `ScaffoldingBlock` | `bottom` 属性由**下面那格**推导 |
+ * | `powder_snow` | `PowderSnowBlock` | 碰撞取决于**踩上去的实体**（人会陷进去） |
+ * | `pointed_dripstone` | `PointedDripstoneBlock` | 形状要看**上方/下方**的滴水石 |
+ *
+ * 处理办法：**照导不误，并标记出来**（原版记录上带 `angelShapeDynamic: true`，
+ * `/config` 里单独报个数）。理由是静态采样得到的形状对这几个方块是**保守的那一侧**：
+ * 关着的潜影盒 / 未伸出的活塞 / 单根竹子 / 未连接的脚手架 / 没被踩入的细雪 /
+ * 孤立的滴水石，碰撞都不小于动态时的最小值。宁可多绕一步，也不要穿模。
+ * 想更精确只能运行时按方块实体改形状 —— 那是寻路层的事，不是调色板的事。
+ *
+ * ⚠️ 模组方块**拿不到**这个标记 —— 模组不会把 `dynamicShape()` 导出来，没有任何
+ *    权威依据可查。所以对模组方块只有"静态采样 + 保守"这一条。名字后缀撞上的
+ *    （`kaleidoscope_cookery:chair_bamboo`、`sophisticatedstorage:iron_shulker_box`…）
+ *    只记在 `angelShapeDynamicGuessed` 里，与上面那个**权威**计数分开报 ——
+ *    把"按名字猜的"混进"有依据的"，数字就没法解释了。
+ * 残余风险与边界写在 `registry/README.md` 的「形状这一列的边界」一节。
  *
  * ## 刻意不做的事
  *
- * 不给注入的方块填 `hardness` / `diggable` / `shapes` / `boundingBox`。
- * 填了就是**改变行为**（能不能挖、碰撞箱形状），而这两件事调色板并不权威。
- * 保持现状：身份（type/name/属性）由调色板提供，碰撞由实心策略提供。
+ * 不给注入的方块填 `hardness` / `diggable` —— 填了就是**改变行为**（能不能挖），
+ * 而调色板对这两件事并不权威。碰撞形状**已经**由 dump 提供（见上），
+ * 所以它从"刻意不做"的名单里移出去了。
  */
 
 /** 本地 minecraft-data 1.20.1 的原版基线：1003 个方块、24135 个 state。 */
 const VANILLA_BLOCK_COUNT = 1003;
 const VANILLA_STATE_TOTAL = 24135;
+
+/**
+ * 形状**不能由单个 state 静态决定**的方块 —— 原版用 `dynamicShape()` 标出来的那 6 处。
+ *
+ * 反汇编客户端 srg jar 的 `Blocks.<clinit>` 实测（`Properties.dynamicShape()` 的
+ * SRG 名是 `m_60988_`，全表只有 6 个调用点）：`ShulkerBoxBlock`（shulker_box 及 16 色）、
+ * `MovingPistonBlock`、`BambooStalkBlock`、`ScaffoldingBlock`、`PowderSnowBlock`、
+ * `PointedDripstoneBlock`。理由逐条见文件头。
+ *
+ * ⚠️ **只用于标记，不改变"填不填形状"的决定。** 静态采样对它们是保守值，
+ *    比"因为不精确就整块不填、退回按名字猜"要好得多（后者会把细雪猜成整块实心）。
+ * ⚠️ 用正则而不是集合：`white_shulker_box` … 16 色都要命中。
+ * ⚠️ **必须排除 `potted_*`**：原版 `potted_bamboo` 的名字以 `_bamboo` 结尾，但它的形状
+ *    来自 `FlowerPotBlock`（静态），**不在**那 6 个 `dynamicShape()` 调用点里 ——
+ *    实测端到端演练时它被误标了（`/config` 里 shapeDynamic 虚高 1）。花盆一律排除。
+ */
+const DYNAMIC_SHAPE_RE =
+  /^(?!potted_)(?:[a-z_]+_)?(?:shulker_box|moving_piston|bamboo|scaffolding|powder_snow|pointed_dripstone)$/;
+
+/**
+ * 模组方块里名字**后缀撞上**上面那几个词的（`…_bamboo`、`…_shulker_box`、`…_scaffolding`）。
+ *
+ * 这些**没有任何权威依据**，只是"说不定也是动态形状，标记一下别当已知"。实测整合包里
+ * 撞上的 22 个全是普通家具/箱子（bamboo 材质的椅子桌子、储存模组的潜影盒…），
+ * 形状其实是静态的 —— 所以它只能进 `angelShapeDynamicGuessed`，不能进权威计数。
+ */
+const DYNAMIC_SHAPE_GUESS_RE =
+  /(?:^|[_:])(?:shulker_box|moving_piston|bamboo|scaffolding|powder_snow|pointed_dripstone)$/;
 
 /**
  * **锚点**：玩家 F3 直接读出来的 `方块 → state id` 真值。
@@ -203,9 +289,68 @@ function toStateProps (props) {
   return out;
 }
 
+/**
+ * 从调色板的一条记录算出要写进注册表的碰撞字段。
+ *
+ * 返回 `null` = **一个字段都不写**（调用方让 `needsShapeFallback` 命中，退回按名字猜）。
+ * 只有下面全部成立才写：
+ *   · `entry.shapes` 是**非空数组**，且条数**恰好等于** `entry.count`（错位一格比没有更糟）
+ *   · 每一个 state 的形状都**知道**（`Array.isArray`）—— 有一个"读不到"就不拿这一块当权威
+ *
+ * `boundingBox` 的规则照抄 `minecraft-data`：有任一 state 有碰撞 → `'block'`，否则 `'empty'`。
+ * 这条规则在本地 1003 个原版方块上只对 `snow` 有 1 处例外（`snow` 是 `'empty'` 却有
+ * 1/8–1 格高的碰撞），属于上游数据的小毛病，不影响寻路的安全侧。
+ *
+ * @returns {{shapes: number[][], stateShapes: number[][][], boundingBox: 'block'|'empty'}|null}
+ */
+function shapeFieldsFor (entry) {
+  const shapes = entry && entry.shapes;
+  if (!Array.isArray(shapes) || !shapes.length) return null;
+  if (shapes.length !== entry.count) return null;
+  for (const s of shapes) if (!Array.isArray(s)) return null;
+  return {
+    // `shapes` 是"默认 state 的形状"，和 minecraft-data 的约定一致；
+    // 真正逐 state 生效的是 `stateShapes`（prismarine-block 用 metadata 索引它）。
+    shapes: shapes[0],
+    stateShapes: shapes,
+    boundingBox: shapes.some(s => s.length > 0) ? 'block' : 'empty',
+  };
+}
+
+/**
+ * 把形状字段盖到一条记录上，并如实标出这一块的形状是从哪来的。
+ *
+ * @param {boolean} authoritative 这个名字有没有**权威依据**判"形状动态"。
+ *   原版方块传 `true`（能反汇编出那 6 个 `dynamicShape()` 调用点）；
+ *   模组方块只能传 `false` —— 它的 `dynamicShape()` 没有导出，任何判断都是按名字猜的。
+ *   两种标记**分开存**（`angelShapeDynamic` / `angelShapeDynamicGuessed`），
+ *   上报时也分开数，免得"有依据的"和"按名字猜的"混成一个没法解释的数字。
+ * @returns {boolean} 是否真的填了形状
+ */
+function applyShapeFields (rec, entry, authoritative = false) {
+  const shape = shapeFieldsFor(entry);
+  if (!shape) {
+    rec.angelShape = !entry || entry.shapes === undefined
+      ? 'absent'          // 旧 dump：根本没导这一列
+      : 'unusable';       // 导了，但条数对不上 / 有 state 读不到
+    return false;
+  }
+  rec.shapes = shape.shapes;
+  rec.stateShapes = shape.stateShapes;
+  rec.boundingBox = shape.boundingBox;
+  rec.angelShape = 'static';
+  const bare = normName(entry.name);
+  if (authoritative) {
+    if (DYNAMIC_SHAPE_RE.test(bare)) rec.angelShapeDynamic = true;
+  } else if (DYNAMIC_SHAPE_GUESS_RE.test(bare)) {
+    rec.angelShapeDynamicGuessed = true;
+  }
+  return true;
+}
+
 /** 由调色板的一条记录造一个方块记录（一个方块**共用一个对象**，不是每个 state 一个）。 */
 function buildRecord (entry) {
-  return {
+  const rec = {
     id: entry.blockId,
     name: entry.name,
     displayName: entry.name,
@@ -215,11 +360,16 @@ function buildRecord (entry) {
     // 实心策略补丁认这个标记：见 pathing.js 的 needsShapeFallback
     angelInjected: true,
   };
+  // 有形状就填 → `needsShapeFallback` 不再命中 → 不再按名字猜；
+  // 没形状就不填 → 兜底照旧（旧 dump 的行为一个字节都不变）。
+  // ⚠️ `authoritative = false`：模组方块的名字没有权威依据可判"形状动态"。
+  applyShapeFields(rec, entry, false);
+  return rec;
 }
 
 /**
  * 用 dump 的 state 布局覆盖一条原版注册表记录，但保留 minecraft-data 提供的
- * 碰撞、挖掘、掉落等运行时字段。整合包会给少数原版方块增加属性值；如果还把
+ * 挖掘、掉落等运行时字段。整合包会给少数原版方块增加属性值；如果还把
  * 原版记录留在旧 state 区间，后面的所有 state 都会被翻译成错误方块。
  */
 function buildVanillaOverlayRecord (base, entry) {
@@ -233,8 +383,10 @@ function buildVanillaOverlayRecord (base, entry) {
   rec.states = toStateProps(entry.props);
   rec.angelInjected = true;
   rec.angelVanillaOverlay = true;
-  // stateShapes 来自旧布局，扩容后 metadata 不再与它一一对应；让 Block 使用
-  // 该方块的默认 shapes，而不是把新 state 错配到旧 stateShapes 的任意一格。
+  if (applyShapeFields(rec, entry, true)) return rec;
+  // 没有可用的形状列 → 沿用 minecraft-data 的碰撞字段。
+  // 但 stateShapes 来自**旧布局**，扩容后 metadata 不再与它一一对应；
+  // 让 Block 使用该方块的默认 shapes，而不是把新 state 错配到旧 stateShapes 的任意一格。
   if (entry.count !== (base.maxStateId - base.minStateId + 1)) delete rec.stateShapes;
   return rec;
 }
@@ -302,7 +454,10 @@ function clearInjected (registry) {
  * @returns {{ok: boolean, reason: string|null, blocks: number, states: number,
  *            vanillaChecked: number, vanillaMismatches: Array, vanillaMissing: Array,
  *            anchorsChecked: number, anchorViolations: Array, anchorMissing: Array,
- *            cleared: number, samples: Array}}
+ *            cleared: number, samples: Array,
+ *            shapeBlocks: number, shapeStates: number,
+ *            shapeAbsent: number, shapeUnusable: number,
+ *            shapeDynamic: number, shapeDynamicGuessed: number}}
  */
 function injectPalette (registry, index, opts = {}) {
   const vanillaTotal = opts.vanillaStateTotal ?? VANILLA_STATE_TOTAL;
@@ -327,6 +482,13 @@ function injectPalette (registry, index, opts = {}) {
     anchorMissing: [],
     cleared: 0,
     samples: [],
+    // 形状列到底带来了多少真实碰撞箱（这是"兜底该不该让位"的唯一正面证据）
+    shapeBlocks: 0,        // 填上了真实形状的方块数（原版 overlay + 模组）
+    shapeStates: 0,        // 填上了真实形状的 state 数
+    shapeAbsent: 0,        // 没导这一列（旧 dump）
+    shapeUnusable: 0,      // 导了但不可用（条数对不上 / 有 state 读不到）
+    shapeDynamic: 0,       // 形状"静态决定不了"的，**原版、有权威依据**（反汇编出的那 6 类）
+    shapeDynamicGuessed: 0,// 模组方块里名字后缀撞上那几个词的（**按名字猜的，无依据**）
   };
 
   if (!registry || !registry.blocksByStateId) {
@@ -463,6 +625,14 @@ function injectPalette (registry, index, opts = {}) {
     }
     ranges.push({ first: entry.first, count: entry.count, assigned: rec });
     records.push({ id: rec.id, name: nameKey || rec.name, assigned: rec });
+    // 形状统计：只看"这一块最终有没有权威形状"，不看 dump 有没有那一列。
+    if (rec.angelShape === 'static') {
+      report.shapeBlocks++;
+      report.shapeStates += entry.count;
+      if (rec.angelShapeDynamic) report.shapeDynamic++;
+      if (rec.angelShapeDynamicGuessed) report.shapeDynamicGuessed++;
+    } else if (rec.angelShape === 'absent') report.shapeAbsent++;
+    else if (rec.angelShape === 'unusable') report.shapeUnusable++;
   };
 
   // 先覆盖整合包真实的 vanilla state 布局，保证扩容后的原版方块不再错译。
@@ -473,14 +643,16 @@ function injectPalette (registry, index, opts = {}) {
     report.overlayStates += entry.count;
   }
 
-  // 再写入模组方块；这些记录没有权威碰撞箱，继续交给 pathing 的实心兜底。
+  // 再写入模组方块：dump 有形状就用真实形状，没有才继续交给 pathing 的实心兜底。
   for (const e of modded) {
     const rec = buildRecord(e);
     assign(e, rec, rec.name);
     report.blocks++;
     report.states += e.count;
     if (report.samples.length < 5) {
-      report.samples.push({ id: rec.id, name: rec.name, first: e.first, count: e.count });
+      report.samples.push({
+        id: rec.id, name: rec.name, first: e.first, count: e.count, shape: rec.angelShape || null,
+      });
     }
   }
 
@@ -590,7 +762,10 @@ function selftest () {
   ok('模组 state 有真实方块 id', mod.type === 1003, mod.type);
   ok('模组 state 属性可读', mod._properties.facing === 'north' && mod._properties.waterlogged === true,
     JSON.stringify(mod._properties));
-  ok('模组 state 保留未知碰撞箱标记，交给实心策略', mod.boundingBox === undefined, mod.boundingBox);
+  // ⚠️ 这一条钉的是**旧 dump 的行为**（没有形状列）。有形状列时相反 —— 见下面 3b。
+  ok('没导形状列时，模组 state 保留未知碰撞箱标记，交给实心策略',
+    mod.boundingBox === undefined, mod.boundingBox);
+  ok('没导形状列时如实标成 absent', registry.blocksByStateId[modState].angelShape, 'absent');
 
   // ---- 2. 重复注入必须基于 pristine vanilla，而不是上一轮 shifted overlay ----
   const injectedAgain = injectPalette(registry, index, { anchors: [] });
@@ -608,6 +783,118 @@ function selftest () {
     registry.blocksByName.oak_leaves.minStateId === 237 && registry.blocksByName.oak_leaves.maxStateId === 264);
   ok('清理后 293 回到原版 spruce 之外的旧布局',
     Block.fromStateId(293, 0).name === 'birch_leaves');
+
+  // ---- 3b. 形状列：有就填真实碰撞箱，按名字猜的那几条自动退居兜底 ----
+  //     这是**契约反转**的正面证据。老契约"注入的记录故意不填 boundingBox"，
+  //     新契约"有形状就填、没形状才不填"。两条都要钉住（3b 钉前者，上面第 1 节钉后者）。
+  {
+    const shaped = makeEntries();
+    const ladder = shaped.find(e => e.name === 'quark:spruce_ladder');
+    const deco = shaped.find(e => e.name === 'quark:decorative_block');
+    // 梯子 8 个 state：偶数 state 有 3/16 厚的板，奇数 state 空碰撞
+    ladder.shapes = Array.from({ length: 8 }, (_, i) => (i % 2 === 0 ? [[0, 0, 0, 0.8125, 1, 1]] : []));
+    deco.shapes = [[[0, 0, 0, 1, 1, 1]]];
+    const rep = injectPalette(registry, palette.buildIndex(shaped), { anchors: [] });
+    ok('带形状列的调色板注入成功', rep.ok === true, rep.reason);
+    ok('报告 2 个方块带形状', rep.shapeBlocks === 2, rep.shapeBlocks);
+    ok('报告 9 个 state 带形状', rep.shapeStates === 9, rep.shapeStates);
+    ok('报告里没有"导了但不可用"', rep.shapeUnusable === 0, rep.shapeUnusable);
+    ok('原版 overlay 那 1003 条如实标成"没导形状列"', rep.shapeAbsent === 1003, rep.shapeAbsent);
+
+    const lad0 = Block.fromStateId(ladder.first, 0);
+    const lad1 = Block.fromStateId(ladder.first + 1, 0);
+    ok('模组梯子 state0 拿到逐 state 形状（3/16 厚）',
+      JSON.stringify(lad0.shapes) === JSON.stringify([[0, 0, 0, 0.8125, 1, 1]]), JSON.stringify(lad0.shapes));
+    ok('模组梯子 state1 是**空碰撞**（"知道没有"，不是"不知道"）',
+      Array.isArray(lad1.shapes) && lad1.shapes.length === 0, JSON.stringify(lad1.shapes));
+    ok('模组梯子 boundingBox = block（有 state 有碰撞）', lad0.boundingBox, 'block');
+    ok('模组整格方块拿到整格碰撞箱',
+      JSON.stringify(Block.fromStateId(deco.first, 0).shapes) === JSON.stringify([[0, 0, 0, 1, 1, 1]]),
+      JSON.stringify(Block.fromStateId(deco.first, 0).shapes));
+    ok('有形状的记录标着 angelShape=static',
+      registry.blocksByStateId[ladder.first].angelShape, 'static');
+    ok('原版 overlay 没形状列时仍沿用 minecraft-data 的碰撞箱（没被清空）',
+      Block.fromStateId(0, 0).boundingBox, 'empty');
+
+    clearInjected(registry);
+    ok('清理后形状字段随记录一起消失', registry.blocksByStateId[ladder.first] === undefined);
+  }
+
+  // ---- 3c. 形状列不可用时必须整块不填（宁可退回按名字猜） ----
+  {
+    const partial = makeEntries();
+    const ladder = partial.find(e => e.name === 'quark:spruce_ladder');
+    ladder.shapes = Array.from({ length: 8 }, () => [[0, 0, 0, 1, 1, 1]]);
+    ladder.shapes[3] = null;                       // 有一个 state 读不到
+    const r1 = buildRecord(ladder);
+    ok('有一个 state 读不到 → 整块不填 boundingBox', r1.boundingBox === undefined, r1.boundingBox);
+    ok('并如实标成 unusable', r1.angelShape, 'unusable');
+
+    const short = makeEntries();
+    const s2 = short.find(e => e.name === 'quark:spruce_ladder');
+    s2.shapes = [[[0, 0, 0, 1, 1, 1]]];            // 只有 1 条，count 是 8
+    ok('条数对不上 count → 整块不填', buildRecord(s2).boundingBox === undefined);
+
+    const old = makeEntries();
+    const r3 = buildRecord(old.find(e => e.name === 'quark:spruce_ladder'));
+    ok('旧 5 列 dump（shapes 是 undefined）→ 不填且标成 absent',
+      r3.boundingBox === undefined && r3.angelShape === 'absent', r3.angelShape);
+
+    const empt = makeEntries();
+    const s4 = empt.find(e => e.name === 'quark:spruce_ladder');
+    s4.shapes = [];                                 // 空数组：不算"知道"
+    ok('shapes 是空数组 → 不填', buildRecord(s4).boundingBox === undefined);
+  }
+
+  // ---- 3d. 原版 overlay：dump 的形状比 minecraft-data 更权威 ----
+  {
+    const over = makeEntries();
+    // 把 air（blockId 0，原版 count 1）改成"整块实心" —— 只为验证 dump 能盖过 base
+    const airEntry = over.find(e => e.blockId === 0);
+    airEntry.shapes = [[[0, 0, 0, 1, 1, 1]]];
+    const rep = injectPalette(registry, palette.buildIndex(over), { anchors: [] });
+    ok('原版 overlay 也吃 dump 的形状', rep.shapeBlocks === 1, rep.shapeBlocks);
+    const air = Block.fromStateId(airEntry.first, 0);
+    ok('overlay 后 air 的碰撞箱来自 dump 而不是 minecraft-data',
+      JSON.stringify(air.shapes) === JSON.stringify([[0, 0, 0, 1, 1, 1]]) && air.boundingBox === 'block',
+      `${JSON.stringify(air.shapes)}/${air.boundingBox}`);
+    clearInjected(registry);
+    ok('清理后 air 回到 minecraft-data 的空碰撞',
+      Block.fromStateId(0, 0).boundingBox === 'empty', Block.fromStateId(0, 0).boundingBox);
+  }
+
+  // ---- 3e. 形状"静态决定不了"的原版方块要**标记**出来，不是不填 ----
+  //     反汇编 Blocks.<clinit> 实测 1.20.1 只有 6 处 dynamicShape()。
+  //     ⚠️ 模组方块只能**按名字猜**，标记与权威标记分开存、分开报。
+  {
+    // 原版（有权威依据）：走 buildVanillaOverlayRecord 那条路 → authoritative = true
+    const mkVan = (name, shapes) => buildVanillaOverlayRecord(
+      { id: 1, name, displayName: name, minStateId: 0, maxStateId: shapes.length - 1, states: [] },
+      { blockId: 1, first: 0, count: shapes.length, name: 'minecraft:' + name, props: [], shapes });
+    // 模组（按名字猜）：走 buildRecord → authoritative = false
+    const mkMod = (name, shapes) => buildRecord(
+      { blockId: 1, first: 0, count: shapes.length, name, props: [], shapes });
+
+    const box = mkVan('white_shulker_box', [[[0, 0, 0, 1, 1, 1]]]);
+    ok('潜影盒被标成动态形状', box.angelShapeDynamic, true);
+    ok('动态形状**照样填**（静态采样是保守值，比退回按名字猜好）', box.boundingBox, 'block');
+    ok('竹子也被标记', mkVan('bamboo', [[[0, 0, 0, 1, 1, 1]]]).angelShapeDynamic, true);
+    ok('脚手架/细雪/滴水石/被推的活塞都认',
+      ['scaffolding', 'powder_snow', 'pointed_dripstone', 'moving_piston']
+        .every(n => mkVan(n, [[[0, 0, 0, 1, 1, 1]]]).angelShapeDynamic === true));
+    ok('普通方块不标', mkVan('stone', [[[0, 0, 0, 1, 1, 1]]]).angelShapeDynamic === undefined);
+    // `potted_bamboo` 名字以 `_bamboo` 结尾，但形状来自 FlowerPotBlock（静态）。
+    // 端到端演练实测被误标过一次，这条断言钉住它。
+    ok('potted_bamboo 不误标（花盆形状是静态的）',
+      mkVan('potted_bamboo', [[[0, 0, 0, 1, 1, 1]]]).angelShapeDynamic === undefined);
+    // 模组：只能猜，进另一个字段
+    const modBamboo = mkMod('some_mod:bamboo', [[[0, 0, 0, 1, 1, 1]]]);
+    ok('模组方块撞上同名后缀 → 标成"猜的"（不是权威标记）',
+      modBamboo.angelShapeDynamicGuessed === true && modBamboo.angelShapeDynamic === undefined);
+    ok('模组方块的名字不会混进权威计数', modBamboo.angelShapeDynamic === undefined);
+    ok('只是名字里含 bamboo 的模组方块不误伤',
+      mkMod('some_mod:bamboo_mat', [[[0, 0, 0, 1, 1, 1]]]).angelShapeDynamicGuessed === undefined);
+  }
 
   // ---- 4. 累计 drift / count 下限校验 ----
   {
@@ -662,10 +949,15 @@ module.exports = {
   VANILLA_BLOCK_COUNT,
   VANILLA_STATE_TOTAL,
   DEFAULT_ANCHORS,
+  DYNAMIC_SHAPE_RE,
+  DYNAMIC_SHAPE_GUESS_RE,
   parseAnchors,
   checkAnchors,
   toStateProps,
+  shapeFieldsFor,
+  applyShapeFields,
   buildRecord,
+  buildVanillaOverlayRecord,
   injectPalette,
   clearInjected,
   lastInjectionSummary,
