@@ -422,9 +422,13 @@ function selftest () {
   ok('真快照无重复 id', idx.duplicateIds === 0);
   ok('真快照无重复名字', idx.duplicateNames === 0);
   ok('真快照无坏条目', idx.badEntries === 0);
-  ok('真快照断点 2 处且被报告', idx.gapCount === 2, `gapCount=${idx.gapCount}`);
-  ok('断点样本是 [16960,16962]', JSON.stringify(idx.gapSamples[0]) === '[16960,16962]', JSON.stringify(idx.gapSamples[0]));
-  ok('缺失 id 里含 16961', idx.missingIds.includes(16961));
+  // 期望值从快照现算，不写死：加/删模组后快照会变（加机械动力后 29474 → 31083 个模组物品、断点 2 → 4 处）
+  const ids = real.entries.map(e => e[1]).sort((a, b) => a - b);
+  const gaps = []; for (let i = 1; i < ids.length; i++) if (ids[i] - ids[i - 1] > 1) gaps.push([ids[i - 1], ids[i]]);
+  const moddedN = ids.filter(id => id >= VANILLA_ITEM_FALLBACK).length;
+  ok(`真快照断点 ${gaps.length} 处且都被报告`, idx.gapCount === gaps.length, `gapCount=${idx.gapCount}`);
+  ok('断点样本是第一处断点', !gaps.length || JSON.stringify(idx.gapSamples[0]) === JSON.stringify(gaps[0]), JSON.stringify(idx.gapSamples[0]));
+  ok('缺失 id 里含第一处断点中间的那个', !gaps.length || idx.missingIds.includes(gaps[0][0] + 1));
   ok('真快照 byName 认得 bountifulfares:lemon', idx.byName.get('bountifulfares:lemon') === 1284,
     String(idx.byName.get('bountifulfares:lemon')));
 
@@ -432,7 +436,7 @@ function selftest () {
   const pre = injectItems(registry, idx, { commit: false });
   ok('预检通过', pre.ok, pre.reason);
   ok('预检 vanillaChecked === 1255', pre.vanillaChecked === VANILLA_ITEM_FALLBACK, String(pre.vanillaChecked));
-  ok('预检 modded === 29474', pre.modded === 29474, String(pre.modded));
+  ok(`预检 modded === ${moddedN}`, pre.modded === moddedN, String(pre.modded));
   ok('预检标记 validationOnly', pre.validationOnly === true);
   ok('预检没碰注册表', registry.items[1284] === undefined && registry.itemsByName['bountifulfares:lemon'] === undefined);
   ok('预检没撑大 itemsArray', registry.itemsArray.length === VANILLA_ITEM_FALLBACK, String(registry.itemsArray.length));
@@ -440,7 +444,7 @@ function selftest () {
   // ---- 3. 真正注入 ----
   const rep = injectItems(registry, idx);
   ok('注入成功', rep.ok, rep.reason);
-  ok('注入条数 29474', rep.modded === 29474, String(rep.modded));
+  ok(`注入条数 ${moddedN}`, rep.modded === moddedN, String(rep.modded));
   ok('注入记下了 cleared', rep.cleared === 0, String(rep.cleared));
   ok('registry.items[1284] 有值', !!registry.items[1284]);
   ok('registry.items[1284].name 正确', registry.items[1284].name === 'bountifulfares:lemon');
@@ -462,13 +466,13 @@ function selftest () {
   // ---- 4. 重复注入不留幽灵 ----
   const rep2 = injectItems(registry, idx);
   ok('重复注入仍成功', rep2.ok, rep2.reason);
-  ok('重复注入清掉了上一轮 29474 条', rep2.cleared === 29474, String(rep2.cleared));
+  ok(`重复注入清掉了上一轮 ${moddedN} 条`, rep2.cleared === moddedN, String(rep2.cleared));
   ok('重复注入后仍是同一份记录', registry.items[1284].name === 'bountifulfares:lemon');
   ok('itemsByName 没有多出别名', Object.keys(registry.itemsByName).filter(n => n === 'bountifulfares:lemon').length === 1);
 
   // ---- 5. 清干净后回到注入前 ----
   const cleared = clearInjected(registry);
-  ok('clearInjected 清掉 29474 条', cleared === 29474, String(cleared));
+  ok(`clearInjected 清掉 ${moddedN} 条`, cleared === moddedN, String(cleared));
   ok('items[1284] 已删除', registry.items[1284] === undefined);
   ok('itemsByName 已删除', registry.itemsByName['bountifulfares:lemon'] === undefined);
   ok('itemsArray 长度回到 1255', registry.itemsArray.length === VANILLA_ITEM_FALLBACK, String(registry.itemsArray.length));
@@ -498,7 +502,7 @@ function selftest () {
   ok('重复 id → 拒绝', !r4.ok && r4.duplicateIds === 1, r4.reason);
 
   const dupName = clone(real);
-  dupName.entries.push(['bountifulfares:lemon', 31000]);
+  dupName.entries.push(['bountifulfares:lemon', ids[ids.length - 1] + 1000]);   // 用一个肯定没人占的 id，只制造"重名"（以前写死 31000，加模组后它成了真 id）
   const r5 = buildIndex(dupName);
   ok('重复名字 → 拒绝', !r5.ok && r5.duplicateNames === 1, r5.reason);
 
