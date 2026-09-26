@@ -4841,6 +4841,7 @@ const handlers = {
     // 掉落物"最后落在哪儿"的坐标集合 —— 用于挖完之后**统一清扫一次**。
     // 见下方 "批量清扫" 段：逐块等待既慢又会互相错位（P10 第二轮）。
     const dropAnchors = [];
+    const skipped = new Set();   // 够不着 / 挖不掉的格子：这次不再选
     const invBefore = inventoryCount(state.bot);
 
     try {
@@ -4850,7 +4851,18 @@ const handlers = {
           break;
         }
         const before = inventoryCount(state.bot);
-        const block = state.bot.findBlock({ matching: blockId, maxDistance: radius });
+        // 选她够得着的：高度差 ≤4 的优先、露在外面（旁边有空气）的优先；够不着/挖不掉的记进 skipped 不再选。
+        // 2026-09-26 实测：直线最近的那块石头在她脚下 17 格（y=106 vs 123），下面 GoalNear 只管水平距离，
+        // 一下就"到达"了，然后在 17 格外空挥镐子，同一格来回挖了几十次（主人看到的"在家里跳着不知道在挖什么"）
+        const me = state.bot.entity.position;
+        const exposed = (p) => [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]]
+          .some(([dx, dy, dz]) => { const b = state.bot.blockAt(p.offset(dx, dy, dz)); return b && b.boundingBox === 'empty'; });
+        const cands = state.bot.findBlocks({ matching: blockId, maxDistance: radius, count: 64 })
+          .filter(p => !skipped.has(`${p.x},${p.y},${p.z}`));
+        const scored = cands.map(p => ({ p, dy: Math.abs(p.y - Math.floor(me.y)), d: p.distanceTo(me), open: exposed(p) }))
+          .filter(c => c.dy <= 4)
+          .sort((a, b) => (b.open - a.open) || (a.d - b.d));
+        const block = scored.length ? state.bot.blockAt(scored[0].p) : null;
         const hit = Boolean(block);
 
         if (hit) {
@@ -4902,6 +4914,14 @@ const handlers = {
             //
             // 这是最难查的一类 bug：**动作声称成功、世界没有变化**。
             // 唯一可靠的防法是**去世界里核对**，而不是相信返回值。
+            // 走完了还够不着（比如隔着地板、在脚下深处）：跳过这一格，别在这儿空挥
+            const reach = state.bot.entity.position.offset(0, 1.62, 0).distanceTo(block.position.offset(0.5, 0.5, 0.5));
+            if (reach > 5) {
+              skipped.add(`${block.position.x},${block.position.y},${block.position.z}`);
+              sweeps.push({ sweep, radius, action: 'skip', reason: `够不着（${reach.toFixed(1)} 格）` });
+              if (skipped.size > 6) { sweeps.push({ sweep, radius, action: 'giveup', reason: '附近的都够不着' }); break; }
+              continue;
+            }
             const beforeBlock = state.bot.blockAt(block.position);
             const beforeName = beforeBlock?.name ?? null;
 

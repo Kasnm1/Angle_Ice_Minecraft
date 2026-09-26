@@ -578,6 +578,34 @@ function fmtRecipe (r) {
   return `${where}：${r.in.map(fmtSlot).join(' + ') || '（无原料）'}${tools} → ${outs}${r.source === 'kubejs' ? '［整合包改过］' : ''}`;
 }
 
+/**
+ * 这样东西能不能从自然方块直接挖到（矿石、原木、土石、庄稼…）。
+ * 只认这些"自然"的方块，免得把"打碎远古花瓶偶尔掉铁锭"也当成正经来源。
+ */
+const ORE_BLOCK = /_ore$|(^|:)ore_/;
+const GROUND_BLOCK = /:(stone|deepslate|dirt|grass_block|sand|red_sand|gravel|clay|netherrack|basalt|blackstone|end_stone|tuff|granite|diorite|andesite|snow_block|ice)$/;
+const CROP_BLOCK = /(wheat|carrots|potatoes|beetroots|crop|crops|nether_wart)$/;
+const SELF_OK = /(_log|_stem|melon|pumpkin|sugar_cane|bamboo|cactus|kelp|vine|flower|mushroom|sapling|_leaves)$/;
+/**
+ * 这样东西能不能从自然方块直接挖到（真人的第一反应）：
+ *   · 方块掉它自己（原木、甘蔗…，不要精准采集）
+ *   · 挖矿石掉的产物（粗铁、煤、钻石…）· 挖地面方块掉的（石头掉圆石）· 收成熟庄稼
+ * 不算：概率掉落（树叶掉木棍、某些矿偶尔掉铁粒）、模组附带的怪掉落（杨树原木掉木棍）、要精准采集才掉的矿石方块本身。
+ * 2026-09-26 实测：以前"有配方就去合成"，做铁镐的路线成了"抓铁脂鲤合成粗铁→粗铁块→粗铁砖→烧"。
+ */
+function naturalRaw (id) {
+  if (/stripped_/.test(id)) return false;   // 去皮原木是斧子削出来的，野外没有
+  load();
+  return (K.drops.get(id) || []).some(d => {
+    if (d.from === 'interact') return true;
+    if (d.from !== 'block') return false;
+    const w = (d.when || []).join(' ');
+    if (/概率/.test(w) || /(^|[^不])需要silk_touch/.test(w)) return false;
+    if (d.id === id) return SELF_OK.test(id) || GROUND_BLOCK.test(id) || !K.byOutput.has(id);
+    return ORE_BLOCK.test(d.id) || GROUND_BLOCK.test(d.id) || CROP_BLOCK.test(d.id);
+  });
+}
+
 function recipeRank (r) {
   const st = r.station === 'inventory' ? 0
     : ['minecraft:crafting_table', 'minecraft:furnace'].includes(r.station) ? 1
@@ -742,11 +770,11 @@ function materialTree (q, count = 1, inventory = []) {
   };
   const inSlot = (slot, x) => slot.alts.some(a => (a.item ? a.item === x : K.tags.get(`item:${a.tag}`)?.has(x)));
   const pickAlt = (slot) => {
-    // 背包里有的 > 原版的 > 有配方/掉落的
+    // 背包里有的 > 能直接挖到的（原木，不是树皮块）> 原版的 > 有配方/掉落的
     const owned = [...inv.keys()].filter(x => have(x) > 0 && inSlot(slot, x));
     if (owned.length) return owned.sort((a, b) => have(b) - have(a))[0];
     const cands = slot.alts.flatMap(a => (a.item ? [a.item] : [...(K.tags.get(`item:${a.tag}`) || [])].slice(0, 400)));
-    const score = (x) => (have(x) >= slot.count ? 100 : have(x) ? 50 : 0) + (x.startsWith('minecraft:') ? 10 : 0)
+    const score = (x) => (have(x) >= slot.count ? 100 : have(x) ? 50 : 0) + (x.startsWith('minecraft:') ? 10 : 0) + (naturalRaw(x) ? 6 : 0)
       + (K.drops.has(x) ? 3 : 0) + (K.byOutput.has(x) ? 2 : 0);
     return cands.sort((a, b) => score(b) - score(a))[0];
   };
@@ -754,7 +782,19 @@ function materialTree (q, count = 1, inventory = []) {
     const st = r.station === 'inventory' ? 0 : ['minecraft:crafting_table', 'minecraft:furnace'].includes(r.station) ? 1
       : r.type.startsWith('minecraft:') ? 3 : 6;
     const haveAll = r.in.every(s => [...inv.keys()].some(x => have(x) > 0 && inSlot(s, x))) ? -2 : 0;
-    return st + r.in.length * 0.5 + haveAll;
+    // 原料好不好弄：身上有 → 0；能直接挖到 → 0.25；一步就能从原材料做出来（木板←原木）→ 0.35；否则 1
+    // 以前只看"在哪做"，铁锭选了"铁块拆 9 个"，往下又选"铁脂鲤合成粗铁"（实测她说"做铁镐得去打铁脂鲤"，2026-09-26）
+    const fromHave = (x) => (K.byOutput.get(x) || []).some(i => K.recipes[i].in.length && K.recipes[i].in.every(s2 => [...inv.keys()].some(y => have(y) > 0 && inSlot(s2, y))));
+    const easy = (x) => have(x) > 0 ? 0 : fromHave(x) ? 0.1 : naturalRaw(x) ? 0.25
+      : (K.byOutput.get(x) || []).some(i => K.recipes[i].in.length && K.recipes[i].in.every(s2 => s2.alts.some(a => (a.item ? naturalRaw(a.item) : [...(K.tags.get(`item:${a.tag}`) || [])].slice(0, 30).some(naturalRaw))))) ? 0.35 : 1;   // 木板←原木 和 竹子 差不多好弄，别为省一步就去找竹林
+    const slotCost = (sl) => Math.min(...sl.alts.map(a => (a.item ? [a.item] : [...(K.tags.get(`item:${a.tag}`) || [])].slice(0, 30)))
+      .flat().map(x => easy(x) + (x.startsWith('minecraft:') || have(x) > 0 ? 0 : 0.75)), 3);   // 身上没有的模组材料略扣分（暮色森林的根须…）
+    const hard = r.in.reduce((a, sl) => a + slotCost(sl), 0);
+    // 拆包（方块拆出 9 个锭）不是正经做法 —— 只有"原料本身能用产物合回去"才算拆包（原木→4 木板不算）
+    const out0 = r.out[0]?.item;
+    const unpack = r.in.length === 1 && r.out.some(o => o.count >= 4) && r.in[0].alts.some(a => a.item && (K.byOutput.get(a.item) || []).some(i => K.recipes[i].in.some(s2 => s2.alts.some(b => b.item === out0)))) ? 5 : 0;
+    const total = r.in.reduce((a, x) => a + (x.count || 1), 0);   // 平手时原料总数少的优先（1 块粗铁 胜过 9 个铁粒）
+    return st + r.in.length * 0.5 + haveAll + hard * 2 + unpack + total * 0.05;
   };
 
   function need (item, n, depth, stack) {
@@ -764,7 +804,8 @@ function materialTree (q, count = 1, inventory = []) {
     const rs = (K.byOutput.get(item) || []).map(i => K.recipes[i])
       .filter(r => !r.in.some(s => s.alts.some(a => a.item && stack.has(a.item))))
       .filter(r => !r.out.some(o => o.chance));
-    if (!rs.length || depth > 7) {
+    // 能直接挖到的（粗铁挖铁矿、原木砍树、圆石挖石头、小麦收庄稼）就是原材料，不再往下找配方
+    if (!rs.length || depth > 7 || (depth > 0 && naturalRaw(item))) {
       raw.set(item, (raw.get(item) || 0) + rest);
       return;
     }
