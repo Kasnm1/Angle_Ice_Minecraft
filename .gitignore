@@ -80,3 +80,4 @@ Thumbs.db
 # 从整合包本体生成的知识数据（20MB+，可用 knowledge/_tools 重新生成）
 knowledge/generated/
 .env.*
+__pycache__/

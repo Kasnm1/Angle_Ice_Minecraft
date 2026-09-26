@@ -42,7 +42,7 @@ CATS = {
 # 这些后缀不是独立物品，是说明/提示文本，要剔除
 NOISE_SUFFIX = re.compile(
     r'\.(description|tooltip|tooltips|desc|info|comment|author|credit|'
-    r'subtitle|hint|usage|lore|pack\.description)(_\d+)?$',
+    r'subtitle|hint|usage|lore|pack\.description)(_?\d+)?(\.|$)',   # 中间段也算：xxx.tooltip.summary、xxx.tooltip2（Create 大量这种）
     re.I,
 )
 

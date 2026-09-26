@@ -1,4 +1,4 @@
-# 模组清单（467 个）
+# 模组清单（484 个）
 
 按 modid 排序。`中文名` 为模组自带的官方中文名（部分模组没有）。
 
@@ -17,7 +17,7 @@
 | `alexsmobs` | Alex's Mobs | Alex 的生物 | 1.22.9 | forge |
 | `alexsmobsdelight` | Alex's Mobs Delight | Alex的生物乐事 | 1.0.6 | forge |
 | `ambientsounds` | AmbientSounds |  | 6.3.4 | forge |
-| `amendments` | Amendments |  | 1.20-1.2.18 | forge |
+| `amendments` | Amendments |  | 1.20-2.2.6 | forge |
 | `animalhatmod` | AnimalHatMod |  | 1.1.0 | forge |
 | `any_lanterns` | any lanterns |  | 1.2 | forge |
 | `appleskin` | AppleSkin |  | 2.5.1 | forge |
@@ -31,7 +31,7 @@
 | `arsdelight` | Ars Nouveau's Flavors & Delight | 新生乐事 | 1.2.1 | forge |
 | `artifacts` | Artifacts |  | 9.5.13 | forge |
 | `astikorcarts` | AstikorCarts Redux | AstikorCarts | 1.1.8 | forge |
-| `asyncparticles` | AsyncParticles |  | 2.3.8 | forge |
+| `asyncparticles` | AsyncParticles |  | 20.1.3.2 | forge |
 | `atmospheric` | Atmospheric |  | 6.1.1 | forge |
 | `attributefix` | AttributeFix |  | 21.0.4 | forge |
 | `autumnity` | Autumnity |  | 5.0.2 | forge |
@@ -54,6 +54,7 @@
 | `bosschongsheng` | bosséç |  | 1.0.0 | forge |
 | `bosses_delight` | Bosses Delight | BOMD乐事 | 1.0.5 | forge |
 | `bosses_of_mass_destruction` | Bosses of Mass Destruction | Bosses of Mass Destruction | 1.1.2 | forge |
+| `botarium` | Botarium |  | 2.3.4 | forge |
 | `bountiful` | Bountiful | 悬赏 | 6.0.4+1.20.1 | forge |
 | `bountifulfares` | Bountiful Fares |  | 1.2.1-1.20.1 | fabric |
 | `bowinfinityfix` | Bow Infinity Fix |  | 2.6.0 | forge |
@@ -98,6 +99,7 @@
 | `continuity` | Continuity |  | 3.0.0+1.20.1.forge | forge |
 | `controlling` | Controlling |  | 12.0.2 | forge |
 | `cookingforblockheads` | CookingForBlockheads | 傻瓜烹饪 | 16.0.12 | forge |
+| `copycats` | Create: Copycats+ | 机械动力：伪装方块+ / 装饰方块 | 3.0.2+mc.1.20.1-forge | forge |
 | `corgilib` | CorgiLib |  | 4.0.3.3 | forge |
 | `cornexpansion` | [Let's Do Addon] Corn Expansion |  | 1.0.1 | forge |
 | `cornucopia` | Cornucopia | 丰饶之角 | 0.2.1-beta | forge |
@@ -108,11 +110,26 @@
 | `crabbers_delight_expand` | Crabber's Delight expand |  | 1.4.2 | forge |
 | `crabbersdelight` | Crabber's Delight | 蟹农乐事 | 1.2.3 | forge |
 | `craftingtweaks` | CraftingTweaks |  | 18.2.5 | forge |
+| `create` | Create | 机械动力 | 6.0.8 | forge |
+| `create_central_kitchen` | Create: Central Kitchen |  | 1.4.3 | forge |
+| `create_confectionery` | Create Confectionery |  | 1.1.0 | forge |
+| `create_connected` | Create: Connected | 机械动力：创意传动 | 1.1.13-mc1.20.1 | forge |
+| `create_enchantment_industry` | Create Enchantment Industry |  | 6.0.6 | forge |
+| `create_mechanical_spawner` | Create Mechanical Spawner |  | 1.20.1-0.1.7-6.0.6 | forge |
+| `create_new_age` | Create: New Age | 机械动力：电气时代 | 1.1.4 | forge |
+| `create_power_loader` | Create: Power Loader | 机械动力：动力加载器 | 2.0.3-mc1.20.1 | forge |
+| `createbetterfps` | CreateBetterFps |  | 1.1.2 | forge |
+| `createcafe` | Create Cafe |  | 1.2.4 | forge |
+| `createdeco` | Create Deco |  | 2.0.3-1.20.1-forge | forge |
+| `createlazytick` | Create:Lazy Tick |  | 2.3.1-6.0.x | forge |
+| `createoreexcavation` | Create Ore Excavation | 机械动力：矿石开掘 | 1.6.5 | forge |
+| `createutilities` | Create Utilities | 机械动力：实用物品 | 0.3.2 | forge |
 | `creativecore` | CreativeCore |  | 2.12.30 | forge |
 | `creeperconfetti` | Creeper Confetti |  | 4.3 | forge |
 | `creeperoverhaul` | Creeper Overhaul | 苦力怕革新 | 3.0.2 | forge |
 | `crescentlib` | CrescentLib |  | 1.0.0 | forge |
 | `crockpot` | CrockPot | 烹饪锅 | 1.1.1 | forge |
+| `crystal_clear` | Create: Crystal Clear |  | 2.0-Beta | forge |
 | `ctov` | ChoiceTheorem's Overhauled Village |  | 3.4.14 | forge |
 | `culllessleaves` | Cull Less Leaves Reforged |  | 1.0.5 | forge |
 | `culturaldelights` | Cultural Delights | 多元乐事 | 0.16.4 | forge |
@@ -185,7 +202,7 @@
 | `festive_delight` | Festive Delight |  | 1.3.0 | forge |
 | `fishermens_trap` | Fishermens Trap |  | 2.1.4 | forge |
 | `fishingreal` | FishingReal |  | 1.9.1-backport | forge |
-| `flerovium` | Flerovium |  | 1.2.15 | forge |
+| `flerovium` | Flerovium |  | 1.2.19 | forge |
 | `flickerfix` | FlickerFix |  | 4.0.1 | forge |
 | `flowerymooblooms` | Friends&Foes - Flowery Mooblooms |  | 2.0.2 | forge |
 | `freecam` | Freecam |  | 1.2.1 | forge |
@@ -266,7 +283,6 @@
 | `magnumtorch` | Magnum Torch |  | 8.0.2 | forge |
 | `makit_better` | Makit Better | Makit Better! | 1.20.1-1.0.1 | forge |
 | `man_of_many_planes` | Man of Many Planes |  | 0.2.0+1.20.1 | forge |
-| `mcef` | MCEF (Minecraft Chromium Embedded Framework) |  | 2.1.6-1.20.1 | forge |
 | `mcwbridges` | Macaw's Bridges |  | 3.0.0 | forge |
 | `mcwdoors` | Macaw's Doors | Macaw的门 | 1.1.1 | forge |
 | `mcwfences` | Macaw's Fences and Walls |  | 1.1.2 | forge |
@@ -286,7 +302,7 @@
 | `mod_menu` | Better ModList |  | 0.1.11 | forge |
 | `modernfix` | ModernFix |  | 5.20.2+mc1.20.1 | forge |
 | `modernui` | Modern UI |  | 3.11.1.6 | forge |
-| `moonlight` | Moonlight Library |  | 1.20-2.14.13 | forge |
+| `moonlight` | Moonlight Library |  | 1.20-2.16.8 | forge |
 | `more_critters` | More Critters |  | 1.4.3 | forge |
 | `morecritterszhcntranslation` | MoreCrittersZhCnTranslationMod |  | 0.1.0 | forge |
 | `moredelight` | More Delight | 多趣乐事 | 26.04.30-1.20-forge | forge |
@@ -407,6 +423,7 @@
 | `starcarefree_game` | StarCarefree Game |  | 1.1.3-vefc | forge |
 | `starcatcher` | starcatcher |  | 2.3.16-FORGE-1.20.1 | forge |
 | `starterkit` | Starter Kit |  | 8.0 | forge |
+| `stellarcreateoptimization` | StellarCreateOptimization |  | 1.0.6 | forge |
 | `sunflowerdelight` | Sunflower Delight |  | 1.0.4 | forge |
 | `supermartijn642configlib` | SuperMartijn642's Config Library |  | 1.1.8 | forge |
 | `supermartijn642corelib` | SuperMartijn642's Core Lib |  | 1.1.18 | forge |

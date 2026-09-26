@@ -52,6 +52,26 @@ function catalog () {
     }
     chapters.push({ title: c.title, ids });
   }
+  // 「机械动力」任务分组里也有食物（红酒、蜂蜜酒、豆腐、米饭…）—— 主人定了也算进心愿（2026-09-26）。
+  // 那个分组大部分是机器和材料，只收"是烹饪类工作站的产物、或带食物标签"的，桶一律不算（岩浆桶是 create:mixing 做的，但不是吃的）
+  const K = knowledge.load();
+  const FOOD_STATION = /^(farmersdelight:cooking|create_central_kitchen:|kaleidoscope_cookery:|kaleidoscope_tea:|vinery:|cosmopolitan:tub_extracting)/;
+  const foodTagged = (id) => [...(K.itemTags.get(id) || [])].some(t => /(^|[:/])(foods?|meals?|drinks?)(\/|$)/.test(t));
+  const cooked = (id) => (K.byOutput.get(id) || []).some(i => FOOD_STATION.test(K.recipes[i].type));
+  for (const c of q.chapters || []) {
+    if (c.groupTitle !== '机械动力') continue;
+    const ids = [];
+    for (const qq of c.quests || []) {
+      for (const t of qq.tasks || []) {
+        if (t.type !== 'item' || !t.item || items.has(t.item) || /bucket$/.test(t.item)) continue;
+        if (!cooked(t.item) && !foodTagged(t.item)) continue;
+        const n = knowledge.label(t.item).replace(/\([^)]*\)$/, '');
+        items.set(t.item, { id: t.item, chapter: `机械动力·${c.title}`, quest: qq.title, zh: n && n !== t.item ? n : null });
+        ids.push(t.item);
+      }
+    }
+    if (ids.length) chapters.push({ title: `机械动力·${c.title}`, ids });
+  }
   CAT = { items, chapters };
   return CAT;
 }
