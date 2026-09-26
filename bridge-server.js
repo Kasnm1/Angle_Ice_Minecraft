@@ -1787,6 +1787,21 @@ function isAiryForPlace (block) {
   return !!block && placeLogic.AIRY.test(block.name || '');
 }
 
+/**
+ * 掉落物实体里是什么物品。prismarine-entity 的 getDroppedItem() 在这个模组服上恒返回 null（2026-09-26 实测），
+ * 直接从 metadata 里找物品槽（{ itemId, itemCount } / { present, itemId, … }），用注入过模组物品的注册表翻名字。
+ */
+function droppedItemOf (e) {
+  try {
+    const it = e.getDroppedItem && e.getDroppedItem();
+    if (it && it.name) return { name: it.name, count: it.count };
+  } catch (_) {}
+  const slot = (e.metadata || []).find(m => m && typeof m === 'object' && m.itemId != null);
+  if (!slot || slot.present === false) return null;
+  const def = state.bot?.registry?.items?.[slot.itemId];
+  return { name: def ? def.name : `#${slot.itemId}`, count: slot.itemCount ?? slot.count ?? 1 };
+}
+
 function isDropEntity (e) {
   if (!e || !e.position) return false;
   const byDisplay = e.displayName === 'Item' || e.displayName === 'item';
@@ -2906,7 +2921,7 @@ const handlers = {
           //    历史上 `objectType` 被三个地方各猜了一遍，每处都踩过坑。
           isDrop: drop,
           // 掉的是什么：她得知道地上躺着的是橡木原木还是圆石，才会有意识地去捡（主人 2026-09-26）
-          item: drop ? (() => { try { const it = e.getDroppedItem && e.getDroppedItem(); return it ? { name: it.name, count: it.count } : null; } catch (_) { return null; } })() : undefined,
+          item: drop ? droppedItemOf(e) : undefined,
           // ⚠️⚠️ 这里的分类是 2026-09-25 第六次实战抓出来的（field-log P8 完整根因）。
           //
           //   原来只写了 `e.type === 'mob' ? 'mob' : 'other'`，
