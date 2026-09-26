@@ -343,7 +343,9 @@ async function setDoor (bot, state, { x, y, z, open }) {
     await bot.activateBlock(b);
     await sleep(300);
   } finally { state.__closingDoor = false; }
-  b = bot.blockAt(b.position);
+  const pos0 = b.position;
+  b = doorBase(bot, pos0);
+  if (!b || !isDoorLike(b)) throw new Error(`右键之后 (${pos0.x},${pos0.y},${pos0.z}) 读不到门了（是 ${b?.name || '读不到'}）`);
   if (isOpen(b) !== open) throw new Error(`右键了，但${doorKind(b)}还是${isOpen(b) ? '开' : '关'}着（可能是铁门，要红石）`);
   if (!open) state.doorsIOpened?.delete(doorKey(b.position));
   // 主动打开的门：也按习惯，走过去会随手关（除非她明说要一直开着 —— 那就用 keepOpen）
@@ -856,7 +858,14 @@ async function craft2 (bot, { itemName, count = 1 } = {}, withTimeout) {
     await sleep(300);
     const d = delta(before, invCounts(bot));
     const made = d.gained[id] || 0;
-    if (!made) throw new Error(`按配方 ${r.id} 摆好了，但没拿到 ${k.label(id)}（服务器没认这个配方？）`);
+    if (!made) {
+      // 服务器没按这条配方给东西：记下实际发生了什么（多了/少了啥），换下一条配方试（2026-09-27 实测木棍这样失败过，原因待查）
+      const what = `多了 ${JSON.stringify(d.gained)}，少了 ${JSON.stringify(d.lost)}`;
+      tried.push(`按 ${r.id} 摆好了但没拿到（${what}）`);
+      console.log(`[craft2] ${r.id} 没拿到 ${id}：${what}；窗口=${bot.currentWindow?.type || '背包'}`);
+      if (Object.keys(d.lost).length) break;   // 原料已经被吃掉了还没拿到东西：别再接着试
+      continue;
+    }
     return { crafted: id, made, recipe: r.id, consumed: d.lost, usedTable: !!recipe.requiresTable };
   }
   throw new Error(`现在做不了 ${k.label(id)}：${[...new Set(tried)].slice(0, 4).join('；')}`);
@@ -1109,8 +1118,12 @@ async function climbColumn (bot, state, col) {
   };
   await align();
 
-  // 往上爬到梯子顶那一格的上面（出口层）
-  const exitFeetY = col.top + 1;
+  // 往上爬到梯子顶那一格的上面（出口层）。
+  // 梯子顶上头顶空间不够时（2026-09-27 她家：梯子顶 128、129 空、130 是屋顶楼梯块）人最高只能到 128.2，
+  // 从侧面迈到阁楼上 —— 以前硬要爬到 129，每次都报"上不去"，她在梯子上来回跳
+  let ceil = null;
+  for (let y = col.top + 1; y <= col.top + 3 && ceil == null; y++) { const b = bot.blockAt(new Vec3(col.x, y, col.z)); if (b && !passable(b) && !/trapdoor/.test(b.name)) ceil = y; }
+  const exitFeetY = ceil != null ? Math.min(col.top + 1, ceil - 1.8) : col.top + 1;
   const deadline = Date.now() + 4000 + (col.top - col.bottom + 2) * 900;
   let stalled = 0; let lastY = bot.entity.position.y; let opened = false;
   while (Date.now() < deadline && bot.entity.position.y < exitFeetY - 0.25) {
@@ -1157,7 +1170,10 @@ async function climbColumn (bot, state, col) {
   // 出口层就在梯子顶上一格（活板门那层地板）的情况：脚下是地板，站在 top+1
   const exits2 = exits.length ? [] : [[1, 0], [-1, 0], [0, 1], [0, -1]].map(([dx, dz]) => ({ x: col.x + dx, z: col.z + dz, y: col.top + 1 }))
     .filter(c => solidUnder(bot.blockAt(new Vec3(c.x, c.y - 1, c.z))) && passable(bot.blockAt(new Vec3(c.x, c.y, c.z))) && passable(bot.blockAt(new Vec3(c.x, c.y + 1, c.z))));
-  const cands = exits.length ? exits.map(c => ({ ...c, y: landY })) : exits2;
+  // 头顶被挡：只能在梯子顶那一层（脚在 top）往旁边迈
+  const exits3 = exits.length || exits2.length ? [] : [[1, 0], [-1, 0], [0, 1], [0, -1]].map(([dx, dz]) => ({ x: col.x + dx, z: col.z + dz, y: col.top }))
+    .filter(c => solidUnder(bot.blockAt(new Vec3(c.x, c.y - 1, c.z))) && passable(bot.blockAt(new Vec3(c.x, c.y, c.z))) && passable(bot.blockAt(new Vec3(c.x, c.y + 1, c.z))));
+  const cands = exits.length ? exits.map(c => ({ ...c, y: landY })) : exits2.length ? exits2 : exits3;
   if (!cands.length) throw new Error(`爬到顶了，但梯子顶 (${col.x},${col.top},${col.z}) 旁边没有能站的地方`);
   for (const c of cands) {
     for (let i = 0; i < 6; i++) {
