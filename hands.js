@@ -115,6 +115,7 @@ function install (bot, state) {
   bot.once('end', () => clearInterval(brightTimer));
   // 合成排错：记下服务器最近发来的背包窗口（0 号）格子更新，看成品格有没有出东西
   state.slotLog = [];
+  bot._client.on('window_items', (p) => { if (p.windowId === 0) state.invItems = { t: Date.now(), n: p.items.length, stateId: p.stateId, filled: p.items.map((it, i) => (it && (it.present !== false) && it.itemId != null && it.itemId !== -1 ? `${i}:${it.itemId}x${it.itemCount}` : null)).filter(Boolean) }; });
   bot._client.on('set_slot', (p) => { if (p.windowId === 0 || p.windowId === -2) { state.slotLog.push({ t: Date.now(), slot: p.slot, stateId: p.stateId, item: p.item?.itemId ?? p.item?.present ?? null, count: p.item?.itemCount ?? null }); if (state.slotLog.length > 40) state.slotLog.shift(); } });
   const pw = require('prismarine-windows')(bot.registry);
   const lastItems = new Map();   // windowId → 最近一次 window_items 的格子数（有的界面先发格子后开窗）
@@ -3103,7 +3104,7 @@ function routes ({ state, withTimeout }) {
     'POST /storage/organize': async (b = {}) => organizeStorage(bot(), state, b),
     'POST /storage/loot': async (b = {}) => lootNearby(bot(), state, b),
     'POST /delve': async (b = {}) => delve(bot(), state, b),
-    'GET /debug/craftgrid': async () => ({ grid: bot().inventory.slots.slice(0, 5).map((it, i) => it ? { slot: i, name: it.name, count: it.count } : null), window: bot().currentWindow?.type || null, stateId: bot().inventory.stateId, slotLog: (state.slotLog || []).slice(-20) }),
+    'GET /debug/craftgrid': async () => ({ serverInv: state.invItems || null, clientSlots: bot().inventory.slots.length, clientFilled: bot().inventory.slots.map((it, i) => it && `${i}:${it.type}x${it.count}`).filter(Boolean), grid: bot().inventory.slots.slice(0, 5).map((it, i) => it ? { slot: i, name: it.name, count: it.count } : null), window: bot().currentWindow?.type || null, stateId: bot().inventory.stateId, slotLog: (state.slotLog || []).slice(-20) }),
     'POST /debug/click': async (b = {}) => { const w = bot().currentWindow || bot().inventory; await bot().clickWindow(+b.slot, +b.button || 0, +b.mode || 0); await sleep(300); return { cursor: w.selectedItem && `${w.selectedItem.name}×${w.selectedItem.count}`, grid: w.slots.slice(0, 5).map(it => it && `${it.name}×${it.count}`), slot: w.slots[+b.slot] && `${w.slots[+b.slot].name}×${w.slots[+b.slot].count}`, log: (state.slotLog || []).slice(-4) }; },
     'POST /debug/returngrid': async () => { await returnGrid(bot()); return { grid: bot().inventory.slots.slice(0, 5).map(it => it && `${it.name}×${it.count}`) }; },
     'GET /light': async () => ({ light: lightAt(bot()), dark: isDark(lightAt(bot())), torches: torchCount(bot()), lastBright: state.lastBright ? { x: state.lastBright.x, y: state.lastBright.y, z: state.lastBright.z } : null }),
