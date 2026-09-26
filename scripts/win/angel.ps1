@@ -31,23 +31,24 @@ function Api($port, $path) {
 
 switch ($cmd) {
   'install' {
+    # 用 schtasks.exe：ScheduledTasks 那套 CIM cmdlet 在 SSH 会话里报"无效命名空间"（2026-09-26 实测）
     foreach ($w in 'bridge', 'mind') {
       $js = if ($w -eq 'bridge') { 'bridge-server.js' } else { 'mind.js' }
       $log = Join-Path $Logs "$w.log"
-      # cmd /c 负责把输出追加进日志（UTF-8）；工作目录 = 仓库根
-      $arg = "/c chcp 65001 >nul & cd /d `"$Root`" & `"$Node`" $js >> `"$log`" 2>&1"
-      $action = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument $arg -WorkingDirectory $Root
-      $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew
-      $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive
-      Register-ScheduledTask -TaskName (TaskName $w) -Action $action -Settings $settings -Principal $principal -Force | Out-Null
-      "已注册计划任务 $(TaskName $w)"
+      $bat = Join-Path $Logs "run-$w.cmd"
+      # 启动脚本：UTF-8 代码页、进仓库根、输出追加进日志
+      Set-Content -Path $bat -Encoding ASCII -Value "@echo off`r`nchcp 65001 >nul`r`ncd /d `"$Root`"`r`n`"$Node`" $js >> `"$log`" 2>&1`r`n"
+      $user = "$env:USERDOMAIN\$env:USERNAME"
+      # /IT：只在 Kasumi 登录着时跑（在她的登录会话里，SSH 断开不受影响）；/SC ONCE 只是占位，平时用 /Run 手动触发
+      schtasks /Create /TN (TaskName $w) /TR "`"$bat`"" /SC ONCE /ST 23:59 /SD 2099/01/01 /RU $user /IT /F | Out-Null
+      if ($LASTEXITCODE -eq 0) { "已注册计划任务 $(TaskName $w)" } else { "注册 $(TaskName $w) 失败（退出码 $LASTEXITCODE）" }
     }
   }
   'start' {
     $list = if ($what -eq 'all') { @('bridge', 'mind') } else { @($what) }
     foreach ($w in $list) {
       if (Procs $w) { "$w 已经在跑"; continue }
-      Start-ScheduledTask -TaskName (TaskName $w)
+      schtasks /Run /TN (TaskName $w) | Out-Null
       if ($w -eq 'bridge') {
         # 等 bridge 连上服务器再起 mind（mind 醒来第一件事就要看世界）
         for ($i = 0; $i -lt 30; $i++) { Start-Sleep 2; $s = Api 3001 '/status'; if ($s -and $s.connected) { break } }
@@ -60,7 +61,7 @@ switch ($cmd) {
     foreach ($w in $list) {
       $p = Procs $w
       if ($p) { $p | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }; "$w 已停（$(@($p).Count) 个进程）" } else { "$w 没在跑" }
-      Stop-ScheduledTask -TaskName (TaskName $w) -ErrorAction SilentlyContinue
+      schtasks /End /TN (TaskName $w) 2>&1 | Out-Null
     }
   }
   'status' {
