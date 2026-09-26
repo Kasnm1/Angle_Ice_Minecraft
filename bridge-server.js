@@ -4842,6 +4842,9 @@ const handlers = {
     // 见下方 "批量清扫" 段：逐块等待既慢又会互相错位（P10 第二轮）。
     const dropAnchors = [];
     const skipped = new Set();   // 够不着 / 挖不掉的格子：这次不再选
+    // 不开透视：只挖她**看得见**的（眼睛到方块的视线没被挡），或者和刚挖掉的那块相连的（顺着矿脉、树干往下挖，玩家也是这样）。
+    // 以前直接查方块表，隔着几十格石头也知道哪有铁 —— 主人说"这不就是矿物透视吗"（2026-09-27）。找矿用 POST /delve
+    const vein = new Set();
     const invBefore = inventoryCount(state.bot);
 
     try {
@@ -4867,7 +4870,8 @@ const handlers = {
         } return false; };
         const cands = state.bot.findBlocks({ matching: blockId, maxDistance: radius, count: 64 })
           .filter(p => !skipped.has(`${p.x},${p.y},${p.z}`))
-          .filter(p => !guardHome || !nearBuilt(p));
+          .filter(p => !guardHome || !nearBuilt(p))
+          .filter(p => vein.has(`${p.x},${p.y},${p.z}`) || state.bot.canSeeBlock(state.bot.blockAt(p)));
         const scored = cands.map(p => ({ p, dy: Math.abs(p.y - Math.floor(me.y)), d: p.distanceTo(me), open: exposed(p) }))
           .filter(c => c.dy <= 4)
           .sort((a, b) => (b.open - a.open) || (a.d - b.d));
@@ -4981,6 +4985,7 @@ const handlers = {
             if (swept.seen > swept.picked || swept.seen === 0) dropAnchors.push(where);
 
             mined.push({ at: where, name: beforeName, nowIs: afterName, drops: swept });
+            for (const [dx, dy, dz] of [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]]) vein.add(`${where.x + dx},${where.y + dy},${where.z + dz}`);
           } catch (e) {
             sweeps.push({ sweep, radius, action: 'error', reason: `挖 ${block.name} 失败：${e.message}` });
             // 单块失败不直接放弃：可能是被卡住，换个目标还有机会。
@@ -5190,7 +5195,7 @@ const handlers = {
       // "搜了多大"必须如实报 —— 这是"附近没有"与"我找不到"的区别所在
       note: last?.action === 'give-up'
         ? `搜到 ${radius} 格仍未拿够：${last.reason}`
-        : undefined,
+        : !mined.length ? `看得见的地方没有 ${label}（只挖视线里的，不透视）。矿石埋在地下：用 /delve 挖下去找、或进矿洞找` : undefined,
       sweeps,
     };
   },

@@ -81,3 +81,4 @@ Thumbs.db
 knowledge/generated/
 .env.*
 __pycache__/
+memory/containers-seen.json*

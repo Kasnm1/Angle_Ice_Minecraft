@@ -213,7 +213,9 @@ let llm = async function (opts) {
   // 中转站的毛病（空壳、网关页、503、限流）大多是一时的 —— 多试几次、两个模型轮着来。
   // 以前熔断期间备用模型只试一次，一回空壳就放弃了，她就说"卡了一下"（实测一天 20 次）
   const M = [model, 'main']; const F = fallback ? [fallback, fbRoute] : null;
-  const tries = !F ? [M, M, M] : open ? [F, F, M] : [M, M, F, F, M];
+  // 主模型失败一次就轮到备用：以前是 [主,主,备…]，主模型超时 25s×2 就撞上 40s 上限，备用一次都没试过，
+  // 她站着发呆 50 秒（2026-09-27 实测两分钟里两次）
+  const tries = !F ? [M, M, M] : open ? [F, F, M] : [M, F, M, F];
   const t0 = Date.now();
   let last;
   for (let i = 0; i < tries.length; i++) {
@@ -565,7 +567,7 @@ const TOOLS = {
   },
   mine: {
     kind: 'action',
-    desc: '挖附近最近的某种方块若干个（如 oak_log、stone、iron_ore）。用注册名（英文 id）。',
+    desc: '挖你看得见的某种方块若干个（如 oak_log、stone、sand）。只挖视线里的，挖完顺着相连的接着挖（树干、矿脉）。埋在地下的矿看不见 —— 找矿用 delve。用注册名（英文 id）。',
     params: { blockName: { type: 'string' }, count: { type: 'number' } }, required: ['blockName'],
     run: async ({ blockName, count }) => bridge.post('/mine', { blockName, count: Math.min(Math.max(1, count || 1), 16) }, CFG.actionTimeoutMs),
   },
@@ -703,6 +705,18 @@ const TOOLS = {
       }
       return r;
     },
+  },
+  delve: {
+    kind: 'action',
+    desc: '像玩家一样下矿找矿：走出家门后，朝一个方向挖楼梯往下到矿石多的深度（铁 y=16、煤铜 48、金 -16、钻石红石 -58），再挖 1×2 矿道往前；挖穿到矿洞就沿着洞往下逛。路上看得见的矿都挖掉，看得见的箱子过去开。每 8 步插火把，挖开会放岩浆/水就绕开。血少/怪来了/背包满/时间到就停下告诉你，接着挖就再调一次（会记得方向）。要石镐以上才挖得到铁。target 写想找的矿（iron_ore / coal_ore / diamond_ore…）。',
+    params: { target: { type: 'string' }, targetY: { type: 'number' }, seconds: { type: 'number' } }, required: [],
+    run: async ({ target, targetY, seconds }) => { const ms = Math.min(Math.max(20, seconds || 90), 240) * 1000; return bridge.post('/delve', { target, targetY, maxMs: ms, home: mem.getHome() }, ms + 60000); },
+  },
+  check_chests: {
+    kind: 'action',
+    desc: '走过去打开视线里没打开过的箱子/木桶：家外的（矿洞、遗迹里的奖励箱）把东西拿走，家里的只看看放了什么。看见没开过的箱子就该先做这个。',
+    params: { max: { type: 'number' } }, required: [],
+    run: async ({ max }) => bridge.post('/chests/check', { max: Math.min(Math.max(1, max || 3), 6), home: mem.getHome() }, 240000),
   },
   loot_nearby: {
     kind: 'action',

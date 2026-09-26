@@ -1905,6 +1905,7 @@ function noteSeen (bot, state, w, pos, name) {
   const b = bot.blockAt(pos);
   const key = b ? storageKey(bot, b) : doorKey(pos);
   state.seenContainers ||= new Map();
+  markSeen(state, key);
   state.seenContainers.set(key, { key, name: name || b?.name, items, slots: w.inventoryStart, used: Object.keys(items).length ? w.slots.slice(0, w.inventoryStart).filter(Boolean).length : 0, at: Date.now() });
 }
 
@@ -2355,10 +2356,11 @@ async function organizeStorage (bot, state, { radius = 12, assign = {}, loadout 
  */
 const LOOT_ORDER = ['工具装备', '矿物', '食物', '其他', '方块', '木头', '作物种子'];
 
-async function lootNearby (bot, state, { radius = 10, home = null, exclude = [] } = {}) {
+async function lootNearby (bot, state, { radius = 10, home = null, exclude = [], only = null } = {}) {
   const inHomeArea = (p) => home && Math.hypot(p.x - home.center.x, p.z - home.center.z) <= home.radius && Math.abs(p.y - home.center.y) <= 16;
   const skip = new Set([].concat(exclude).map(x => String(x).replace(/[()\s]/g, '')));
   const targets = findStorage(bot, radius).filter(b => !inHomeArea(b.position) && !skip.has(doorKey(b.position)))
+    .filter(b => !only || only.includes(storageKey(bot, b)) || only.includes(doorKey(b.position)))
     .sort((a, b) => bot.entity.position.distanceTo(a.position) - bot.entity.position.distanceTo(b.position));
   if (!targets.length) return { looted: [], note: home && findStorage(bot, radius).some(b => inHomeArea(b.position)) ? '附近的箱子都是家里的，不拿' : `附近 ${radius} 格没有箱子` };
   const report = []; const covered = new Set(); let full = false;
@@ -2385,6 +2387,261 @@ async function lootNearby (bot, state, { radius = 10, home = null, exclude = [] 
     noteSeen(bot, state, w, state.openContainerPos); bot.closeWindow(w); await sleep(150);
   }
   return { looted: report, backpackFull: full || bot.inventory.emptySlotCount() === 0, freeSlots: bot.inventory.emptySlotCount() };
+}
+
+// ------------------------------------------------------------------ 没看过的箱子 / 像玩家一样找矿（不透视）
+//
+// 主人 2026-09-27：「挖矿不要扫描区域挖，这不是很像矿物透视吗？让她像玩家一样挖矿或者探索矿洞，顺便打开遇到的所有奖励箱子」
+//                  「任何时候遇到没见过的箱子、木桶都要看，优先级比较高，视野内出现了箱子就应该寻路过去」
+// 所以这里的一切"发现"都只认**视线**（bot.canSeeBlock：眼睛到方块中心的射线第一个碰到的就是它）。
+
+// 看过的箱子存盘：bridge 重启后 seenContainers 就空了，不存的话每次重启她都要把家里的箱子全翻一遍
+const SEEN_FILE = require('path').join(__dirname, 'memory', 'containers-seen.json');
+function seenKeys (state) {
+  if (!state.__seenKeys) {
+    try { state.__seenKeys = new Set(JSON.parse(require('fs').readFileSync(SEEN_FILE, 'utf8'))); } catch (_) { state.__seenKeys = new Set(); }
+  }
+  return state.__seenKeys;
+}
+function markSeen (state, key) {
+  const s = seenKeys(state);
+  if (s.has(key)) return;
+  s.add(key);
+  try { const tmp = SEEN_FILE + '.tmp'; require('fs').writeFileSync(tmp, JSON.stringify([...s])); require('fs').renameSync(tmp, SEEN_FILE); } catch (_) {}
+}
+const inHomeArea = (home, p) => !!home && Math.hypot(p.x - home.center.x, p.z - home.center.z) <= home.radius && Math.abs(p.y - home.center.y) <= 16;
+
+/** 视野里没打开过的箱子/木桶（radius 内、眼睛看得见的），最近的在前 */
+function unseenChests (bot, state, radius = 24) {
+  const seen = seenKeys(state);
+  return findStorage(bot, radius)
+    .filter(b => /chest|barrel/.test(b.name) && !/ender_chest/.test(b.name))
+    .filter(b => !seen.has(storageKey(bot, b)) && !state.seenContainers?.has(storageKey(bot, b)))
+    .filter(b => bot.canSeeBlock(b))
+    .sort((a, b) => bot.entity.position.distanceTo(a.position) - bot.entity.position.distanceTo(b.position));
+}
+
+/** 走过去打开视野里没看过的箱子：家外的把东西拿走（奖励箱），家里的只看看记住放了什么 */
+async function checkChests (bot, state, { radius = 24, home = null, max = 4 } = {}) {
+  const out = [];
+  for (const b of unseenChests(bot, state, radius).slice(0, max)) {
+    const key = storageKey(bot, b);
+    markSeen(state, key);                     // 先记下：打不开/走不到也别来回折腾
+    if (eyeDist(bot, b) > REACH) {
+      const err = await pathTo(bot, b.position, 2, 30000);
+      if (err && eyeDist(bot, b) > REACH) { out.push({ at: key, name: b.name, error: `走不过去：${err}` }); continue; }
+    }
+    if (inHomeArea(home, b.position)) {
+      try {
+        const r = await containerOpen(bot, state, b.position);
+        const w = bot.currentWindow;
+        const items = {}; if (w) for (let i = 0; i < w.inventoryStart; i++) { const it = w.slots[i]; if (it) items[fullId(it.name)] = (items[fullId(it.name)] || 0) + it.count; }
+        if (w) bot.closeWindow(w);
+        out.push({ at: key, name: b.name, home: true, holds: items, slots: r?.containerSlots });
+      } catch (e) { out.push({ at: key, name: b.name, error: e.message }); }
+    } else {
+      try {
+        const r = await lootNearby(bot, state, { radius: 6, only: [key] });
+        out.push({ at: key, name: b.name, looted: r.looted?.[0]?.took || {}, left: r.looted?.[0]?.leftStacks, backpackFull: r.backpackFull });
+        if (r.backpackFull) break;
+      } catch (e) { out.push({ at: key, name: b.name, error: e.message }); }
+    }
+  }
+  return out;
+}
+
+const ORE_RE = /(_ore|ancient_debris)$/;
+// 1.20 原版矿石数量最多的高度（分布峰值）；模组矿、没写目标就按铁
+const ORE_Y = { coal: 48, copper: 48, iron: 16, lapis: 0, gold: -16, redstone: -58, diamond: -58, emerald: 100 };
+const HOSTILE_RE = /zombie|skeleton|creeper|spider|witch|slime|drowned|husk|stray|enderman|silverfish|pillager|vindicator|zoglin|piglin_brute|blaze|wither/;
+const isLiquid = (b) => !!b && /water|lava|bubble_column/.test(b.name);
+const airish = (b) => !b || (b.boundingBox === 'empty' && !isLiquid(b));
+// 人造方块：挖到这些说明走到别人/自己的建筑里了，不挖（和 bridge 的 isPlayerBuilt 同义的粗判）
+const BUILT_RE = /planks|_stairs|_slab|door|glass|brick|wool|carpet|chest|barrel|torch|lantern|ladder|fence|_bed$|crafting_table|furnace/;
+const N6 = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
+
+async function digBlock (bot, block) {
+  if (airish(block)) return { ok: true };
+  if (BUILT_RE.test(block.name)) return { ok: false, why: `前面是 ${block.name}（人造的，不拆）` };
+  if (!block.diggable || block.hardness == null || block.hardness < 0) return { ok: false, why: `${block.name} 挖不动` };
+  const tool = bot.pathfinder?.bestHarvestTool?.(block);
+  if (tool && bot.heldItem?.type !== tool.type) await bot.equip(tool, 'hand').catch(() => {});
+  const need = block.harvestTools && Object.keys(block.harvestTools).length;
+  if (need && !(bot.heldItem && block.harvestTools[bot.heldItem.type])) return { ok: false, needTool: true, why: `${block.name} 要更好的镐子才掉东西` };
+  await bot.lookAt(block.position.offset(0.5, 0.5, 0.5), true);
+  await Promise.race([bot.dig(block, true), sleep(15000).then(() => { throw new Error('挖了 15 秒还没挖掉'); })]);
+  await sleep(80);
+  const after = bot.blockAt(block.position);
+  return after && after.name === block.name ? { ok: false, why: `挖了但 ${block.name} 还在` } : { ok: true, name: block.name };
+}
+
+/** 把一格挖空（沙砾会接着往下掉，多挖几次）；挖开会放出岩浆/水就不挖 */
+async function clearCell (bot, pos) {
+  for (let i = 0; i < 6; i++) {
+    const b = bot.blockAt(pos);
+    if (airish(b)) return null;
+    if (isLiquid(b)) return `(${pos.x},${pos.y},${pos.z}) 是${/lava/.test(b.name) ? '岩浆' : '水'}`;
+    const wet = N6.map(([dx, dy, dz]) => bot.blockAt(pos.offset(dx, dy, dz))).find(isLiquid);
+    if (wet) return `挖开 (${pos.x},${pos.y},${pos.z}) 会放出${/lava/.test(wet.name) ? '岩浆' : '水'}`;
+    const r = await digBlock(bot, b);
+    if (!r.ok) return r.why;
+  }
+  return `(${pos.x},${pos.y},${pos.z}) 挖了好几次还是满的（上面一直掉沙砾？）`;
+}
+
+async function stepTo (bot, dest) {
+  const { goals } = require('mineflayer-pathfinder');
+  try {
+    await Promise.race([bot.pathfinder.goto(new goals.GoalBlock(dest.x, dest.y, dest.z)), sleep(6000).then(() => { throw new Error('走不进去'); })]);
+  } catch (_) {
+    bot.pathfinder.setGoal(null);
+    await bot.lookAt(dest.offset(0.5, 1.6, 0.5), true);
+    await holdControls(bot, ['forward'], 400);
+  }
+  const p = bot.entity.position;
+  return Math.floor(p.x) === dest.x && Math.floor(p.z) === dest.z && Math.abs(p.y - dest.y) < 1;
+}
+
+/** 视野里的矿（想要的在前，其次近的） */
+function visibleOres (bot, want, radius, skip) {
+  const ids = Object.values(bot.registry.blocksByName).filter(b => ORE_RE.test(b.name)).map(b => b.id);
+  const me = bot.entity.position;
+  return bot.findBlocks({ matching: ids, maxDistance: radius, count: 48 })
+    .filter(p => !skip.has(doorKey(p)))
+    .map(p => bot.blockAt(p)).filter(b => b && bot.canSeeBlock(b))
+    .sort((a, b) => ((want && b.name.includes(want)) - (want && a.name.includes(want))) || me.distanceTo(a.position) - me.distanceTo(b.position));
+}
+
+/** 在矿洞里：视线里挑一个没去过的落脚点走过去（还没到目标深度就往下走） */
+async function caveStep (bot, D, targetY) {
+  const me = bot.entity.position.floored();
+  const cands = [];
+  for (let dx = -12; dx <= 12; dx++) for (let dz = -12; dz <= 12; dz++) for (let dy = -8; dy <= 4; dy++) {
+    if (Math.abs(dx) + Math.abs(dz) < 5) continue;
+    const p = me.offset(dx, dy, dz);
+    const vk = `${p.x >> 2},${p.y >> 2},${p.z >> 2}`;
+    if (D.visited.has(vk)) continue;
+    const floor = bot.blockAt(p.offset(0, -1, 0));
+    if (!floor || floor.boundingBox !== 'block' || isLiquid(floor)) continue;
+    if (!airish(bot.blockAt(p)) || !airish(bot.blockAt(p.offset(0, 1, 0)))) continue;
+    const down = me.y > targetY ? -dy : Math.abs(dy) * -0.5;     // 没到深度：越往下越好
+    cands.push({ p, floor, score: down * 2 + Math.hypot(dx, dz) * 0.3 + Math.random() });
+  }
+  cands.sort((a, b) => b.score - a.score);
+  for (const c of cands.slice(0, 12)) {
+    if (!bot.canSeeBlock(c.floor)) continue;
+    D.visited.add(`${c.p.x >> 2},${c.p.y >> 2},${c.p.z >> 2}`);
+    const err = await pathTo(bot, c.p, 1, 20000, { retry: false });
+    if (!err) return { to: { x: c.p.x, y: c.p.y, z: c.p.z } };
+  }
+  return null;
+}
+
+/** 脚边是不是一片开阔的地下空间（矿洞） */
+function inCave (bot) {
+  const f = bot.entity.position.floored();
+  let air = 0;
+  for (let dx = -3; dx <= 3; dx++) for (let dz = -3; dz <= 3; dz++) for (let dy = 0; dy <= 2; dy++) if (airish(bot.blockAt(f.offset(dx, dy, dz)))) air++;
+  const sky = bot.blockAt(f)?.skyLight;
+  return air > 60 && !(sky > 0);
+}
+
+/**
+ * 像玩家一样找矿：
+ *   还没到目标深度 → 朝一个方向挖楼梯往下（每步挖前方 3 格高，走下去；从不直着往脚下挖）
+ *   到了深度 → 挖 1×2 的矿道往前
+ *   挖穿了洞、或本来就在矿洞里 → 沿视线里没去过的地方逛，往下找
+ *   一路上：看得见的矿挖掉，看得见的没开过的箱子走过去开（家外的拿走）
+ *   每 8 步插一个火把；挖开会放出岩浆/水就换方向；血少、怪近、背包满就停下交还给她
+ */
+async function delve (bot, state, { target = null, targetY = null, maxMs = 120000, home = null, torchEvery = 8 } = {}) {
+  const t0 = Date.now();
+  const want = target ? String(target).replace(/^.*:/, '').replace(/^deepslate_/, '').replace(/_ore$/, '') : null;
+  const ty = targetY != null ? +targetY : (ORE_Y[Object.keys(ORE_Y).find(k => want?.includes(k))] ?? 16);
+  const D = state.delve && state.delve.last && bot.entity.position.distanceTo(state.delve.last) < 32 ? state.delve
+    : (state.delve = { heading: null, visited: new Set(), steps: 0, last: null });
+  if (inHomeArea(home, bot.entity.position)) throw new Error(`在家附近（离家中心 ${home.radius} 格内）不往下挖 —— 先走远一点再挖`);
+  const DIRS = [[0, -1], [1, 0], [0, 1], [-1, 0]];
+  if (!D.heading) { const yaw = bot.entity.yaw; const vx = -Math.sin(yaw); const vz = -Math.cos(yaw); D.heading = Math.abs(vx) > Math.abs(vz) ? [Math.sign(vx), 0] : [0, Math.sign(vz)]; }
+  const invBefore = invCounts(bot);
+  const oreSkip = new Set(); const chests = []; const log = []; let reason = null; let turns = 0; let caveMoves = 0; let dug = 0;
+  const y0 = bot.entity.position.y;
+
+  while (Date.now() - t0 < maxMs) {
+    D.last = bot.entity.position.clone();
+    if (bot.health < 8) { reason = `血只剩 ${Math.round(bot.health)}`; break; }
+    const mob = Object.values(bot.entities).find(e => e !== bot.entity && HOSTILE_RE.test(e.name || '') && e.position.distanceTo(bot.entity.position) < 8);
+    if (mob) { reason = `${mob.name} 在 ${mob.position.distanceTo(bot.entity.position).toFixed(0)} 格外`; break; }
+    if (bot.inventory.emptySlotCount() <= 1) { reason = '背包快满了'; break; }
+
+    // 1. 视野里没开过的箱子（主人说优先级高）
+    if (unseenChests(bot, state, 24).length) { chests.push(...await checkChests(bot, state, { home, max: 2 })); continue; }
+
+    // 2. 视野里的矿
+    const ore = visibleOres(bot, want, 10, oreSkip)[0];
+    if (ore) {
+      oreSkip.add(doorKey(ore.position));
+      if (eyeDist(bot, ore) > REACH) await pathTo(bot, ore.position, 3, 15000, { retry: false });
+      if (eyeDist(bot, ore) <= REACH + 0.3) {
+        const wet = N6.map(([dx, dy, dz]) => bot.blockAt(ore.position.offset(dx, dy, dz))).find(isLiquid);
+        if (wet) { log.push(`${ore.name} 旁边有${/lava/.test(wet.name) ? '岩浆' : '水'}，没挖`); continue; }
+        const r = await digBlock(bot, ore).catch(e => ({ ok: false, why: e.message }));
+        if (r.ok) { dug++; await collectDrops(bot, 5); } else { log.push(r.why); if (r.needTool) { reason = r.why; break; } }
+      }
+      continue;
+    }
+
+    // 3. 在矿洞里：逛
+    if (inCave(bot) && caveMoves < 12) {
+      const m = await caveStep(bot, D, ty);
+      if (m) { caveMoves++; log.push(`矿洞里走到 (${m.to.x},${m.to.y},${m.to.z})`); continue; }
+    }
+
+    // 4. 挖楼梯往下 / 挖矿道往前
+    const f = bot.entity.position.floored();
+    const [dx, dz] = D.heading;
+    const goingDown = f.y > ty;
+    const cells = goingDown ? [f.offset(dx, 1, dz), f.offset(dx, 0, dz), f.offset(dx, -1, dz)] : [f.offset(dx, 1, dz), f.offset(dx, 0, dz)];
+    const dest = goingDown ? f.offset(dx, -1, dz) : f.offset(dx, 0, dz);
+    const floor = bot.blockAt(dest.offset(0, -1, 0));
+    let why = null;
+    if (isLiquid(floor)) why = `前面脚下是${/lava/.test(floor.name) ? '岩浆' : '水'}`;
+    else if (airish(floor)) {
+      // 前面脚下是空的：挖穿到洞里了。先看多深，别跳下去摔死
+      let depth = 1; while (depth < 6 && airish(bot.blockAt(dest.offset(0, -1 - depth, 0)))) depth++;
+      if (depth >= 4) {
+        for (const c of cells) { why = await clearCell(bot, c); if (why) break; }   // 开个口看看下面
+        const m = !why && await caveStep(bot, D, ty);
+        if (m) { caveMoves++; log.push(`挖穿到矿洞，走到 (${m.to.x},${m.to.y},${m.to.z})`); continue; }
+        why = why || `前面是 ${depth}+ 格深的坑，下不去`;
+      }
+    }
+    if (!why) for (const c of cells) { why = await clearCell(bot, c); if (why) break; }
+    if (!why && !await stepTo(bot, dest)) why = `挖开了但走不进 (${dest.x},${dest.y},${dest.z})`;
+    if (why) {
+      log.push(why);
+      if (/镐子/.test(why)) { reason = why; break; }
+      D.heading = DIRS[(DIRS.findIndex(d => d[0] === dx && d[1] === dz) + 1 + (turns % 2) * 2) % 4];   // 右转，再不行掉头
+      if (++turns >= 4) { reason = `四个方向都挖不下去：${why}`; break; }
+      continue;
+    }
+    turns = 0; D.steps++;
+    D.visited.add(`${dest.x >> 2},${dest.y >> 2},${dest.z >> 2}`);
+    if (D.steps % torchEvery === 0) {
+      const torch = bot.inventory.items().find(i => /(^|:)torch$/.test(i.name));
+      const under = bot.blockAt(bot.entity.position.floored().offset(0, -1, 0));
+      if (torch && under && under.boundingBox === 'block') {
+        try { await bot.equip(torch, 'hand'); await bot.placeBlock(under, new Vec3(0, 1, 0)); log.push('插了个火把'); } catch (_) {}
+      }
+    }
+  }
+  if (!reason) reason = `时间到（${Math.round((Date.now() - t0) / 1000)} 秒），可以接着挖`;
+  const d = delta(invBefore, invCounts(bot));
+  const p = bot.entity.position;
+  return {
+    ok: true, reason, at: { x: Math.floor(p.x), y: Math.floor(p.y), z: Math.floor(p.z) }, fromY: Math.floor(y0), targetY: ty,
+    heading: D.heading, steps: D.steps, oresDug: dug, gained: d.gained, chests: chests.length ? chests : undefined, log: log.slice(-8),
+  };
 }
 
 // ------------------------------------------------------------------ 睡觉
@@ -2619,6 +2876,9 @@ function routes ({ state, withTimeout }) {
     'GET /containers/seen': async (_, q) => ({ seen: [...(state.seenContainers || new Map()).values()].filter(c => c.at > (+q?.since || 0)) }),
     'POST /storage/organize': async (b = {}) => organizeStorage(bot(), state, b),
     'POST /storage/loot': async (b = {}) => lootNearby(bot(), state, b),
+    'POST /delve': async (b = {}) => delve(bot(), state, b),
+    'GET /chests/unseen': async (_, q) => ({ chests: unseenChests(bot(), state, +q?.radius || 24).slice(0, 6).map(b => ({ at: storageKey(bot(), b), name: b.name, x: b.position.x, y: b.position.y, z: b.position.z, distance: +bot().entity.position.distanceTo(b.position).toFixed(1) })) }),
+    'POST /chests/check': async (b = {}) => ({ checked: await checkChests(bot(), state, b) }),
     'POST /sleep': async (b = {}) => sleepInBed(bot(), state, b),
     'POST /farm': async (b = {}) => farm(bot(), state, b),
     'POST /cook_pot': async (b = {}) => cookInPot(bot(), state, b),

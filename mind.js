@@ -145,6 +145,11 @@ function survivalFocus (s) {
   if ((s.health != null && s.health <= 8) || hostiles.length) {
     out.push(`保命：${s.health <= 8 ? `血只有 ${s.health}` : ''}${hostiles.length ? `${s.health <= 8 ? '，' : ''}身边 ${hostiles.length} 只怪（最近 ${hostiles[0].distance} 格）` : ''} —— 打得过就打，打不过就躲进屋/挖个洞堵上，血少先吃东西`);
   }
+  const boxes = s.unseenChests || [];
+  if (boxes.length && !hostiles.length) {
+    const b = boxes[0];
+    out.push(`视线里有 ${boxes.length} 个没打开过的箱子/木桶（最近的在 ${b.x},${b.y},${b.z}，${b.distance} 格）：先过去看（check_chests）—— 家外的是奖励箱，东西拿走；家里的看看放了什么`);
+  }
   if (!home) {
     out.push(has(/structure_spawner/)
       ? '还没有家，身上有结构生成器（新手小屋）：挑块平地 place_structure 放下，进屋后 set_home'
@@ -200,9 +205,9 @@ function invText (items) {
 
 async function look () {
   const safe = p => bridge.get(p, 2000).catch(() => null);
-  const [st, inv, near, pl, chat, doors, eq, seen] = await Promise.all([
+  const [st, inv, near, pl, chat, doors, eq, seen, boxes] = await Promise.all([
     safe('/status'), safe('/inventory'), safe('/nearby?radius=16'), safe('/players'), safe('/chatlog?limit=30'), safe('/doors?radius=6'), safe('/equipment'),
-    safe(`/containers/seen?since=${W.seenSince || 0}`),
+    safe(`/containers/seen?since=${W.seenSince || 0}`), safe('/chests/unseen?radius=24'),
   ]);
   // 打开过的箱子：是家里的，就记住里面有什么、各有几个（像人一样，看过就大概记得）
   for (const c of seen?.seen || []) {
@@ -221,7 +226,15 @@ async function look () {
     equipment: eq?.equipment || null,
     curios: eq?.curios || null,
     backpack: eq?.backpack || null,
+    unseenChests: boxes?.chests || [],
   };
+  // 视线里冒出没开过的箱子/木桶：马上告诉她（主人：优先级高，看见就过去）
+  for (const c of W.state.unseenChests) {
+    const k = `chest@${c.at}`;
+    if (W.seenChat.has(k)) continue;
+    W.seenChat.add(k);
+    emit(`👀 看见一个没打开过的${knowledge.label(c.name.includes(':') ? c.name : `minecraft:${c.name}`).replace(/\(.*\)$/, '')}（${c.x},${c.y},${c.z}，${c.distance} 格）`, { cue: 'chest', urgent: false });
+  }
   // 她开了没来得及关的门（走太快，已经够不着了）—— 告诉她，由她决定回去关
   for (const d of doors?.leftOpen || []) {
     const k = `${d.pos.x},${d.pos.y},${d.pos.z}@${d.at}`;
