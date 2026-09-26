@@ -38,7 +38,8 @@ switch ($cmd) {
       $bat = Join-Path $Logs "run-$w.cmd"
       # 启动脚本：UTF-8 代码页、进仓库根、输出追加进日志
       Set-Content -Path $bat -Encoding ASCII -Value "@echo off`r`nchcp 65001 >nul`r`ncd /d `"$Root`"`r`n`"$Node`" $js >> `"$log`" 2>&1`r`n"
-      $user = "$env:USERDOMAIN\$env:USERNAME"
+      # 当前账户的完整名（机器名\用户）。别用 USERDOMAIN：SSH 会话里它是 WORKGROUP，拼出来的账户不存在
+      $user = [Security.Principal.WindowsIdentity]::GetCurrent().Name
       # 用 XML 定义一个**没有触发器**的任务：只在 /Run 时启动（/SC ONCE 要日期，格式随系统区域变，还会在当天到点自己跑一次）
       # InteractiveToken = 在 Kasumi 的登录会话里跑，不要密码；SSH 断开不受影响
       $xml = @"
