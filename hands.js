@@ -830,13 +830,16 @@ async function craftByHand (bot, recipe, times, table) {
   else recipe.ingredients.forEach((id, i) => cells.push({ slot: 1 + i, id: typeof id === 'object' ? id.id : id }));
   const pause = () => sleep(150);
   const findSrc = (id) => { for (let i = win.inventoryStart; i < win.inventoryEnd; i++) { const it = win.slots[i]; if (it && it.type === id) return i; } return -1; };
+  // 原料在哪格：开始时（服务器同步过的状态）找一次，之后一直从这格拿。
+  // 不能每次重找：这个服上客户端对"拿起一叠"的预测是错的（拿起后以为格子空了、手上也空），一重找就说缺原料
+  const srcOf = new Map();
+  for (const c of cells) if (!srcOf.has(c.id)) { const i = findSrc(c.id); if (i < 0) throw new Error(`缺原料（物品 id ${c.id}）`); srcOf.set(c.id, i); }
   let made = 0;
   try {
     for (let t = 0; t < times; t++) {
+      win.slots[0] = null;   // 成品格只认这一轮服务器发来的
       for (const c of cells) {
-        if (win.slots[c.slot]?.type === c.id) continue;
-        const src = findSrc(c.id);
-        if (src < 0) throw new Error(`第 ${t + 1} 次缺原料（物品 id ${c.id}）`);
+        const src = srcOf.get(c.id);
         // 固定三下，不看 win.selectedItem：这个服上它不跟踪（实测拿起一叠后读出来还是 null），bot.craft 就是被它带乱的
         await bot.clickWindow(src, 0, 0); await pause();          // 拿起一叠
         await bot.clickWindow(c.slot, 1, 0); await pause();       // 右键放一个
