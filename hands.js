@@ -859,6 +859,38 @@ async function craftByHand (bot, recipe, times, table) {
   return made;
 }
 
+/**
+ * 用配方书做：只告诉服务器"我要做配方 X"（craft_recipe_request），服务器自己从背包拿料摆好、出成品，再 shift 点成品格。
+ * 不靠客户端的格子号 —— 2026-09-27 实测这个服上客户端和服务器对背包格子号认识不一致（登录时服务器说花岗岩在合成格 4 号），
+ * 自己点格子（bot.craft / 手摆）都会乱：原料卡进合成格、成品不出。原版玩家点配方书也是这条路。
+ */
+async function craftByRecipeBook (bot, recipeId, times, table) {
+  let win = bot.inventory;
+  if (table) {
+    if (!bot.currentWindow || !/crafting/.test(bot.currentWindow.type || '')) {
+      await approach(bot, table);
+      bot.activateBlock(table);
+      const t0 = Date.now(); while (!(bot.currentWindow && /crafting/.test(bot.currentWindow.type || '')) && Date.now() - t0 < 4000) await sleep(50);
+      if (!bot.currentWindow) throw new Error('工作台打不开');
+    }
+    win = bot.currentWindow;
+  }
+  let made = 0;
+  try {
+    for (let t = 0; t < times; t++) {
+      win.slots[0] = null;
+      bot._client.write('craft_recipe_request', { windowId: win.id, recipe: recipeId, makeAll: false });
+      const t0 = Date.now(); while (!win.slots[0] && Date.now() - t0 < 3000) await sleep(50);
+      if (!win.slots[0]) throw new Error(made ? `做了 ${made} 次后服务器不给了（原料不够？）` : `服务器没按配方 ${recipeId} 摆出成品`);
+      await bot.clickWindow(0, 0, 1); await sleep(300);          // shift 点成品，进背包
+      made++;
+    }
+  } finally {
+    if (table && bot.currentWindow) { bot.closeWindow(bot.currentWindow); await sleep(200); } else if (!table) await returnGrid(bot);
+  }
+  return made;
+}
+
 async function craft2 (bot, { itemName, count = 1 } = {}, withTimeout) {
   const k = K(); const KB = k.load();
   const id = k.resolve(itemName, 1)[0];
@@ -927,7 +959,7 @@ async function craft2 (bot, { itemName, count = 1 } = {}, withTimeout) {
     }
     const before = invCounts(bot);
     try {
-      await withTimeout(craftByHand(bot, enumItem, times, recipe.requiresTable ? table : null), 15000 + times * 6000);
+      await withTimeout(craftByRecipeBook(bot, r.id, times, recipe.requiresTable ? table : null), 15000 + times * 4000);
     } catch (e) { await returnGrid(bot); throw e; }
     await sleep(300);
     const d = delta(before, invCounts(bot));
