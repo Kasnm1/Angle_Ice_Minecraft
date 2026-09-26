@@ -139,6 +139,7 @@ function survivalFocus (s) {
   const home = mem.getHome();
   const atHome = home && mem.inHome(s.pos);
   const hostiles = (s.nearby || []).filter(e => e.kind === 'hostile' && e.distance <= 12);
+  const free = 36 - (s.items || []).length;
   const names = (s.items || []).map(i => (i.name.includes(':') ? i.name : `minecraft:${i.name}`));
   const has = (re) => names.some(n => re.test(n));
   if ((s.health != null && s.health <= 8) || hostiles.length) {
@@ -153,12 +154,15 @@ function survivalFocus (s) {
   } else if (!s.isDay && atHome) {
     out.push('夜里在家：有床就睡（sleep_in_bed）；睡不了就在家里干活 —— 整理箱子、做菜、挖家里的矿');
   }
-  const free = 36 - (s.items || []).length;
   if (free <= 8) {
     const packWorn = (s.curios || []).some(x => /backpack/.test(x));
     out.push(packWorn && (s.backpack ? s.backpack.used < s.backpack.slots - 4 : true)
       ? `身上只剩 ${free} 格：先把杂物装进背包（open_backpack → store_items）`
       : `身上只剩 ${free} 格${packWorn ? '、背包也快满了' : ''}：回家整理（go_home → organize_storage）`);
+  }
+  const drops = dropsNear(s, 8);
+  if (drops.length && !hostiles.length && free > 0) {
+    out.push(`地上有掉落物（${drops.slice(0, 3).map(x => (x.id ? knowledge.label(x.id).replace(/\([^)]*\)$/, '') : '东西') + '×' + x.count).join('、')}）：砍树挖矿打怪掉的东西顺手捡起来（pickup）`);
   }
   if (home && atHome && s.isDay && has(/(^|:)torch$/) && W.torchDay !== dayKey()) {
     W.torchDay = dayKey();   // 一天提醒一次
@@ -167,6 +171,24 @@ function survivalFocus (s) {
   return out.slice(0, 2);
 }
 const dayKey = () => new Date().toDateString();
+
+/** 地上的掉落物（她砍树、挖矿、打怪掉的，别人扔的）—— 按物品合并，最近的在前 */
+function dropsNear (s, maxDist = 12) {
+  const m = new Map();
+  for (const e of s?.nearby || []) {
+    if (!e.isDrop || e.distance > maxDist) continue;
+    const id = e.item?.name ? (e.item.name.includes(':') ? e.item.name : `minecraft:${e.item.name}`) : null;
+    const k = id || '?';
+    const cur = m.get(k) || { id, count: 0, distance: e.distance };
+    cur.count += e.item?.count || 1; cur.distance = Math.min(cur.distance, e.distance);
+    m.set(k, cur);
+  }
+  return [...m.values()].sort((a, b) => a.distance - b.distance);
+}
+function dropLine (s) {
+  const d = dropsNear(s);
+  return d.length ? `地上的掉落物：${d.slice(0, 6).map(x => `${x.id ? knowledge.label(x.id).replace(/\([^)]*\)$/, '') : '某样东西'}×${x.count}（${x.distance}格）`).join('、')}` : '';
+}
 
 function invText (items) {
   return (items || []).map(i => `${knowledge.label(i.name.includes(':') ? i.name : `minecraft:${i.name}`)}×${i.count}`).join('、') || '空的';
@@ -681,7 +703,7 @@ function buildNow (why) {
   const s = W.state;
   const me = s?.pos;
   const playerNames = new Set((s?.players || []).map(p => p.username));
-  const near = (s?.nearby || []).filter(e => e.name !== CFG.botName && !playerNames.has(e.name)).slice(0, 8).map(e => `${e.name}${e.distance != null ? `(${e.distance}格)` : ''}`).join('、');
+  const near = (s?.nearby || []).filter(e => !e.isDrop && e.name !== CFG.botName && !playerNames.has(e.name)).slice(0, 8).map(e => `${e.name}${e.distance != null ? `(${e.distance}格)` : ''}`).join('、');
   // 玩家：标出在上面还是下面（"来二楼"要知道二楼在自己上面还是下面 —— 实测她在三楼听到"来二楼"，往上爬去了四楼）
   const people = (s?.players || []).map(p => {
     if (!p.position || !me) return `${p.username}（在线，看不见）`;
@@ -716,6 +738,7 @@ function buildNow (why) {
     })(),
     people ? `玩家：${people}` : '',
     near ? `身边：${near}` : '',
+    dropLine(s),
     (() => { const open = (s?.doors || []).filter(d => d.open); return open.length ? `身边开着的门：${open.slice(0, 5).map(d => `${d.kind}(${d.x},${d.y},${d.z})`).join('、')}` : ''; })(),
     bodyNow(),
     (() => { const f = survivalFocus(s); return f.length ? `\n【眼下最该操心的】\n${f.map(x => `· ${x}`).join('\n')}` : ''; })(),
@@ -1248,6 +1271,8 @@ async function selftest () {
     check('血少有怪：保命排第一', /保命/.test(hurt[0] || ''), hurt);
     const full = survivalFocus({ pos: { x: 99999, y: 64, z: 99999 }, health: 20, isDay: true, items: Array.from({ length: 30 }, (_, i) => ({ name: `x:${i}`, count: 1 })), nearby: [], curios: ['sophisticatedbackpacks:iron_backpack'] });
     check('身上快满、背着背包：先装背包', full.some(x => /装进背包/.test(x)), full);
+    const logs = survivalFocus({ pos: { x: 99999, y: 64, z: 99999 }, health: 20, isDay: true, items: [], nearby: [{ isDrop: true, distance: 3, item: { name: 'oak_log', count: 3 } }] });
+    check('地上有掉落物：提醒捡', logs.some(x => /掉落物/.test(x) && /pickup/.test(x)), logs);
   }
 
   console.log('\n他说了话、她只在正文里回：提醒一次（不替她说）');

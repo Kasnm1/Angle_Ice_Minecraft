@@ -2905,6 +2905,8 @@ const handlers = {
           //    这里我们自己算好 `isDrop` 再暴露，不让消费者各自去猜 ——
           //    历史上 `objectType` 被三个地方各猜了一遍，每处都踩过坑。
           isDrop: drop,
+          // 掉的是什么：她得知道地上躺着的是橡木原木还是圆石，才会有意识地去捡（主人 2026-09-26）
+          item: drop ? (() => { try { const it = e.getDroppedItem && e.getDroppedItem(); return it ? { name: it.name, count: it.count } : null; } catch (_) { return null; } })() : undefined,
           // ⚠️⚠️ 这里的分类是 2026-09-25 第六次实战抓出来的（field-log P8 完整根因）。
           //
           //   原来只写了 `e.type === 'mob' ? 'mob' : 'other'`，
