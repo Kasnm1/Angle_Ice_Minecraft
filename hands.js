@@ -808,6 +808,54 @@ async function returnGrid (bot) {
   await sleep(400);
 }
 
+/**
+ * 自己一格一格摆合成格（替代 mineflayer 的 bot.craft）。
+ * 2026-09-27 实测 bot.craft 在这个服上：4 块花岗岩只进了 3 格、成品格一直空、20 秒超时，原料卡在合成格里（看着就是"被吃了"）；
+ * 同时服务器说花岗岩在 14 号格、客户端以为在 16 号格 —— 它一口气连点不核对，一错位就全乱。
+ * 这里每一下都等服务器回话：摆一格 → 把手上剩的放回去 → 等成品格真的出东西 → shift 点成品 → 核对。
+ */
+async function craftByHand (bot, recipe, times, table) {
+  let win = bot.inventory; let w = 2;
+  if (table) {
+    if (!bot.currentWindow || !/crafting/.test(bot.currentWindow.type || '')) {
+      await approach(bot, table);
+      bot.activateBlock(table);
+      const t0 = Date.now(); while (!(bot.currentWindow && /crafting/.test(bot.currentWindow.type || '')) && Date.now() - t0 < 4000) await sleep(50);
+      if (!bot.currentWindow) throw new Error('工作台打不开');
+    }
+    win = bot.currentWindow; w = 3;
+  }
+  const cells = [];
+  if (recipe.inShape) recipe.inShape.forEach((row, y) => row.forEach((id, x) => { if (id != null && id !== -1) cells.push({ slot: 1 + x + y * w, id: typeof id === 'object' ? id.id : id }); }));
+  else recipe.ingredients.forEach((id, i) => cells.push({ slot: 1 + i, id: typeof id === 'object' ? id.id : id }));
+  const pause = () => sleep(150);
+  const findSrc = (id) => { for (let i = win.inventoryStart; i < win.inventoryEnd; i++) { const it = win.slots[i]; if (it && it.type === id) return i; } return -1; };
+  let made = 0;
+  try {
+    for (let t = 0; t < times; t++) {
+      for (const c of cells) {
+        if (win.slots[c.slot]?.type === c.id) continue;
+        const src = findSrc(c.id);
+        if (src < 0) throw new Error(`第 ${t + 1} 次缺原料（物品 id ${c.id}）`);
+        await bot.clickWindow(src, 0, 0); await pause();          // 拿起一叠
+        await bot.clickWindow(c.slot, 1, 0); await pause();       // 右键放一个
+        if (win.selectedItem) { await bot.clickWindow(src, 0, 0); await pause(); }   // 剩下的放回去
+        if (win.selectedItem) { await bot.putSelectedItemRange(win.inventoryStart, win.inventoryEnd, win, null); await pause(); }
+      }
+      const t0 = Date.now(); while (!win.slots[0] && Date.now() - t0 < 3000) await sleep(50);
+      if (!win.slots[0]) {
+        const grid = cells.map(c => `${c.slot}:${win.slots[c.slot]?.name || '空'}`).join(' ');
+        throw new Error(`摆好了但服务器没出成品（合成格 ${grid}）`);
+      }
+      await bot.clickWindow(0, 0, 1); await sleep(250);          // shift 点成品，进背包
+      made++;
+    }
+  } finally {
+    if (table && bot.currentWindow) { bot.closeWindow(bot.currentWindow); await sleep(200); } else if (!table) await returnGrid(bot);
+  }
+  return made;
+}
+
 async function craft2 (bot, { itemName, count = 1 } = {}, withTimeout) {
   const k = K(); const KB = k.load();
   const id = k.resolve(itemName, 1)[0];
@@ -876,7 +924,7 @@ async function craft2 (bot, { itemName, count = 1 } = {}, withTimeout) {
     }
     const before = invCounts(bot);
     try {
-      await withTimeout(bot.craft(recipe, times, recipe.requiresTable ? table : null), 20000);
+      await withTimeout(craftByHand(bot, enumItem, times, recipe.requiresTable ? table : null), 15000 + times * 6000);
     } catch (e) { await returnGrid(bot); throw e; }
     await sleep(300);
     const d = delta(before, invCounts(bot));
