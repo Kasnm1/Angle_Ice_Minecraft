@@ -4820,7 +4820,8 @@ const handlers = {
       resolveCandidates = found.blocks.length;
       resolvedVia = `byItem:${byItem}[${found.resolveSource}] → ${found.blocks.slice(0, 4).map(f => f.name).join('/')}`;
     } else {
-      const def = state.bot.registry.blocksByName[blockName];
+      // 原版方块在注册表里不带 minecraft: 前缀（她常写 minecraft:stone，实测报 Unknown block）
+      const def = state.bot.registry.blocksByName[blockName] || state.bot.registry.blocksByName[String(blockName).replace(/^minecraft:/, '')];
       if (!def) throw new Error(`Unknown block: ${blockName}`);
       blockId = def.id;
       resolvedVia = `blockName:${blockName}`;
