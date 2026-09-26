@@ -152,7 +152,11 @@ function survivalFocus (s) {
   } else if (!s.isDay && !atHome) {
     out.push('天黑了还在外面：回家（go_home）；离家太远就就地挖个洞躲一夜，别在野外乱跑');
   } else if (!s.isDay && atHome) {
-    out.push('夜里在家：有床就睡（sleep_in_bed）；睡不了就在家里干活 —— 整理箱子、做菜、挖家里的矿');
+    // 刚睡失败过（附近有怪 / 别人没睡…）：别反复上床（实测：睡不了就一直 上床→失败→转身→再上床，看着像原地转圈）
+    const sf = W.sleepFail && Date.now() - W.sleepFail.t < 3 * 60 * 1000 ? W.sleepFail : null;
+    out.push(sf
+      ? `刚才睡不了（${sf.why}）：别反复上床。先关好门、屋里暗的地方插火把，然后在屋里干活（整理箱子、做菜），过几分钟再试`
+      : '夜里在家：有床就睡（sleep_in_bed）；睡不了就在家里干活 —— 整理箱子、做菜、挖家里的矿');
   }
   if (free <= 8) {
     const packWorn = (s.curios || []).some(x => /backpack/.test(x));
@@ -373,6 +377,7 @@ async function startJob (steps, why, { skillId = null } = {}) {
     if (!r.ok) {
       review.record({ kind: 'action_failed', tool, args, error: r.error, why, skillId, doneBefore: results.slice(0, -1).map(x => x.tool), ...scene() });
       W.recentFails.push(`[${hhmmss()}] ${tool}${fmtArgs(args)} → ${r.error}`);
+      if (tool === 'sleep_in_bed') W.sleepFail = { t: Date.now(), why: String(r.error || '').slice(0, 60) };
       if (W.recentFails.length > 5) W.recentFails.shift();
       W.job = null;
       if (skillId) mem.skillResult(skillId, false, `${tool} → ${r.error}`);
@@ -1272,6 +1277,11 @@ async function selftest () {
     const full = survivalFocus({ pos: { x: 99999, y: 64, z: 99999 }, health: 20, isDay: true, items: Array.from({ length: 30 }, (_, i) => ({ name: `x:${i}`, count: 1 })), nearby: [], curios: ['sophisticatedbackpacks:iron_backpack'] });
     check('身上快满、背着背包：先装背包', full.some(x => /装进背包/.test(x)), full);
     const logs = survivalFocus({ pos: { x: 99999, y: 64, z: 99999 }, health: 20, isDay: true, items: [], nearby: [{ isDrop: true, distance: 3, item: { name: 'oak_log', count: 3 } }] });
+    W.sleepFail = { t: Date.now(), why: '附近有怪，睡不了' };
+    const home0 = mem.getHome; mem.getHome = () => ({ center: { x: 0, y: 64, z: 0 }, radius: 24 }); const inH = mem.inHome; mem.inHome = () => true;
+    const nightHome = survivalFocus({ pos: { x: 0, y: 64, z: 0 }, health: 20, isDay: false, items: [], nearby: [] });
+    mem.getHome = home0; mem.inHome = inH; W.sleepFail = null;
+    check('刚睡失败过：别反复上床', nightHome.some(x => /别反复上床/.test(x)), nightHome);
     check('地上有掉落物：提醒捡', logs.some(x => /掉落物/.test(x) && /pickup/.test(x)), logs);
   }
 
