@@ -3106,6 +3106,16 @@ function routes ({ state, withTimeout }) {
     'POST /delve': async (b = {}) => delve(bot(), state, b),
     'GET /debug/craftgrid': async () => ({ serverInv: state.invItems || null, clientSlots: bot().inventory.slots.length, clientFilled: bot().inventory.slots.map((it, i) => it && `${i}:${it.type}x${it.count}`).filter(Boolean), grid: bot().inventory.slots.slice(0, 5).map((it, i) => it ? { slot: i, name: it.name, count: it.count } : null), window: bot().currentWindow?.type || null, stateId: bot().inventory.stateId, slotLog: (state.slotLog || []).slice(-20) }),
     'POST /debug/click': async (b = {}) => { const w = bot().currentWindow || bot().inventory; await bot().clickWindow(+b.slot, +b.button || 0, +b.mode || 0); await sleep(300); return { cursor: w.selectedItem && `${w.selectedItem.name}×${w.selectedItem.count}`, grid: w.slots.slice(0, 5).map(it => it && `${it.name}×${it.count}`), slot: w.slots[+b.slot] && `${w.slots[+b.slot].name}×${w.slots[+b.slot].count}`, log: (state.slotLog || []).slice(-4) }; },
+    'POST /debug/seq': async (b = {}) => {
+      const out = []; const gap = +b.gap || 450;
+      for (const [slot, button, mode] of b.clicks || []) {
+        const n0 = (state.slotLog || []).length; const t0 = Date.now();
+        let err = null; try { await Promise.race([bot().clickWindow(slot, button, mode), sleep(3000).then(() => { throw new Error('click 3s 没返回'); })]); } catch (e) { err = e.message; }
+        const ms = Date.now() - t0; await sleep(gap);
+        out.push({ click: [slot, button, mode], ms, err, server: (state.slotLog || []).slice(n0).map(x => `${x.slot}:${x.item === false ? '空' : x.item + 'x' + x.count}`) });
+      }
+      return { out };
+    },
     'POST /debug/returngrid': async () => { await returnGrid(bot()); return { grid: bot().inventory.slots.slice(0, 5).map(it => it && `${it.name}×${it.count}`) }; },
     'GET /light': async () => ({ light: lightAt(bot()), dark: isDark(lightAt(bot())), torches: torchCount(bot()), lastBright: state.lastBright ? { x: state.lastBright.x, y: state.lastBright.y, z: state.lastBright.z } : null }),
     'POST /light_up': async (b = {}) => { const m = await makeTorches(bot(), 4); const r = await lightUp(bot(), { max: Math.min(+b.max || 3, 8) }); return { ...r, made: m.made || 0, note: m.note }; },
