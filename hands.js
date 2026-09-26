@@ -423,6 +423,36 @@ async function ftbqSend (bot, state, name, body = Buffer.alloc(0), waitMs = 1500
   return { sent: `ftbquests:${name}`, serverReplies: [...new Set(replies)] };
 }
 
+/**
+ * 放建筑蓝图（nsprefab 结构生成器，FTB「新手小屋」送的）：手持 → 右键地面出预览 → 潜行 + 右键地面确认放下。
+ * 核对：生成器少了一个、附近出现了床或箱子（新手小屋自带），才算放下了。
+ */
+async function placeStructure (bot, state, { x, y, z, itemName = 'nsprefab:structure_spawner' } = {}) {
+  const it = findItem(bot, itemName);
+  if (!it) throw new Error(`身上没有 ${itemName}（先 quest_claim 领新手小屋）`);
+  const ground = x != null ? bot.blockAt(new Vec3(+x, +y, +z)) : bot.blockAt(bot.entity.position.offset(0, -1, 0).floored());
+  if (!ground || ground.boundingBox !== 'block') throw new Error('要对着实心的地面放（给 x y z 或站在平地上）');
+  if (eyeDist(bot, ground) > REACH) await approach(bot, ground);
+  const before = invCounts(bot).get(fullId(it.name)) || 0;
+  await bot.equip(it, 'hand');
+  await bot.lookAt(ground.position.offset(0.5, 1, 0.5), true);
+  await bot.activateBlock(ground, new Vec3(0, 1, 0));          // 第一次右键：出预览
+  await sleep(900);
+  bot.setControlState('sneak', true); await sleep(300);
+  await bot.activateBlock(ground, new Vec3(0, 1, 0));          // 潜行右键：确认放下
+  await sleep(400); bot.setControlState('sneak', false);
+  await sleep(2500);                                           // 结构是分几 tick 生成的
+  const after = invCounts(bot).get(fullId(it.name)) || 0;
+  const bed = bot.findBlock({ matching: (b) => b && /(^|_)bed$/.test(b.name), maxDistance: 24 });
+  const chest = bot.findBlock({ matching: (b) => b && /chest$/.test(b.name), maxDistance: 24 });
+  const placed = after < before;
+  return {
+    placed, usedItem: placed, at: ground.position,
+    bed: bed ? bed.position : null, chest: chest ? chest.position : null,
+    note: placed ? (bed ? '放下了，附近有床（可以 set_home、上床睡）' : '生成器用掉了，但 24 格内没看到床 —— 看看周围') : '生成器还在手上：没放下（可能地面不平/空间不够，换块平地再试）',
+  };
+}
+
 function installModProtocols (bot, state) {
   // FTB 任务书的服务端回包：记下消息名（载荷开头的 ResourceLocation）
   bot._client.on('custom_payload', (p) => {
@@ -2609,6 +2639,12 @@ function routes ({ state, withTimeout }) {
     'POST /ftbq/submit': async (b = {}) => { if (!b.taskId) throw new Error('要给 taskId（任务书里的 16 位十六进制）'); return ftbqSend(bot(), state, 'submit_task', hexLong(b.taskId)); },
     'POST /ftbq/claim': async (b = {}) => { if (!b.rewardId) throw new Error('要给 rewardId'); return ftbqSend(bot(), state, 'claim_reward', Buffer.concat([hexLong(b.rewardId), Buffer.from([b.notify === false ? 0 : 1])])); },
     'POST /ftbq/claim_all': async () => ftbqSend(bot(), state, 'claim_all_rewards'),
+    'POST /ftbq/claim_choice': async (b = {}) => {   // 多选一奖励（新手小屋 14 选 1）：long rewardId + varint 选第几个
+      if (!b.rewardId) throw new Error('要给 rewardId');
+      const i = Math.max(0, +b.index || 0); const v = []; let n = i; do { let x = n & 0x7f; n >>>= 7; if (n) x |= 0x80; v.push(x); } while (n);
+      return ftbqSend(bot(), state, 'claim_choice_reward', Buffer.concat([hexLong(b.rewardId), Buffer.from(v)]));
+    },
+    'POST /place_structure': async (b = {}) => placeStructure(bot(), state, b),
     'GET /ftbq/recent': async () => ({ recent: (state.ftbqRecent || []).slice(-20) }),
     // 调试：原样发一个模组消息（逆向模组协议时用）{ channel, hex }
     'POST /debug/payload': async (b = {}) => { bot()._client.write('custom_payload', { channel: b.channel, data: Buffer.from(b.hex || '', 'hex') }); await sleep(b.waitMs || 1500); return { sent: b, window: summarizeWindow(bot(), state) }; },

@@ -128,6 +128,46 @@ function humanState (s) {
   return `血 ${hp}/20（${hpWord}）、饥饿 ${food}/20（${foodWord}）、${s.isDay ? '白天' : '夜晚'}、在 (${s.pos?.x},${s.pos?.y},${s.pos?.z})`;
 }
 
+/**
+ * 眼下最该操心的（生存优先级）：每一刻按局面算一两件，写进【此刻】。只是提醒她看清局面，怎么做还是她自己定。
+ * 主人 2026-09-26 定的方向：没家先安家（FTB 新手小屋）、夜里躲危险/睡觉/在家干活、家附近插火把、背包快满先进精妙背包再回家整理。
+ * 依据：modpack-study/survival/report.md（本包没有普通玩家的传送命令；火把地面每 12 格一个；背包剩 ≤8 格就回家整理）。
+ */
+function survivalFocus (s) {
+  if (!s || !s.pos) return [];
+  const out = [];
+  const home = mem.getHome();
+  const atHome = home && mem.inHome(s.pos);
+  const hostiles = (s.nearby || []).filter(e => e.kind === 'hostile' && e.distance <= 12);
+  const names = (s.items || []).map(i => (i.name.includes(':') ? i.name : `minecraft:${i.name}`));
+  const has = (re) => names.some(n => re.test(n));
+  if ((s.health != null && s.health <= 8) || hostiles.length) {
+    out.push(`保命：${s.health <= 8 ? `血只有 ${s.health}` : ''}${hostiles.length ? `${s.health <= 8 ? '，' : ''}身边 ${hostiles.length} 只怪（最近 ${hostiles[0].distance} 格）` : ''} —— 打得过就打，打不过就躲进屋/挖个洞堵上，血少先吃东西`);
+  }
+  if (!home) {
+    out.push(has(/structure_spawner/)
+      ? '还没有家，身上有结构生成器（新手小屋）：挑块平地 place_structure 放下，进屋后 set_home'
+      : '还没有家：先安家 —— FTB 任务书「新手小屋」点对号就送（quest_submit 新手小屋 → quest_claim 新手小屋 choice=0 森林小屋 → place_structure → set_home）；拿不到就挖进山里 1×2×2、堵住身后、插火把过夜');
+  } else if (!s.isDay && !atHome) {
+    out.push('天黑了还在外面：回家（go_home）；离家太远就就地挖个洞躲一夜，别在野外乱跑');
+  } else if (!s.isDay && atHome) {
+    out.push('夜里在家：有床就睡（sleep_in_bed）；睡不了就在家里干活 —— 整理箱子、做菜、挖家里的矿');
+  }
+  const free = 36 - (s.items || []).length;
+  if (free <= 8) {
+    const packWorn = (s.curios || []).some(x => /backpack/.test(x));
+    out.push(packWorn && (s.backpack ? s.backpack.used < s.backpack.slots - 4 : true)
+      ? `身上只剩 ${free} 格：先把杂物装进背包（open_backpack → store_items）`
+      : `身上只剩 ${free} 格${packWorn ? '、背包也快满了' : ''}：回家整理（go_home → organize_storage）`);
+  }
+  if (home && atHome && s.isDay && has(/(^|:)torch$/) && W.torchDay !== dayKey()) {
+    W.torchDay = dayKey();   // 一天提醒一次
+    out.push('家附近暗的地方插火把防刷怪（地面大约每 12 格一个）');
+  }
+  return out.slice(0, 2);
+}
+const dayKey = () => new Date().toDateString();
+
 function invText (items) {
   return (items || []).map(i => `${knowledge.label(i.name.includes(':') ? i.name : `minecraft:${i.name}`)}×${i.count}`).join('、') || '空的';
 }
@@ -577,6 +617,12 @@ const SYSTEM = `你是 Angel_ICE（安琪），住在这个 Minecraft 模组服�
 - 家：你认定的庇护所（set_home）。家里的箱子是仓库，分类整理过一次就固定（organize_storage 会按记住的放）；要回家用 go_home。
 - 探险：家以外的箱子，用 loot_nearby 尽量装到身上带回家，回家再 organize_storage 归位。
 - 晚上：天黑了、手上阶段性的事忙完了，就自己回家上床睡觉（sleep_in_bed）；有人正找你、事没做完就先忙完。
+- 生存常识（这个包的真实情况）：
+  · 没有 /home /spawn /back 这类传送命令；远距离回家只能靠传送石碑（waystones：两块石碑之间右键互传，不耗经验）—— 家里放一块、常去的地方放一块
+  · 怪只在全黑的地方刷：家周围地面大约每 12 格插一个火把就不刷了
+  · 睡不了（服务器可能要多人一起睡）也别在外面过夜：待在屋里干活
+  · 床 = 3 羊毛 + 3 木板；睡袋只要 3 羊毛（只能夜里用）
+  · 精妙背包：身上快满先装背包；背包剩不到几格就回家 organize_storage
 - 【你会的做法】是你以前做成过的步骤，照做用 use_skill；做法不好了可以 save_skill 改。
 - 发现自己不对劲（身体不听使唤、查到的和实际对不上、会错了意），除了自己记教训，再用 report_issue 给照顾你身体的人留张纸条，他们会修。
 - 被问到、或者你自己要做一件事的时候，不懂这个整合包的东西就查书（item_info / recipe / how_to_obtain / item_uses / material_plan / guide_search）。这个包魔改很多，别凭原版印象；查不到就说不知道。查到的只回答他问的那一点，一个下一步就够。**查一两次就回答**：查到什么说什么，查不到就说查不到 —— 别换着花样查个没完让他干等（他问了一句，你查了五次还没开口，就是没理他）。不查就不要讲做法步骤。
@@ -672,6 +718,7 @@ function buildNow (why) {
     near ? `身边：${near}` : '',
     (() => { const open = (s?.doors || []).filter(d => d.open); return open.length ? `身边开着的门：${open.slice(0, 5).map(d => `${d.kind}(${d.x},${d.y},${d.z})`).join('、')}` : ''; })(),
     bodyNow(),
+    (() => { const f = survivalFocus(s); return f.length ? `\n【眼下最该操心的】\n${f.map(x => `· ${x}`).join('\n')}` : ''; })(),
     happened,
     saidLine,
     proLine,
@@ -1191,6 +1238,16 @@ async function selftest () {
     check('睡着时不会再睡一次，也不会插进来想', calls === 1 && !W.sleeping, calls);
     if (thinkTimer) { clearTimeout(thinkTimer); thinkTimer = null; }
     W.pending = [];
+  }
+
+  console.log('\n眼下最该操心的（生存优先级）');
+  {
+    const night = survivalFocus({ pos: { x: 99999, y: 64, z: 99999 }, health: 20, isDay: false, items: [], nearby: [] });
+    check('没家时先安家（提到新手小屋）', night.some(x => /新手小屋/.test(x)), night);
+    const hurt = survivalFocus({ pos: { x: 99999, y: 64, z: 99999 }, health: 5, isDay: true, items: [], nearby: [{ kind: 'hostile', distance: 4 }] });
+    check('血少有怪：保命排第一', /保命/.test(hurt[0] || ''), hurt);
+    const full = survivalFocus({ pos: { x: 99999, y: 64, z: 99999 }, health: 20, isDay: true, items: Array.from({ length: 30 }, (_, i) => ({ name: `x:${i}`, count: 1 })), nearby: [], curios: ['sophisticatedbackpacks:iron_backpack'] });
+    check('身上快满、背着背包：先装背包', full.some(x => /装进背包/.test(x)), full);
   }
 
   console.log('\n他说了话、她只在正文里回：提醒一次（不替她说）');

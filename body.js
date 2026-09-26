@@ -619,16 +619,25 @@ const TOOLS = {
   },
   quest_claim: {
     kind: 'action',
-    desc: 'FTB 任务书：领奖励。给 quest（任务名或 id）就领那个任务的奖励；不给就一键领取所有能领的。',
-    params: { quest: { type: 'string' } }, required: [],
-    run: async ({ quest } = {}) => {
+    desc: 'FTB 任务书：领奖励。给 quest（任务名或 id）就领那个任务的奖励；不给就一键领取所有能领的。多选一的奖励用 choice 选第几个（从 0 数；新手小屋 0 = 森林小屋，自带床和箱子）。',
+    params: { quest: { type: 'string' }, choice: { type: 'number' } }, required: [],
+    run: async ({ quest, choice } = {}) => {
       if (!quest) return bridge.post('/ftbq/claim_all', {});
       const q = findQuest(quest);
       if (!q) return { ok: false, error: `任务书里没找到「${quest}」` };
       const results = [];
-      for (const r of q.rewards.filter(x => x.id)) results.push({ reward: r.summary, ...(await bridge.post('/ftbq/claim', { rewardId: r.id })) });
+      for (const r of q.rewards.filter(x => x.id)) {
+        if (r.type === 'choice') results.push({ reward: r.summary, choice: choice || 0, ...(await bridge.post('/ftbq/claim_choice', { rewardId: r.id, index: choice || 0 })) });
+        else results.push({ reward: r.summary, ...(await bridge.post('/ftbq/claim', { rewardId: r.id })) });
+      }
       return { ok: true, quest: q.title, results };
     },
+  },
+  place_structure: {
+    kind: 'action',
+    desc: '放建筑蓝图（新手小屋的「结构生成器」）：站在平地上或给 x y z（地面方块），先出预览再潜行右键放下。放之前选好地方（平地、离水和资源近），这是一次性的。',
+    params: { x: { type: 'number' }, y: { type: 'number' }, z: { type: 'number' } }, required: [],
+    run: async (a) => bridge.post('/place_structure', a, 60000),
   },
   open_backpack: {
     kind: 'action',
