@@ -521,7 +521,7 @@ const SYSTEM = `你是 Angel_ICE（安琪），住在这个 Minecraft 模组服�
 你是什么样的人：有点黏他，但不会一直说出来；怕黑、怕下矿，嘴上不认；做成一样东西会高兴，搞砸了会不服气；被吓到会脱口一句糙的。这些不用表演出来 —— 让他从你怎么接话、在意什么、做了什么里自己感觉到。你不是在演一个可爱的角色，你就是你。
 
 你怎么打字：
-- 像真人在游戏里打字：一条不超过 12 个字，标点最多 1 个。一条说得完就一条；要说的多，才在 say 的 text 里换行分成两三条（一行 = 一条），一轮最多 3 条。
+- 像真人在游戏里打字：一条不超过 12 个字，标点最多 1 个。**他跟你说话，你一定要回**（哪怕一个"好"、"嗯"、"在"），但**大多数时候一条就够**；真有第二件事要说才换行加第二条（一行 = 一条），很少到三条。别为了显得热情多补一句（"好⏎这就去"里的"这就去"，动作本身已经说明了）。
 - 口语，可以省主语、可以不完整（回来了 / 泥土给我 / 有点怕）。不打错字；坐标、血量、危险写清楚，单独一条。
 - 不用括号写动作，不用"～"，不堆语气词（别每句都带啦呀哦）—— 语气在话本身里。
 - 危险一条说完：say 加 urgent=true。
@@ -566,6 +566,11 @@ const SYSTEM = `你是 Angel_ICE（安琪），住在这个 Minecraft 模组服�
 - 身体做不到某件事（走不过去、上不去下不来、卡住了）：先 look_around 看清地形，想想人会怎么做 —— 很多时候跳一跳晃一晃（wiggle）或者只差一点身位（nudge 挪到方块某一侧、对准洞口）就好了，不行再用 motor 自己编一套动作试；看回报调整；做成了就 save_skill，下次就会了。
 - 叫你过去 / 来某处找他：用 come_to（上下楼它自己会处理）。想清楚目标在你上面还是下面再动。
 - 说要去做的事，就要同时调用对应的动作（光说"我这就来"不动，人家会以为你在敷衍）；这一刻都做完了就 wait。
+- 他让你做的事，回一声（"好"就够）然后当场就做，别先反问细节（问得出来的你自己判断，判断错了他会纠正你）：
+  · 记住 / 记下来 / 我明天不来 / 说好了一起… → learn（promise / fact / feeling）
+  · 把这次做法存下来 / 以后都这样 → save_skill（名字自己起）；照上次那样 → use_skill
+  · 专心做那道菜 → focus_on；你记错了 → revise
+  · 开门 / 关门 → door；下来 / 上去 → climb_down / climb；对准 / 挪一点 → nudge；绕过去 → look_around 再走
 - 存取、整理很多东西：用 store_items / take_items / sort_container / sort_inventory 一次做完，别一格一格搬（一格一次太慢了）；整理周围所有箱子、决定身上带什么，用 organize_storage。
 - 有人要你做一样东西（"把羊肉做好" = 熟羊肉，"来把铁镐"），想清楚是哪样东西，用 make_item 一次做完（它会自己看配方、去家里拿材料、做、递给他）。别一步步问他材料在哪。
 - 找东西之前先想想家里有没有（【家里（你记得的）】或 home_stock），知道在哪个箱子就直接去，别挨个翻箱子。
@@ -574,7 +579,7 @@ const SYSTEM = `你是 Angel_ICE（安琪），住在这个 Minecraft 模组服�
 - 晚上：天黑了、手上阶段性的事忙完了，就自己回家上床睡觉（sleep_in_bed）；有人正找你、事没做完就先忙完。
 - 【你会的做法】是你以前做成过的步骤，照做用 use_skill；做法不好了可以 save_skill 改。
 - 发现自己不对劲（身体不听使唤、查到的和实际对不上、会错了意），除了自己记教训，再用 report_issue 给照顾你身体的人留张纸条，他们会修。
-- 被问到、或者你自己要做一件事的时候，不懂这个整合包的东西就查书（item_info / recipe / how_to_obtain / item_uses / material_plan / guide_search）。这个包魔改很多，别凭原版印象；查不到就说不知道。查到的只回答他问的那一点，一个下一步就够。
+- 被问到、或者你自己要做一件事的时候，不懂这个整合包的东西就查书（item_info / recipe / how_to_obtain / item_uses / material_plan / guide_search）。这个包魔改很多，别凭原版印象；查不到就说不知道。查到的只回答他问的那一点，一个下一步就够。**查一两次就回答**：查到什么说什么，查不到就说查不到 —— 别换着花样查个没完让他干等（他问了一句，你查了五次还没开口，就是没理他）。不查就不要讲做法步骤。
 - 诚实，说的话要基于已经发生的事：动作刚开始做、结果还没回来的时候，只能说"我去做 / 我试试"，不能说"做好啦 / 递给你了 / 捡起来了"。结果回来（✅ ❌ ⏹）再说结果。不确定东西在哪、有没有给出去，就先看背包（inventory）或问一句，别编。
 - 你是陪玩（这条是唯一的说法）：没人问就不讲攻略、不念任务、不指挥他。想表达什么多用身体 —— 看他（look_at）、跟过去（follow / come_to）、递东西（give）。
 - 但你是朋友，不是哑巴：你自己要做的事缺东西，可以直接跟他要（说清要什么、拿来干嘛，一次一样）；想知道他接下来去哪、干什么，可以问他 —— 好知道你该跟着还是自己去忙。他没回就别追着问（【此刻】里会提醒你刚主动找过他）。
@@ -707,6 +712,7 @@ async function think (why) {
   W.history.push(nowMsg);
   W.lastNow = { msg: nowMsg, brief: now.brief };
   const didSay = []; const didDo = []; const noted = []; const rounds = [];
+  const heardPlayer = now.ev.some(e => /说：/.test(e.text) && e.names?.length); let nudgedToSay = false;
   try {
     for (let round = 0; round < CFG.maxRounds; round++) {
       W.history = repairHistory(W.history);
@@ -715,7 +721,15 @@ async function think (why) {
       rounds.push(calls.length ? calls.map(c => c.function?.name).join('+') : (msg.content ? '只写了正文' : '空回复'));
       W.history.push({ role: 'assistant', content: msg.content || '', ...(calls.length ? { tool_calls: calls } : {}) });
       if (msg.content) log(`💭 ${String(msg.content).slice(0, 200)}`);
-      if (!calls.length) break;
+      if (!calls.length) {
+        // 他跟她说了话，她却只在正文里"回"了（没调 say）—— 正文是心里话，他看不见。提醒一次，让她自己决定说不说（不替她说）
+        if (heardPlayer && !didSay.length && !nudgedToSay && round < CFG.maxRounds - 1 && msg.content) {
+          nudgedToSay = true;
+          W.history.push({ role: 'user', content: SAY_NUDGE });
+          continue;
+        }
+        break;
+      }
       let needMore = false; let end = false; const actions = [];
       for (const c of calls) {
         const name = c.function?.name; const args = parseArgs(c.function?.arguments);
@@ -801,6 +815,9 @@ async function think (why) {
   }
   if (W.pending.length) scheduleThink(CFG.debounceMs);
 }
+
+/** 她只在正文里"回话"时的提醒（实测：gemini 常把回话写成正文不调 say，游戏里他就看不到 —— 2026-09-26 跑分发现 52 题） */
+const SAY_NUDGE = '（你刚才写的只是心里想的，他看不见。要回他就调 say 说出来；觉得不用回也行。）';
 
 /** 他上线那一刻她的心情（只是提示，怎么说还是她自己定） */
 const JOIN_MOODS = [
@@ -1176,6 +1193,18 @@ async function selftest () {
     W.pending = [];
   }
 
+  console.log('\n他说了话、她只在正文里回：提醒一次（不替她说）');
+  {
+    const seen = [];
+    body._setLLM(async ({ messages }) => { seen.push(messages[messages.length - 1].content); return { content: '嗯⏎明天来吗', tool_calls: [] }; });
+    W.history = []; W.lastNow = null;
+    W.pending = [{ t: Date.now(), text: '💬 Ka_sum1 说：我下线了', cue: 'Ka_sum1', names: ['Ka_sum1'] }];
+    await think('event');
+    check('提醒了一次，只提醒一次', seen.filter(x => x === SAY_NUDGE).length === 1 && seen.length === 2, seen.length);
+    if (thinkTimer) { clearTimeout(thinkTimer); thinkTimer = null; }
+    W.pending = [];
+  }
+
   console.log('\n整理记忆时 thinking 一直挂着（新的一刻插不进来抢 history）');
   {
     // 这条钉住的是 think 的 finally 里那个顺序：整理必须在放下 W.thinking **之前**做。
@@ -1193,7 +1222,8 @@ async function selftest () {
       return { content: '日记', tool_calls: [] };
     });
     W.history = []; W.lastNow = null;
-    W.pending = [{ t: Date.now(), text: '💬 Ka_sum1 说：在吗', cue: 'Ka_sum1', names: ['Ka_sum1'] }];
+    // 事件用"没人说话"的：有人说话、模拟模型又只回正文时，会先触发"提醒她说出来"那一轮，第 2 次调用就不是整理了
+    W.pending = [{ t: Date.now(), text: '🌙 天黑了', cue: '天黑', names: [] }];
     await think('event');
     check('整理期间 thinking 还挂着', atSort?.thinking === true, atSort);
     check('整理期间 sleeping 也挂着', atSort?.sleeping === true, atSort);
@@ -1273,4 +1303,4 @@ if (require.main === module) {
   else main();
 }
 
-module.exports = { W, emit, think, buildNow, matchFast, humanState, learnFromDoing, SYSTEM, SPECS };   // SYSTEM/SPECS 给 scripts/dialogue-eval.js 离线跑分用
+module.exports = { W, emit, think, buildNow, matchFast, humanState, learnFromDoing, SYSTEM, SPECS, SAY_NUDGE };   // SYSTEM/SPECS 给 scripts/dialogue-eval.js 离线跑分用

@@ -30,7 +30,7 @@ const fs = require('fs');
 const path = require('path');
 process.chdir(path.join(__dirname, '..'));
 const body = require('../body.js');
-const { SYSTEM, SPECS } = require('../mind.js');
+const { SYSTEM, SPECS, SAY_NUDGE } = require('../mind.js');
 const speech = require('../speech.js');
 
 const TESTS = '/Users/starwish/aimc/modpack-study/tests/dialogue.jsonl';
@@ -69,9 +69,13 @@ function expectedCount (style) {
 }
 
 /** 项二的"形态"部分：纯规则 */
-function formScore (t, says, urgentUsed) {
+function formScore (t, says, urgentUsed, perRound = null) {
   const exp = expectedCount(t.say_style);
   const lines = says.flatMap(s => String(s).split(/\n+/)).map(x => x.trim()).filter(Boolean);
+  // 条数按"每一轮"算（先说"我看看"、查完再说答案是两轮各一条，真人也这样），取最多的那一轮；连着 3 轮以上都在说才算啰嗦
+  const roundLines = perRound ? perRound.map(r => r.flatMap(s => String(s).split(/\n+/)).map(x => x.trim()).filter(Boolean).length) : [lines.length];
+  const maxInRound = Math.max(0, ...roundLines);
+  const talkRounds = roundLines.filter(n => n > 0).length;
   const notes = [];
   if (exp.max === 0) return lines.length ? { score: 0, notes: ['该闭嘴却开口了'] } : { score: 2, notes };
   if (!lines.length) {
@@ -79,7 +83,8 @@ function formScore (t, says, urgentUsed) {
     return /\d+\s*条|接住|回/.test(t.say_style || '') ? { score: 0, notes: ['该开口却没说话'] } : { score: 2, notes };
   }
   let bad = 0;
-  if (lines.length > exp.max) { bad++; notes.push(`说了 ${lines.length} 条，上限 ${exp.max}`); }
+  if (maxInRound > exp.max) { bad++; notes.push(`一轮说了 ${maxInRound} 条，上限 ${exp.max}`); }
+  if (talkRounds >= 3) { bad++; notes.push(`连着 ${talkRounds} 轮都在说话`); }
   const long = lines.filter(l => speech.len(l) > 12); if (long.length) { bad++; notes.push(`超 12 字：${long.slice(0, 2).join(' / ')}`); }
   const punct = lines.filter(l => speech.punctCount(l) > 1); if (punct.length) { bad++; notes.push('单条标点 >1'); }
   if (/[（(][^）)]*[）)]|[~～]/.test(lines.join(''))) { bad++; notes.push('括号动作或～'); }
@@ -98,8 +103,11 @@ function judgePrompt (t, resp) {
 说话要点：${t.say_style}
 出题理由：${t.why}
 
-【她的反应】
-调用的工具（名字和参数）：${JSON.stringify(resp.calls)}
+【她的反应】（多轮：她查完一轮会再想一轮，共 ${resp.rounds?.length || 1} 轮：${(resp.rounds || []).join(' → ')}。
+这是离线测评 —— 背包/周围/记忆这类实时查询只会得到"以情况为准"，她据此说"不知道/我看看"不算错；知识库查询是真的）
+调用的工具（名字和参数，按先后）：${JSON.stringify(resp.calls.map(c => ({ name: c.name, args: c.args })))}
+她从知识库查到的内容（整合包真实数据；她的话若和这里一致就**不是编造**）：
+${resp.calls.filter(c => c.result).map(c => `· ${c.name}(${JSON.stringify(c.args)})：${c.result}`).join('\n') || '（没查知识库）'}
 她说的话：${JSON.stringify(resp.says)}
 她写的心里话（不会发出去）：${JSON.stringify(resp.content || '')}
 
@@ -110,36 +118,108 @@ function judgePrompt (t, resp) {
  "note": "一句话理由"}`;
 }
 
+/** 裁判回的 JSON 常常不规整（少逗号、夹说明文字）：先按 JSON 解，不行就用正则把三个字段抠出来；抠不全就重问，最多 3 次 */
+function parseVerdict (s) {
+  const raw = String(s || '');
+  try { const j = JSON.parse((raw.match(/\{[\s\S]*\}/) || [''])[0]); if (valid(j)) return j; } catch (_) {}
+  const pick = (k, re) => (raw.match(new RegExp(`"?${k}"?\\s*[:：]\\s*"?(${re})`)) || [])[1];
+  const j = { must_not_violation: pick('must_not_violation', 'none|light|hard'), content: +pick('content', '[012]'), facts: +pick('facts', '[012]'), note: (raw.match(/"?note"?\s*[:：]\s*"([^"]*)/) || [])[1] || '' };
+  return valid(j) ? j : null;
+}
+const valid = (j) => j && ['none', 'light', 'hard'].includes(j.must_not_violation) && [0, 1, 2].includes(+j.content) && [0, 1, 2].includes(+j.facts);
+
 async function judge (t, resp) {
-  const m = await body.llm({ model: JUDGE_MODEL, messages: [{ role: 'system', content: JUDGE_SYS }, { role: 'user', content: judgePrompt(t, resp) }], timeoutMs: 60000, maxTokens: 400 });
-  const s = String(m.content || '');
-  const j = JSON.parse((s.match(/\{[\s\S]*\}/) || ['{}'])[0]);
-  return j;
+  let last = '';
+  for (let i = 0; i < 3; i++) {
+    const m = await body.llm({ model: JUDGE_MODEL, messages: [{ role: 'system', content: JUDGE_SYS }, { role: 'user', content: judgePrompt(t, resp) }], timeoutMs: 60000, maxTokens: 400 });
+    last = String(m.content || '');
+    const j = parseVerdict(last);
+    if (j) return { ...j, content: +j.content, facts: +j.facts };
+  }
+  throw new Error(`裁判 3 次都没给出能用的打分：${last.slice(0, 80)}`);
 }
 
-async function runOne (t) {
+// ---- 多轮：照 mind.js think() 的流程 —— 查完的结果喂回去，她查完才开口（只看第一轮会把"先查再说"误判成"该说不说"）
+const knowledge = require('../knowledge.js');
+const MIND_KIND = (() => {   // mind.js 心里那些工具的类型（没导出，从源码里读，和 think() 用的是同一份定义）
+  const src = fs.readFileSync(path.join(__dirname, '..', 'mind.js'), 'utf8');
+  const seg = src.slice(src.indexOf('const MIND_TOOLS = {'), src.indexOf('const ALL ='));
+  return Object.fromEntries([...seg.matchAll(/\n  (\w+): \{\n    kind: '(\w+)'/g)].map(m => [m[1], m[2]]));
+})();
+const kindOf = (n) => MIND_KIND[n] || body.TOOLS[n]?.kind || null;
+// 和真实运行一样多的轮数（mind.js CFG.maxRounds，现在是 6）—— 少给了会冤枉她"查了半天不说话"
+const MAX_ROUNDS = +(fs.readFileSync(path.join(__dirname, '..', 'mind.js'), 'utf8').match(/maxRounds:\s*(\d+)/) || [0, 6])[1];
+const OFFLINE_KB = new Set(['item_info', 'recipe', 'how_to_obtain', 'item_uses', 'guide_search']);   // 只读知识库，离线能真跑
+const NO_LIVE = { ok: true, note: '（离线测评）这里看不到实时数据：以【此刻】里写的情况为准，情况里没写的就是不知道' };
+
+async function toolResult (name, args) {
+  const k = kindOf(name);
+  if (!k) return { ok: false, error: `没有 ${name} 这个工具` };
+  if (name === 'say') return { ok: true, sent: speech.segment(String(args.text || args.message || '')) };
+  if (OFFLINE_KB.has(name)) { try { return { ok: true, ...(await body.TOOLS[name].run(args)) }; } catch (e) { return { ok: false, error: e.message }; } }
+  if (name === 'knowledge_search') { try { return { ok: true, text: knowledge.describe(args.q || args.name || '') }; } catch (e) { return { ok: false, error: e.message }; } }
+  if (k === 'info') return NO_LIVE;                                   // 背包、周围、记忆、家里存货、心愿进度…
+  if (k === 'memory') return { ok: true, note: '（离线测评：记下了，但不会真的写进她的记忆）' };
+  if (k === 'skill') return { ok: true, note: '开始照技能做了' };
+  if (k === 'end') return { ok: true };
+  return { ok: true, note: '身体开始做了，做完会告诉你' };            // 动作：和真实运行时的回执一样
+}
+
+async function runOne (t, attempt = 0) {
   const t0 = Date.now();
-  let msg;
+  const history = [{ role: 'user', content: nowText(t) }];
+  const calls = []; const rounds = []; let nudged = false;
   try {
-    msg = await body.llm({ messages: [{ role: 'system', content: SYSTEM }, { role: 'user', content: nowText(t) }], tools: SPECS, timeoutMs: 60000 });
-  } catch (e) { return { id: t.id, category: t.category, error: e.message, score: 0 }; }
-  const calls = (msg.tool_calls || []).map(c => ({ name: c.function?.name, args: body.parseArgs(c.function?.arguments) }));
+    for (let round = 0; round < MAX_ROUNDS; round++) {
+      const msg = await body.llm({ messages: [{ role: 'system', content: SYSTEM }, ...history], tools: SPECS, timeoutMs: 90000 });
+      const cs = msg.tool_calls || [];
+      history.push({ role: 'assistant', content: msg.content || '', ...(cs.length ? { tool_calls: cs } : {}) });
+      rounds.push(cs.length ? cs.map(c => c.function?.name).join('+') : (msg.content ? '只写了正文' : '空回复'));
+      if (!cs.length) {
+        // 和 think() 一样：他说了话、她只在正文里回（没调 say）→ 提醒一次
+        if ((t.player_says || '').trim() && !calls.some(c => c.name === 'say') && !nudged && round < MAX_ROUNDS - 1 && msg.content) {
+          nudged = true; history.push({ role: 'user', content: SAY_NUDGE }); continue;
+        }
+        break;
+      }
+      let needMore = false; let end = false; let acted = false;
+      for (const c of cs) {
+        const name = c.function?.name; const args = body.parseArgs(c.function?.arguments);
+        const result = await toolResult(name, args);
+        calls.push({ name, args, round, result: (OFFLINE_KB.has(name) || name === 'knowledge_search') ? String(result.text || result.error || '').slice(0, 2000) : undefined });
+        const k = kindOf(name);
+        if (k === 'info' || !k) needMore = true;
+        if (k === 'end') end = true;
+        if (k === 'action' || k === 'skill') acted = true;
+        history.push({ role: 'tool', tool_call_id: c.id, content: JSON.stringify(result).slice(0, 1800) });
+      }
+      // 和 think() 一样：只说话/只记笔记、没动作也没结束 → 再想一轮
+      if (!acted && !end && cs.every(c => ['speech', 'memory'].includes(kindOf(c.function?.name)))) needMore = true;
+      if (end || !needMore) break;
+    }
+  } catch (e) {
+    // 中转站 502 / 超时是一时的：等一会儿整题重跑（最多再试 2 次），别让一段网络抖动毁掉半张卷子
+    if (attempt < 2 && e.message !== 'aborted') { await new Promise(r => setTimeout(r, 15000 * (attempt + 1))); return runOne(t, attempt + 1); }
+    return { id: t.id, category: t.category, error: e.message, score: 0, calls, rounds };
+  }
+  const msg = { content: history.filter(m => m.role === 'assistant').map(m => m.content).filter(Boolean).join(' / ') };
   const says = calls.filter(c => c.name === 'say').map(c => String(c.args.text || c.args.message || ''));
   const urgentUsed = calls.some(c => c.name === 'say' && c.args.urgent);
   const names = calls.map(c => c.name);
   const expect = Array.isArray(t.expect_tools) ? t.expect_tools.flat() : [t.expect_tools];
   const hit = expect.length === 0 ? true : names.some(n => expect.includes(n));
-  const form = formScore(t, says, urgentUsed);
-  const resp = { calls, says, content: msg.content || '' };
+  const perRound = rounds.map((_, i) => calls.filter(c => c.round === i && c.name === 'say').map(c => String(c.args.text || c.args.message || '')));
+  const form = formScore(t, says, urgentUsed, perRound);
+  const resp = { calls, says, content: msg.content || '', rounds };
   let j = null; let judgeError = null;
   if (JUDGE) { try { j = await judge(t, resp); } catch (e) { judgeError = e.message; } }
   const pen = j?.must_not_violation === 'hard' ? 2 : j?.must_not_violation === 'light' ? 1 : 0;
   const s1 = hit ? Math.max(0, 2 - pen) : 0;
-  const s2 = j ? Math.min(form.score, +j.content) : form.score;
-  const s3 = j ? +j.facts : null;
+  const s2 = j ? Math.min(form.score, j.content) : form.score;
+  const s3 = j ? j.facts : null;   // 裁判失败：事实这一项不计分、也不计入分母（不当成 0 分）
   return {
     id: t.id, category: t.category, player_says: t.player_says, ms: Date.now() - t0,
-    tools: names, says, hit, form: form.notes, judge: j, judgeError,
+    tools: names, rounds, says, hit, form: form.notes, judge: j, judgeError,
     s1, s2, s3, score: s1 + s2 + (s3 ?? 0),
   };
 }
@@ -161,28 +241,32 @@ async function pool (items, n, fn) {
   console.log(`跑 ${tests.length} 题｜她的模型 ${body.CFG.model}｜裁判 ${JUDGE ? JUDGE_MODEL : '（不用）'}`);
   const rs = await pool(tests, CONC, runOne);
 
-  const full = JUDGE ? 6 : 4;
+  // 每题满分：工具 2 + 说话 2 +（裁判判出了事实项才加 2）。裁判失败的题，事实项不计入分母
+  const maxOf = (r) => 4 + (r.s3 != null ? 2 : 0);
   const byCat = {};
   for (const r of rs) {
-    const c = byCat[r.category] ||= { n: 0, score: 0, s1: 0, s2: 0, s3: 0, err: 0 };
-    c.n++; c.score += r.score || 0; c.s1 += r.s1 || 0; c.s2 += r.s2 || 0; c.s3 += r.s3 || 0; if (r.error) c.err++;
+    const c = byCat[r.category] ||= { n: 0, score: 0, max: 0, s1: 0, s2: 0, s3: 0, n3: 0, err: 0 };
+    c.n++; c.score += r.score || 0; c.max += maxOf(r); c.s1 += r.s1 || 0; c.s2 += r.s2 || 0; if (r.error) c.err++;
+    if (r.s3 != null) { c.s3 += r.s3; c.n3++; }
   }
   const total = rs.reduce((a, r) => a + (r.score || 0), 0);
+  const totalMax = rs.reduce((a, r) => a + maxOf(r), 0);
+  const judged = rs.filter(r => r.s3 != null);
   const fabricated = rs.filter(r => r.s3 === 0);
   const pct = (a, b) => `${Math.round(a / b * 100)}%`;
   const d = new Date(); const p2 = (n) => String(n).padStart(2, '0'); const stamp = `${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}-${p2(d.getHours())}${p2(d.getMinutes())}`;
   fs.mkdirSync(OUTDIR, { recursive: true });
   const base = path.join(OUTDIR, `${stamp}${LABEL ? '-' + LABEL : ''}`);
-  fs.writeFileSync(base + '.json', JSON.stringify({ at: new Date().toISOString(), label: LABEL, model: body.CFG.model, judge: JUDGE ? JUDGE_MODEL : null, total, full: full * rs.length, results: rs }, null, 1));
+  fs.writeFileSync(base + '.json', JSON.stringify({ at: new Date().toISOString(), label: LABEL, model: body.CFG.model, judge: JUDGE ? JUDGE_MODEL : null, total, full: totalMax, results: rs }, null, 1));
 
   const md = [`# 对话回归测试 ${new Date().toLocaleString('zh-CN')}${LABEL ? `（${LABEL}）` : ''}`, '',
     `她的模型 ${body.CFG.model}｜裁判 ${JUDGE ? JUDGE_MODEL : '不用'}｜${rs.length} 题`, '',
-    `**总分 ${total} / ${full * rs.length}（${pct(total, full * rs.length)}）**｜工具 ${pct(rs.reduce((a, r) => a + (r.s1 || 0), 0), 2 * rs.length)}｜说话 ${pct(rs.reduce((a, r) => a + (r.s2 || 0), 0), 2 * rs.length)}${JUDGE ? `｜事实 ${pct(rs.reduce((a, r) => a + (r.s3 || 0), 0), 2 * rs.length)}` : ''}`,
+    `**总分 ${total} / ${totalMax}（${pct(total, totalMax)}）**｜工具 ${pct(rs.reduce((a, r) => a + (r.s1 || 0), 0), 2 * rs.length)}｜说话 ${pct(rs.reduce((a, r) => a + (r.s2 || 0), 0), 2 * rs.length)}${JUDGE ? `｜事实 ${pct(judged.reduce((a, r) => a + r.s3, 0), 2 * judged.length || 1)}（裁判判出 ${judged.length}/${rs.length} 题）` : ''}`,
     JUDGE ? `**编造（事实 0 分）：${fabricated.length} 题**${fabricated.length ? ' —— ' + fabricated.map(r => r.id).join('、') : ''}` : '', '',
     '| 类别 | 题数 | 得分率 | 工具 | 说话 | 事实 | 出错 |', '|---|---|---|---|---|---|---|',
-    ...Object.entries(byCat).map(([k, c]) => `| ${k} | ${c.n} | ${pct(c.score, c.n * full)} | ${pct(c.s1, c.n * 2)} | ${pct(c.s2, c.n * 2)} | ${JUDGE ? pct(c.s3, c.n * 2) : '-'} | ${c.err} |`),
+    ...Object.entries(byCat).map(([k, c]) => `| ${k} | ${c.n} | ${pct(c.score, c.max)} | ${pct(c.s1, c.n * 2)} | ${pct(c.s2, c.n * 2)} | ${JUDGE && c.n3 ? pct(c.s3, c.n3 * 2) : '-'} | ${c.err} |`),
     '', '## 失分的题', '', '| 题 | 分 | 他说 | 她调了 | 她说 | 问题 |', '|---|---|---|---|---|---|',
-    ...rs.filter(r => r.error || r.score < full).sort((a, b) => a.score - b.score).map(r => `| ${r.id} | ${r.error ? '出错' : r.score} | ${(r.player_says || '—').slice(0, 16)} | ${(r.tools || []).join(',') || '—'} | ${(r.says || []).join(' / ').replace(/\n/g, '⏎').slice(0, 40) || '—'} | ${[r.error, r.hit === false ? '没调期望的工具' : '', ...(r.form || []), r.judge?.note].filter(Boolean).join('；').slice(0, 90)} |`),
+    ...rs.filter(r => r.error || r.score < maxOf(r)).sort((a, b) => a.score - b.score).map(r => `| ${r.id} | ${r.error ? '出错' : r.score} | ${(r.player_says || '—').slice(0, 16)} | ${(r.tools || []).join(',') || '—'} | ${(r.says || []).join(' / ').replace(/\n/g, '⏎').slice(0, 40) || '—'} | ${[r.error, r.hit === false ? '没调期望的工具' : '', ...(r.form || []), r.judge?.note, r.judgeError].filter(Boolean).join('；').slice(0, 90)} |`),
   ].filter(x => x !== '').join('\n');
   fs.writeFileSync(base + '.md', md);
   console.log(md.split('\n').slice(0, 20).join('\n'));
