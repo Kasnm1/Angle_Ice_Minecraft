@@ -829,7 +829,7 @@ async function craftByHand (bot, recipe, times, table) {
   const cells = [];
   if (recipe.inShape) recipe.inShape.forEach((row, y) => row.forEach((id, x) => { if (id != null && id !== -1) cells.push({ slot: 1 + x + y * w, id: typeof id === 'object' ? id.id : id }); }));
   else recipe.ingredients.forEach((id, i) => cells.push({ slot: 1 + i, id: typeof id === 'object' ? id.id : id }));
-  const pause = () => sleep(+process.env.CRAFT_PAUSE_MS || 450);
+  const pause = () => sleep(+process.env.CRAFT_PAUSE_MS || 150);
   const findSrc = (id) => { for (let i = win.inventoryStart; i < win.inventoryEnd; i++) { const it = win.slots[i]; if (it && it.type === id) return i; } return -1; };
   // 原料在哪格：开始时（服务器同步过的状态）找一次，之后一直从这格拿。
   // 不能每次重找：这个服上客户端对"拿起一叠"的预测是错的（拿起后以为格子空了、手上也空），一重找就说缺原料
@@ -839,12 +839,13 @@ async function craftByHand (bot, recipe, times, table) {
   try {
     for (let t = 0; t < times; t++) {
       win.slots[0] = null;   // 成品格只认这一轮服务器发来的
-      for (const c of cells) {
-        const src = srcOf.get(c.id);
-        // 固定三下，不看 win.selectedItem：这个服上它不跟踪（实测拿起一叠后读出来还是 null），bot.craft 就是被它带乱的
-        await bot.clickWindow(src, 0, 0); await pause();          // 拿起一叠
-        await bot.clickWindow(c.slot, 1, 0); await pause();       // 右键放一个
-        await bot.clickWindow(src, 0, 0); await pause();          // 剩下的放回原格（只有 1 个时手上已空，点空格子什么也不发生）
+      // 同一种原料：拿起一次 → 该放的格子挨个右键 → 放回原格。不看 win.selectedItem（这个服上它不跟踪）。
+      // 实测这个顺序服务器马上出成品（/debug/seq：40 拿起、1-4 右键、40 放回 → 成品格 4 个磨制花岗岩）；
+      // 每格都"拿起-放-放回"就会乱（第一格放不进）
+      for (const [id, src] of srcOf) {
+        await bot.clickWindow(src, 0, 0); await pause();
+        for (const c of cells.filter(x => x.id === id)) { await bot.clickWindow(c.slot, 1, 0); await pause(); }
+        await bot.clickWindow(src, 0, 0); await pause();
       }
       const t0 = Date.now(); while (!win.slots[0] && Date.now() - t0 < 3000) await sleep(50);
       if (!win.slots[0]) {
@@ -960,7 +961,7 @@ async function craft2 (bot, { itemName, count = 1 } = {}, withTimeout) {
     }
     const before = invCounts(bot);
     try {
-      await withTimeout(craftByRecipeBook(bot, r.id, times, recipe.requiresTable ? table : null), 15000 + times * 4000);
+      await withTimeout(craftByHand(bot, enumItem, times, recipe.requiresTable ? table : null), 15000 + times * 5000);
     } catch (e) { await returnGrid(bot); throw e; }
     await sleep(300);
     const d = delta(before, invCounts(bot));
