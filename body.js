@@ -388,9 +388,11 @@ const TOOLS = {
         const now = Date.now();
         while (saidRecently.length && now - saidRecently[0].t > 3 * 60 * 1000) saidRecently.shift();
         const seen = new Set(saidRecently.map(r => r.k));
-        parts = parts.filter(x => { const k = speech.wordsOnly(x); if (!k || seen.has(k)) return false; seen.add(k); return true; });
+        // 只有标点的（一个「？」）也是一句话，用原文当去重的键；以前字为空就被当成空话丢掉了
+        const keyOf = (x) => speech.wordsOnly(x) || String(x).trim();
+        parts = parts.filter(x => { const k = keyOf(x); if (!k || seen.has(k)) return false; seen.add(k); return true; });
         if (!parts.length) return { ok: true, sent: [], note: '这些刚刚都说过了，没再发' };
-        for (const x of parts) saidRecently.push({ k: speech.wordsOnly(x), t: now });
+        for (const x of parts) saidRecently.push({ k: keyOf(x), t: now });
       }
       await hooks.beforeSay(parts[0]);   // 像人一样要点时间打字（见 mind.js）
       if (parts.length === 1) await bridge.post('/chat', { message: parts[0] });

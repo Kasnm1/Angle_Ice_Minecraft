@@ -181,10 +181,13 @@ async function look () {
       if (review.looksLikeComplaint(text)) review.record({ kind: 'player_complaint', who, text, ...scene() });
       if (fastPath(who, text)) continue;
       W.lastHeardAt = Date.now();
+      if (W.lastProactive) W.lastProactive.answered = true;
       emit(`💬 ${who} 说：${text}`, { cue: `${who} ${text}`, names: [who], urgent: true });
     } else if (m.position === 'bridge' && /加入|离开|joined|left/.test(m.text)) {
       const who = (m.text.match(/\*\s*(\S+)/) || [])[1];
-      if (who && who !== CFG.botName) emit(`🚪 ${m.text.replace(/^\*\s*/, '')}`, { cue: who, names: [who] });
+      // 他上线时她打不打招呼：真的掷一次骰子（主人要的是"像朋友一样随性" —— 多数时候看一眼，有时扣个问号，有时随口一句）
+      const mood = /加入|joined/.test(m.text) ? pickJoinMood() : '';
+      if (who && who !== CFG.botName) emit(`🚪 ${m.text.replace(/^\*\s*/, '')}${mood}`, { cue: who, names: [who] });
     } else if (m.position === 'system' && new RegExp(CFG.botName).test(m.text) && /died|死|slain|killed|blew|burn|drown/.test(m.text)) {
       review.record({ kind: 'died', text: m.text, ...scene() });
       emit(`☠️ ${m.text}`, { urgent: true });
@@ -533,7 +536,7 @@ const SYSTEM = `你是 Angel_ICE（安琪），住在这个 Minecraft 模组服�
 - 说人话，别说系统里的词（寻路、坐标差、第几步、还差 116 格 → 过不去 / 还挺远）。
 - 事实（配方、数量、东西在哪）只说查到或看到的；没查就说"我查查"，查不到就说不知道。被追问时发现说错了，就认"我记错了"，别硬撑着再编一个。
 示范（他说的 → 你回的；⏎ = 另起一条）：
-  他上线了 → 回来啦
+  他上线了 → 随心情：多数时候看他一眼不出声；有时就扣个「？」；有时「来啦」「哟」（别每次都一样，【此刻】里会写你这会儿的心情）
   他：你还好吗（你在挖矿） → 没事⏎挖着呢
   他：干得不错啊 → 还行吧⏎又不是第一次
   他：666 → 嘿
@@ -549,6 +552,8 @@ const SYSTEM = `你是 Angel_ICE（安琪），住在这个 Minecraft 模组服�
   他：你自己定呗 → 那我做栅栏⏎把田围起来
   他：你不是说你懂吗（你刚说错了配方） → 我记错了⏎我查一下
   他：我下线了 → 嗯⏎明天来吗
+  （你想做蛋糕，家里没鸡蛋，他在旁边） → 有鸡蛋吗⏎想做个蛋糕
+  （他收拾好东西站在门口） → 去哪⏎带我不
 
 你的心愿：这个整合包里有好多好多好吃的 ——《食录逸闻》记着 2390 种。你想把它们一道一道都亲手做出来、尝一尝。为了一道菜去研究食材从哪来、要什么工作站，然后去采、去种、去做，是你最喜欢的事。（有人找你、要陪人的时候，当然先陪人。）
 
@@ -571,7 +576,8 @@ const SYSTEM = `你是 Angel_ICE（安琪），住在这个 Minecraft 模组服�
 - 发现自己不对劲（身体不听使唤、查到的和实际对不上、会错了意），除了自己记教训，再用 report_issue 给照顾你身体的人留张纸条，他们会修。
 - 被问到、或者你自己要做一件事的时候，不懂这个整合包的东西就查书（item_info / recipe / how_to_obtain / item_uses / material_plan / guide_search）。这个包魔改很多，别凭原版印象；查不到就说不知道。查到的只回答他问的那一点，一个下一步就够。
 - 诚实，说的话要基于已经发生的事：动作刚开始做、结果还没回来的时候，只能说"我去做 / 我试试"，不能说"做好啦 / 递给你了 / 捡起来了"。结果回来（✅ ❌ ⏹）再说结果。不确定东西在哪、有没有给出去，就先看背包（inventory）或问一句，别编。
-- 你是陪玩（这条是唯一的说法）：没人问就不讲攻略、不念任务、不指挥他。想表达什么就用身体 —— 看他（look_at）、跟过去（follow / come_to）、递东西（give）；有人跟你说话再接话。
+- 你是陪玩（这条是唯一的说法）：没人问就不讲攻略、不念任务、不指挥他。想表达什么多用身体 —— 看他（look_at）、跟过去（follow / come_to）、递东西（give）。
+- 但你是朋友，不是哑巴：你自己要做的事缺东西，可以直接跟他要（说清要什么、拿来干嘛，一次一样）；想知道他接下来去哪、干什么，可以问他 —— 好知道你该跟着还是自己去忙。他没回就别追着问（【此刻】里会提醒你刚主动找过他）。
 - 没人找你的时候，就做自己想做的事（比如为心愿研究、准备一道菜），像真人一样边做边留意身边的人；有人需要你，就放下手上的事。真的什么都不想做才 wait。`;
 
 // ------------------------------------------------------------------ 想
@@ -636,6 +642,8 @@ function buildNow (why) {
   const head = `【此刻 ${hhmmss()}】`;
   // 他刚说的最后一句：单独拎出来，先回这句（实测答非所问占晚期 20.8%：事件一多，她回的是更早那句，或者只回自己的进度）
   const lastSaid = [...ev].reverse().find(e => /说：/.test(e.text) && e.names?.length);
+  const pro = W.lastProactive && !W.lastProactive.answered && Date.now() - W.lastProactive.t < 10 * 60 * 1000 ? W.lastProactive : null;
+  const proLine = pro ? `\n（你 ${Math.max(1, Math.round((Date.now() - pro.t) / 60000))} 分钟前主动找他说过「${pro.text}」，他还没回 —— 没急事就先别再开口）` : '';
   const saidLine = lastSaid ? `\n【他刚说的】${lastSaid.text.replace(/^\S+\s*/, '')}（先接这一句）` : '';
   const happened = ev.length ? `\n刚才发生的：\n${ev.map(e => `[${hhmmss(e.t)}] ${e.text}`).join('\n')}` : `\n（${why === 'idle' ? `已经 ${Math.round((Date.now() - W.lastEventAt) / 1000)} 秒没发生什么了` : '没有新的事'}）`;
   const parts = [
@@ -661,6 +669,7 @@ function buildNow (why) {
     bodyNow(),
     happened,
     saidLine,
+    proLine,
     remembered ? `\n你想起来：\n${remembered}` : '',
     earlier ? `\n以前发生过的相关的事：\n${earlier}` : '',
     stockLine,
@@ -780,7 +789,9 @@ async function think (why) {
     if (didSay.length && !didDo.length && !W.job && review.looksLikePromise(didSay.join(' '))) {
       review.record({ kind: 'said_no_action', said: didSay.join(' / '), rounds: rounds.join(' → '), ...scene(3) });
     }
-    log(`🧠 ${why} ${Date.now() - t0}ms｜说[${didSay.join(' / ')}] 做[${didDo.join(',')}]${noted.length ? ` 记[${noted.join(',')}]` : ''}｜轮次：${rounds.join(' → ') || '无'}`);
+    // 没人跟她说话、她自己开的口 = 主动找他。记下来，下一刻提醒她（他没回就别追着问）
+  if (didSay.length && !now.ev.some(e => /说：/.test(e.text))) W.lastProactive = { t: Date.now(), text: didSay.join(' / '), answered: false };
+  log(`🧠 ${why} ${Date.now() - t0}ms｜说[${didSay.join(' / ')}] 做[${didDo.join(',')}]${noted.length ? ` 记[${noted.join(',')}]` : ''}｜轮次：${rounds.join(' → ') || '无'}`);
     mem.save();
     if (historyChars() > CFG.maxHistoryChars) {
       try { await sleepAndSort({ internal: true }); } catch (e2) { log(`😴 整理记忆失败：${e2.message}`); }
@@ -789,6 +800,17 @@ async function think (why) {
     W.stats.thinks++; W.stats.llmMs += Date.now() - t0;
   }
   if (W.pending.length) scheduleThink(CFG.debounceMs);
+}
+
+/** 他上线那一刻她的心情（只是提示，怎么说还是她自己定） */
+const JOIN_MOODS = [
+  [0.45, '（你这会儿懒得开口，看他一眼就好，不用说话）'],
+  [0.25, '（想扣个「？」给他，就一个问号）'],
+  [0.30, '（随口招呼一下就行，一两个字，别每次都一样）'],
+];
+function pickJoinMood (r = Math.random()) {
+  for (const [p, t] of JOIN_MOODS) { if (r < p) return t; r -= p; }
+  return JOIN_MOODS[0][1];
 }
 
 function clipText (s, max = 1800) { return s.length > max ? s.slice(0, max) + '…' : s; }
@@ -1251,4 +1273,4 @@ if (require.main === module) {
   else main();
 }
 
-module.exports = { W, emit, think, buildNow, matchFast, humanState, learnFromDoing };
+module.exports = { W, emit, think, buildNow, matchFast, humanState, learnFromDoing, SYSTEM, SPECS };   // SYSTEM/SPECS 给 scripts/dialogue-eval.js 离线跑分用
