@@ -270,11 +270,8 @@ function checkVanilla (rows, mcData) {
 }
 
 /** 与 palette-registry.js 的内置锚点对齐，做一次"导入前预演"。 */
-function checkAnchors (rows) {
-  const anchors = [
-    { blockId: 14286, stateId: 506805, name: 'cluttered:ancient_codex' },
-    { blockId: 15061, stateId: 522768, name: 'upgrade_aquatic:glass_trapdoor' },
-  ];
+function checkAnchors (rows, anchors = require('../palette-registry.js').parseAnchors(process.env.MC_PALETTE_ANCHORS)) {
+  // 和桥接导入用同一份锚点（以前这里抄了一份，加模组后两边会不同步）；配了 MC_PALETTE_ANCHORS 就用配的
   const byBlockId = new Map(rows.map((r) => [r.blockId, r]));
   const out = [];
   for (const a of anchors) {
@@ -631,9 +628,11 @@ function selftest () {
   }
 
   // 8) 锚点预演：state 落在区间内即可，不要求等于 first
-  const an = checkAnchors([{ blockId: 14286, first: 506805, count: 8, name: 'cluttered:ancient_codex' }]);
+  // 锚点显式传入：这里测的是"命中/偏移"的判断，不绑具体数值（真实锚点加模组后会重测）
+  const A = [{ blockId: 14286, stateId: 506805, name: 'cluttered:ancient_codex' }];
+  const an = checkAnchors([{ blockId: 14286, first: 506805, count: 8, name: 'cluttered:ancient_codex' }], A);
   ok('锚点命中区间', an[0].found && an[0].inRange && an[0].delta === 0);
-  const an2 = checkAnchors([{ blockId: 14286, first: 506800, count: 2, name: 'x' }]);
+  const an2 = checkAnchors([{ blockId: 14286, first: 506800, count: 2, name: 'x' }], A);
   ok('锚点落在区间外能报偏移', an2[0].inRange === false && an2[0].delta === 5);
 
   console.log(`\nangelpal-to-palette 自测：${pass} 通过 / ${fail} 失败`);

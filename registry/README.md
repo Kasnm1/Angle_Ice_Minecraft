@@ -250,7 +250,7 @@ Matrix4f, Quaternionf, RotationAxis, BlockPos, DamageSource, SoundType, BlockPro
 |---|---|
 | `stone` | `.`（整格） |
 | `air` | `-`（无碰撞） |
-| `ladder` | `0:0:0:0.8125:1:1`（3/16 厚） |
+| `ladder` | `0:0:0.8125:1:1:1`（默认朝北，贴北侧 3/16 厚；顺序 minX:minY:minZ:maxX:maxY:maxZ） |
 
 这一串里任何一个可读名没被 `jsmappings` 接上，都会在**每个 state 上**抛异常 ——
 结果是"导出了一份形状全是 `?` 的 dump"，看起来跑完了、其实白跑，还得多重启一次客户端。

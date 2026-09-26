@@ -225,13 +225,15 @@ function angelPropSpec (def) {
  * 期望值来自 minecraft-data 的原版数据（离线核对过）：
  *   stone  → `.`（整格）
  *   air    → `-`（无碰撞）
- *   ladder → `0:0:0:0.8125:1:1`（3/16 厚；**必须带 level** 才是这个值）
+ *   ladder → `0:0:0.8125:1:1:1`（默认朝北，贴在北侧 3/16 厚：原版 LadderBlock.NORTH_AABB = box(0,0,13,16,16,16)；
+ *            编码顺序是 minX:minY:minZ:maxX:maxY:maxZ。以前这里写成 0:0:0:0.8125:1:1 是抄错了 ——
+ *            2026-09-26 实测探针拿到的正是 0:0:0.8125:1:1:1，被错的期望值拦下、整份 dump 白跑）
  */
 function angelProbe (level, reg, pos) {
   var cases = [
     ['stone', '.'],
     ['air', '-'],
-    ['ladder', '0:0:0:0.8125:1:1']
+    ['ladder', '0:0:0.8125:1:1:1']
   ]
   var out = []
   var ok = true

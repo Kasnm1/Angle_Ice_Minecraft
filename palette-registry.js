@@ -183,11 +183,14 @@ const DYNAMIC_SHAPE_GUESS_RE =
  * **锚点越多越硬**，而且它们互相独立 —— 一个锚点只能证明"它前面那一段的和"对了。
  */
 const DEFAULT_ANCHORS = [
-  // cluttered:ancient_codex —— 玩家 F3 实测（也是"她撞上透明墙"那次的主角）
-  { blockId: 14286, stateId: 506805, name: 'cluttered:ancient_codex' },
-  // upgrade_aquatic:glass_trapdoor —— 玩家 F3 实测；open:false→true 相差 4，
-  // 与 facing(4)×half(2)×open(2)×powered(2)×waterlogged(2) 的混合进制展开吻合
-  { blockId: 15061, stateId: 522768, name: 'upgrade_aquatic:glass_trapdoor' },
+  // ⚠️ 加/删/升级模组后方块 state 会整体平移，锚点必须重测（ADD-MODS-REBUILD.md 第 5 节）。
+  // 2026-09-26 加机械动力后重测：不用 F3，直接取服务端区块数据里的真实 state（她出生点附近的自然地形），
+  // 用新调色板反查译名与地形吻合才采用（旧调色板把同一批 state 译成悬空的石墙/楼梯）。
+  // natures_spirit:tall_oat_grass 下半株（half=lower 是第 1 个 state），(-27,128,-19)；上面 y=129 正好是 219728（上半株）
+  { blockId: 4439, stateId: 219729, name: 'natures_spirit:tall_oat_grass' },
+  // natures_spirit:orange_maple_leaves，(17,128,25)，一棵树上 229072–229084 一簇
+  { blockId: 4776, stateId: 229072, name: 'natures_spirit:orange_maple_leaves' },
+  // 旧锚点（加机械动力之前，玩家 F3 实测）：cluttered:ancient_codex 14286=506805、upgrade_aquatic:glass_trapdoor 15061=522768 —— 已过期
 ];
 
 /** 解析 `MC_PALETTE_ANCHORS`：`14286=506805,15061=522768` → 锚点数组。 */

@@ -1,30 +1,30 @@
 {
- "capturedAt": "2026-09-25T17:17:26.974Z",
+ "capturedAt": "2026-09-26T10:40:14.875Z",
  "registry": "minecraft:menu",
  "entries": [
   [
    "adorablehamsterpets:hamster_inventory",
-   219
+   222
   ],
   [
    "alexscaves:nuclear_furnace_menu",
-   313
+   331
   ],
   [
    "alexscaves:spelunkery_table_menu",
-   312
+   330
   ],
   [
    "alexsmobs:transmutation_table",
-   202
+   205
   ],
   [
    "amendments:lectern_edit",
-   242
+   383
   ],
   [
    "aquaculture:tackle_box",
-   195
+   198
   ],
   [
    "armamentarium:keystone_ui_adam",
@@ -40,7 +40,7 @@
   ],
   [
    "ars_nouveau:storage_lectern",
-   196
+   199
   ],
   [
    "astikorcarts:plow",
@@ -48,15 +48,15 @@
   ],
   [
    "beachparty:mini_fridge_gui_handler",
-   230
+   233
   ],
   [
    "beachparty:tiki_bar_gui_handler",
-   229
+   232
   ],
   [
    "bosschongsheng:boss_respawn_config",
-   194
+   197
   ],
   [
    "bosses_delight:soul_cooking_pot",
@@ -64,7 +64,7 @@
   ],
   [
    "bountiful:board",
-   213
+   216
   ],
   [
    "bountifulfares:gristmill_screen_handler",
@@ -76,7 +76,7 @@
   ],
   [
    "candlelight:letter_screen",
-   228
+   231
   ],
   [
    "cataclysm:weapon_fusion",
@@ -88,39 +88,39 @@
   ],
   [
    "cookingforblockheads:cooking_table",
-   344
+   362
   ],
   [
    "cookingforblockheads:counter",
-   339
+   357
   ],
   [
    "cookingforblockheads:crafting_book",
-   347
+   365
   ],
   [
    "cookingforblockheads:fridge",
-   340
+   358
   ],
   [
    "cookingforblockheads:fruit_basket",
-   341
+   359
   ],
   [
    "cookingforblockheads:no_filter_book",
-   345
+   363
   ],
   [
    "cookingforblockheads:oven",
-   342
+   360
   ],
   [
    "cookingforblockheads:recipe_book",
-   346
+   364
   ],
   [
    "cookingforblockheads:spice_rack",
-   343
+   361
   ],
   [
    "cosmeticarmorreworked:inventorycosarmor",
@@ -140,7 +140,83 @@
   ],
   [
    "crabbersdelight:crab_trap_menu",
-   366
+   385
+  ],
+  [
+   "create:attribute_filter",
+   255
+  ],
+  [
+   "create:crafting_blueprint",
+   257
+  ],
+  [
+   "create:factory_panel_set_item",
+   265
+  ],
+  [
+   "create:filter",
+   254
+  ],
+  [
+   "create:linked_controller",
+   258
+  ],
+  [
+   "create:package_filter",
+   256
+  ],
+  [
+   "create:package_port",
+   263
+  ],
+  [
+   "create:redstone_requester",
+   264
+  ],
+  [
+   "create:schedule",
+   260
+  ],
+  [
+   "create:schematic_table",
+   252
+  ],
+  [
+   "create:schematicannon",
+   253
+  ],
+  [
+   "create:stock_keeper_category",
+   261
+  ],
+  [
+   "create:stock_keeper_request",
+   262
+  ],
+  [
+   "create:toolbox",
+   259
+  ],
+  [
+   "create_central_kitchen:cooking_guide",
+   266
+  ],
+  [
+   "create_central_kitchen:miners_cooking_guide",
+   267
+  ],
+  [
+   "create_enchantment_industry:enchanting_guide_for_blaze",
+   130
+  ],
+  [
+   "createoreexcavation:vein_atlas",
+   194
+  ],
+  [
+   "createutilities:void_chest",
+   195
   ],
   [
    "creativecore:container",
@@ -148,15 +224,15 @@
   ],
   [
    "crockpot:crock_pot",
-   192
+   193
   ],
   [
    "curios:curios_container",
-   168
+   169
   ],
   [
    "curios:curios_container_v2",
-   169
+   170
   ],
   [
    "cyberspace:cyberspace_terminal_cmd_gui",
@@ -184,7 +260,7 @@
   ],
   [
    "delighto_flight:cook_book",
-   206
+   209
   ],
   [
    "dimensional_stomach:blue_stomach_menu",
@@ -200,15 +276,15 @@
   ],
   [
    "drinkbeer:beer_barrel_container",
-   130
-  ],
-  [
-   "drinkbeer:trade_box_normal_container",
    131
   ],
   [
+   "drinkbeer:trade_box_normal_container",
+   132
+  ],
+  [
    "dungeonsdelight:monster_pot",
-   207
+   210
   ],
   [
    "eeeabsmobs:animation_controller",
@@ -224,19 +300,19 @@
   ],
   [
    "enigmaticaddons:antique_bag_menu",
-   348
+   366
   ],
   [
    "enigmaticaddons:artificial_flower_menu",
-   349
+   367
   ],
   [
    "enigmaticdelicacy:etherium_stove_menu",
-   350
+   368
   ],
   [
    "enigmaticlegacy:lore_inscriber_container",
-   215
+   218
   ],
   [
    "enlightened_end:nuclear_furnace_screen",
@@ -244,11 +320,11 @@
   ],
   [
    "etcetera:prickly_can",
-   365
+   384
   ],
   [
    "expandedstorage:handler_type",
-   214
+   217
   ],
   [
    "exposure:album",
@@ -280,19 +356,19 @@
   ],
   [
    "farm_and_charm:cooking_pot_gui_handler",
-   223
+   226
   ],
   [
    "farm_and_charm:roaster_gui_handler",
-   224
+   227
   ],
   [
    "farm_and_charm:stove_gui_handler",
-   222
+   225
   ],
   [
    "farmersdelight:cooking_pot",
-   205
+   208
   ],
   [
    "farmersrespite:kettle",
@@ -300,7 +376,7 @@
   ],
   [
    "fishermens_trap:fishtrap_menu",
-   240
+   243
   ],
   [
    "galosphere:combustion_table",
@@ -312,11 +388,11 @@
   ],
   [
    "herbalbrews:cauldron_gui_handler",
-   221
+   224
   ],
   [
    "herbalbrews:tea_kettle_gui_handler",
-   220
+   223
   ],
   [
    "immortalers_delight:enchantal_cooler_menu",
@@ -328,67 +404,67 @@
   ],
   [
    "ironfurnaces:allthemodium_furnace",
-   159
-  ],
-  [
-   "ironfurnaces:copper_furnace",
-   157
-  ],
-  [
-   "ironfurnaces:crystal_furnace",
-   155
-  ],
-  [
-   "ironfurnaces:diamond_furnace",
-   152
-  ],
-  [
-   "ironfurnaces:emerald_furnace",
-   153
-  ],
-  [
-   "ironfurnaces:gold_furnace",
-   151
-  ],
-  [
-   "ironfurnaces:heater",
-   162
-  ],
-  [
-   "ironfurnaces:iron_furnace",
-   150
-  ],
-  [
-   "ironfurnaces:million_furnace",
-   163
-  ],
-  [
-   "ironfurnaces:netherite_furnace",
-   156
-  ],
-  [
-   "ironfurnaces:obsidian_furnace",
-   154
-  ],
-  [
-   "ironfurnaces:silver_furnace",
-   158
-  ],
-  [
-   "ironfurnaces:unobtainium_furnace",
-   161
-  ],
-  [
-   "ironfurnaces:vibranium_furnace",
    160
   ],
   [
+   "ironfurnaces:copper_furnace",
+   158
+  ],
+  [
+   "ironfurnaces:crystal_furnace",
+   156
+  ],
+  [
+   "ironfurnaces:diamond_furnace",
+   153
+  ],
+  [
+   "ironfurnaces:emerald_furnace",
+   154
+  ],
+  [
+   "ironfurnaces:gold_furnace",
+   152
+  ],
+  [
+   "ironfurnaces:heater",
+   163
+  ],
+  [
+   "ironfurnaces:iron_furnace",
+   151
+  ],
+  [
+   "ironfurnaces:million_furnace",
+   164
+  ],
+  [
+   "ironfurnaces:netherite_furnace",
+   157
+  ],
+  [
+   "ironfurnaces:obsidian_furnace",
+   155
+  ],
+  [
+   "ironfurnaces:silver_furnace",
+   159
+  ],
+  [
+   "ironfurnaces:unobtainium_furnace",
+   162
+  ],
+  [
+   "ironfurnaces:vibranium_furnace",
+   161
+  ],
+  [
    "itemfilters:inventory_filter",
-   248
+   250
   ],
   [
    "kaleidoscope_doll:computer",
-   144
+   145
   ],
   [
    "kitchenkarrot:air_compressor",
@@ -404,123 +480,123 @@
   ],
   [
    "kubejs:menu",
-   236
-  ],
-  [
-   "lightmanscurrency:atm",
-   171
-  ],
-  [
-   "lightmanscurrency:atm_card",
-   191
-  ],
-  [
-   "lightmanscurrency:coin_chest",
-   186
-  ],
-  [
-   "lightmanscurrency:coin_management",
-   188
-  ],
-  [
-   "lightmanscurrency:coinmint",
-   172
-  ],
-  [
-   "lightmanscurrency:gacha_machine",
-   178
-  ],
-  [
-   "lightmanscurrency:network_terminal",
-   173
-  ],
-  [
-   "lightmanscurrency:notifications",
-   190
-  ],
-  [
-   "lightmanscurrency:player_trading",
-   185
-  ],
-  [
-   "lightmanscurrency:slot_machine",
-   177
-  ],
-  [
-   "lightmanscurrency:tax_collector",
-   187
-  ],
-  [
-   "lightmanscurrency:team_management",
-   189
-  ],
-  [
-   "lightmanscurrency:ticket_machine",
-   182
-  ],
-  [
-   "lightmanscurrency:trader",
-   174
-  ],
-  [
-   "lightmanscurrency:trader_block",
-   175
-  ],
-  [
-   "lightmanscurrency:trader_interface",
-   183
-  ],
-  [
-   "lightmanscurrency:trader_network_all",
-   176
-  ],
-  [
-   "lightmanscurrency:trader_recovery",
-   184
-  ],
-  [
-   "lightmanscurrency:trader_storage",
-   179
-  ],
-  [
-   "lightmanscurrency:wallet",
-   180
-  ],
-  [
-   "lightmanscurrency:wallet_bank",
-   181
-  ],
-  [
-   "ltc2:flavouring_table",
    239
   ],
   [
+   "lightmanscurrency:atm",
+   172
+  ],
+  [
+   "lightmanscurrency:atm_card",
+   192
+  ],
+  [
+   "lightmanscurrency:coin_chest",
+   187
+  ],
+  [
+   "lightmanscurrency:coin_management",
+   189
+  ],
+  [
+   "lightmanscurrency:coinmint",
+   173
+  ],
+  [
+   "lightmanscurrency:gacha_machine",
+   179
+  ],
+  [
+   "lightmanscurrency:network_terminal",
+   174
+  ],
+  [
+   "lightmanscurrency:notifications",
+   191
+  ],
+  [
+   "lightmanscurrency:player_trading",
+   186
+  ],
+  [
+   "lightmanscurrency:slot_machine",
+   178
+  ],
+  [
+   "lightmanscurrency:tax_collector",
+   188
+  ],
+  [
+   "lightmanscurrency:team_management",
+   190
+  ],
+  [
+   "lightmanscurrency:ticket_machine",
+   183
+  ],
+  [
+   "lightmanscurrency:trader",
+   175
+  ],
+  [
+   "lightmanscurrency:trader_block",
+   176
+  ],
+  [
+   "lightmanscurrency:trader_interface",
+   184
+  ],
+  [
+   "lightmanscurrency:trader_network_all",
+   177
+  ],
+  [
+   "lightmanscurrency:trader_recovery",
+   185
+  ],
+  [
+   "lightmanscurrency:trader_storage",
+   180
+  ],
+  [
+   "lightmanscurrency:wallet",
+   181
+  ],
+  [
+   "lightmanscurrency:wallet_bank",
+   182
+  ],
+  [
+   "ltc2:flavouring_table",
+   242
+  ],
+  [
    "ltc2:latiao_oven",
-   237
+   240
   ],
   [
    "ltc2:mill",
-   238
+   241
   ],
   [
    "makit_better:active_armor_storage_menu",
-   201
+   204
   ],
   [
    "makit_better:titanium_anvil_menu",
-   200
+   203
   ],
   [
    "meadow:cheese_form",
-   226
+   229
   ],
   [
    "meadow:cooking_cauldron",
-   225
+   228
   ],
   [
    "meadow:woodcutter",
-   227
+   230
   ],
   [
    "minecraft:anvil",
@@ -624,235 +700,235 @@
   ],
   [
    "more_critters:cannon_gui",
-   285
-  ],
-  [
-   "more_critters:carrybug_gui",
-   255
-  ],
-  [
-   "more_critters:critter_atlas_armossillo",
-   300
-  ],
-  [
-   "more_critters:critter_atlas_armossillo_2",
-   301
-  ],
-  [
-   "more_critters:critter_atlas_avoider",
-   277
-  ],
-  [
-   "more_critters:critter_atlas_avoider_2",
-   278
-  ],
-  [
-   "more_critters:critter_atlas_balloon_rat",
-   268
-  ],
-  [
-   "more_critters:critter_atlas_balloon_rat_2",
-   269
-  ],
-  [
-   "more_critters:critter_atlas_blubberfish",
-   280
-  ],
-  [
-   "more_critters:critter_atlas_blubberfish_2",
-   307
-  ],
-  [
-   "more_critters:critter_atlas_bomb_jelly",
-   276
-  ],
-  [
-   "more_critters:critter_atlas_bouncelizard",
-   265
-  ],
-  [
-   "more_critters:critter_atlas_bunbug",
-   258
-  ],
-  [
-   "more_critters:critter_atlas_bunbug_2",
-   297
-  ],
-  [
-   "more_critters:critter_atlas_corpse_crew",
-   294
-  ],
-  [
-   "more_critters:critter_atlas_corpse_crew_2",
-   295
-  ],
-  [
-   "more_critters:critter_atlas_corpse_crew_3",
-   296
-  ],
-  [
-   "more_critters:critter_atlas_corpse_crew_4",
-   308
-  ],
-  [
-   "more_critters:critter_atlas_creeblossom",
-   263
-  ],
-  [
-   "more_critters:critter_atlas_creeblossom_2",
-   264
-  ],
-  [
-   "more_critters:critter_atlas_critterlings",
-   310
-  ],
-  [
-   "more_critters:critter_atlas_critterlings_2",
-   311
-  ],
-  [
-   "more_critters:critter_atlas_custodian",
-   305
-  ],
-  [
-   "more_critters:critter_atlas_custodian_2",
-   306
-  ],
-  [
-   "more_critters:critter_atlas_dripper",
-   304
-  ],
-  [
-   "more_critters:critter_atlas_gravedigger",
-   298
-  ],
-  [
-   "more_critters:critter_atlas_gravedigger_2",
-   299
-  ],
-  [
-   "more_critters:critter_atlas_iropod",
-   279
-  ],
-  [
-   "more_critters:critter_atlas_kelpire",
-   281
-  ],
-  [
-   "more_critters:critter_atlas_mightshroom",
-   273
-  ],
-  [
-   "more_critters:critter_atlas_mightshroom_2",
-   274
-  ],
-  [
-   "more_critters:critter_atlas_mightshroom_3",
-   275
-  ],
-  [
-   "more_critters:critter_atlas_nauticrawl",
-   282
-  ],
-  [
-   "more_critters:critter_atlas_nauticrawl_2",
-   283
-  ],
-  [
-   "more_critters:critter_atlas_nervoid",
-   292
-  ],
-  [
-   "more_critters:critter_atlas_nervoid_2",
-   293
-  ],
-  [
-   "more_critters:critter_atlas_ramchu",
-   302
-  ],
-  [
-   "more_critters:critter_atlas_ramchu_2",
    303
   ],
   [
-   "more_critters:critter_atlas_root_page",
-   257
+   "more_critters:carrybug_gui",
+   273
   ],
   [
-   "more_critters:critter_atlas_root_page_2",
-   287
+   "more_critters:critter_atlas_armossillo",
+   318
   ],
   [
-   "more_critters:critter_atlas_shadelet",
-   288
+   "more_critters:critter_atlas_armossillo_2",
+   319
   ],
   [
-   "more_critters:critter_atlas_shadelet_2",
-   289
+   "more_critters:critter_atlas_avoider",
+   295
   ],
   [
-   "more_critters:critter_atlas_shimmerwing",
-   272
+   "more_critters:critter_atlas_avoider_2",
+   296
   ],
   [
-   "more_critters:critter_atlas_shimmerwing_2",
-   284
-  ],
-  [
-   "more_critters:critter_atlas_shriekbat",
-   261
-  ],
-  [
-   "more_critters:critter_atlas_shriekbat_2",
-   262
-  ],
-  [
-   "more_critters:critter_atlas_snowflake_spider",
-   259
-  ],
-  [
-   "more_critters:critter_atlas_snowflake_spider_2",
-   260
-  ],
-  [
-   "more_critters:critter_atlas_stincarp",
-   266
-  ],
-  [
-   "more_critters:critter_atlas_stincarp_2",
-   267
-  ],
-  [
-   "more_critters:critter_atlas_treeplet",
-   290
-  ],
-  [
-   "more_critters:critter_atlas_treeplet_2",
-   291
-  ],
-  [
-   "more_critters:critter_atlas_view",
-   256
-  ],
-  [
-   "more_critters:critter_atlas_warptrap",
-   270
-  ],
-  [
-   "more_critters:critter_atlas_warptrap_2",
-   271
-  ],
-  [
-   "more_critters:evolution_table_gui",
-   309
-  ],
-  [
-   "more_critters:treasure_chest_gui",
+   "more_critters:critter_atlas_balloon_rat",
    286
   ],
   [
+   "more_critters:critter_atlas_balloon_rat_2",
+   287
+  ],
+  [
+   "more_critters:critter_atlas_blubberfish",
+   298
+  ],
+  [
+   "more_critters:critter_atlas_blubberfish_2",
+   325
+  ],
+  [
+   "more_critters:critter_atlas_bomb_jelly",
+   294
+  ],
+  [
+   "more_critters:critter_atlas_bouncelizard",
+   283
+  ],
+  [
+   "more_critters:critter_atlas_bunbug",
+   276
+  ],
+  [
+   "more_critters:critter_atlas_bunbug_2",
+   315
+  ],
+  [
+   "more_critters:critter_atlas_corpse_crew",
+   312
+  ],
+  [
+   "more_critters:critter_atlas_corpse_crew_2",
+   313
+  ],
+  [
+   "more_critters:critter_atlas_corpse_crew_3",
+   314
+  ],
+  [
+   "more_critters:critter_atlas_corpse_crew_4",
+   326
+  ],
+  [
+   "more_critters:critter_atlas_creeblossom",
+   281
+  ],
+  [
+   "more_critters:critter_atlas_creeblossom_2",
+   282
+  ],
+  [
+   "more_critters:critter_atlas_critterlings",
+   328
+  ],
+  [
+   "more_critters:critter_atlas_critterlings_2",
+   329
+  ],
+  [
+   "more_critters:critter_atlas_custodian",
+   323
+  ],
+  [
+   "more_critters:critter_atlas_custodian_2",
+   324
+  ],
+  [
+   "more_critters:critter_atlas_dripper",
+   322
+  ],
+  [
+   "more_critters:critter_atlas_gravedigger",
+   316
+  ],
+  [
+   "more_critters:critter_atlas_gravedigger_2",
+   317
+  ],
+  [
+   "more_critters:critter_atlas_iropod",
+   297
+  ],
+  [
+   "more_critters:critter_atlas_kelpire",
+   299
+  ],
+  [
+   "more_critters:critter_atlas_mightshroom",
+   291
+  ],
+  [
+   "more_critters:critter_atlas_mightshroom_2",
+   292
+  ],
+  [
+   "more_critters:critter_atlas_mightshroom_3",
+   293
+  ],
+  [
+   "more_critters:critter_atlas_nauticrawl",
+   300
+  ],
+  [
+   "more_critters:critter_atlas_nauticrawl_2",
+   301
+  ],
+  [
+   "more_critters:critter_atlas_nervoid",
+   310
+  ],
+  [
+   "more_critters:critter_atlas_nervoid_2",
+   311
+  ],
+  [
+   "more_critters:critter_atlas_ramchu",
+   320
+  ],
+  [
+   "more_critters:critter_atlas_ramchu_2",
+   321
+  ],
+  [
+   "more_critters:critter_atlas_root_page",
+   275
+  ],
+  [
+   "more_critters:critter_atlas_root_page_2",
+   305
+  ],
+  [
+   "more_critters:critter_atlas_shadelet",
+   306
+  ],
+  [
+   "more_critters:critter_atlas_shadelet_2",
+   307
+  ],
+  [
+   "more_critters:critter_atlas_shimmerwing",
+   290
+  ],
+  [
+   "more_critters:critter_atlas_shimmerwing_2",
+   302
+  ],
+  [
+   "more_critters:critter_atlas_shriekbat",
+   279
+  ],
+  [
+   "more_critters:critter_atlas_shriekbat_2",
+   280
+  ],
+  [
+   "more_critters:critter_atlas_snowflake_spider",
+   277
+  ],
+  [
+   "more_critters:critter_atlas_snowflake_spider_2",
+   278
+  ],
+  [
+   "more_critters:critter_atlas_stincarp",
+   284
+  ],
+  [
+   "more_critters:critter_atlas_stincarp_2",
+   285
+  ],
+  [
+   "more_critters:critter_atlas_treeplet",
+   308
+  ],
+  [
+   "more_critters:critter_atlas_treeplet_2",
+   309
+  ],
+  [
+   "more_critters:critter_atlas_view",
+   274
+  ],
+  [
+   "more_critters:critter_atlas_warptrap",
+   288
+  ],
+  [
+   "more_critters:critter_atlas_warptrap_2",
+   289
+  ],
+  [
+   "more_critters:evolution_table_gui",
+   327
+  ],
+  [
+   "more_critters:treasure_chest_gui",
+   304
+  ],
+  [
    "more_critters:wandering_trader_gui",
-   254
+   272
   ],
   [
    "muffins_thaidelight:mortar",
@@ -860,15 +936,15 @@
   ],
   [
    "netmusic:cd_burner",
-   197
+   200
   ],
   [
    "netmusic:computer",
-   198
+   201
   ],
   [
    "netmusic:maid_music_player_backpack",
-   199
+   202
   ],
   [
    "nsprefab:structure_browser_menu",
@@ -908,31 +984,31 @@
   ],
   [
    "papercraft_magic_decoration:bunny_suitcase",
-   137
-  ],
-  [
-   "papercraft_magic_decoration:cocktail_recipe_book_ui",
    138
   ],
   [
+   "papercraft_magic_decoration:cocktail_recipe_book_ui",
+   139
+  ],
+  [
    "papercraft_magic_decoration:copper_bartender_ui",
-   135
+   136
   ],
   [
    "papercraft_magic_decoration:inside_the_dirt_hole",
-   134
+   135
   ],
   [
    "papercraft_magic_decoration:kazi_lucky_cat_tank",
-   133
+   134
   ],
   [
    "papercraft_magic_decoration:lobby_boy_backpack",
-   132
+   133
   ],
   [
    "papercraft_magic_decoration:the_name_tap",
-   136
+   137
   ],
   [
    "pasterdream:blueprint_gui_0",
@@ -1012,7 +1088,7 @@
   ],
   [
    "polaristrading:shop_block",
-   241
+   244
   ],
   [
    "powerful_dummy:test_dummy_menu",
@@ -1020,147 +1096,147 @@
   ],
   [
    "quark:backpack",
-   351
+   369
   ],
   [
    "quark:crafter",
-   352
+   370
   ],
   [
    "quark:crate",
-   353
+   371
   ],
   [
    "quark:feeding_trough",
-   355
+   373
   ],
   [
    "quark:held_shulker_box",
-   354
+   372
   ],
   [
    "quark:matrix_enchanting",
-   356
+   374
   ],
   [
    "refinedcooking:kitchen_access_point",
-   314
-  ],
-  [
-   "refinedstorage:constructor",
    332
   ],
   [
+   "refinedstorage:constructor",
+   350
+  ],
+  [
    "refinedstorage:controller",
-   315
-  ],
-  [
-   "refinedstorage:crafter",
-   335
-  ],
-  [
-   "refinedstorage:crafter_manager",
-   336
-  ],
-  [
-   "refinedstorage:crafting_monitor",
-   337
-  ],
-  [
-   "refinedstorage:destructor",
    333
   ],
   [
+   "refinedstorage:crafter",
+   353
+  ],
+  [
+   "refinedstorage:crafter_manager",
+   354
+  ],
+  [
+   "refinedstorage:crafting_monitor",
+   355
+  ],
+  [
+   "refinedstorage:destructor",
+   351
+  ],
+  [
    "refinedstorage:detector",
-   317
+   335
   ],
   [
    "refinedstorage:disk_drive",
-   324
+   342
   ],
   [
    "refinedstorage:disk_manipulator",
-   334
+   352
   ],
   [
    "refinedstorage:exporter",
-   318
+   336
   ],
   [
    "refinedstorage:external_storage",
-   319
+   337
   ],
   [
    "refinedstorage:filter",
-   320
-  ],
-  [
-   "refinedstorage:fluid_interface",
-   329
-  ],
-  [
-   "refinedstorage:fluid_storage_block",
-   326
-  ],
-  [
-   "refinedstorage:grid",
-   316
-  ],
-  [
-   "refinedstorage:importer",
-   321
-  ],
-  [
-   "refinedstorage:interface",
-   328
-  ],
-  [
-   "refinedstorage:network_transmitter",
-   322
-  ],
-  [
-   "refinedstorage:relay",
-   323
-  ],
-  [
-   "refinedstorage:security_manager",
-   327
-  ],
-  [
-   "refinedstorage:storage_block",
-   325
-  ],
-  [
-   "refinedstorage:storage_monitor",
-   331
-  ],
-  [
-   "refinedstorage:wireless_crafting_monitor",
    338
   ],
   [
+   "refinedstorage:fluid_interface",
+   347
+  ],
+  [
+   "refinedstorage:fluid_storage_block",
+   344
+  ],
+  [
+   "refinedstorage:grid",
+   334
+  ],
+  [
+   "refinedstorage:importer",
+   339
+  ],
+  [
+   "refinedstorage:interface",
+   346
+  ],
+  [
+   "refinedstorage:network_transmitter",
+   340
+  ],
+  [
+   "refinedstorage:relay",
+   341
+  ],
+  [
+   "refinedstorage:security_manager",
+   345
+  ],
+  [
+   "refinedstorage:storage_block",
+   343
+  ],
+  [
+   "refinedstorage:storage_monitor",
+   349
+  ],
+  [
+   "refinedstorage:wireless_crafting_monitor",
+   356
+  ],
+  [
    "refinedstorage:wireless_transmitter",
-   330
+   348
   ],
   [
    "rustic_engineer:abyssal_submarine_gui",
-   142
+   143
   ],
   [
    "rustic_engineer:airship_gui",
-   141
+   142
   ],
   [
    "rustic_engineer:dragon_fly_gui",
-   140
+   141
   ],
   [
    "rustic_engineer:golden_bot_chest_gui",
-   139
+   140
   ],
   [
    "rustic_engineer:spidermech_gui",
-   143
+   144
   ],
   [
    "selling_bin:selling_bin_menu",
@@ -1168,11 +1244,11 @@
   ],
   [
    "simple_cream:icecreammachinegui",
-   193
+   196
   ],
   [
    "smallships:ship_container",
-   235
+   238
   ],
   [
    "sophisticatedbackpacks:backpack",
@@ -1184,75 +1260,75 @@
   ],
   [
    "sophisticatedstorage:decoration_table",
-   247
+   249
   ],
   [
    "sophisticatedstorage:limited_barrel",
-   244
-  ],
-  [
-   "sophisticatedstorage:limited_barrel_settings",
    246
   ],
   [
+   "sophisticatedstorage:limited_barrel_settings",
+   248
+  ],
+  [
    "sophisticatedstorage:settings",
-   245
+   247
   ],
   [
    "sophisticatedstorage:storage",
-   243
+   245
   ],
   [
    "species:birtday_cake",
-   170
+   171
   ],
   [
    "starcatcher:fishing_rod_menu",
-   208
+   211
   ],
   [
    "starcatcher:stand_menu",
-   209
+   212
   ],
   [
    "starcatcher:tackle_box.png",
-   210
+   213
   ],
   [
    "supplementaries:cannon",
-   363
+   381
   ],
   [
    "supplementaries:notice_board",
-   359
+   377
   ],
   [
    "supplementaries:present",
-   357
+   375
   ],
   [
    "supplementaries:pulley_block",
-   362
+   380
   ],
   [
    "supplementaries:red_merchant",
-   364
+   382
   ],
   [
    "supplementaries:safe",
-   361
+   379
   ],
   [
    "supplementaries:trapped_present",
-   358
+   376
   ],
   [
    "supplementaries:variable_size",
-   360
+   378
   ],
   [
    "tacz:gun_smith_table_menu",
-   249
+   251
   ],
   [
    "tanukidecor:diy_workbench",
@@ -1268,19 +1344,19 @@
   ],
   [
    "terramity:ammo_bag_ui",
-   147
+   148
   ],
   [
    "terramity:blood_contract_ui",
-   146
+   147
   ],
   [
    "terramity:cardboard_box_storage",
-   145
+   146
   ],
   [
    "terramity:ocarina_of_power_ui",
-   148
+   149
   ],
   [
    "the_bumblezone:buzzing_briefcase",
@@ -1380,19 +1456,19 @@
   ],
   [
    "trashcans:energy_trash_can_container",
-   233
+   236
   ],
   [
    "trashcans:item_trash_can_container",
-   231
+   234
   ],
   [
    "trashcans:liquid_trash_can_container",
-   232
+   235
   ],
   [
    "trashcans:ultimate_trash_can_container",
-   234
+   237
   ],
   [
    "trotting_wagons:conestoga_wagon",
@@ -1404,99 +1480,99 @@
   ],
   [
    "twilightforest:uncrafting",
-   203
+   206
   ],
   [
    "ultramarine:brick_kiln",
-   373
+   392
   ],
   [
    "ultramarine:chisel_table",
-   374
+   393
   ],
   [
    "ultramarine:container_decorative_block_menu_food_9x3",
-   370
+   389
   ],
   [
    "ultramarine:container_decorative_block_menu_food_9x6",
-   371
+   390
   ],
   [
    "ultramarine:container_decorative_block_menu_generic_9x1",
-   367
+   386
   ],
   [
    "ultramarine:container_decorative_block_menu_generic_9x3",
-   368
+   387
   ],
   [
    "ultramarine:container_decorative_block_menu_generic_9x6",
-   369
+   388
   ],
   [
    "ultramarine:woodworking_workbench",
-   372
+   391
   ],
   [
    "undergardendelight:undergarden_cabinet",
-   204
+   207
   ],
   [
    "unusualend:bolok_notes",
-   165
-  ],
-  [
-   "unusualend:building_inhibitor_gui",
    166
   ],
   [
-   "unusualend:infuser_gui",
+   "unusualend:building_inhibitor_gui",
    167
   ],
   [
+   "unusualend:infuser_gui",
+   168
+  ],
+  [
    "unusualend:purpur_tank_gui",
-   164
+   165
   ],
   [
    "vinery:apple_press_gui_handler",
-   217
+   220
   ],
   [
    "vinery:basket_gui_handler",
-   218
+   221
   ],
   [
    "vinery:fermentation_barrel_gui_handler",
-   216
+   219
   ],
   [
    "vintagedelight:fermenting_menu",
-   149
+   150
   ],
   [
    "waystones:sharestone_selection",
-   251
+   269
   ],
   [
    "waystones:warp_plate",
-   252
+   270
   ],
   [
    "waystones:waystone_selection",
-   250
+   268
   ],
   [
    "waystones:waystone_settings",
-   253
+   271
   ],
   [
    "xiangcaomengjia:selling_bin_config",
-   212
+   215
   ],
   [
    "xiangcaomengjia:xiangcao_selling_bin",
-   211
+   214
   ],
   [
    "youkaishomecoming:moka_pot",
