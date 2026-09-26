@@ -2275,6 +2275,9 @@ function stripNamespace (name) {
  *   要拦的不是"挖人造方块"，而是"**拆别人的建筑**"。
  *   信息给出去，让上层自己决定。
  */
+// 背包里的原版物品名不带 minecraft: 前缀，她常写带前缀的（实测 /place /equip 都报 Not carrying，2026-09-27）
+function sameItem (have, want) { return have === want || have === String(want || '').replace(/^minecraft:/, ''); }
+
 function isPlayerBuilt (blockName) {
   if (!blockName) return null;
   const n = stripNamespace(blockName);
@@ -3930,7 +3933,7 @@ const handlers = {
       };
     }
     if (!itemName) throw new Error('itemName required（或传 auto: true）');
-    const item = state.bot.inventory.items().find(i => i.name === itemName);
+    const item = state.bot.inventory.items().find(i => sameItem(i.name, itemName));
     if (!item) throw new Error(`Not carrying ${itemName}`);
     await state.bot.equip(item, destination);
     return { equipped: itemName, itemName, destination, changed: true };
@@ -3996,7 +3999,7 @@ const handlers = {
 
     // 手里要放的方块：指定 itemName，或默认用当前手持
     const item = itemName
-      ? bot.inventory.items().find(i => i.name === itemName)
+      ? bot.inventory.items().find(i => sameItem(i.name, itemName))
       : bot.heldItem;
     if (!item) throw new Error(itemName ? `Not carrying ${itemName}` : 'Nothing in hand (pass itemName)');
     if (bot.heldItem?.name !== item.name) await bot.equip(item, 'hand');
@@ -4100,7 +4103,7 @@ const handlers = {
 
     // 要放的方块
     const item = itemName
-      ? bot.inventory.items().find(i => i.name === itemName)
+      ? bot.inventory.items().find(i => sameItem(i.name, itemName))
       : bot.heldItem;
     if (!item) throw new Error(itemName ? `Not carrying ${itemName}` : 'Nothing in hand (pass itemName)');
 
@@ -4470,7 +4473,7 @@ const handlers = {
   // 丢出 / 递给玩家。给了坐标就能"把东西还给你"。
   'POST /drop': async ({ itemName, count, playerName }) => {
     const item = itemName
-      ? state.bot.inventory.items().find(i => i.name === itemName)
+      ? state.bot.inventory.items().find(i => sameItem(i.name, itemName))
       : state.bot.heldItem;
     if (!item) throw new Error(itemName ? `Not carrying ${itemName}` : 'Nothing in hand (pass itemName)');
 

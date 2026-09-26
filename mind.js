@@ -145,6 +145,16 @@ function survivalFocus (s) {
   if ((s.health != null && s.health <= 8) || hostiles.length) {
     out.push(`保命：${s.health <= 8 ? `血只有 ${s.health}` : ''}${hostiles.length ? `${s.health <= 8 ? '，' : ''}身边 ${hostiles.length} 只怪（最近 ${hostiles[0].distance} 格）` : ''} —— 打得过就打，打不过就躲进屋/挖个洞堵上，血少先吃东西`);
   }
+  // 暗处（主人：像玩家一样别往暗处去；真要去就带火把点亮）
+  const fuel = has(/(^|:)(coal|charcoal)$/);
+  if (s.dark && !atHome) {
+    out.push(s.torches ? `脚下很暗（亮度 ${s.light?.block}）：插火把点亮（light_up）再往前` : `这里很暗又没带火把：别往里走，退回亮的地方${fuel ? '，先用煤做火把（make_torches）' : ''}`);
+  }
+  if (s.torches === 0) out.push(fuel ? '身上没火把：有煤/木炭，先做一组（make_torches）' : '身上没火把：看得见的煤矿先挖，或者原木进熔炉烧木炭 → 做火把（下矿、过夜都要用）');
+  // 家外打不过、跑不掉：垫方块自救
+  if (!atHome && hostiles.length && ((s.health != null && s.health <= 10) || hostiles.length >= 3)) {
+    out.push(`打不过就垫方块自救：原地往上垫 3 格（self_rescue mode=pillar），或者把自己四面围住（self_rescue mode=enclose）`);
+  }
   const boxes = s.unseenChests || [];
   if (boxes.length && !hostiles.length) {
     const b = boxes[0];
@@ -155,7 +165,7 @@ function survivalFocus (s) {
       ? '还没有家，身上有结构生成器（新手小屋）：挑块平地 place_structure 放下，进屋后 set_home'
       : '还没有家：先安家 —— FTB 任务书「新手小屋」点对号就送（quest_submit 新手小屋 → quest_claim 新手小屋 choice=0 森林小屋 → place_structure → set_home）；拿不到就挖进山里 1×2×2、堵住身后、插火把过夜');
   } else if (!s.isDay && !atHome) {
-    out.push('天黑了还在外面：回家（go_home）；离家太远就就地挖个洞躲一夜，别在野外乱跑');
+    out.push('天黑了还在外面：回家（go_home）；离家太远就就地垫方块把自己围起来躲一夜（self_rescue mode=enclose），别在野外乱跑');
   } else if (!s.isDay && atHome) {
     // 刚睡失败过（附近有怪 / 别人没睡…）：别反复上床（实测：睡不了就一直 上床→失败→转身→再上床，看着像原地转圈）
     const sf = W.sleepFail && Date.now() - W.sleepFail.t < 3 * 60 * 1000 ? W.sleepFail : null;
@@ -205,9 +215,9 @@ function invText (items) {
 
 async function look () {
   const safe = p => bridge.get(p, 2000).catch(() => null);
-  const [st, inv, near, pl, chat, doors, eq, seen, boxes] = await Promise.all([
+  const [st, inv, near, pl, chat, doors, eq, seen, boxes, lit] = await Promise.all([
     safe('/status'), safe('/inventory'), safe('/nearby?radius=16'), safe('/players'), safe('/chatlog?limit=30'), safe('/doors?radius=6'), safe('/equipment'),
-    safe(`/containers/seen?since=${W.seenSince || 0}`), safe('/chests/unseen?radius=24'),
+    safe(`/containers/seen?since=${W.seenSince || 0}`), safe('/chests/unseen?radius=24'), safe('/light'),
   ]);
   // 打开过的箱子：是家里的，就记住里面有什么、各有几个（像人一样，看过就大概记得）
   for (const c of seen?.seen || []) {
@@ -227,6 +237,7 @@ async function look () {
     curios: eq?.curios || null,
     backpack: eq?.backpack || null,
     unseenChests: boxes?.chests || [],
+    light: lit?.light || null, dark: !!lit?.dark, torches: lit?.torches ?? null,
   };
   // 视线里冒出没开过的箱子/木桶：马上告诉她（主人：优先级高，看见就过去）
   for (const c of W.state.unseenChests) {
@@ -660,6 +671,8 @@ const SYSTEM = `你是 Angel_ICE（安琪），住在这个 Minecraft 模组服�
 - 生存常识（这个包的真实情况）：
   · 没有 /home /spawn /back 这类传送命令；远距离回家只能靠传送石碑（waystones：两块石碑之间右键互传，不耗经验）—— 家里放一块、常去的地方放一块
   · 怪只在全黑的地方刷：家周围地面大约每 12 格插一个火把就不刷了
+  · 像玩家一样避开暗处：没火把别进洞、别往黑的地方走；要下矿、进矿洞，先带够火把（make_torches），走到哪亮到哪（light_up）
+  · 家外遇险（怪围上来、掉进坑里出不来、夜里在野外）：垫方块自救 —— 往上垫（self_rescue pillar）或把自己围住（self_rescue enclose）；身上常备一组圆石/泥土
   · 睡不了（服务器可能要多人一起睡）也别在外面过夜：待在屋里干活
   · 床 = 3 羊毛 + 3 木板；睡袋只要 3 羊毛（只能夜里用）
   · 精妙背包：身上快满先装背包；背包剩不到几格就回家 organize_storage

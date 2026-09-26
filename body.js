@@ -708,9 +708,27 @@ const TOOLS = {
   },
   delve: {
     kind: 'action',
-    desc: '像玩家一样下矿找矿：走出家门后，朝一个方向挖楼梯往下到矿石多的深度（铁 y=16、煤铜 48、金 -16、钻石红石 -58），再挖 1×2 矿道往前；挖穿到矿洞就沿着洞往下逛。路上看得见的矿都挖掉，看得见的箱子过去开。每 8 步插火把，挖开会放岩浆/水就绕开。血少/怪来了/背包满/时间到就停下告诉你，接着挖就再调一次（会记得方向）。要石镐以上才挖得到铁。target 写想找的矿（iron_ore / coal_ore / diamond_ore…）。',
+    desc: '像玩家一样下矿找矿：走出家门后，朝一个方向挖楼梯往下到矿石多的深度（铁 y=16、煤铜 48、金 -16、钻石红石 -58），再挖 1×2 矿道往前；挖穿到矿洞就沿着洞往下逛。路上看得见的矿都挖掉，看得见的箱子过去开。要带火把（没有会先用煤做，做不出来就不下去），暗了就插，火把用完就停；挖开会放岩浆/水就绕开。血少/怪来了/背包满/时间到就停下告诉你，接着挖就再调一次（会记得方向）。要石镐以上才挖得到铁。target 写想找的矿（iron_ore / coal_ore / diamond_ore…）。',
     params: { target: { type: 'string' }, targetY: { type: 'number' }, seconds: { type: 'number' } }, required: [],
     run: async ({ target, targetY, seconds }) => { const ms = Math.min(Math.max(20, seconds || 90), 240) * 1000; return bridge.post('/delve', { target, targetY, maxMs: ms, home: mem.getHome() }, ms + 60000); },
+  },
+  light_up: {
+    kind: 'action',
+    desc: '在脚边暗的地方插火把，直到够亮（火把不够会先用煤/木炭做）。进洞、下矿、家附近暗处用。',
+    params: { max: { type: 'number' } }, required: [],
+    run: async ({ max }) => bridge.post('/light_up', { max }, 60000),
+  },
+  make_torches: {
+    kind: 'action',
+    desc: '用身上的煤/木炭 + 木棍做火把（count = 想要几个，默认 16）。',
+    params: { count: { type: 'number' } }, required: [],
+    run: async ({ count }) => bridge.post('/make_torches', { count }, 60000),
+  },
+  self_rescue: {
+    kind: 'action',
+    desc: '家外遇险时垫方块自救。mode=pillar：原地往上垫 height 格（默认 3），甩开近战怪、从坑里爬出来；mode=enclose：四面两层+头顶全堵上，躲一夜/躲怪。要身上有圆石/泥土这类方块。在家里不用。',
+    params: { mode: { type: 'string', enum: ['pillar', 'enclose'] }, height: { type: 'number' } }, required: ['mode'],
+    run: async ({ mode, height }) => bridge.post('/self_rescue', { mode, height, home: mem.getHome() }, 60000),
   },
   check_chests: {
     kind: 'action',

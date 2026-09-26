@@ -2563,6 +2563,9 @@ async function delve (bot, state, { target = null, targetY = null, maxMs = 12000
   if (inHomeArea(home, bot.entity.position)) throw new Error(`在家附近（离家中心 ${home.radius} 格内）不往下挖 —— 先走远一点再挖`);
   const DIRS = [[0, -1], [1, 0], [0, 1], [-1, 0]];
   if (!D.heading) { const yaw = bot.entity.yaw; const vx = -Math.sin(yaw); const vz = -Math.cos(yaw); D.heading = Math.abs(vx) > Math.abs(vz) ? [Math.sign(vx), 0] : [0, Math.sign(vz)]; }
+  // 下矿先备火把（主人：真要去暗处，就带着火把把那里点亮）
+  const prep = await makeTorches(bot, 16);
+  if (!prep.torches) throw new Error(`没带火把，不下去（${prep.note || '做不出来'}）—— 先弄点煤/木炭做火把（煤/木炭 + 木棍 → 4 个火把）`);
   const invBefore = invCounts(bot);
   const oreSkip = new Set(); const chests = []; const log = []; let reason = null; let turns = 0; let caveMoves = 0; let dug = 0;
   const y0 = bot.entity.position.y;
@@ -2586,7 +2589,7 @@ async function delve (bot, state, { target = null, targetY = null, maxMs = 12000
         const wet = N6.map(([dx, dy, dz]) => bot.blockAt(ore.position.offset(dx, dy, dz))).find(isLiquid);
         if (wet) { log.push(`${ore.name} 旁边有${/lava/.test(wet.name) ? '岩浆' : '水'}，没挖`); continue; }
         const r = await digBlock(bot, ore).catch(e => ({ ok: false, why: e.message }));
-        if (r.ok) { dug++; await collectDrops(bot, 5); } else { log.push(r.why); if (r.needTool) { reason = r.why; break; } }
+        if (r.ok) { dug++; await collectDrops(bot, 5); if (/coal/.test(ore.name) && torchCount(bot) < 16) await makeTorches(bot, 16); } else { log.push(r.why); if (r.needTool) { reason = r.why; break; } }
       }
       continue;
     }
@@ -2594,7 +2597,7 @@ async function delve (bot, state, { target = null, targetY = null, maxMs = 12000
     // 3. 在矿洞里：逛
     if (inCave(bot) && caveMoves < 12) {
       const m = await caveStep(bot, D, ty);
-      if (m) { caveMoves++; log.push(`矿洞里走到 (${m.to.x},${m.to.y},${m.to.z})`); continue; }
+      if (m) { caveMoves++; log.push(`矿洞里走到 (${m.to.x},${m.to.y},${m.to.z})`); const lu = await lightUp(bot, { max: 2 }); if (lu.placed) log.push(`矿洞里插了 ${lu.placed} 个火把`); continue; }
     }
 
     // 4. 挖楼梯往下 / 挖矿道往前
@@ -2627,21 +2630,137 @@ async function delve (bot, state, { target = null, targetY = null, maxMs = 12000
     }
     turns = 0; D.steps++;
     D.visited.add(`${dest.x >> 2},${dest.y >> 2},${dest.z >> 2}`);
-    if (D.steps % torchEvery === 0) {
-      const torch = bot.inventory.items().find(i => /(^|:)torch$/.test(i.name));
-      const under = bot.blockAt(bot.entity.position.floored().offset(0, -1, 0));
-      if (torch && under && under.boundingBox === 'block') {
-        try { await bot.equip(torch, 'hand'); await bot.placeBlock(under, new Vec3(0, 1, 0)); log.push('插了个火把'); } catch (_) {}
-      }
-    }
+    // 脚下暗了就插（读不到亮度时每 torchEvery 步插一个）
+    const l = lightAt(bot);
+    if (l ? isDark(l) : D.steps % torchEvery === 0) { if (await placeTorchHere(bot)) log.push('插了个火把'); }
+    if (!torchItem(bot)) { reason = '火把用完了，别再往暗处挖 —— 回去补火把'; break; }
   }
   if (!reason) reason = `时间到（${Math.round((Date.now() - t0) / 1000)} 秒），可以接着挖`;
   const d = delta(invBefore, invCounts(bot));
   const p = bot.entity.position;
   return {
     ok: true, reason, at: { x: Math.floor(p.x), y: Math.floor(p.y), z: Math.floor(p.z) }, fromY: Math.floor(y0), targetY: ty,
-    heading: D.heading, steps: D.steps, oresDug: dug, gained: d.gained, chests: chests.length ? chests : undefined, log: log.slice(-8),
+    heading: D.heading, steps: D.steps, oresDug: dug, torchesLeft: torchCount(bot), gained: d.gained, chests: chests.length ? chests : undefined, log: log.slice(-8),
   };
+}
+
+// ------------------------------------------------------------------ 亮度 / 火把 / 垫方块自救
+//
+// 主人 2026-09-27：「应该像玩家一样避免前往暗处，如果真要去，就应该带着火把点亮那里。然后应该会搭方块自救（家里以外的地方）」
+
+/** 脚下那格的亮度：block = 方块光（火把等），sky = 天空光（露天白天 15）；读不到给 null */
+function lightAt (bot, pos = bot.entity.position.floored()) {
+  const b = bot.blockAt(pos);
+  if (!b || b.light == null) return null;
+  return { block: b.light, sky: b.skyLight ?? null };
+}
+// 怪物在方块光 0 的地方刷；地下没天空光，方块光 < 8 就算暗（留余量）
+const isDark = (l) => !!l && l.block < 8 && !(l.sky > 7);
+
+const torchItem = (bot) => bot.inventory.items().find(i => /(^|:)torch$/.test(i.name));
+const torchCount = (bot) => bot.inventory.items().filter(i => /(^|:)torch$/.test(i.name)).reduce((a, i) => a + i.count, 0);
+const plainTimeout = (p, ms) => Promise.race([p, sleep(ms).then(() => { throw new Error(`超时 ${ms}ms`); })]);
+
+/** 火把不够就用身上的煤/木炭 + 木棍做（背包 2×2 就能做） */
+async function makeTorches (bot, want = 8) {
+  const have = torchCount(bot);
+  if (have >= want) return { torches: have };
+  const fuel = bot.inventory.items().filter(i => /(^|:)(coal|charcoal)$/.test(i.name)).reduce((a, i) => a + i.count, 0);
+  if (!fuel) return { torches: have, note: '没有煤/木炭' };
+  const times = Math.min(fuel, Math.ceil((want - have) / 4));
+  try { await craft2(bot, { itemName: 'minecraft:torch', count: times * 4 }, plainTimeout); } catch (e) { return { torches: torchCount(bot), note: `做火把没成：${e.message}` }; }
+  return { torches: torchCount(bot), made: torchCount(bot) - have };
+}
+
+/** 在脚边插一个火把（地上，或者旁边的墙上） */
+async function placeTorchHere (bot) {
+  const t = torchItem(bot);
+  if (!t) return false;
+  const f = bot.entity.position.floored();
+  try {
+    await bot.equip(t, 'hand');
+    const under = bot.blockAt(f.offset(0, -1, 0));
+    if (under && under.boundingBox === 'block') { await bot.placeBlock(under, new Vec3(0, 1, 0)); return true; }
+    for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const wall = bot.blockAt(f.offset(dx, 1, dz));
+      if (wall && wall.boundingBox === 'block') { await bot.placeBlock(wall, new Vec3(-dx, 0, -dz)); return true; }
+    }
+  } catch (_) {}
+  return false;
+}
+
+/** 点亮身边：暗的地方插火把，直到脚下够亮或插够 max 个 */
+async function lightUp (bot, { max = 3 } = {}) {
+  let placed = 0;
+  for (let i = 0; i < max; i++) {
+    const l = lightAt(bot);
+    if (l && !isDark(l)) break;
+    if (!torchItem(bot)) break;
+    if (!await placeTorchHere(bot)) break;
+    placed++; await sleep(250);
+    if (!l) break;                       // 读不到亮度：插一个就算
+  }
+  return { placed, light: lightAt(bot), torchesLeft: torchCount(bot) };
+}
+
+// 垫脚/堵洞用的方块：不值钱、不会掉（沙子砂砾会塌，不用）
+const FILLER_RE = /(^|:)(cobblestone|cobbled_deepslate|dirt|coarse_dirt|granite|diorite|andesite|netherrack|tuff|calcite|stone|deepslate|blackstone|basalt|end_stone|mossy_cobblestone|cobbled_\w+)$/;
+const fillerItem = (bot) => bot.inventory.items().filter(i => FILLER_RE.test(i.name)).sort((a, b) => b.count - a.count)[0]
+  || bot.inventory.items().find(i => /_planks$/.test(i.name));
+
+/** 在 pos 放一个垫的方块（找旁边任意一个实心面贴上去） */
+async function placeFiller (bot, pos) {
+  if (!airish(bot.blockAt(pos))) return true;
+  const it = fillerItem(bot);
+  if (!it) throw new Error('身上没有能垫的方块（圆石/泥土/花岗岩…）');
+  await bot.equip(it, 'hand');
+  for (const [dx, dy, dz] of [[0, -1, 0], [1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1], [0, 1, 0]]) {
+    const ref = bot.blockAt(pos.offset(dx, dy, dz));
+    if (ref && ref.boundingBox === 'block') {
+      try { await bot.placeBlock(ref, new Vec3(-dx, -dy, -dz)); return true; } catch (_) {}
+    }
+  }
+  return false;
+}
+
+/**
+ * 垫方块自救（家外）：
+ *   mode=pillar  原地往上垫 height 格（跳起来往脚下放）—— 甩开僵尸/蜘蛛以外的近战怪、从坑里爬出来
+ *   mode=enclose 把自己四面两层 + 头顶都堵上（夜里在野外、打不过又跑不掉时）
+ */
+async function selfRescue (bot, state, { mode = 'pillar', height = 3, home = null } = {}) {
+  if (inHomeArea(home, bot.entity.position)) throw new Error('在家里，不往家里乱垫方块 —— 回屋关门就好');
+  if (!fillerItem(bot)) throw new Error('身上没有能垫的方块（圆石/泥土/花岗岩…），先挖点');
+  const log = []; const y0 = bot.entity.position.y;
+  bot.pathfinder?.setGoal(null); bot.clearControlStates();
+  if (mode === 'enclose') {
+    const f = bot.entity.position.floored();
+    let n = 0;
+    const cells = [];
+    for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) cells.push(f.offset(dx, 0, dz), f.offset(dx, 1, dz));
+    cells.push(f.offset(0, 2, 0));
+    for (const c of cells) { try { if (airish(bot.blockAt(c)) && await placeFiller(bot, c)) n++; } catch (e) { log.push(e.message); break; } }
+    const open = cells.filter(c => airish(bot.blockAt(c))).length;
+    if (open === 0) await lightUp(bot, { max: 1 });
+    return { ok: open === 0, mode, placed: n, stillOpen: open, log };
+  }
+  let up = 0;
+  for (let i = 0; i < Math.min(Math.max(1, height), 8); i++) {
+    const f = bot.entity.position.floored();
+    if (!airish(bot.blockAt(f.offset(0, 2, 0)))) { log.push('头顶被挡住了'); break; }
+    const it = fillerItem(bot);
+    if (!it) { log.push('垫的方块用完了'); break; }
+    await bot.equip(it, 'hand');
+    await bot.look(bot.entity.yaw, -Math.PI / 2, true);
+    bot.setControlState('jump', true);
+    const t = Date.now();
+    while (bot.entity.position.y < f.y + 1.05 && Date.now() - t < 900) await sleep(20);
+    bot.setControlState('jump', false);
+    const under = bot.blockAt(f.offset(0, -1, 0));
+    try { await bot.placeBlock(under, new Vec3(0, 1, 0)); up++; } catch (e) { log.push(`没垫上：${e.message}`); break; }
+    await sleep(300);
+  }
+  return { ok: up > 0, mode, raised: +(bot.entity.position.y - y0).toFixed(1), blocks: up, log };
 }
 
 // ------------------------------------------------------------------ 睡觉
@@ -2877,6 +2996,10 @@ function routes ({ state, withTimeout }) {
     'POST /storage/organize': async (b = {}) => organizeStorage(bot(), state, b),
     'POST /storage/loot': async (b = {}) => lootNearby(bot(), state, b),
     'POST /delve': async (b = {}) => delve(bot(), state, b),
+    'GET /light': async () => ({ light: lightAt(bot()), dark: isDark(lightAt(bot())), torches: torchCount(bot()) }),
+    'POST /light_up': async (b = {}) => { const m = await makeTorches(bot(), 4); const r = await lightUp(bot(), { max: Math.min(+b.max || 3, 8) }); return { ...r, made: m.made || 0, note: m.note }; },
+    'POST /make_torches': async (b = {}) => makeTorches(bot(), Math.min(+b.count || 16, 64)),
+    'POST /self_rescue': async (b = {}) => selfRescue(bot(), state, b),
     'GET /chests/unseen': async (_, q) => ({ chests: unseenChests(bot(), state, +q?.radius || 24).slice(0, 6).map(b => ({ at: storageKey(bot(), b), name: b.name, x: b.position.x, y: b.position.y, z: b.position.z, distance: +bot().entity.position.distanceTo(b.position).toFixed(1) })) }),
     'POST /chests/check': async (b = {}) => ({ checked: await checkChests(bot(), state, b) }),
     'POST /sleep': async (b = {}) => sleepInBed(bot(), state, b),
