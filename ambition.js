@@ -130,7 +130,32 @@ const VANILLA_STATIONS = new Set(['inventory', 'minecraft:crafting_table', 'mine
  * 评分只看"离做成还有多远"：缺几样原材料、要的工作站见没见过、原材料是不是挖/打/种得到。
  * 同样远的，优先她之前试过但没做成的（人会惦记没做成的事）—— 但失败太多次的往后放。
  */
-function candidates ({ inventory = [], knownStations = new Set(), limit = 5, chapter = null } = {}) {
+// ---- 路线图（modpack-study 算好的：每道菜的档位、步数、原材料；scripts/import-route.js 导入）
+let ROUTE = null;
+function route () {
+  if (ROUTE) return ROUTE;
+  try { ROUTE = JSON.parse(fs.readFileSync(path.join(__dirname, 'knowledge', 'route.json'), 'utf8')); } catch (_) { ROUTE = { dishes: {}, rawUse: {} }; }
+  return ROUTE;
+}
+// 档位代价：T0 徒手/工作台 < T1 原版炉子 < T2 农夫乐事系 < T3 别的模组工作站 < C 只能靠机械动力 < T4 跨维度/Boss
+const TIER_COST = { T0: 0, T1: 2, T2: 4, T3: 7, C: 10, T4: 12 };
+const TIER_ZH = { T0: '徒手或工作台', T1: '原版炉子', T2: '农夫乐事那套', T3: '别的模组工作站', C: '机械动力', T4: '要去别的维度或打 Boss' };
+
+/** 一样原材料从哪来，说人话（挖 / 打 / 钓 / 右键…） */
+function rawHow (id) {
+  const K = knowledge.load();
+  const d = K.drops.get(id) || [];
+  const act = d.find(x => x.from === 'interact'); if (act) return act.how;
+  const self = d.find(x => x.from === 'block' && x.id === id); if (self) return '直接挖';
+  const blk = d.find(x => x.from === 'block'); if (blk) return `挖${knowledge.label(blk.id).replace(/\([^)]*\)$/, '')}`;
+  const ent = d.find(x => x.from === 'entity'); if (ent) return `打${knowledge.label(ent.id).replace(/\([^)]*\)$/, '')}`;
+  if (d.some(x => x.from === 'fishing')) return '钓鱼';
+  if (d.some(x => x.from === 'chest')) return '结构箱子里翻';
+  return K.byOutput.has(id) ? '要先做' : '不知道哪来';
+}
+
+function candidates ({ inventory = [], knownStations = new Set(), limit = 5, chapter = null, allowCreate = false } = {}) {
+  const R = route();
   const K = knowledge.load();
   const A = state();
   const { items } = catalog();
@@ -166,6 +191,16 @@ function candidates ({ inventory = [], knownStations = new Set(), limit = 5, cha
       if (!best || score < best.score) best = { score, r, missing, need, stationOk, st };
     }
     if (!best) continue;
+    // 路线图：做不出来（X）、要装没装的模组（M）的不当候选；只能靠机械动力的（C）她学会操作机器之前也先不当
+    const rt = R.dishes[id];
+    if (rt) {
+      if (rt.tier === 'X' || rt.tier === 'M' || (rt.tier === 'C' && !allowCreate)) continue;
+      best.tier = rt.tier; best.depth = rt.depth; best.raw = rt.raw;
+      best.score += (TIER_COST[rt.tier] ?? 6) + (+rt.depth || 0) * 1.2;
+      // 用的原材料很多菜都要（小麦、牛奶…）：先把它弄到手，后面好多菜都顺了 —— 小小加分
+      const share = rt.raw.length ? rt.raw.reduce((a, x) => a + (R.rawUse[x.id] || 0), 0) / rt.raw.length : 0;
+      best.score -= Math.min(3, Math.log2(1 + share / 50));
+    }
     // 她亲手做成过"X → 这道菜"：经验比书可信（书上的配方在这个包里常有冲突）
     const exp = mem.load().memories.find(m => m.kind === 'relation' && m.o === id && m.source === 'experience' && m.status !== 'stale');
     if (exp) { best.score -= 6; best.byExperience = exp.text; }
@@ -184,8 +219,11 @@ function renderCandidates (cands) {
       ? `还缺 ${c.need.slice(0, 4).map(n => `${n.id ? knowledge.label(n.id) : `#${n.tag}`}${n.gatherable ? '' : n.craftable ? '(要先做)' : '(不好弄)'}`).join('、')}`
       : '材料都有了！';
     const t = state().tries[c.id];
+    const tier = c.tier ? `（${TIER_ZH[c.tier] || c.tier}${c.depth ? `，${c.depth} 步` : ''}）` : '';
+    // 缺的东西从哪来：她自己去弄，还是跟他要
+    const from = c.need.length && c.raw ? `；原材料：${c.raw.slice(0, 4).map(x => `${knowledge.label(x.id).replace(/\([^)]*\)$/, '')}（${rawHow(x.id)}）`).join('、')}` : '';
     if (c.byExperience) return `· ${knowledge.label(c.id)}〔${c.meta.chapter}〕你做过：${c.byExperience}`;
-    return `· ${knowledge.label(c.id)}〔${c.meta.chapter}〕在${where}${c.stationOk ? '' : '(这个工作站还没见过)'}，${needs}${t ? `（试过 ${t.n} 次${t.lastFail ? `，上次卡在：${t.lastFail}` : ''}）` : ''}`;
+    return `· ${knowledge.label(c.id)}〔${c.meta.chapter}〕${tier}在${where}${c.stationOk ? '' : '(这个工作站还没见过)'}，${needs}${from}${t ? `（试过 ${t.n} 次${t.lastFail ? `，上次卡在：${t.lastFail}` : ''}）` : ''}`;
   }).join('\n');
 }
 
@@ -227,6 +265,10 @@ function selftest () {
   const c = candidates({ inventory: [{ name: 'egg', count: 7 }, { name: 'bread', count: 2 }], knownStations: new Set(['farmersdelight:cooking_pot']) });
   check('有候选', c.length === 5, c.map(x => x.id));
   check('做过的不再当候选', !c.some(x => x.id === egg));
+  const many = candidates({ limit: 400 });
+  const bad = many.filter(x => ['X', 'M', 'C'].includes(route().dishes[x.id]?.tier));
+  check('路线图里做不出来 / 要装没装的模组 / 只能靠机械动力的不当候选', bad.length === 0, bad.slice(0, 3).map(x => x.id));
+  check('候选按档位从易到难（前 5 个都不是 T4）', many.slice(0, 5).every(x => x.tier !== 'T4'), many.slice(0, 5).map(x => x.tier));
   console.log(summary({ inventory: [{ name: 'egg', count: 7 }] }).split('\n').slice(0, 8).join('\n'));
   console.log(`\n  ${pass}/${total} 通过`);
   process.exit(pass === total ? 0 : 1);
