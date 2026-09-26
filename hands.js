@@ -828,7 +828,7 @@ async function craftByHand (bot, recipe, times, table) {
   const cells = [];
   if (recipe.inShape) recipe.inShape.forEach((row, y) => row.forEach((id, x) => { if (id != null && id !== -1) cells.push({ slot: 1 + x + y * w, id: typeof id === 'object' ? id.id : id }); }));
   else recipe.ingredients.forEach((id, i) => cells.push({ slot: 1 + i, id: typeof id === 'object' ? id.id : id }));
-  const pause = () => sleep(150);
+  const pause = () => sleep(+process.env.CRAFT_PAUSE_MS || 450);
   const findSrc = (id) => { for (let i = win.inventoryStart; i < win.inventoryEnd; i++) { const it = win.slots[i]; if (it && it.type === id) return i; } return -1; };
   // 原料在哪格：开始时（服务器同步过的状态）找一次，之后一直从这格拿。
   // 不能每次重找：这个服上客户端对"拿起一叠"的预测是错的（拿起后以为格子空了、手上也空），一重找就说缺原料
