@@ -113,6 +113,9 @@ function install (bot, state) {
     try { if (bot.entity && bot.entity.onGround) { const l = lightAt(bot); if (l && !isDark(l)) state.lastBright = bot.entity.position.floored(); } } catch (_) {}
   }, 2000);
   bot.once('end', () => clearInterval(brightTimer));
+  // 合成排错：记下服务器最近发来的背包窗口（0 号）格子更新，看成品格有没有出东西
+  state.slotLog = [];
+  bot._client.on('set_slot', (p) => { if (p.windowId === 0 || p.windowId === -2) { state.slotLog.push({ t: Date.now(), slot: p.slot, stateId: p.stateId, item: p.item?.itemId ?? p.item?.present ?? null, count: p.item?.itemCount ?? null }); if (state.slotLog.length > 40) state.slotLog.shift(); } });
   const pw = require('prismarine-windows')(bot.registry);
   const lastItems = new Map();   // windowId → 最近一次 window_items 的格子数（有的界面先发格子后开窗）
 
@@ -792,6 +795,19 @@ async function findAndApproach (bot, names) {
  * 从知识库挑一条**现在背包就做得出来**的工作台/背包配方，翻成 mineflayer 的 Recipe 交给 bot.craft。
  * bot.craft 自己会把东西摆进合成格、取出成品 —— 我们只替换"配方从哪来"。
  */
+/**
+ * 合成没成时，材料会留在合成格里（背包的 2×2 是 0 号窗口的 1–4 格，工作台是开着的窗口的 1–9 格）。
+ * 关掉窗口服务器会把格子里的东西还给她；背包窗口没法"关"，就发一次 close_window(0) —— 原版客户端按 E 关背包也是这么做的。
+ * 2026-09-27 实测：合成超时后 3 个原木不见了（卡在合成格里）
+ */
+async function returnGrid (bot) {
+  try {
+    if (bot.currentWindow) bot.closeWindow(bot.currentWindow);
+    bot._client.write('close_window', { windowId: 0 });
+  } catch (_) {}
+  await sleep(400);
+}
+
 async function craft2 (bot, { itemName, count = 1 } = {}, withTimeout) {
   const k = K(); const KB = k.load();
   const id = k.resolve(itemName, 1)[0];
@@ -859,11 +875,14 @@ async function craft2 (bot, { itemName, count = 1 } = {}, withTimeout) {
       if (!table) { tried.push('要工作台，但 16 格内没有（背包里有的话先 place 放下）'); continue; }
     }
     const before = invCounts(bot);
-    await withTimeout(bot.craft(recipe, times, recipe.requiresTable ? table : null), 20000);
+    try {
+      await withTimeout(bot.craft(recipe, times, recipe.requiresTable ? table : null), 20000);
+    } catch (e) { await returnGrid(bot); throw e; }
     await sleep(300);
     const d = delta(before, invCounts(bot));
     const made = d.gained[id] || 0;
     if (!made) {
+      await returnGrid(bot);
       // 服务器没按这条配方给东西：记下实际发生了什么（多了/少了啥），换下一条配方试（2026-09-27 实测木棍这样失败过，原因待查）
       const what = `多了 ${JSON.stringify(d.gained)}，少了 ${JSON.stringify(d.lost)}`;
       tried.push(`按 ${r.id} 摆好了但没拿到（${what}）`);
@@ -3001,6 +3020,8 @@ function routes ({ state, withTimeout }) {
     'POST /storage/organize': async (b = {}) => organizeStorage(bot(), state, b),
     'POST /storage/loot': async (b = {}) => lootNearby(bot(), state, b),
     'POST /delve': async (b = {}) => delve(bot(), state, b),
+    'GET /debug/craftgrid': async () => ({ grid: bot().inventory.slots.slice(0, 5).map((it, i) => it ? { slot: i, name: it.name, count: it.count } : null), window: bot().currentWindow?.type || null, stateId: bot().inventory.stateId, slotLog: (state.slotLog || []).slice(-20) }),
+    'POST /debug/returngrid': async () => { await returnGrid(bot()); return { grid: bot().inventory.slots.slice(0, 5).map(it => it && `${it.name}×${it.count}`) }; },
     'GET /light': async () => ({ light: lightAt(bot()), dark: isDark(lightAt(bot())), torches: torchCount(bot()), lastBright: state.lastBright ? { x: state.lastBright.x, y: state.lastBright.y, z: state.lastBright.z } : null }),
     'POST /light_up': async (b = {}) => { const m = await makeTorches(bot(), 4); const r = await lightUp(bot(), { max: Math.min(+b.max || 3, 8) }); return { ...r, made: m.made || 0, note: m.note }; },
     'POST /make_torches': async (b = {}) => makeTorches(bot(), Math.min(+b.count || 16, 64)),
