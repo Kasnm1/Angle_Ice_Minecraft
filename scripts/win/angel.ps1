@@ -39,8 +39,25 @@ switch ($cmd) {
       # 启动脚本：UTF-8 代码页、进仓库根、输出追加进日志
       Set-Content -Path $bat -Encoding ASCII -Value "@echo off`r`nchcp 65001 >nul`r`ncd /d `"$Root`"`r`n`"$Node`" $js >> `"$log`" 2>&1`r`n"
       $user = "$env:USERDOMAIN\$env:USERNAME"
-      # /IT：只在 Kasumi 登录着时跑（在她的登录会话里，SSH 断开不受影响）；/SC ONCE 只是占位，平时用 /Run 手动触发
-      schtasks /Create /TN (TaskName $w) /TR "`"$bat`"" /SC ONCE /ST 23:59 /SD 2099/01/01 /RU $user /IT /F | Out-Null
+      # 用 XML 定义一个**没有触发器**的任务：只在 /Run 时启动（/SC ONCE 要日期，格式随系统区域变，还会在当天到点自己跑一次）
+      # InteractiveToken = 在 Kasumi 的登录会话里跑，不要密码；SSH 断开不受影响
+      $xml = @"
+<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <Principals><Principal id="Author"><UserId>$user</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <Enabled>true</Enabled>
+  </Settings>
+  <Actions Context="Author"><Exec><Command>$bat</Command><WorkingDirectory>$Root</WorkingDirectory></Exec></Actions>
+</Task>
+"@
+      $xf = Join-Path $Logs "task-$w.xml"
+      [IO.File]::WriteAllText($xf, $xml, [Text.Encoding]::Unicode)
+      schtasks /Create /TN (TaskName $w) /XML $xf /F | Out-Null
       if ($LASTEXITCODE -eq 0) { "已注册计划任务 $(TaskName $w)" } else { "注册 $(TaskName $w) 失败（退出码 $LASTEXITCODE）" }
     }
   }
