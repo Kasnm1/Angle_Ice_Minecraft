@@ -148,7 +148,7 @@ function survivalFocus (s) {
   // 暗处（主人：像玩家一样别往暗处去；真要去就带火把点亮）
   const fuel = has(/(^|:)(coal|charcoal)$/);
   if (s.dark && !atHome) {
-    out.push(s.torches ? `脚下很暗（亮度 ${s.light?.block}）：插火把点亮（light_up）再往前` : `这里很暗又没带火把：别往里走，退回亮的地方${fuel ? '，先用煤做火把（make_torches）' : ''}`);
+    out.push(s.torches ? `脚下很暗（亮度 ${s.light?.block}）：插火把点亮（light_up）再往前` : `这里很暗又没带火把：别往里走，退回亮的地方${s.lastBright ? `（上次亮的地方 goto ${s.lastBright.x},${s.lastBright.y},${s.lastBright.z}）` : ''}${fuel ? '，或者先用煤做火把（make_torches）' : ''}；有人陪着也一样，边说边走`);
   }
   if (s.torches === 0) out.push(fuel ? '身上没火把：有煤/木炭，先做一组（make_torches）' : '身上没火把：看得见的煤矿先挖，或者原木进熔炉烧木炭 → 做火把（下矿、过夜都要用）');
   // 家外打不过、跑不掉：垫方块自救
@@ -237,7 +237,7 @@ async function look () {
     curios: eq?.curios || null,
     backpack: eq?.backpack || null,
     unseenChests: boxes?.chests || [],
-    light: lit?.light || null, dark: !!lit?.dark, torches: lit?.torches ?? null,
+    light: lit?.light || null, dark: !!lit?.dark, torches: lit?.torches ?? null, lastBright: lit?.lastBright || null,
   };
   // 视线里冒出没开过的箱子/木桶：马上告诉她（主人：优先级高，看见就过去）
   for (const c of W.state.unseenChests) {

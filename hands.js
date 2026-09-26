@@ -108,6 +108,11 @@ let HSTATE = null;   // 给 approach 这类不带 state 的函数用（跨楼层
 
 function install (bot, state) {
   HSTATE = state;
+  // 记住"上次站在亮处"的位置：走进暗处又没火把时，知道往哪退
+  const brightTimer = setInterval(() => {
+    try { if (bot.entity && bot.entity.onGround) { const l = lightAt(bot); if (l && !isDark(l)) state.lastBright = bot.entity.position.floored(); } } catch (_) {}
+  }, 2000);
+  bot.once('end', () => clearInterval(brightTimer));
   const pw = require('prismarine-windows')(bot.registry);
   const lastItems = new Map();   // windowId → 最近一次 window_items 的格子数（有的界面先发格子后开窗）
 
@@ -2996,7 +3001,7 @@ function routes ({ state, withTimeout }) {
     'POST /storage/organize': async (b = {}) => organizeStorage(bot(), state, b),
     'POST /storage/loot': async (b = {}) => lootNearby(bot(), state, b),
     'POST /delve': async (b = {}) => delve(bot(), state, b),
-    'GET /light': async () => ({ light: lightAt(bot()), dark: isDark(lightAt(bot())), torches: torchCount(bot()) }),
+    'GET /light': async () => ({ light: lightAt(bot()), dark: isDark(lightAt(bot())), torches: torchCount(bot()), lastBright: state.lastBright ? { x: state.lastBright.x, y: state.lastBright.y, z: state.lastBright.z } : null }),
     'POST /light_up': async (b = {}) => { const m = await makeTorches(bot(), 4); const r = await lightUp(bot(), { max: Math.min(+b.max || 3, 8) }); return { ...r, made: m.made || 0, note: m.note }; },
     'POST /make_torches': async (b = {}) => makeTorches(bot(), Math.min(+b.count || 16, 64)),
     'POST /self_rescue': async (b = {}) => selfRescue(bot(), state, b),
