@@ -4857,8 +4857,17 @@ const handlers = {
         const me = state.bot.entity.position;
         const exposed = (p) => [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]]
           .some(([dx, dy, dz]) => { const b = state.bot.blockAt(p.offset(dx, dy, dz)); return b && b.boundingBox === 'empty'; });
+        // 别拆房子：紧挨着人造方块（木板/门/玻璃/楼梯…）的格子不挖。新手小屋的柱子就是 oak_log，
+        // 她说"去砍树"时最近的"树"是自己家（2026-09-27 实测家周围 82 块原木被当成可砍）。
+        // 目标本身就是人造方块（要拆木板、拆箱子）时不拦 —— 那是有意的。
+        const guardHome = !isPlayerBuilt(state.bot.registry.blocks[blockId]?.name);
+        const nearBuilt = (p) => { for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) for (let dz = -1; dz <= 1; dz++) {
+          if (!dx && !dy && !dz) continue;
+          const b = state.bot.blockAt(p.offset(dx, dy, dz)); if (b && isPlayerBuilt(b.name)) return true;
+        } return false; };
         const cands = state.bot.findBlocks({ matching: blockId, maxDistance: radius, count: 64 })
-          .filter(p => !skipped.has(`${p.x},${p.y},${p.z}`));
+          .filter(p => !skipped.has(`${p.x},${p.y},${p.z}`))
+          .filter(p => !guardHome || !nearBuilt(p));
         const scored = cands.map(p => ({ p, dy: Math.abs(p.y - Math.floor(me.y)), d: p.distanceTo(me), open: exposed(p) }))
           .filter(c => c.dy <= 4)
           .sort((a, b) => (b.open - a.open) || (a.d - b.d));
