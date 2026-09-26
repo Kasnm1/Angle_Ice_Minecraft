@@ -837,10 +837,10 @@ async function craftByHand (bot, recipe, times, table) {
         if (win.slots[c.slot]?.type === c.id) continue;
         const src = findSrc(c.id);
         if (src < 0) throw new Error(`第 ${t + 1} 次缺原料（物品 id ${c.id}）`);
+        // 固定三下，不看 win.selectedItem：这个服上它不跟踪（实测拿起一叠后读出来还是 null），bot.craft 就是被它带乱的
         await bot.clickWindow(src, 0, 0); await pause();          // 拿起一叠
         await bot.clickWindow(c.slot, 1, 0); await pause();       // 右键放一个
-        if (win.selectedItem) { await bot.clickWindow(src, 0, 0); await pause(); }   // 剩下的放回去
-        if (win.selectedItem) { await bot.putSelectedItemRange(win.inventoryStart, win.inventoryEnd, win, null); await pause(); }
+        await bot.clickWindow(src, 0, 0); await pause();          // 剩下的放回原格（只有 1 个时手上已空，点空格子什么也不发生）
       }
       const t0 = Date.now(); while (!win.slots[0] && Date.now() - t0 < 3000) await sleep(50);
       if (!win.slots[0]) {
