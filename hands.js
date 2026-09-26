@@ -396,7 +396,45 @@ function locatePlayerInv (bot, items) {
   return best < 0 ? Math.max(0, items.length - 36) : best;
 }
 
+// ------------------------------------------------------------------ FTB 任务书（Architectury 网络）
+
+/**
+ * FTB Quests 不用 Forge SimpleChannel，用 Architectury：所有消息走同一条 Forge **事件通道** `architectury:network`，
+ * 载荷 = writeResourceLocation(消息名) + 消息体，**没有数字序号前缀**（architectury-9.2.14 NetworkManagerImpl.toPacket 反汇编）。
+ *   ftbquests:submit_task   long taskId            —— 点对号、交物品都是它（任务书里点"提交"/对号时客户端发的就是这条）
+ *   ftbquests:claim_reward  long rewardId, bool notify
+ *   ftbquests:claim_all_rewards （空）
+ * 任务/奖励 id 是任务书里的 16 位十六进制，按有符号 long 写。
+ */
+function mcString (str) {
+  const b = Buffer.from(str, 'utf8'); const len = [];
+  let n = b.length; do { let x = n & 0x7f; n >>>= 7; if (n) x |= 0x80; len.push(x); } while (n);
+  return Buffer.concat([Buffer.from(len), b]);
+}
+function hexLong (hex) {
+  const b = Buffer.alloc(8); b.writeBigInt64BE(BigInt.asIntN(64, BigInt('0x' + String(hex).replace(/^0x/i, '')))); return b;
+}
+async function ftbqSend (bot, state, name, body = Buffer.alloc(0), waitMs = 1500) {
+  const since = Date.now();
+  bot._client.write('custom_payload', { channel: 'architectury:network', data: Buffer.concat([mcString(`ftbquests:${name}`), body]) });
+  await sleep(waitMs);
+  // 服务器回了什么（任务进度更新 / 完成 / 奖励到账…）—— 用来核对"真的交上了"，不是"发出去了"
+  const replies = (state.ftbqRecent || []).filter(r => r.t >= since).map(r => r.name);
+  return { sent: `ftbquests:${name}`, serverReplies: [...new Set(replies)] };
+}
+
 function installModProtocols (bot, state) {
+  // FTB 任务书的服务端回包：记下消息名（载荷开头的 ResourceLocation）
+  bot._client.on('custom_payload', (p) => {
+    if (p.channel !== 'architectury:network') return;
+    try {
+      const buf = Buffer.isBuffer(p.data) ? p.data : Buffer.from(p.data || []);
+      const o = { i: 0 }; const n = readVarInt(buf, o); const name = buf.subarray(o.i, o.i + n).toString('utf8');
+      if (!name.startsWith('ftbquests:')) return;
+      (state.ftbqRecent ||= []).push({ t: Date.now(), name });
+      if (state.ftbqRecent.length > 50) state.ftbqRecent.shift();
+    } catch (_) {}
+  });
   bot._client.on('custom_payload', (p) => {
     if (p.channel !== 'sophisticatedcore:channel') return;
     const buf = Buffer.isBuffer(p.data) ? p.data : Buffer.from(p.data || []);
@@ -2567,6 +2605,11 @@ function routes ({ state, withTimeout }) {
     'POST /curios/equip': async (b = {}) => curiosEquip(bot(), state, b),
     'POST /curios/unequip': async (b = {}) => curiosUnequip(bot(), state, b),
     'POST /backpack/open': async () => backpackOpen(bot(), state),
+    // FTB 任务书：交任务（点对号 / 交物品）、领奖励、一键全领
+    'POST /ftbq/submit': async (b = {}) => { if (!b.taskId) throw new Error('要给 taskId（任务书里的 16 位十六进制）'); return ftbqSend(bot(), state, 'submit_task', hexLong(b.taskId)); },
+    'POST /ftbq/claim': async (b = {}) => { if (!b.rewardId) throw new Error('要给 rewardId'); return ftbqSend(bot(), state, 'claim_reward', Buffer.concat([hexLong(b.rewardId), Buffer.from([b.notify === false ? 0 : 1])])); },
+    'POST /ftbq/claim_all': async () => ftbqSend(bot(), state, 'claim_all_rewards'),
+    'GET /ftbq/recent': async () => ({ recent: (state.ftbqRecent || []).slice(-20) }),
     // 调试：原样发一个模组消息（逆向模组协议时用）{ channel, hex }
     'POST /debug/payload': async (b = {}) => { bot()._client.write('custom_payload', { channel: b.channel, data: Buffer.from(b.hex || '', 'hex') }); await sleep(b.waitMs || 1500); return { sent: b, window: summarizeWindow(bot(), state) }; },
     // 调试：寻路器眼里这一格是什么（safe=能站进去、physical=实心）

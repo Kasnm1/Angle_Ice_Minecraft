@@ -55,6 +55,17 @@ const LOCAL_TIMEOUT = { codex: 45000, workbuddy: 30000 };
 const localFallbacks = () => (process.env.LOCAL_FALLBACKS ?? '').split(',').map(s => s.trim())
   .filter(n => LOCAL[n] && !(n === 'workbuddy' && process.env.WORKBUDDY_FALLBACK === '0'));   // 旧开关仍然有效
 
+// FTB 任务书（knowledge/quests.json）：按任务 id 或名字找任务
+let QUESTS = null;
+function findQuest (key) {
+  if (!QUESTS) {
+    const q = JSON.parse(require('fs').readFileSync(require('path').join(__dirname, 'knowledge', 'quests.json'), 'utf8'));
+    QUESTS = q.chapters.flatMap(ch => (ch.quests || []).map(x => ({ ...x, chapter: ch.title, group: ch.groupTitle })));
+  }
+  const k = String(key || '').trim();
+  return QUESTS.find(x => x.id === k.toUpperCase()) || QUESTS.find(x => x.title === k) || QUESTS.find(x => x.title && k && (x.title.includes(k) || k.includes(x.title))) || null;
+}
+
 const saidRecently = [];   // 她最近 3 分钟说过的话（say 去重用）
 
 const hooks = { onSay: () => {}, beforeSay: async () => {} };
@@ -591,6 +602,33 @@ const TOOLS = {
     desc: '穿戴装备：盔甲、模组装备、饰品（戒指、项链；背包会背到背饰格上）。会自己判断该放哪个槽，放不进就试右键穿上。',
     params: { itemName: { type: 'string' } }, required: ['itemName'],
     run: async ({ itemName }) => bridge.post('/wear', { itemName }),
+  },
+  quest_submit: {
+    kind: 'action',
+    desc: 'FTB 任务书：交一个任务 —— 点对号（checkmark）的任务、交物品的任务都用它（相当于打开任务书点对号/点提交）。quest 写任务名或任务 id。交物品的要身上有那些东西。返回服务器回了什么（有回应才说明交上了）。',
+    params: { quest: { type: 'string' } }, required: ['quest'],
+    run: async ({ quest }) => {
+      const q = findQuest(quest);
+      if (!q) return { ok: false, error: `任务书里没找到「${quest}」` };
+      const tasks = q.tasks.filter(t => t.id && (t.type === 'checkmark' || t.type === 'item'));
+      if (!tasks.length) return { ok: false, error: `「${q.title}」没有能点对号或交物品的任务（${q.tasks.map(t => t.type).join('、')}，这些要在游戏里做到才算）` };
+      const results = [];
+      for (const t of tasks) results.push({ task: t.summary, ...(await bridge.post('/ftbq/submit', { taskId: t.id })) });
+      return { ok: true, quest: q.title, chapter: q.chapter, results, note: q.group === '机械动力' ? '⚠️ 机械动力章节的任务 id 可能和服务器对不上（加载时重新生成过），没有服务器回应就是没交上' : undefined };
+    },
+  },
+  quest_claim: {
+    kind: 'action',
+    desc: 'FTB 任务书：领奖励。给 quest（任务名或 id）就领那个任务的奖励；不给就一键领取所有能领的。',
+    params: { quest: { type: 'string' } }, required: [],
+    run: async ({ quest } = {}) => {
+      if (!quest) return bridge.post('/ftbq/claim_all', {});
+      const q = findQuest(quest);
+      if (!q) return { ok: false, error: `任务书里没找到「${quest}」` };
+      const results = [];
+      for (const r of q.rewards.filter(x => x.id)) results.push({ reward: r.summary, ...(await bridge.post('/ftbq/claim', { rewardId: r.id })) });
+      return { ok: true, quest: q.title, results };
+    },
   },
   open_backpack: {
     kind: 'action',

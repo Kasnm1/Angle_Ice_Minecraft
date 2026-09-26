@@ -178,7 +178,9 @@ def extract_chapter(path):
                 raw_item = (t.get('item', {}).get('item')
                             if isinstance(t.get('item'), dict) else t.get('item'))
                 tasks.append({
+                    'id': t.get('id'),                       # 交任务 / 点对号要用（ftbquests:submit_task 的 taskId）
                     'type': t.get('type'),
+                    'consume': bool(t.get('consume_items')), # 交物品任务：True = 要点提交才收走东西
                     'summary': task_summary(t),
                     'item': raw_item,
                     'itemZh': zh(raw_item) if raw_item else None,
@@ -189,6 +191,7 @@ def extract_chapter(path):
         for r in q.get('rewards', []) or []:
             if isinstance(r, dict):
                 rewards.append({
+                    'id': r.get('id'),                       # 领单个奖励（ftbquests:claim_reward）
                     'type': r.get('type'),
                     'summary': reward_summary(r),
                 })
