@@ -1095,7 +1095,7 @@ const NATURAL_EXTRA = ['gravel', 'clay', 'mud', 'calcite', 'dripstone_block', 'm
   'sandstone', 'red_sandstone', 'netherrack', 'basalt', 'blackstone', 'tuff', 'deepslate', 'stone', 'granite', 'diorite', 'andesite'].map(n => `minecraft:${n}`);
 // 加工过的 / 挖了有麻烦的：一律不进白名单（哪怕某个模组把它打进了 forge:stone）
 // suspicious_*：考古方块，一挖里面的东西就没了；soil/farmland/compost：多半是主人的地；boundary/raw_*_block/decorative_blocks：不像天然地形（2026-09-27 看过真名单后补）
-const NOT_NATURAL_RE = /polished|brick|smooth|chiseled|(^|:|_)cut_|tiles?($|_)|pillar|_slab$|_stairs$|_wall$|carved|mosaic|planks|infested|cobblestone|cobbled|glass|_block_of_|bookshelf|lamp|suspicious|farmland|compost|soil|boundary|raw_\w+_block|^decorative_blocks:|dirt_path|packed_mud/;
+const NOT_NATURAL_RE = /polished|brick|smooth|chiseled|(^|:|_)cut_|tiles?($|_)|pillar|_slab$|_stairs$|_wall$|carved|mosaic|planks|infested|cobblestone|cobbled|glass|_block_of_|bookshelf|lamp|suspicious|farmland|compost|soil|boundary|raw_\w+_block|^decorative_blocks:|dirt_path|packed_mud|vase|_pot$|_jar$/;   // vase：etcetera 把陶罐塞进了 dirt 标签
 function naturalDigNames (tagOf = () => undefined) {
   const out = new Set();
   for (const t of NATURAL_TAGS) for (const n of tagOf(t) || []) out.add(n);
@@ -1912,6 +1912,7 @@ if (require.main === module && process.argv.includes('--selftest')) {
   check('★ 圆石不挖（常被拿来盖房子）', nat.has('minecraft:cobblestone'), false);
   check('原版砂砾在里面', nat.has('minecraft:gravel'), true);
   check('★ 原版泥土在里面（标签里缺，靠补充名单）', nat.has('minecraft:dirt'), true);
+  check('★ 陶罐（etcetera 塞进 dirt 标签）不挖', naturalDigNames(t => (t === 'minecraft:dirt' ? new Set(['etcetera:terracotta_vase']) : undefined)).has('etcetera:terracotta_vase'), false);
   check('★ 可疑的沙（考古）不挖', naturalDigNames(t => (t === 'minecraft:sand' ? new Set(['minecraft:suspicious_sand']) : undefined)).has('minecraft:suspicious_sand'), false);
   check('★ 耕地 / 土壤不挖（多半是主人的地）', naturalDigNames(t => (t === 'minecraft:dirt' ? new Set(['somemod:rich_soil_farmland']) : undefined)).size === NATURAL_EXTRA.length - [...NATURAL_EXTRA].filter(n => NOT_NATURAL_RE.test(n)).length, true);
   const dm = { exclusionAreasBreak: [], bot: { entity: { position: { y: 64 } } } };
