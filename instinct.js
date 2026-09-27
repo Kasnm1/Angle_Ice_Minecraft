@@ -69,6 +69,18 @@
  *     打的时候除了 停/逃/跟随/走 这几类，其他命令直接回"在打架"（不然两边抢身体）。
  *   · 打完：跟着人的接着跟；自己干活的走回锚点；告诉 mind 打了什么、剩多少血
  *
+ * ## 随身物品本能（主人 2026-09-27：至少带武器、工具、食物、搭脚方块）
+ *
+ * 装备单在 hands.defaultLoadout()（和"回家整理"用的是同一张单子）：镐、武器（剑或斧）、吃的、搭脚方块是 essential，
+ * 火把、斧、剑缺了只记着。
+ *   · 缺了 essential 的：告诉 mind（缺的一变就说一次，带上"背包 / 家里箱子里有没有"）
+ *   · **背着精妙背包时先用背包**（主人 2026-09-27）：身上快满、背包还有空 → 就地把杂物装进背包；
+ *     缺的东西背包里有 → 从背包里拿。都不行（背包也满了 / 只有家里有）才回家。
+ *   · 什么时候回家整理（POST /go 回家 → POST /storage/organize：杂物按类放回箱子、缺的从箱子里拿）：
+ *       ① 背包快满（空格 ≤ fullAt）；或 ② 缺 essential、而且**记得家里箱子里有**（开过的箱子会记住里面有什么）
+ *     只在：知道家在哪、离家不远（≤ maxHomeDist）、不是夜里在露天（除非家就在旁边）、上次整理过了 cooldown 之后
+ *   · 缺的东西家里也没有：只告诉 mind（去做 / 去挖是她的事），不空跑
+ *
  * ## 其他本能（主人 2026-09-27 让 WorkBuddy 补充核实后挑的，见 modpack-study/instincts/suggestions.md）
  *
  *   · 危险方块退开：站在岩浆块 / 营火 / 火上，或者陷在细雪、浆果丛、仙人掌边 → 挪到旁边安全的一格（最先，保命）
@@ -135,6 +147,16 @@ const CFG = {
     scanMs: 250,
     loseMs: 2500,           // 这么久没有目标 = 打完了
     maxMs: 90000,
+  },
+  tidy: {
+    enabled: process.env.MC_INSTINCT_TIDY !== 'false',
+    fullAt: 3,              // 空格 ≤ 这个就算快满
+    packMinFree: 4,         // 背包至少剩这么多格才往里装（不知道剩多少 = 试一次）
+    packCooldownMs: 120000, // 倒腾一次背包后 2 分钟内不再倒腾
+    maxHomeDist: 160,       // 离家超过这个不专程回去（mind 决定）
+    nightHomeDist: 48,      // 夜里在露天：家在这么近才回
+    cooldownMs: 600000,     // 整理一次后 10 分钟内不再专程回去
+    checkMs: 20000,
   },
   minFreeSlots: 2,          // 收获、采矿至少留几个空格
   yieldWaitMs: 1500,        // 让出身体时最多等本能收拾多久
@@ -389,6 +411,35 @@ function combatPlan (ctx, cfg = CFG.combat) {
 }
 
 /**
+ * 该不该回家整理。
+ * @param c.free        背包空格数
+ * @param c.short       缺的 essential 标签
+ * @param c.atHomeHas   其中家里箱子里记得有的
+ * @param c.homeDist    离家多远（null = 不知道家在哪）
+ * @param c.nightOut / c.sinceLast（上次整理过去多久，ms）
+ * @returns { go: true, why } | { skip }
+ */
+function pickTidy (c, cfg = CFG.tidy) {
+  const { free = 36, short = [], atHomeHas = [], homeDist = null, nightOut = false, sinceLast = Infinity,
+    pack = null, sincePack = Infinity } = c;   // pack = { free: 背包空格(null=没开过不知道), has: [背包里有的缺项] } | null（没背）
+  const full = free <= cfg.fullAt;
+  // 先用背包：满了还能装、缺的背包里有 —— 就地倒腾，不跑回家
+  if (pack && sincePack >= cfg.packCooldownMs) {
+    const packRoom = pack.free == null || pack.free >= cfg.packMinFree;
+    if ((full && packRoom) || (pack.has || []).length) {
+      return { go: true, where: 'backpack', why: [full && packRoom ? `身上只剩 ${free} 格，先装进背包` : null, (pack.has || []).length ? `从背包里拿 ${pack.has.join('、')}` : null].filter(Boolean).join('，') };
+    }
+  }
+  const restock = atHomeHas.length > 0;
+  if (!full && !restock) return { skip: short.length ? `缺 ${short.join('、')}，家里也没记得有` : '身上齐全，也没满' };
+  if (homeDist == null) return { skip: '不知道家在哪' };
+  if (sinceLast < cfg.cooldownMs) return { skip: '刚整理过' };
+  if (homeDist > cfg.maxHomeDist) return { skip: `离家 ${Math.round(homeDist)} 格，太远了（mind 决定要不要回）` };
+  if (nightOut && homeDist > cfg.nightHomeDist) return { skip: '夜里在露天，家不够近' };
+  return { go: true, where: 'home', why: [full ? `身上快满了（只剩 ${free} 格${pack ? '，背包也快满了' : ''}）` : null, restock ? `回家拿 ${atHomeHas.join('、')}` : null].filter(Boolean).join('，') };
+}
+
+/**
  * 身体空不空。返回 null = 空着；否则是一句"为什么不空"。
  * following 的时候算空（本能会打断跟随，干完再接上）。
  */
@@ -420,7 +471,7 @@ function install (bot, state, deps) {
     home: null,             // { center:{x,y,z}, radius }，mind 通过 POST /instinct {home} 告诉
   };
   // 跨重连保留状态；新加的本能补上默认配置（老的 state.instinct 里没有）
-  for (const k of ['pickup', 'harvest', 'mine', 'sleep', 'armor', 'gaze', 'combat']) I.cfg[k] = { ...CFG[k], ...(I.cfg[k] || {}) };
+  for (const k of ['pickup', 'harvest', 'mine', 'sleep', 'armor', 'gaze', 'combat', 'tidy']) I.cfg[k] = { ...CFG[k], ...(I.cfg[k] || {}) };
   const spawned = new Map();   // 掉落物 id → { t, thrower }
   const fails = new Map();
   const mineFails = new Map();   // "x,y,z" → 到什么时候之前不再试
@@ -677,6 +728,93 @@ function install (bot, state, deps) {
     return { did: 'armor' };
   }
 
+  // ---- 随身物品：缺什么（告诉 mind）/ 回家整理
+  const kitNow = () => {
+    const items = bot.inventory.items().map(i => ({ name: i.name, count: i.count }));
+    const short = deps.hands.kitShortfall(bot, items).filter(x => x.essential).map(x => x.label);
+    // 家里箱子里记得有什么（开过的箱子，hands.noteSeen 记的）
+    const homeItems = [];
+    for (const c of state.seenContainers?.values?.() || []) {
+      const [x, y, z] = String(c.key).split(',').map(Number);
+      if (inHome({ x, y, z }) !== true) continue;
+      for (const [name, count] of Object.entries(c.items || {})) homeItems.push({ name, count });
+    }
+    const atHomeHas = short.length ? deps.hands.kitAvailable(bot, homeItems, short) : [];
+    // 精妙背包：背着就算一层"随身仓库"。里面有什么是上次打开时记的（不开看不到）
+    let pack = null;
+    if (deps.hands.wearingBackpack?.(bot, state)) {
+      const bp = state.backpackSeen;
+      const packItems = Object.entries(bp?.items || {}).map(([name, count]) => ({ name, count }));
+      pack = { free: bp ? bp.slots - bp.used : null, has: short.length ? deps.hands.kitAvailable(bot, packItems, short) : [] };
+    }
+    return { short, atHomeHas, homeKnown: homeItems.length > 0, pack };
+  };
+  const kitTimer = setInterval(() => {
+    try {
+      if (!bot.entity || !bot.inventory) return;
+      const k = kitNow();
+      const sig = k.short.join(',');
+      if (sig === (I.kitSig ?? '')) return;
+      I.kitSig = sig;
+      if (!k.short.length) return;
+      const have = [k.pack?.has?.length ? `背包里有：${k.pack.has.join('、')}` : null,
+        k.atHomeHas.length ? `家里箱子里有：${k.atHomeHas.join('、')}` : (k.homeKnown ? '家里的箱子里也没看到' : null)].filter(Boolean).join('；');
+      event('kit_short', `身上没带够：${k.short.join('、')}${have ? `（${have}）` : ''}`, { short: k.short });
+    } catch (_) {}
+  }, CFG.tidy.checkMs);
+
+  async function tryTidy (nightOut) {
+    const TD = I.cfg.tidy;
+    if (!TD.enabled || Date.now() - (I.lastTidyCheck || 0) < TD.checkMs) return null;
+    I.lastTidyCheck = Date.now();
+    const k = kitNow();
+    const h = I.home;
+    const pick = pickTidy({
+      free: bot.inventory.emptySlotCount(), short: k.short, atHomeHas: k.atHomeHas,
+      homeDist: h ? Math.hypot(bot.entity.position.x - h.center.x, bot.entity.position.z - h.center.z) : null,
+      nightOut, sinceLast: Date.now() - (I.lastTidyAt || 0),
+      pack: k.pack, sincePack: Date.now() - (I.lastPackAt || 0),
+    }, TD);
+    if (!pick.go) return pick;
+    if (pick.where === 'backpack') {
+      I.lastPackAt = Date.now();
+      const { r, aborted } = await runJob('tidy', { route: 'POST /backpack/tidy' }, (abort) => deps.handlers['POST /backpack/tidy']({ abort }));
+      note({ kind: 'backpack', why: pick.why, aborted: aborted || undefined, stashed: r?.stashed, took: r?.took, error: r?.error });
+      if (!aborted && (r?.stashed || r?.took || r?.error)) {
+        event('backpack', r?.error ? `想倒腾背包（${pick.why}），没做成：${String(r.error).slice(0, 80)}`
+          : `倒腾了一下背包：装进去 ${r.stashed} 组、拿出来 ${r.took} 组${r.backpackFree != null ? `（背包还剩 ${r.backpackFree} 格）` : ''}`);
+      }
+      return { did: 'backpack' };
+    }
+    I.lastTidyAt = Date.now();
+    const { r, aborted } = await runJob('tidy', { route: 'POST /storage/organize' }, async (abort) => {
+      if (inHome(bot.entity.position) !== true) {
+        const g = await deps.handlers['POST /go']({ x: h.center.x, y: h.center.y, z: h.center.z, range: 3, abort });
+        if (abort() || g?.arrived === false) return { error: `没走到家${g?.error ? `：${g.error}` : ''}` };
+      }
+      // 背着背包：先把背包里的倒出来一起整理（不然背包满了就永远满着，每次都白跑回家）。最多两轮
+      let r = null; let unpacked = 0;
+      for (let round = 0; round < 2 && !abort(); round++) {
+        let u = null;
+        if (deps.hands.wearingBackpack?.(bot, state)) {
+          try { u = await deps.handlers['POST /backpack/tidy']({ stash: false, restock: false, unpack: true, abort }); } catch (_) {}
+          unpacked += u?.unpacked || 0;
+        }
+        r = await deps.handlers['POST /storage/organize']({ abort });
+        if (!u?.unpacked) break;
+      }
+      return { ...r, unpacked };
+    });
+    const after = kitNow();
+    note({ kind: 'tidy', why: pick.why, aborted: aborted || undefined, moved: r?.moved, error: r?.error });
+    if (!aborted) {
+      event('tidy', r?.error
+        ? `想回家整理（${pick.why}），没做成：${String(r.error).slice(0, 80)}`
+        : `回家整理了（${pick.why}）：搬了 ${r?.moved ?? 0} 组${r?.unpacked ? `（其中从背包倒出来 ${r.unpacked} 组）` : ''}${after.short.length ? `；还缺 ${after.short.join('、')}` : '，该带的都带上了'}`);
+    }
+    return { did: 'tidy' };
+  }
+
   // ---- 转头看人（独立的小节拍：只转头，不占身体、不打断任何动作）
   let nextGaze = 0;
   const lookAtPlayer = (ent) => {
@@ -890,6 +1028,10 @@ function install (bot, state, deps) {
     const sl = await trySleep();
     if (sl?.did) { I.last = { t: now, ...last, sleep: '做了' }; return; }
     if (sl?.skip) last.sleep = sl.skip;
+    // ③ 回家整理（背包快满 / 缺吃的缺镐子而家里有）—— 夜里家近也回
+    const td = await tryTidy(nightOut);
+    if (td?.did) { I.last = { t: now, ...last, tidy: '做了' }; return; }
+    if (td?.skip) last.tidy = td.skip;
     if (nightOut) { I.last = { t: now, ...last, other: '夜里在露天，不收不挖' }; return; }
 
     // ③ 收获  ④ 采矿  ⑤ 换护甲
@@ -908,7 +1050,7 @@ function install (bot, state, deps) {
     ticking = true;
     try { await tick(); } catch (e) { I.last = { t: Date.now(), error: e.message }; } finally { ticking = false; }
   }, CFG.pickup.tickMs);
-  bot.once('end', () => { clearInterval(timer); clearInterval(gazeTimer); clearInterval(toolTimer); clearInterval(combatTimer); });
+  bot.once('end', () => { clearInterval(timer); clearInterval(gazeTimer); clearInterval(toolTimer); clearInterval(combatTimer); clearInterval(kitTimer); });
 }
 
 /**
@@ -1022,6 +1164,23 @@ function selftest () {
   check('野生的（不在耕地上）→ 收', pickHarvest({ self: me, crops: [crop(1, 0, { farmland: false }), crop(2, 0, { farmland: false }), crop(3, 0, { farmland: false })] }).only?.length, 3);
   check('★ 右键摘的（浆果丛）→ 不打掉', pickHarvest({ self: me, crops: [1, 2, 3].map(x => crop(x, 0, { harvest: 'use' })), inHome: home }).only, undefined);
 
+  // ---- 回家整理 ----
+  const TD = (o) => pickTidy({ free: 20, short: [], atHomeHas: [], homeDist: 30, ...o });
+  check('身上齐全、没满 → 不回', TD({}).go, undefined);
+  check('★ 背包快满 → 回家整理', TD({ free: 2 }).go, true);
+  check('★ 没吃的、家里箱子里有 → 回家拿', TD({ short: ['吃的'], atHomeHas: ['吃的'] }).go, true);
+  check('★ 没吃的、家里也没有 → 不空跑（告诉 mind 就行）', TD({ short: ['吃的'], atHomeHas: [] }).go, undefined);
+  check('不知道家在哪 → 不回', TD({ free: 1, homeDist: null }).go, undefined);
+  check('离家太远 → 不专程回（mind 决定）', TD({ free: 1, homeDist: 500 }).go, undefined);
+  check('刚整理过 → 不回', TD({ free: 1, sinceLast: 1000 }).go, undefined);
+  check('夜里在露天、家远 → 不回', TD({ free: 1, homeDist: 100, nightOut: true }).go, undefined);
+  check('夜里在露天、家就在旁边 → 回', TD({ free: 1, homeDist: 20, nightOut: true }).go, true);
+  check('★ 身上快满、背着背包还有空 → 先装背包，不回家', TD({ free: 2, pack: { free: 20, has: [] } }).where, 'backpack');
+  check('★ 缺吃的、背包里有 → 从背包拿（哪怕家里也有）', TD({ short: ['吃的'], atHomeHas: ['吃的'], pack: { free: 10, has: ['吃的'] } }).where, 'backpack');
+  check('★ 身上满、背包也满 → 回家', TD({ free: 2, pack: { free: 1, has: [] } }).where, 'home');
+  check('背包没开过（不知道剩多少）→ 试一次', TD({ free: 2, pack: { free: null, has: [] } }).where, 'backpack');
+  check('刚倒腾过背包 → 这次回家', TD({ free: 2, pack: { free: 20, has: [] }, sincePack: 1000 }).where, 'home');
+
   // ---- 战斗 ----
   check('苦力怕', mobKind('creeper'), 'creeper');
   check('模组苦力怕也认', mobKind('somemod:ice_creeper'), 'creeper');
@@ -1122,7 +1281,7 @@ function selftest () {
   });
 }
 
-module.exports = { CFG, mobKind, attackCooldownMs, combatPlan, COMBAT_YIELD, TIER, pickaxeTier, needTier, pickOre, pickHarvest, hazardUnder, pickStepOff, armorRank, pickArmor, toolWorn, pickGaze, whoThrew, pickPickup, bodyBusy, install, yieldBody, PASSIVE_POSTS, selftest };
+module.exports = { CFG, pickTidy, mobKind, attackCooldownMs, combatPlan, COMBAT_YIELD, TIER, pickaxeTier, needTier, pickOre, pickHarvest, hazardUnder, pickStepOff, armorRank, pickArmor, toolWorn, pickGaze, whoThrew, pickPickup, bodyBusy, install, yieldBody, PASSIVE_POSTS, selftest };
 
 if (require.main === module && process.argv.includes('--selftest')) {
   selftest().then(code => process.exit(code));
