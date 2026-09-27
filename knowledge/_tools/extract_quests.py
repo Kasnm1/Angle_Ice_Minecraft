@@ -180,6 +180,7 @@ def extract_chapter(path):
                 tasks.append({
                     'id': t.get('id'),                       # 交任务 / 点对号要用（ftbquests:submit_task 的 taskId）
                     'type': t.get('type'),
+                    'title': strip_fmt(t.get('title') or ''),
                     'consume': bool(t.get('consume_items')), # 交物品任务：True = 要点提交才收走东西
                     'summary': task_summary(t),
                     'item': raw_item,
@@ -196,9 +197,16 @@ def extract_chapter(path):
                     'summary': reward_summary(r),
                 })
 
+        # 游戏里显示的名字：任务自己的 title → 第一个有 title 的任务项 → 第一个交物品项的物品名。
+        # 本包 4257 个任务里 3373 个自己没写 title，名字写在任务项上（如主线「装备精进」）；
+        # 以前只存任务的 title，她按名字找任务永远找不到（2026-09-27）
+        own = strip_fmt(q.get('title') or '')
+        shown = own or next((t['title'] for t in tasks if t.get('title')), '') \
+            or next((t['itemZh'] for t in tasks if t.get('itemZh') and t['itemZh'] != t.get('item')), '')
         quests.append({
             'id': q.get('id'),
-            'title': strip_fmt(q.get('title') or ''),
+            'title': shown,
+            'ownTitle': own,
             'subtitle': strip_fmt(q.get('subtitle') or ''),
             'icon': q.get('icon'),
             'iconZh': zh(q.get('icon')) if q.get('icon') else None,
