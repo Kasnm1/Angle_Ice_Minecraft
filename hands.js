@@ -115,26 +115,7 @@ function install (bot, state) {
   bot.once('end', () => clearInterval(brightTimer));
   // 合成排错：记下服务器最近发来的背包窗口（0 号）格子更新，看成品格有没有出东西
   state.slotLog = [];
-  // 服务器登录时发来的命令树（她这个权限能用的命令）。协议层改成了原样收字节（模组参数类型解析不了），
-  // 这里只挖"字面量节点"的名字：flags 低两位=1 → 子节点数 → 子节点号 → (重定向) → 名字
-  bot._client.on('declare_commands', (p) => {
-    try {
-      const b = p.raw; const words = new Set();
-      const rv = (o) => { let n = 0, sh = 0, x; do { if (o.i >= b.length || sh > 28) throw 0; x = b[o.i++]; n |= (x & 0x7f) << sh; sh += 7; } while (x & 0x80); return n; };
-      for (let i = 0; i < b.length - 3; i++) {
-        const f = b[i]; if ((f & 3) !== 1 || f > 0x1f) continue;
-        try {
-          const o = { i: i + 1 }; const nc = rv(o); if (nc > 300) continue;
-          for (let k = 0; k < nc; k++) rv(o);
-          if (f & 8) rv(o);
-          const len = rv(o); if (len < 2 || len > 32 || o.i + len > b.length) continue;
-          const name = b.subarray(o.i, o.i + len).toString('latin1');
-          if (/^[a-z][a-z0-9_-]*$/.test(name)) words.add(name);
-        } catch (_) {}
-      }
-      state.commandWords = [...words];
-    } catch (_) {}
-  });
+
   bot._client.on('window_items', (p) => { if (p.windowId === 0) state.invItems = { t: Date.now(), n: p.items.length, stateId: p.stateId, filled: p.items.map((it, i) => (it && (it.present !== false) && it.itemId != null && it.itemId !== -1 ? `${i}:${it.itemId}x${it.itemCount}` : null)).filter(Boolean) }; });
   bot._client.on('set_slot', (p) => { if (p.windowId === 0 || p.windowId === -2) { state.slotLog.push({ t: Date.now(), slot: p.slot, stateId: p.stateId, item: p.item?.itemId ?? p.item?.present ?? null, count: p.item?.itemCount ?? null }); if (state.slotLog.length > 40) state.slotLog.shift(); } });
   const pw = require('prismarine-windows')(bot.registry);
@@ -2892,6 +2873,54 @@ async function selfRescue (bot, state, { mode = 'pillar', height = 3, home = nul
   return { ok: up > 0, mode, raised: +(bot.entity.position.y - y0).toFixed(1), blocks: up, log };
 }
 
+
+/** 从命令树原始字节里挖"字面量节点"的名字（flags 低两位=1 → 子节点数 → 子节点号 → (重定向) → 名字）。
+ *  协议层改成了原样收字节（模组参数类型解析不了），所以不做完整解析，只认字面量 */
+function commandWords (bot) {
+  const b = bot._client.__cmdRaw; if (!b) return null;
+  const words = new Set();
+  const rv = (o) => { let n = 0, sh = 0, x; do { if (o.i >= b.length || sh > 28) throw 0; x = b[o.i++]; n |= (x & 0x7f) << sh; sh += 7; } while (x & 0x80); return n; };
+  for (let i = 0; i < b.length - 3; i++) {
+    const f = b[i]; if ((f & 3) !== 1 || f > 0x1f) continue;
+    try {
+      const o = { i: i + 1 }; const nc = rv(o); if (nc > 300) continue;
+      for (let k = 0; k < nc; k++) rv(o);
+      if (f & 8) rv(o);
+      const len = rv(o); if (len < 2 || len > 32 || o.i + len > b.length) continue;
+      const name = b.subarray(o.i, o.i + len).toString('latin1');
+      if (/^[a-z][a-z0-9_-]*$/.test(name)) words.add(name);
+    } catch (_) {}
+  }
+  return words;
+}
+
+// 管理员命令：只有玩家明确要求时才用（主人 2026-09-27）。其余（回家、传送请求…）她自己判断
+const ADMIN_CMDS = new Set(['give', 'tp', 'teleport', 'gamemode', 'time', 'weather', 'effect', 'kill', 'summon', 'setblock', 'fill', 'clear', 'enchant', 'xp', 'experience', 'difficulty', 'gamerule', 'op', 'deop', 'ban', 'kick', 'whitelist', 'stop', 'item', 'attribute', 'spreadplayers', 'setworldspawn', 'spawnpoint', 'worldborder', 'data', 'execute', 'function', 'reload', 'forge', 'kubejs', 'ftbquests', 'tpx', 'invsee', 'heal', 'feed', 'fly', 'god']);
+const NEVER_CMDS = new Set(['stop', 'op', 'deop', 'ban', 'ban-ip', 'pardon', 'kick', 'whitelist', 'reload', 'save-off', 'debug', 'forceload']);
+
+/** 执行一条命令。管理员命令要带 because = 玩家的原话，而且最近聊天里真有玩家说过这句 */
+async function runCommand (bot, state, { command, because } = {}) {
+  const cmd = String(command || '').trim().replace(/^\/+/, '');
+  if (!cmd) throw new Error('command 要写命令，比如 home、tpa Ka_sum1');
+  const head = cmd.split(/\s+/)[0].toLowerCase().replace(/^minecraft:/, '');
+  if (NEVER_CMDS.has(head)) throw new Error(`/${head} 不归你用`);
+  const words = commandWords(bot);
+  if (words && !words.has(head)) throw new Error(`服务器没给你 /${head} 这个命令（你能用的：${[...words].filter(w => w.length < 12).slice(0, 40).join(' ')}…）`);
+  if (ADMIN_CMDS.has(head)) {
+    const said = String(because || '').trim();
+    const me = bot.username;
+    // 聊天缓冲（bridge 的 chatlog：{t, position, text}）里 10 分钟内、不是她自己说的那条要包含这句原话
+    const recent = (state.chatlog || []).filter(m => Date.now() - m.t < 10 * 60 * 1000);
+    const heard = said.length >= 2 && recent.some(m => { const t = String(m.text || ''); return m.position !== 'bridge' && !t.includes(`<${me}>`) && !t.startsWith(me) && t.includes(said); });
+    if (!heard) throw new Error(`/${head} 是管理员命令：只有玩家明确要你用才行 —— because 写他的原话（最近聊天里要真有这句）`);
+  }
+  const t0 = Date.now();
+  bot.chat('/' + cmd);
+  await sleep(1200);
+  const replies = (state.chatlog || []).filter(m => m.t >= t0).map(m => String(m.text || '')).filter(Boolean).slice(-4);
+  return { ran: '/' + cmd, serverSaid: replies };
+}
+
 // ------------------------------------------------------------------ 睡觉
 
 async function sleepInBed (bot, state, { home = null } = {}) {
@@ -3139,10 +3168,11 @@ function routes ({ state, withTimeout }) {
     },
     'POST /debug/returngrid': async () => { await returnGrid(bot()); return { grid: bot().inventory.slots.slice(0, 5).map(it => it && `${it.name}×${it.count}`) }; },
     'GET /commands': async () => {
-      const w = new Set(state.commandWords || []);
+      const w = commandWords(bot()) || new Set();
       const TP = ['home', 'sethome', 'delhome', 'homes', 'back', 'spawn', 'tpa', 'tpahere', 'tpaccept', 'tpdeny', 'rtp', 'warp', 'warps', 'tpx', 'tp', 'kit', 'near', 'trashcan', 'leaderboard'];
-      return { known: !!state.commandWords, total: w.size, teleport: TP.filter(x => w.has(x)), all: [...w].sort() };
+      return { known: !!bot()._client.__cmdRaw, total: w.size, teleport: TP.filter(x => w.has(x)), all: [...w].sort() };
     },
+    'POST /cmd': async (b = {}) => runCommand(bot(), state, b),
     'GET /light': async () => ({ light: lightAt(bot()), dark: isDark(lightAt(bot())), torches: torchCount(bot()), lastBright: state.lastBright ? { x: state.lastBright.x, y: state.lastBright.y, z: state.lastBright.z } : null }),
     'POST /light_up': async (b = {}) => { const m = await makeTorches(bot(), 4); const r = await lightUp(bot(), { max: Math.min(+b.max || 3, 8) }); return { ...r, made: m.made || 0, note: m.note }; },
     'POST /make_torches': async (b = {}) => makeTorches(bot(), Math.min(+b.count || 16, 64)),

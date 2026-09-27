@@ -712,6 +712,12 @@ const TOOLS = {
     params: { target: { type: 'string' }, targetY: { type: 'number' }, seconds: { type: 'number' } }, required: [],
     run: async ({ target, targetY, seconds }) => { const ms = Math.min(Math.max(20, seconds || 90), 240) * 1000; return bridge.post('/delve', { target, targetY, maxMs: ms, home: mem.getHome() }, ms + 60000); },
   },
+  run_command: {
+    kind: 'action',
+    desc: '执行一条服务器命令（不带 /，如 home、back、tpa Ka_sum1、spawn）。传送、回家这类你自己判断什么时候用。管理员命令（give、tp、gamemode、time、weather、effect…）只有玩家明确要你用时才行：because 写他的原话，程序会核对聊天里真有这句；没人要就别用。',
+    params: { command: { type: 'string' }, because: { type: 'string' } }, required: ['command'],
+    run: async ({ command, because }) => bridge.post('/cmd', { command, because }, 20000),
+  },
   light_up: {
     kind: 'action',
     desc: '在脚边暗的地方插火把，直到够亮（火把不够会先用煤/木炭做）。进洞、下矿、家附近暗处用。',

@@ -225,6 +225,10 @@ async function look () {
     const [x, y, z] = String(c.key).split(',').map(Number);
     if (mem.inHome({ x, y, z })) mem.noteHomeBox(c);
   }
+  if (!W.commands?.known || Date.now() - (W.commands.at || 0) > 30 * 60 * 1000) {
+    const c = await safe('/commands');
+    if (c) W.commands = { ...c, at: Date.now(), admin: (c.all || []).filter(x => ['give', 'tp', 'teleport', 'gamemode', 'time', 'weather', 'effect', 'summon', 'kill', 'clear', 'enchant', 'xp'].includes(x)) };
+  }
   if (!st) { W.state = null; return; }
   W.state = {
     connected: !!st.connected, health: st.health, food: st.food, isDay: st.isDay,
@@ -669,7 +673,7 @@ const SYSTEM = `你是 Angel_ICE（安琪），住在这个 Minecraft 模组服�
 - 探险：家以外的箱子，用 loot_nearby 尽量装到身上带回家，回家再 organize_storage 归位。
 - 晚上：天黑了、手上阶段性的事忙完了，就自己回家上床睡觉（sleep_in_bed）；有人正找你、事没做完就先忙完。
 - 生存常识（这个包的真实情况）：
-  · 没有 /home /spawn /back 这类传送命令；远距离回家只能靠传送石碑（waystones：两块石碑之间右键互传，不耗经验）—— 家里放一块、常去的地方放一块
+  · 命令：服务器给你开了哪些，看【你能用的命令】（run_command 执行）。回家、传送这类自己判断着用；管理员命令（give/tp/gamemode/time/weather…）只在玩家明确要你用时才用，because 写他的原话。传送石碑（waystones）也能远距离移动
   · 怪只在全黑的地方刷：家周围地面大约每 12 格插一个火把就不刷了
   · 像玩家一样避开暗处：没火把别进洞、别往黑的地方走；要下矿、进矿洞，先带够火把（make_torches），走到哪亮到哪（light_up）
   · 家外遇险（怪围上来、掉进坑里出不来、夜里在野外）：垫方块自救 —— 往上垫（self_rescue pillar）或把自己围住（self_rescue enclose）；身上常备一组圆石/泥土
@@ -773,6 +777,7 @@ function buildNow (why) {
     (() => { const open = (s?.doors || []).filter(d => d.open); return open.length ? `身边开着的门：${open.slice(0, 5).map(d => `${d.kind}(${d.x},${d.y},${d.z})`).join('、')}` : ''; })(),
     bodyNow(),
     (() => { const f = survivalFocus(s); return f.length ? `\n【眼下最该操心的】\n${f.map(x => `· ${x}`).join('\n')}` : ''; })(),
+    W.commands?.known ? `\n【你能用的命令】传送/回家类：${W.commands.teleport.length ? W.commands.teleport.map(c => '/' + c).join(' ') : '没有'}${W.commands.admin?.length ? `；管理员（玩家明确要求才用）：${W.commands.admin.map(c => '/' + c).join(' ')}` : ''}` : '',
     happened,
     saidLine,
     proLine,

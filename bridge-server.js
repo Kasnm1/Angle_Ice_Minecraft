@@ -348,6 +348,8 @@ if (cfg('MC_FORGE', '0') === '1') {
   const origCreateClient = nmp.createClient;
   nmp.createClient = function (options) {
     const client = origCreateClient.call(nmp, options);
+    // 命令树原始字节留一份：hands.js 从里面读她能用哪些命令（GET /commands）。它登录就到，身体层那时还没挂上
+    client.on('declare_commands', (p) => { client.__cmdRaw = p.raw; });
     // 3) 拦下 minecraft-protocol **自带 chat 插件**的 `declare_commands` 校验器。
     //
     // 上面 `patchProtocol` 把那个包改成了「原样收字节」（`{raw: Buffer}`），
@@ -743,6 +745,7 @@ const MAX_BODY_BYTES = 64 * 1024;
 // 供 GET /chatlog 读取。没有这个，`POST /command`（如 /list）的执行结果会被直接丢掉。
 const CHATLOG_MAX = 200;
 const chatlog = [];
+state.chatlog = chatlog;   // hands.js 的 /cmd 要核对"玩家真的这么说过"
 
 /** 往聊天环形缓冲里塞一条。position: 'chat' | 'system' | 'game_info' | 'bridge' */
 function pushChat (text, position) {
