@@ -482,6 +482,37 @@ Example:
 
 ---
 
+## GET /ftbq/completed[?refresh=1]
+
+FTB 任务书的队伍进度（`ftbq-sync.js`）：`{ known:true, count, completed:[16 位十六进制 id], team, at }`。
+`known:false` = 还没收到服务器发来的进度（不是"一个都没做"）；`refresh=1` 先发 `ftbquests:request_team_data` 要一份。
+id 和 `knowledge/quests.json` 里的一样，长期计划（`plan.mainlineStatus`）拿它判断主线做到哪了。
+
+---
+
+## 布置规划（现用现定）
+
+`POST /layout/save`：新格式只存分区 `{ name, zones:[{ name, purpose, wants:{物品:数量}, area:{x,y,z,r} }] }`，不定格子；旧的带 `slots` 的格式照样能存。
+`GET /layout/status`：每个区 `zoneDetail`（想要 / 已有 / 还想要 / 手上能摆 / 空地格数 / `stale` 要重新想的原因）。
+`POST /layout/zone { id?, zone, stale:true|false, why }`：标一个区"要重新想"（`place_nicely` 在区里放不下时自动标）。
+
+## 工程
+
+`POST /project/save` 可带 `asked:true`（主人要盖的）。`POST /project/work`：没开过工、不是 asked、材料不到七成 → `{ ok:false, notStarted:true, cover }`，不先挖坑。
+
+## POST /place 的 chest
+
+放箱子时 `chest:'merge'`（默认）：旁边有同种单箱子就合成大箱子 —— 先按玩家做法站到旧箱子正面、面向空地放；站不到才潜行点旧箱子侧面。
+`chest:'single'`：潜行点地面，一定不合。返回 `chest:'double'|'single'`（放完核对的），想合没合上带 `mergeNote`。
+依附的方块能右键打开（箱子、熔炉、工作台…）时，放的那一下会潜行。
+
+## POST /bucket · POST /till（常识动作，`commonsense.js`）
+
+`POST /bucket { mode:'fill' }`：空桶去最近的**水源**装水；`{ mode:'pour', x,y,z }`：往那一格倒水（下界倒不了）。
+`POST /till { x?, z?, radius=4, count=9, allowDry=false }`：锄地开耕地，默认只锄 4 格内有水的。
+
+---
+
 ## GET /block
 
 Query blocks. **Always probe before moving** — the bot can walk off a cliff or into lava
