@@ -115,6 +115,26 @@ function install (bot, state) {
   bot.once('end', () => clearInterval(brightTimer));
   // 合成排错：记下服务器最近发来的背包窗口（0 号）格子更新，看成品格有没有出东西
   state.slotLog = [];
+  // 服务器登录时发来的命令树（她这个权限能用的命令）。协议层改成了原样收字节（模组参数类型解析不了），
+  // 这里只挖"字面量节点"的名字：flags 低两位=1 → 子节点数 → 子节点号 → (重定向) → 名字
+  bot._client.on('declare_commands', (p) => {
+    try {
+      const b = p.raw; const words = new Set();
+      const rv = (o) => { let n = 0, sh = 0, x; do { if (o.i >= b.length || sh > 28) throw 0; x = b[o.i++]; n |= (x & 0x7f) << sh; sh += 7; } while (x & 0x80); return n; };
+      for (let i = 0; i < b.length - 3; i++) {
+        const f = b[i]; if ((f & 3) !== 1 || f > 0x1f) continue;
+        try {
+          const o = { i: i + 1 }; const nc = rv(o); if (nc > 300) continue;
+          for (let k = 0; k < nc; k++) rv(o);
+          if (f & 8) rv(o);
+          const len = rv(o); if (len < 2 || len > 32 || o.i + len > b.length) continue;
+          const name = b.subarray(o.i, o.i + len).toString('latin1');
+          if (/^[a-z][a-z0-9_-]*$/.test(name)) words.add(name);
+        } catch (_) {}
+      }
+      state.commandWords = [...words];
+    } catch (_) {}
+  });
   bot._client.on('window_items', (p) => { if (p.windowId === 0) state.invItems = { t: Date.now(), n: p.items.length, stateId: p.stateId, filled: p.items.map((it, i) => (it && (it.present !== false) && it.itemId != null && it.itemId !== -1 ? `${i}:${it.itemId}x${it.itemCount}` : null)).filter(Boolean) }; });
   bot._client.on('set_slot', (p) => { if (p.windowId === 0 || p.windowId === -2) { state.slotLog.push({ t: Date.now(), slot: p.slot, stateId: p.stateId, item: p.item?.itemId ?? p.item?.present ?? null, count: p.item?.itemCount ?? null }); if (state.slotLog.length > 40) state.slotLog.shift(); } });
   const pw = require('prismarine-windows')(bot.registry);
@@ -3118,6 +3138,11 @@ function routes ({ state, withTimeout }) {
       return { out };
     },
     'POST /debug/returngrid': async () => { await returnGrid(bot()); return { grid: bot().inventory.slots.slice(0, 5).map(it => it && `${it.name}×${it.count}`) }; },
+    'GET /commands': async () => {
+      const w = new Set(state.commandWords || []);
+      const TP = ['home', 'sethome', 'delhome', 'homes', 'back', 'spawn', 'tpa', 'tpahere', 'tpaccept', 'tpdeny', 'rtp', 'warp', 'warps', 'tpx', 'tp', 'kit', 'near', 'trashcan', 'leaderboard'];
+      return { known: !!state.commandWords, total: w.size, teleport: TP.filter(x => w.has(x)), all: [...w].sort() };
+    },
     'GET /light': async () => ({ light: lightAt(bot()), dark: isDark(lightAt(bot())), torches: torchCount(bot()), lastBright: state.lastBright ? { x: state.lastBright.x, y: state.lastBright.y, z: state.lastBright.z } : null }),
     'POST /light_up': async (b = {}) => { const m = await makeTorches(bot(), 4); const r = await lightUp(bot(), { max: Math.min(+b.max || 3, 8) }); return { ...r, made: m.made || 0, note: m.note }; },
     'POST /make_torches': async (b = {}) => makeTorches(bot(), Math.min(+b.count || 16, 64)),
