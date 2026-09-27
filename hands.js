@@ -3124,7 +3124,9 @@ async function projectWork (bot, state, { id, maxMs = 90000, maxOps = 60 } = {})
     // 人造方块（木板、楼梯、门、玻璃…）默认不拆：设计没看清压到了房子上，照做就会拆家（实测南门石径要拆 3 块云杉木板）。
     // 工程写了 allowDemolish（明确要改造自己的建筑）才拆
     for (const c of d.dig) { const b = bot.blockAt(c.pos); if (!p.allowDemolish && b && BUILT_RE.test(b.name) && !skip.has(key(c.pos))) { skip.add(key(c.pos)); protectedCells.push(`${bareId(b.name)}(${key(c.pos)})`); } }
-    const dig = d.dig.filter(c => !skip.has(key(c.pos))).sort((a, b) => (b.pos.y - a.pos.y) || (a.pos.distanceTo(me()) - b.pos.distanceTo(me())))[0];
+    // 要"挖掉换成别的"的格子：手上有替换材料才挖，不然挖出一个坑就走了（实测门口留了 4 个坑）
+    for (const c of d.dig) if (c.thenPlace && !invCount(bot, c.want)) missing[c.want] = (missing[c.want] || 0) + 1;
+    const dig = d.dig.filter(c => !skip.has(key(c.pos)) && !(c.thenPlace && !invCount(bot, c.want))).sort((a, b) => (b.pos.y - a.pos.y) || (a.pos.distanceTo(me()) - b.pos.distanceTo(me())))[0];
     if (dig) {
       if (!await goNear(dig.pos)) { skip.add(key(dig.pos)); continue; }
       const b = bot.blockAt(dig.pos);
