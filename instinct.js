@@ -1581,8 +1581,8 @@ function install (bot, state, deps) {
       }
       // 背着背包：先把背包里的倒出来一起整理（不然背包满了就永远满着，每次都白跑回家）。最多两轮
       let r = null; let unpacked = 0;
-      const organizeArgs = storagePolicy.storageRequest(h, { abort }, { discover: false });
-      if (!organizeArgs.only?.length) return { error: '家里的仓库还没有登记；自动整理不会猜哪些箱子能动，请先让我人工整理一次' };
+      const organizeArgs = storagePolicy.storageRequest(h, { abort, mode: 'daily' }, { discover: false });
+      if (!organizeArgs.only?.length) return { error: '家里没有可自动整理的已登记箱子（还没登记，或都受保护）；不会猜哪些箱子能动' };
       for (let round = 0; round < 2 && !abort(); round++) {
         let u = null;
         if (deps.hands.wearingBackpack?.(bot, state)) {
@@ -1599,7 +1599,7 @@ function install (bot, state, deps) {
     if (!aborted) {
       event('tidy', r?.error
         ? `想回家整理（${pick.why}），没做成：${String(r.error).slice(0, 80)}`
-        : `回家整理了（${pick.why}）：搬了 ${r?.moved ?? 0} 组${r?.unpacked ? `（其中从背包倒出来 ${r.unpacked} 组）` : ''}${after.short.length ? `；还缺 ${after.short.join('、')}` : '，该带的都带上了'}`,
+        : `${r?.completed === false ? '回家整理了一部分' : '回家整理了'}（${pick.why}）：搬了 ${r?.moved ?? 0} 组${r?.unpacked ? `（其中从背包倒出来 ${r.unpacked} 组）` : ''}${after.short.length ? `；还缺 ${after.short.join('、')}` : '，该带的都带上了'}`,
       r?.boxes ? { storage: { completed: r.completed === true, boxes: r.boxes } } : {});
     }
     return { did: 'tidy' };

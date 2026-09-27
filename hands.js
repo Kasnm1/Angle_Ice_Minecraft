@@ -2179,7 +2179,7 @@ async function containerPut (bot, state, { slot, itemName, count }) {
   if (!src.length) throw new Error(`背包里没有 ${itemName}`);
   const item = w.slots[src[0]];
   const n = Math.min(count || item.count, src.reduce((a, i) => a + w.slots[i].count, 0));
-  await bot.transfer({ window: w, itemType: item.type, metadata: null, count: n, sourceStart: w.inventoryStart, sourceEnd: w.inventoryEnd, destStart: slot, destEnd: slot + 1 });
+  await safeTransfer(bot, { window: w, itemType: item.type, metadata: null, count: n, sourceStart: w.inventoryStart, sourceEnd: w.inventoryEnd, destStart: slot, destEnd: slot + 1 });
   await sleep(200);
   return { put: want, count: n, slot, now: w.slots[slot] ? { item: fullId(w.slots[slot].name), count: w.slots[slot].count } : null };
 }
@@ -2193,7 +2193,7 @@ async function containerTake (bot, state, { slot, count }) {
   if (!count || count >= it.count) {
     await bot.clickWindow(slot, 0, 1);   // shift+左键：整格收进背包
   } else {
-    await bot.transfer({ window: w, itemType: it.type, metadata: null, count, sourceStart: slot, sourceEnd: slot + 1, destStart: w.inventoryStart, destEnd: w.inventoryEnd });
+    await safeTransfer(bot, { window: w, itemType: it.type, metadata: null, count, sourceStart: slot, sourceEnd: slot + 1, destStart: w.inventoryStart, destEnd: w.inventoryEnd });
   }
   await sleep(700);   // 服务器同步背包要一会儿，太早核对会看成"什么都没拿到"
   return { took: fullId(it.name), gained: delta(before, invCounts(bot)).gained, slotNow: w.slots[slot] ? w.slots[slot].count : 0 };
@@ -2254,8 +2254,15 @@ function tally (list) {
 }
 
 /** 同 ID 但附魔、耐久、NBT 不同的物品不能当成同一堆。 */
+function stableValue (v) {
+  if (Array.isArray(v)) return v.map(stableValue);
+  if (v && typeof v === 'object' && !Buffer.isBuffer(v)) {
+    return Object.fromEntries(Object.keys(v).sort().map(k => [k, stableValue(v[k])]));
+  }
+  return v;
+}
 function stackIdentity (it) {
-  return `${it?.type ?? '?'}|${it?.metadata ?? 0}|${JSON.stringify(it?.nbt || null)}`;
+  return `${it?.type ?? '?'}|${it?.metadata ?? 0}|${JSON.stringify(stableValue(it?.nbt || null))}`;
 }
 
 function compareSortedItems (bot, a, b) {
@@ -2288,6 +2295,47 @@ function auditSortedRange (bot, w, start, end) {
   for (const g of groups.values()) mergeableStacks += Math.max(0, g.stacks - Math.ceil(g.count / g.size));
   const cursorEmpty = !w.selectedItem;
   return { sorted: ordered && compact && mergeableStacks === 0 && cursorEmpty, ordered, compact, mergeableStacks, cursorEmpty, occupied: items.length };
+}
+
+async function settleCursor (bot, w) {
+  if (!w?.selectedItem) return true;
+  // 先找能合并的格，再找空格。刚拿起物品时原槽通常就是空的，因此不该需要丢到地上。
+  const same = [];
+  const empty = [];
+  for (let i = 0; i < w.inventoryEnd; i++) {
+    const it = w.slots[i];
+    if (!it) empty.push(i);
+    else if (stackIdentity(it) === stackIdentity(w.selectedItem) && it.count < (it.stackSize || 64)) same.push(i);
+  }
+  for (const i of [...same, ...empty]) {
+    await click(bot, i);
+    if (!w.selectedItem) return true;
+  }
+  return false;
+}
+
+async function safeTransfer (bot, options) {
+  const w = options.window || bot.currentWindow || bot.inventory;
+  try { return await bot.transfer(options); } catch (e) {
+    let settled = false;
+    try { settled = await settleCursor(bot, w); } catch (_) {}
+    if (!settled && w?.selectedItem) e.message += '；而且鼠标游标仍有物品，窗口已保留供恢复';
+    throw e;
+  }
+}
+
+function identityTotals (items) {
+  const out = {};
+  for (const it of items || []) {
+    const k = it.identity || stackIdentity(it);
+    out[k] = (out[k] || 0) + (it.count || 0);
+  }
+  return out;
+}
+function sameTotals (a, b) {
+  const keys = new Set([...Object.keys(a || {}), ...Object.keys(b || {})]);
+  for (const k of keys) if ((a[k] || 0) !== (b[k] || 0)) return false;
+  return true;
 }
 
 /** 存进当前打开的箱子：items 指定要存的（物品/分类/标签）；all=true 全存，keep 里的留下 */
@@ -2330,7 +2378,7 @@ async function withdraw (bot, state, { items = [], all = false } = {}) {
       if (!it || !r.m(it)) continue;
       if (it.count <= need) { await click(bot, i, 0, 1); got.push({ name: it.name, count: it.count }); need -= it.count; }
       else {
-        await bot.transfer({ window: w, itemType: it.type, metadata: null, count: need, sourceStart: i, sourceEnd: i + 1, destStart: w.inventoryStart, destEnd: w.inventoryEnd });
+        await safeTransfer(bot, { window: w, itemType: it.type, metadata: null, count: need, sourceStart: i, sourceEnd: i + 1, destStart: w.inventoryStart, destEnd: w.inventoryEnd });
         got.push({ name: it.name, count: need }); need = 0;
       }
       if (bot.inventory.emptySlotCount() === 0) break;
@@ -2371,7 +2419,7 @@ async function sortRange (bot, w, start, end) {
     await click(bot, j); await click(bot, i); clicks += 2;       // 拿起 j，放到 i（i 原来的东西到了手上）
     if (w.selectedItem) { await click(bot, j); clicks++; }       // 手上的放回 j
   }
-  if (w.selectedItem) { for (let k = start; k < end; k++) if (!w.slots[k]) { await click(bot, k); break; } }
+  if (w.selectedItem && !(await settleCursor(bot, w))) throw new Error('整理后鼠标游标仍拿着物品；已停止，避免关窗时丢失');
   // ③ 往前压紧：中间有空格、后面还有东西的，搬到前面去
   for (let i = start; i < end; i++) {
     if (w.slots[i]) continue;
@@ -2488,6 +2536,16 @@ function kitShortfall (bot, items, loadout = defaultLoadout()) {
   // 有武器（剑或斧）就不单说"缺剑""缺斧"是急事 —— 本来它俩也不是 essential
   return out;
 }
+
+function loadoutTargetShortfall (bot, items, loadout = defaultLoadout()) {
+  const out = [];
+  for (const L of loadout) {
+    const have = items.filter(it => kitMatch(bot, L, it)).reduce((a, it) => a + (it.count || 1), 0);
+    const target = L.kind === 'best' ? 1 : L.count;
+    if (have < target) out.push({ label: L.label, have, target, essential: !!L.essential });
+  }
+  return out;
+}
 /** 背没背着精妙背包（饰品栏 / 胸甲槽）。饰品栏是上线时摸过一次记下的（install 里 curiosList） */
 function wearingBackpack (bot, state) {
   return (state.curiosWorn || []).some(x => /backpack/.test(x)) || /backpack/.test(bot.inventory.slots[6]?.name || '');
@@ -2528,14 +2586,24 @@ async function backpackTidy (bot, state, { abort = null, stash = true, restock =
       await sleep(700);
     }
     if (restock && !stop()) {
-      const mine = []; for (let i = w.inventoryStart; i < w.inventoryEnd; i++) if (w.slots[i]) mine.push(w.slots[i]);
-      for (const sf of kitShortfall(bot, mine)) {
-        const L = [...defaultLoadout(), WEAPON_CHECK].find(x => x.label === sf.label);
-        for (let i = 0; i < w.inventoryStart && L; i++) {
-          const it = w.slots[i];
-          if (!it || !kitMatch(bot, L, it)) continue;
-          await click(bot, i, 0, 1); took++;   // 整组拿出来
-          break;
+      const kit = defaultLoadout();
+      const haveCount = (L) => {
+        let n = 0; for (let i = w.inventoryStart; i < w.inventoryEnd; i++) if (w.slots[i] && kitMatch(bot, L, w.slots[i])) n += w.slots[i].count;
+        return n;
+      };
+      for (const L of kit) {
+        const target = L.kind === 'best' ? 1 : L.count;
+        if (haveCount(L) >= target) continue;
+        const sources = [];
+        for (let i = 0; i < w.inventoryStart; i++) if (w.slots[i] && kitMatch(bot, L, w.slots[i])) sources.push(i);
+        if (L.kind === 'best') sources.sort((a, b) => tierOf(w.slots[a].name) - tierOf(w.slots[b].name));
+        else if (L.kind === 'food') sources.sort((a, b) => foodScore(w.slots[b]) - foodScore(w.slots[a]));
+        // 精妙背包的自定义同步不可靠地支持拆组，仍用 shift 整组拿；但一堆不够时继续下一堆。
+        for (const i of sources) {
+          if (stop() || haveCount(L) >= target || !w.slots[i]) break;
+          const before = haveCount(L);
+          await click(bot, i, 0, 1);
+          if (haveCount(L) > before) took++;
         }
       }
       await sleep(700);
@@ -2603,10 +2671,22 @@ function applyBoxSnapshot (box, snap) {
   box.cats = snap.cats; box.items = snap.items; box.contents = snap.contents; box.used = snap.used;
 }
 
+/** 同类物品合并到最紧凑状态后真正需要几格；NBT/耐久不同的签名分别计算。 */
+function packedSlots (items) {
+  const groups = new Map();
+  for (const it of items || []) {
+    const k = it.identity || stackIdentity(it); const g = groups.get(k) || { count: 0, size: it.stackSize || 64 };
+    g.count += it.count || 0; groups.set(k, g);
+  }
+  let n = 0; for (const g of groups.values()) n += Math.ceil(g.count / g.size);
+  return n;
+}
+
 // abort：进程内调用才能传（随身物品本能被命令打断时用），每开一个箱子之前问一次
-async function organizeStorage (bot, state, { radius = 12, assign = {}, loadout = null, maxPasses = 4, dryRun = false, only = null, allFloors = false, skip = [], abort = null } = {}) {
+async function organizeStorage (bot, state, { radius = 12, assign = {}, loadout = null, maxPasses = 4, dryRun = false, only = null, allFloors = false, skip = [], abort = null, mode = 'rebalance' } = {}) {
   const t0 = Date.now();
   const stop = () => typeof abort === 'function' && abort();
+  const daily = mode === 'daily';
   const log = [];
   const kit = loadout ? [].concat(loadout).map(x => (typeof x === 'object' ? { kind: 'spec', m: matcher(bot, x.item || x.name), count: +x.count || 1, label: x.item || x.name } : { kind: 'spec', m: matcher(bot, x), count: 64, label: x })) : defaultLoadout();
 
@@ -2639,10 +2719,11 @@ async function organizeStorage (bot, state, { radius = 12, assign = {}, loadout 
   if (!boxes.length) throw new Error('周围的箱子一个都打不开');
 
   // ② 分配：每类给"已经放这类最多"的箱子，装不下顺延；主人指定的优先
-  const invCats = {};
-  for (const it of bot.inventory.items()) { const c = categoryOf(bot, it); invCats[c] = (invCats[c] || 0) + 1; }
+  const inventoryItems = bot.inventory.items();
+  const allItems = [...boxes.flatMap(b => b.contents || []), ...inventoryItems];
+  const beforeTotals = identityTotals(allItems);
   const need = {};
-  for (const c of CAT_ORDER) need[c] = boxes.reduce((a, b) => a + (b.cats[c] || 0), 0) + (invCats[c] || 0);
+  for (const c of CAT_ORDER) need[c] = packedSlots(allItems.filter(it => categoryOf(bot, it) === c));
   const free = new Map(boxes.map(b => [b.key, b.slots]));
   const owner = {};   // 类别 → [箱子 key…]
   for (const [cat, where] of Object.entries(assign)) {
@@ -2656,7 +2737,7 @@ async function organizeStorage (bot, state, { radius = 12, assign = {}, loadout 
   }
   const claimed = new Set(Object.values(owner).flat());
   const center = boxes.reduce((a, b) => a.offset(b.pos.x / boxes.length, b.pos.y / boxes.length, b.pos.z / boxes.length), new Vec3(0, 0, 0));
-  for (const c of CAT_ORDER.filter(c => need[c] > 0 && !owner[c]).sort((a, b) => need[b] - need[a])) {
+  for (const c of (daily ? [] : CAT_ORDER.filter(c => need[c] > 0 && !owner[c]).sort((a, b) => need[b] - need[a]))) {
     owner[c] = [];
     let left = need[c];
     // 一类一个箱子：先挑还没被别的类占用的（已经放这类最多的优先，其次是靠近仓库中间的大箱子），都占完了才合住
@@ -2682,7 +2763,8 @@ async function organizeStorage (bot, state, { radius = 12, assign = {}, loadout 
   // ③ 搬：一个个箱子走过去，拿出不属于这的，放进属于这的；背包满了就分几轮
   let moved = 0; let visits = 0;
   const cats0 = (box) => box.items || [];
-  const misplaced = (box) => cats0(box).filter(c => !(owner[c] || []).includes(box.key) && (owner[c] || []).length).length;
+  // 日常归位只把身上的东西送回已登记箱子，不从箱子里抽出“错类”去重排整个仓库。
+  const misplaced = (box) => daily ? 0 : cats0(box).filter(c => !(owner[c] || []).includes(box.key) && (owner[c] || []).length).length;
   const invWants = (box) => bot.inventory.items().some(it => home(it).includes(box.key));
   for (let pass = 0; pass < maxPasses; pass++) {
     let changed = 0;
@@ -2704,17 +2786,19 @@ async function organizeStorage (bot, state, { radius = 12, assign = {}, loadout 
         const keepN = keepHere.get(e.slot) || 0;
         const before = w.slots[e.slot]?.count || 0;
         if (keepN >= before) continue;
-        if (keepN > 0) await bot.transfer({ window: w, itemType: e.item.type, metadata: null, count: before - keepN, sourceStart: e.slot, sourceEnd: e.slot + 1, destStart: 0, destEnd: w.inventoryStart });
+        if (keepN > 0) await safeTransfer(bot, { window: w, itemType: e.item.type, metadata: null, count: before - keepN, sourceStart: e.slot, sourceEnd: e.slot + 1, destStart: 0, destEnd: w.inventoryStart });
         else await click(bot, e.slot, 0, 1);
         if ((w.slots[e.slot]?.count || 0) < before) { changed++; moved++; }
       }
-      // 拿出不属于这里的（给背包留 2 格余量）
-      for (let i = 0; i < w.inventoryStart; i++) {
-        const it = w.slots[i];
-        if (!it || home(it).includes(box.key) || !home(it).length) continue;
-        if (bot.inventory.emptySlotCount() <= 2) break;
-        await click(bot, i, 0, 1);
-        if (!w.slots[i]) { changed++; moved++; }
+      // 完整重整才把错类抽出来；日常归位尊重主人当前箱内摆法，不跨箱洗牌。
+      if (!daily) {
+        for (let i = 0; i < w.inventoryStart; i++) {
+          const it = w.slots[i];
+          if (!it || home(it).includes(box.key) || !home(it).length) continue;
+          if (bot.inventory.emptySlotCount() <= 2) break;
+          await click(bot, i, 0, 1);
+          if (!w.slots[i]) { changed++; moved++; }
+        }
       }
       // 更新心里的账：这个箱子现在装着什么
       applyBoxSnapshot(box, snapshotContainer(bot, w));
@@ -2724,14 +2808,18 @@ async function organizeStorage (bot, state, { radius = 12, assign = {}, loadout 
     if (!changed) break;
   }
 
-  // ④ 每个箱子里面再排好；⑤ 随身装备缺的从箱子里拿（空箱子不去）。
+  // ④ 完整重整才把每个箱子内部重排；日常归位只补随身装备，不制造无意义搬动。
+  // ⑤ 随身装备缺的从箱子里拿（空箱子不去）。
   // 已知材质的高级工具箱先看，避免先拿木镐后就把“有一把镐”误当成已经满足。
   const boxTier = (box) => Math.min(...(box.contents || []).map(x => knownTierOf(x.name)).filter(x => x != null), 99);
-  for (const box of boxes.filter(b => b.used > 0).sort((a, b) => boxTier(a) - boxTier(b))) {
+  const carriedNow = bot.inventory.items();
+  const dailyNeeds = kit.filter(L => L.kind === 'best' || carriedNow.filter(it => kitMatch(bot, L, it)).reduce((n, it) => n + it.count, 0) < L.count);
+  const finishBoxes = boxes.filter(b => b.used > 0 && (!daily || (b.contents || []).some(it => dailyNeeds.some(L => kitMatch(bot, L, it)))));
+  for (const box of finishBoxes.sort((a, b) => boxTier(a) - boxTier(b))) {
     if (stop()) break;
     try { await containerOpen(bot, state, box.pos); } catch (_) { continue; }
     const w = bot.currentWindow;
-    await sortRange(bot, w, 0, w.inventoryStart);
+    if (!daily) await sortRange(bot, w, 0, w.inventoryStart);
     for (const L of kit) {
       const haveEntries = () => {
         const out = []; for (let i = w.inventoryStart; i < w.inventoryEnd; i++) if (w.slots[i]) out.push({ slot: i, item: w.slots[i] });
@@ -2761,7 +2849,7 @@ async function organizeStorage (bot, state, { radius = 12, assign = {}, loadout 
         if (!it || !kitMatch(bot, L, it) || got >= target) continue;
         const n = Math.min(it.count, target - got);
         const before = got;
-        await bot.transfer({ window: w, itemType: it.type, metadata: it.metadata, nbt: it.nbt, count: n, sourceStart: i, sourceEnd: i + 1, destStart: w.inventoryStart, destEnd: w.inventoryEnd });
+        await safeTransfer(bot, { window: w, itemType: it.type, metadata: it.metadata, nbt: it.nbt, count: n, sourceStart: i, sourceEnd: i + 1, destStart: w.inventoryStart, destEnd: w.inventoryEnd });
         have = haveEntries(); got = have.filter(e => kitMatch(bot, L, e.item)).reduce((a, e) => a + e.item.count, 0);
         if (got <= before) log.push(`${L.label} 从 ${box.key} 拿取后数量没有增加`);
       }
@@ -2774,14 +2862,18 @@ async function organizeStorage (bot, state, { radius = 12, assign = {}, loadout 
   for (const [c, keys] of Object.entries(owner)) for (const k of keys) (layout[k] ||= []).push(c);
   const carry = {}; for (const it of bot.inventory.items()) carry[fullId(it.name)] = (carry[fullId(it.name)] || 0) + it.count;
   const misplacedStacks = boxes.reduce((n, b) => n + misplaced(b), 0);
-  const shortfall = kitShortfall(bot, bot.inventory.items(), kit).filter(x => x.label !== '武器');
+  const shortfall = loadoutTargetShortfall(bot, bot.inventory.items(), kit);
   const blocked = log.some(x => /打不开|放不下|被新的命令打断|数量没有增加/.test(x));
   const cursorEmpty = !bot.currentWindow?.selectedItem;
-  const completed = !stop() && !blocked && misplacedStacks === 0 && cursorEmpty;
+  const afterTotals = identityTotals([...boxes.flatMap(b => b.contents || []), ...bot.inventory.items()]);
+  const conserved = sameTotals(beforeTotals, afterTotals);
+  if (!conserved) log.push('整理前后物品总数不一致；结果不记为完成');
+  const blockingShortfall = daily ? shortfall.filter(x => x.essential) : shortfall;
+  const completed = !stop() && !blocked && (daily || misplacedStacks === 0) && cursorEmpty && conserved && blockingShortfall.length === 0;
   return {
     boxes: boxes.map(b => ({ at: b.key, name: b.name, slots: b.slots, holds: layout[b.key] || [], used: b.used, skipped: !!b.skipped })),
-    completed, status: completed ? 'completed' : (stop() ? 'aborted' : 'partial'),
-    verification: { misplacedStacks, cursorEmpty, loadoutShortfall: shortfall },
+    mode: daily ? 'daily' : 'rebalance', completed, status: completed ? 'completed' : (stop() ? 'aborted' : 'partial'),
+    verification: { misplacedStacks, cursorEmpty, conserved, loadoutShortfall: shortfall },
     moved, visits, carrying: carry, notes: log, seconds: Math.round((Date.now() - t0) / 1000),
   };
 }
@@ -4063,7 +4155,7 @@ async function cookInPot (bot, state, { itemName, count = 1 } = {}) {
     const put = async (itemId, slot, n) => {
       const it = w.slots.slice(w.inventoryStart, w.inventoryEnd).find(x => x && fullId(x.name) === itemId);
       if (!it) throw new Error(`背包里没找到 ${itemId}`);
-      await bot.transfer({ window: w, itemType: it.type, metadata: null, count: n, sourceStart: w.inventoryStart, sourceEnd: w.inventoryEnd, destStart: slot, destEnd: slot + 1 });
+      await safeTransfer(bot, { window: w, itemType: it.type, metadata: null, count: n, sourceStart: w.inventoryStart, sourceEnd: w.inventoryEnd, destStart: slot, destEnd: slot + 1 });
     };
     for (let i = 0; i < plan.picks.length; i++) await put(plan.picks[i], i, count);
     if (plan.container) await put(plan.container, 7, count);
@@ -4318,6 +4410,34 @@ if (require.main === module && process.argv.includes('--selftest')) {
       check('背包开头与玩家段内容相同 → 按界面结构选 108，不选 0', locatePlayerInv(bot, packet), 108);
       const emptyBot = { inventory: { slots: Array(45).fill(null) } };
       check('普通物品栏全空也能从 149 格结构认出 108', locatePlayerInv(emptyBot, Array(149).fill(null)), 108);
+    }
+
+    console.log('\n[0b] 整理终态：顺序、压紧、NBT 合堆和游标都要验');
+    {
+      const fbot = { registry: { blocksByName: { cobblestone: {} } } };
+      const item = (name, count, type, nbt = null, stackSize = 64) => ({ name, count, type, metadata: 0, nbt, stackSize });
+      const iron = item('iron_ingot', 32, 1); const stone = item('cobblestone', 64, 2);
+      check('矿物在方块前、末尾空格 → 已排序', auditSortedRange(fbot, { slots: [iron, stone, null], selectedItem: null }, 0, 3).sorted, true);
+      check('中间空格后还有物品 → 未压紧', auditSortedRange(fbot, { slots: [iron, null, stone], selectedItem: null }, 0, 3).compact, false);
+      check('两个同 NBT 的残堆还能合并 → 不算完成', auditSortedRange(fbot, { slots: [item('iron_ingot', 20, 1), item('iron_ingot', 10, 1)], selectedItem: null }, 0, 2).mergeableStacks, 1);
+      check('同 ID 不同 NBT 不误判成可合并', auditSortedRange(fbot, { slots: [item('iron_ingot', 20, 1, { a: 1 }), item('iron_ingot', 10, 1, { a: 2 })], selectedItem: null }, 0, 2).mergeableStacks, 0);
+      check('NBT 只有键顺序不同仍是同一签名', stackIdentity(item('book', 1, 5, { b: 2, a: 1 })) === stackIdentity(item('book', 1, 5, { a: 1, b: 2 })), true);
+      check('鼠标还拿着东西 → 不算完成', auditSortedRange(fbot, { slots: [iron], selectedItem: stone }, 0, 1).cursorEmpty, false);
+      check('已知材质等级：下界合金优于木头；模组未知不猜', [knownTierOf('netherite_pickaxe'), knownTierOf('wooden_pickaxe'), knownTierOf('mod:star_pickaxe')], [0, 5, null]);
+      check('容量按合并后的真实格数算（32+40 铁锭占 2 格）', packedSlots([item('iron_ingot', 32, 1), item('iron_ingot', 40, 1)]), 2);
+      check('不同 NBT 分开占格', packedSlots([item('enchanted_book', 1, 3, { a: 1 }, 1), item('enchanted_book', 1, 3, { a: 2 }, 1)]), 2);
+      check('16 上限物品不按 64 错算', packedSlots([item('bucket', 17, 4, null, 16)]), 2);
+      check('物品守恒不受槽位/顺序影响', sameTotals(identityTotals([item('iron_ingot', 20, 1), item('cobblestone', 3, 2)]), identityTotals([item('cobblestone', 3, 2), item('iron_ingot', 7, 1), item('iron_ingot', 13, 1)])), true);
+      check('少一个也能发现', sameTotals(identityTotals([item('iron_ingot', 20, 1)]), identityTotals([item('iron_ingot', 19, 1)])), false);
+      check('终态按目标数报缺，不把“超过最低生存线”误当补齐', loadoutTargetShortfall(fbot, [item('torch', 5, 6)], [{ kind: 'id', id: 'minecraft:torch', count: 16, label: '火把', essential: true }]), [{ label: '火把', have: 5, target: 16, essential: true }]);
+      const fw = { slots: [null, null], inventoryEnd: 2, selectedItem: null };
+      const transferBot = {
+        currentWindow: fw,
+        transfer: async () => { fw.selectedItem = item('iron_ingot', 8, 1); throw new Error('destination full'); },
+        clickWindow: async (slot) => { fw.slots[slot] = fw.selectedItem; fw.selectedItem = null; },
+      };
+      let transferError = null; try { await safeTransfer(transferBot, { window: fw }); } catch (e) { transferError = e.message; }
+      check('transfer 失败会先把游标物品放回窗口，不丢到地上', { error: transferError, cursor: fw.selectedItem, restored: fw.slots[0]?.count }, { error: 'destination full', cursor: null, restored: 8 });
     }
 
     console.log('\n[1/8] 同层 → 交给 GoalFollow 贴着走');
