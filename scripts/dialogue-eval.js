@@ -23,6 +23,7 @@
  *   node scripts/dialogue-eval.js --cat danger_urgent 只跑一类
  *   node scripts/dialogue-eval.js --limit 10 --no-judge
  *   node scripts/dialogue-eval.js --label 改说话前     结果文件名里带上标签，方便前后对比
+ *   node scripts/dialogue-eval.js --tests <jsonl>      换一份题（默认 tests/dialogue.jsonl）
  * 结果：modpack-study/tests/results/<时间>-<标签>.json + .md
  */
 
@@ -33,7 +34,7 @@ const body = require('../body.js');
 const { SYSTEM, SPECS, SAY_NUDGE } = require('../mind.js');
 const speech = require('../speech.js');
 
-const TESTS = '/Users/starwish/aimc/modpack-study/tests/dialogue.jsonl';
+const TESTS_DEFAULT = '/Users/starwish/aimc/modpack-study/tests/dialogue.jsonl';
 const OUTDIR = '/Users/starwish/aimc/modpack-study/tests/results';
 
 const arg = (k, d) => { const i = process.argv.indexOf(k); return i > 0 ? process.argv[i + 1] : d; };
@@ -44,6 +45,7 @@ const LIMIT = +arg('--limit', 0);
 const JUDGE = !has('--no-judge');
 const JUDGE_MODEL = arg('--judge-model', body.CFG.fallback);
 const LABEL = arg('--label', '');
+const TESTS = arg('--tests', TESTS_DEFAULT);   // 另一份题，如 tests/dialogue-realness.jsonl（真人感：英文 id / 坐标 / 念清单）
 const CONC = +arg('--conc', 4);
 const PLAYER = 'Ka_sum1';
 
