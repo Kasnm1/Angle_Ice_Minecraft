@@ -2275,6 +2275,8 @@ function defaultLoadout () {
     { kind: 'food', count: 16, min: 4, label: '吃的', essential: true },
     { kind: 'id', id: 'minecraft:torch', count: 16, label: '火把' },
     { kind: 'any', ids: SCAFFOLD_IDS, count: 32, min: 8, label: '搭脚方块', essential: true },
+    // 落地水（主人 2026-09-27）：搭不了路要往下跳时，落地前倒水保命、落地后收回（instinct.js 的反射）
+    { kind: 'id', id: 'minecraft:water_bucket', count: 1, label: '一桶水', essential: true },
   ];
 }
 // 只用来查缺不缺，不参与整理时"留哪几件"：剑和斧有一样就算有武器
@@ -3929,4 +3931,4 @@ if (require.main === module && process.argv.includes('--selftest')) {
   })();
 }
 
-module.exports = { install, routes, slotByName, foodScore, fullId, botName, startFollow, farm, kitShortfall, kitAvailable, defaultLoadout, wearingBackpack, backpackTidy, unseenChests, unseenCarts, inHomeArea, inCave };   // farm：收获本能直接调（instinct.js）
+module.exports = { install, routes, slotByName, foodScore, fullId, botName, startFollow, farm, kitShortfall, kitAvailable, defaultLoadout, wearingBackpack, backpackTidy, unseenChests, unseenCarts, inHomeArea, inCave, SCAFFOLD_IDS };   // farm：收获本能直接调（instinct.js）

@@ -83,6 +83,15 @@
  * 怪 → 战斗本能打 —— 几个本能接力，就是"逛矿洞"。每个洞（按入口所在的 32 格网格）最多走 maxSteps 步、不离入口 range 格，
  * 逛完告诉 mind。下礦（/delve）里的逛洞是 mind 叫的，那一套归 hands.delve 管，这里不碰。
  *
+ * ## 搭路本能 / 落地水本能（主人 2026-09-27）
+ *
+ *   · 搭路：寻路走到断崖、沟、要往上的地方，用**她随身带的搭脚方块**（hands.SCAFFOLD_IDS）垫过去 / 垫高 ——
+ *     每 2 秒按身上有没有这些方块更新 pathfinder（pathing.setScaffold）；家的范围里不许放（别在主人基地里乱垫）；
+ *     放一块的代价 ≈ 走 12 格，能绕就绕。
+ *   · 落地水：身上有水桶、不在下界 → 寻路允许往下跳到 24 格（pathing.setDropAllowance；代价照样很高，有路就绕）。
+ *     反射（physicsTick，每 50ms）：在往下掉、算出来会摔伤（落差 > 3.5 格）→ 先把水桶换到手上；
+ *     离落点 ≤ 3 格时低头倒水；落地（或落进水里）后低头用空桶把水收回来。不管是自己跳的还是被打下去的都管。
+ *
  * ## 采矿按进度（主人 2026-09-27：前期煤、铁，后期钻石，也包括模组矿）
  *
  * 还没有铁镐时：铁矿当最高价值（它就是下一步）、煤少于 32 就挖；有了铁镐之后煤按少于 16 算。
@@ -196,6 +205,8 @@ const CFG = {
     minHp: 12,
     visitCell: 4,           // "去过"按几格一格子记
   },
+  bridge: { enabled: process.env.MC_INSTINCT_BRIDGE !== 'false' },
+  mlg: { enabled: process.env.MC_INSTINCT_MLG !== 'false', minFall: 3.5, placeAt: 3.0 },
   minFreeSlots: 2,          // 收获、采矿至少留几个空格
   yieldWaitMs: 1500,        // 让出身体时最多等本能收拾多久
 };
@@ -511,6 +522,22 @@ function pickCaveStep ({ cells = [], self, entry = null, visited = new Set() }, 
 }
 
 /**
+ * 落地水：这一拍该做什么。
+ * @param c.startY 这次离地后到过的最高点；c.y 现在的脚底高度；c.vy 竖直速度（格/tick，往下是负）
+ * @param c.landY  下面第一块实心方块的顶面高度（null = 下面 40 格内没有 / 读不到）；c.landIsWater 落点本来就是水
+ * @param c.hasBucket / c.holding（手上是不是水桶）/ c.nether / c.placed（这次已经倒过了）
+ * @returns 'equip' | 'place' | null
+ */
+function mlgStep (c, cfg = CFG.mlg) {
+  const { startY, y, vy, landY, landIsWater = false, hasBucket, holding, nether = false, placed = false } = c;
+  if (placed || !hasBucket || nether || landY == null || landIsWater || vy > -0.3) return null;
+  if (startY - landY <= cfg.minFall) return null;   // 摔不伤
+  if (!holding) return 'equip';
+  if (y - landY <= cfg.placeAt) return 'place';
+  return null;
+}
+
+/**
  * 该不该回家整理。
  * @param c.free        背包空格数
  * @param c.short       缺的 essential 标签
@@ -571,7 +598,7 @@ function install (bot, state, deps) {
     home: null,             // { center:{x,y,z}, radius }，mind 通过 POST /instinct {home} 告诉
   };
   // 跨重连保留状态；新加的本能补上默认配置（老的 state.instinct 里没有）
-  for (const k of ['pickup', 'harvest', 'mine', 'sleep', 'armor', 'gaze', 'combat', 'tidy', 'loot', 'cave']) I.cfg[k] = { ...CFG[k], ...(I.cfg[k] || {}) };
+  for (const k of ['pickup', 'harvest', 'mine', 'sleep', 'armor', 'gaze', 'combat', 'tidy', 'loot', 'cave', 'bridge', 'mlg']) I.cfg[k] = { ...CFG[k], ...(I.cfg[k] || {}) };
   const spawned = new Map();   // 掉落物 id → { t, thrower }
   const fails = new Map();
   const mineFails = new Map();   // "x,y,z" → 到什么时候之前不再试
@@ -937,6 +964,81 @@ function install (bot, state, deps) {
     return { did: 'cave' };
   }
 
+  // ---- 搭路 / 落地水：按身上的东西随时调寻路（有搭脚方块才搭路；有水桶才敢往下跳高）
+  const policyTimer = setInterval(() => {
+    try {
+      const mv = bot.pathfinder?.movements;
+      if (!mv || !bot.inventory || !deps.pathing) return;
+      const names = new Set(bot.inventory.items().map(i => i.name));
+      const nether = /nether/.test(String(bot.game?.dimension || ''));
+      const drop = deps.pathing.setDropAllowance(mv, { water: I.cfg.mlg.enabled && names.has('water_bucket'), nether });
+      let sc = { scaffolding: 0 };
+      if (I.cfg.bridge.enabled) {
+        const ids = deps.hands.SCAFFOLD_IDS.map(n => bot.registry.itemsByName[n.replace(/^minecraft:/, '')]?.id).filter(x => x != null);
+        sc = deps.pathing.setScaffold(mv, { itemIds: ids, forbid: (p) => inHome(p) === true });
+      } else deps.pathing.setScaffold(mv, {});
+      I.movePolicy = { maxDrop: drop, scaffoldKinds: sc.scaffolding, scaffoldCount: mv.countScaffoldingItems?.() ?? null, homeGuard: !!I.home };
+    } catch (_) {}
+  }, 2000);
+
+  // ---- 落地水反射（每个物理 tick）
+  const M = { startY: null, placed: null, equipping: false, collecting: false };
+  const groundBelow = (p) => {
+    const f = p.floored();
+    for (let dy = 0; dy <= 40; dy++) {
+      const b = bot.blockAt(f.offset(0, -dy, 0));
+      if (!b) return null;
+      if (/water/.test(b.name)) return { y: b.position.y + 1, water: true };
+      if (b.boundingBox === 'block') return { y: b.position.y + 1, water: false, pos: b.position };
+    }
+    return null;
+  };
+  async function collectWater () {
+    if (M.collecting || !M.placed) return;
+    M.collecting = true;
+    try {
+      await sleepMs(250);
+      const bucket = bot.inventory.items().find(i => i.name === 'bucket');
+      if (bucket && bot.heldItem?.name !== 'bucket') await bot.equip(bucket, 'hand');
+      const tgt = M.placed.pos;
+      for (let k = 0; k < 3 && !bot.inventory.items().some(i => i.name === 'water_bucket'); k++) {
+        await bot.lookAt(tgt.offset(0.5, 0.1, 0.5), true);
+        bot.activateItem();
+        await sleepMs(300);
+      }
+      const ok = bot.inventory.items().some(i => i.name === 'water_bucket');
+      event('mlg', ok ? `从 ${Math.round(M.placed.fall)} 格高掉下来，落地前倒了水、又收回来了` : `从 ${Math.round(M.placed.fall)} 格高掉下来倒了水，但水没收回来（${tgt.x},${tgt.y},${tgt.z}）`);
+    } catch (_) {} finally { M.placed = null; M.collecting = false; }
+  }
+  bot.on('physicsTick', () => {
+    try {
+      const e = bot.entity;
+      if (!e || !I.cfg.mlg.enabled) return;
+      if (e.onGround || e.isInWater || e.isInLava) {
+        M.startY = null;
+        if (M.placed && !M.collecting && (e.velocity?.y ?? 0) > -0.1) collectWater();
+        return;
+      }
+      if (M.startY == null || e.position.y > M.startY) M.startY = e.position.y;
+      const g = groundBelow(e.position);
+      const act = mlgStep({
+        startY: M.startY, y: e.position.y, vy: e.velocity?.y ?? 0, landY: g?.y ?? null, landIsWater: !!g?.water,
+        hasBucket: bot.inventory.items().some(i => i.name === 'water_bucket'), holding: bot.heldItem?.name === 'water_bucket',
+        nether: /nether/.test(String(bot.game?.dimension || '')), placed: !!M.placed,
+      });
+      if (act === 'equip' && !M.equipping) {
+        M.equipping = true;
+        const it = bot.inventory.items().find(i => i.name === 'water_bucket');
+        bot.equip(it, 'hand').catch(() => {}).finally(() => { M.equipping = false; });
+      } else if (act === 'place') {
+        bot.look(e.yaw, -Math.PI / 2, true);   // 低头看正下方
+        bot.activateItem();
+        M.placed = { pos: g.pos.offset(0, 1, 0), fall: M.startY - g.y };
+        state.ledger?.note({ route: 'mlg' });
+      }
+    } catch (_) {}
+  });
+
   // ---- 赶路 / 干别的时候看见值钱的矿：不打断命令，告诉 mind（一个位置一次）
   const oreWatch = setInterval(() => {
     try {
@@ -1281,7 +1383,7 @@ function install (bot, state, deps) {
     ticking = true;
     try { await tick(); } catch (e) { I.last = { t: Date.now(), error: e.message }; } finally { ticking = false; }
   }, CFG.pickup.tickMs);
-  bot.once('end', () => { clearInterval(timer); clearInterval(gazeTimer); clearInterval(toolTimer); clearInterval(combatTimer); clearInterval(kitTimer); clearInterval(oreWatch); });
+  bot.once('end', () => { clearInterval(timer); clearInterval(gazeTimer); clearInterval(toolTimer); clearInterval(combatTimer); clearInterval(kitTimer); clearInterval(oreWatch); clearInterval(policyTimer); });
 }
 
 /**
@@ -1407,6 +1509,18 @@ function selftest () {
   check('身上满了、背包也满 → 不去', pickLoot({ chests: 2, free: 1, packFree: 1, self: me }).mode, undefined);
   check('身上满了但背包还空 → 去', pickLoot({ chests: 2, free: 1, packFree: 20, self: me }).mode, 'open');
   check('夜里在露天 → 不去', pickLoot({ chests: 2, nightOut: true, self: me }).mode, undefined);
+
+  // ---- 落地水 ----
+  const F = (o) => mlgStep({ startY: 90, y: 75, vy: -1.2, landY: 70, hasBucket: true, holding: true, ...o });
+  check('还在半空（离地 5 格）→ 先不倒', F({}), null);
+  check('★ 离地 3 格以内 → 倒水', F({ y: 72.5 }), 'place');
+  check('★ 会摔伤、手上还没拿水桶 → 先换上', F({ holding: false }), 'equip');
+  check('落差 3 格（摔不伤）→ 不管', F({ startY: 73, y: 72, landY: 70 }), null);
+  check('★ 下界 → 不倒（水会蒸发）', F({ y: 72.5, nether: true }), null);
+  check('落点本来就是水 → 不用倒', F({ y: 72.5, landIsWater: true }), null);
+  check('没有水桶 → 什么都做不了', F({ y: 72.5, hasBucket: false }), null);
+  check('这次已经倒过 → 不再倒', F({ y: 72.5, placed: true }), null);
+  check('只是跳一下（速度小）→ 不管', F({ y: 72.5, vy: -0.1 }), null);
 
   // ---- 洞里下一步 ----
   const cv = (x, y, z, extra = {}) => ({ pos: { x, y, z }, visible: true, lavaNear: false, dark: true, ...extra });
@@ -1547,7 +1661,7 @@ function selftest () {
   });
 }
 
-module.exports = { CFG, pickCaveStep, STRUCTURE_SIGNS, recognizeStructures, pickLoot, pickTidy, mobKind, attackCooldownMs, combatPlan, COMBAT_YIELD, TIER, pickaxeTier, needTier, pickOre, pickHarvest, hazardUnder, pickStepOff, armorRank, pickArmor, toolWorn, pickGaze, whoThrew, pickPickup, bodyBusy, install, yieldBody, PASSIVE_POSTS, selftest };
+module.exports = { CFG, mlgStep, pickCaveStep, STRUCTURE_SIGNS, recognizeStructures, pickLoot, pickTidy, mobKind, attackCooldownMs, combatPlan, COMBAT_YIELD, TIER, pickaxeTier, needTier, pickOre, pickHarvest, hazardUnder, pickStepOff, armorRank, pickArmor, toolWorn, pickGaze, whoThrew, pickPickup, bodyBusy, install, yieldBody, PASSIVE_POSTS, selftest };
 
 if (require.main === module && process.argv.includes('--selftest')) {
   selftest().then(code => process.exit(code));

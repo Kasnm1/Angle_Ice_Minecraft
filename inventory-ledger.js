@@ -55,6 +55,9 @@ const ROUTE_RULES = [
   { re: /^POST \/(command|cmd)$/, gain: 'received', lose: 'lost' },
   { re: /^POST \/attack$/, gain: 'got', lose: null },
   { re: /^death$/, gain: null, lose: 'died' },   // bridge 在 bot 'death' 时登记
+  { re: /^mlg$/, gain: 'mlg', lose: 'mlg' },     // 落地水：水桶 ↔ 空桶（instinct.js 登记）
+  // 走路 / 跟着人时少了方块 = 寻路搭路垫掉的（pathfinder 会用她带的搭脚方块）
+  { re: /^POST \/(go|move|follow|flee|jump|come_to)$/, gain: 'got', lose: 'bridged' },
 ];
 
 // 界面种类 → 多了/少了的意思。container / backpack 带 where（放进哪 / 从哪拿）。
@@ -70,7 +73,7 @@ const VERB_TEXT = {
   picked: '捡到', got: '得到', mined: '挖到', harvested: '收获', crafted: '做出', smelted: '烧出',
   took: '拿出', took_off: '脱下/换下', given: '给的', reward: '任务奖励', received: '指令给了',
   stored: '放进', used: '合成用掉', furnace: '放进炉子', ate: '吃掉', placed: '放下/用掉', planted: '种下',
-  gave: '给了人', dropped: '丢掉', died: '死的时候掉了', wore: '穿上', submitted: '交任务交掉', broke: '用坏了', lost: '不知道怎么没的',
+  gave: '给了人', dropped: '丢掉', died: '死的时候掉了', bridged: '搭路垫掉', mlg: '落地水（倒出 / 收回）', wore: '穿上', submitted: '交任务交掉', broke: '用坏了', lost: '不知道怎么没的',
 };
 
 const GAIN_DEFAULT = 'got';

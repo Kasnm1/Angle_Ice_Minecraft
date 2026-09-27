@@ -1135,6 +1135,8 @@ function installLedger (bot) {
     timer = null;
     if (!bot.inventory || bot.currentWindow) return;   // 开着界面：等关窗那次再结
     try {
+      // 跟着人走是长状态（没有命令在跑）：这期间搭路垫掉的方块算"跟随"的
+      if (/^following /.test(state.currentAction || '')) L.note({ route: 'POST /follow' });
       L.commit(bot.inventory.items().map(i => ({ name: i.name, count: i.count })), { food: bot.food });
     } catch (_) {}
   };
@@ -1245,7 +1247,7 @@ function createBot() {
   hands.install(state.bot, state);
   installEntitySense(state.bot);
   installLedger(state.bot);
-  instinct.install(state.bot, state, { handlers, hands, isDropEntity, droppedItemOf, aggroOf, exposureOf, night, cancelCommands, pickAutoEquip });
+  instinct.install(state.bot, state, { handlers, hands, pathing, isDropEntity, droppedItemOf, aggroOf, exposureOf, night, cancelCommands, pickAutoEquip });
 
   // ---- 身体反射插件 ----------------------------------------------------------
   // 加载顺序有讲究（两边项目都是 pathfinder 打头）：
@@ -6073,7 +6075,7 @@ const handlers = {
     if (!I) return { installed: false };
     return {
       installed: true,
-      pickup: I.cfg.pickup, harvest: I.cfg.harvest, mine: I.cfg.mine, sleep: I.cfg.sleep, armor: I.cfg.armor, gaze: I.cfg.gaze, combat: I.cfg.combat, tidy: I.cfg.tidy, loot: I.cfg.loot, cave: I.cfg.cave,
+      pickup: I.cfg.pickup, harvest: I.cfg.harvest, mine: I.cfg.mine, sleep: I.cfg.sleep, armor: I.cfg.armor, gaze: I.cfg.gaze, combat: I.cfg.combat, tidy: I.cfg.tidy, loot: I.cfg.loot, cave: I.cfg.cave, bridge: I.cfg.bridge, mlg: I.cfg.mlg, movePolicy: I.movePolicy || null,
       combatNow: I.combat && I.running?.kind === 'combat' ? { since: I.combat.started, engaged: I.combat.engaged.size, killed: I.combat.killed } : null,
       lastCancel: state.lastCancel || null,
       home: I.home,
@@ -6095,7 +6097,7 @@ const handlers = {
     const { radius, followRadius, home } = b;
     const I = state.instinct;
     if (!I) throw new Error('本能还没装上（bot 还没建好）');
-    const KINDS = ['pickup', 'harvest', 'mine', 'sleep', 'armor', 'gaze', 'combat', 'tidy', 'loot', 'cave'];
+    const KINDS = ['pickup', 'harvest', 'mine', 'sleep', 'armor', 'gaze', 'combat', 'tidy', 'loot', 'cave', 'bridge', 'mlg'];
     for (const k of KINDS) if (typeof b[k] === 'boolean') I.cfg[k].enabled = b[k];
     // 家在哪（收获本能：耕地上的庄稼只收家里的）。mind 知道家，定期告诉这里
     if (home === null) I.home = null;

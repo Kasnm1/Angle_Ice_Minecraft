@@ -1063,6 +1063,34 @@ const SAFE_DROP = 3;    // 3 格以内落地不掉血
 const MAX_DROP = 8;     // 再高就不走
 /** 跳下 h 格的额外代价：≤3 格 0；4–8 格每格 +40（走 40 格路的代价）→ 有别的路一定绕 */
 function dropPenalty (h) { return h > SAFE_DROP ? (h - SAFE_DROP) * 40 : 0; }
+const MLG_DROP = 24;    // 身上有水桶（且不在下界）：落地水保命，最多往下跳这么高（代价照样按 dropPenalty，有路一定绕）
+
+/**
+ * 落地水本能（主人 2026-09-27）：有水桶就允许更高的跳落 —— 搭不了路、又要下去的时候跳，落地前倒水（instinct.js 的反射）。
+ * 下界放不了水（会蒸发），不放宽。返回生效的 maxDropDown。
+ */
+function setDropAllowance (mv, { water = false, nether = false } = {}) {
+  mv.maxDropDown = water && !nether ? MLG_DROP : MAX_DROP;
+  return mv.maxDropDown;
+}
+
+/**
+ * 搭路本能（主人 2026-09-27）：走到断崖 / 沟 / 要往上的地方，用**她自己带的搭脚方块**垫过去。
+ *   itemIds  ：能拿来垫的物品 id（只放她随身带的那几种，hands.SCAFFOLD_IDS）；空数组 = 不搭（回到老行为）
+ *   forbid   ：(pos) → true 表示这里不许放（家的范围：别在主人的基地里乱垫）
+ * 放方块的代价仍是 placeCost（≈ 走 12 格），能绕就绕；allow1by1towers 跟着开（垫高往上爬）。
+ */
+function setScaffold (mv, { itemIds = [], forbid = null } = {}) {
+  mv.scafoldingBlocks = itemIds.slice();
+  mv.allow1by1towers = itemIds.length > 0;
+  mv.exclusionAreasPlace = (mv.exclusionAreasPlace || []).filter(f => !f.__noPlaceGuard);
+  if (forbid) {
+    const guard = (block) => (block?.position && forbid(block.position) ? 100 : 0);   // ≥100 = 不许放（pathfinder 的约定）
+    guard.__noPlaceGuard = true;
+    mv.exclusionAreasPlace.push(guard);
+  }
+  return { scaffolding: mv.scafoldingBlocks.length, towers: mv.allow1by1towers, guarded: !!forbid };
+}
 
 function applyPolicy (mv, blocksByName, opts = {}) {
   if (!mv) throw new Error('applyPolicy: 需要 Movements 实例');
@@ -1808,6 +1836,18 @@ if (require.main === module && process.argv.includes('--selftest')) {
   check('liquidCost 已写入', fakeMv.liquidCost, COSTS.liquidCost);
   check('allow1by1towers 关闭（不垫方块爬高）', fakeMv.allow1by1towers, false);
   check('scafoldingBlocks 清空（不消耗玩家材料）', fakeMv.scafoldingBlocks.length, 0);
+  // 搭路 / 落地水（instinct.js 按身上的东西随时调）
+  check('★ 有水桶 → 允许跳到 MLG_DROP', setDropAllowance(fakeMv, { water: true }), MLG_DROP);
+  check('★ 下界有水桶也不放宽（水会蒸发）', setDropAllowance(fakeMv, { water: true, nether: true }), MAX_DROP);
+  check('没水桶 → 回到 8 格', setDropAllowance(fakeMv, {}), MAX_DROP);
+  const sc = setScaffold(fakeMv, { itemIds: [1, 2], forbid: (p) => p.x === 0 });
+  check('★ 带着搭脚方块 → 能搭路、能垫高', sc.scaffolding === 2 && fakeMv.allow1by1towers === true, true);
+  const guard = fakeMv.exclusionAreasPlace.find(f => f.__noPlaceGuard);
+  check('★ 家里不许放（代价 ≥100）', guard({ position: { x: 0, y: 64, z: 0 } }) >= 100 && guard({ position: { x: 5, y: 64, z: 0 } }) === 0, true);
+  setScaffold(fakeMv, { itemIds: [3] });
+  check('再设一次不会叠两道闸', fakeMv.exclusionAreasPlace.filter(f => f.__noPlaceGuard).length, 0);
+  setScaffold(fakeMv, {});
+  check('没带搭脚方块 → 不搭（回到老行为）', fakeMv.scafoldingBlocks.length === 0 && fakeMv.allow1by1towers === false, true);
   check('blocksCantBreak 是"只增不减"：原有 999 还在', fakeMv.blocksCantBreak.has(999), true);
   check('blocksCantBreak 装上了 4 个受保护 ID', fakeMv.blocksCantBreak.size, 5);
   check('摘要里的 protectedCount 与实际一致', summary.protectedCount, 4);
@@ -2958,7 +2998,7 @@ if (require.main === module && process.argv.includes('--selftest')) {
     });
 }
 
-module.exports = {
+module.exports = { setDropAllowance, setScaffold, MLG_DROP,
   bareName,
   isProtected,
   PROTECTED_PATTERNS,
