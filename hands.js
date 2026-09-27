@@ -2097,10 +2097,13 @@ function categoryOf (bot, item) {
   try { inCatalog = require('./ambition').isFood(id); } catch (_) {}
   // 矿物/宝石先认：《食录逸闻》清单里也有要交绿宝石的任务，不能因为在清单里就当成吃的
   if (has(/^(forge|c):(ores|ingots|gems|raw_materials|nuggets|dusts)/)) return '矿物';
-  if ((inCatalog && !isBlock) || has(/^(forge|c):foods|meals|feasts|drinks$/) || foodScore(item) >= 3) return '食物';
+  // minecraft:fishes：很多模组的鱼（starcatcher…）只打了这个标签，没打 forge:foods（WorkBuddy 2026-09-27 统计：109 个）
+  if ((inCatalog && !isBlock) || has(/^(forge|c):foods|meals|feasts|drinks$/) || has(/^minecraft:fishes$/) || foodScore(item) >= 3) return '食物';
   if (has(/^(forge|c):(seeds|crops)|saplings$/) || /seed|sapling/.test(item.name)) return '作物种子';
   if (has(/^(forge|c):(ores|ingots|gems|raw_materials|nuggets|dusts|storage_blocks)/) || /ingot|_ore$|raw_|nugget|gem$|diamond$|emerald$|coal$|redstone$|lapis/.test(item.name)) return '矿物';
   if (has(/^minecraft:(logs|planks)$/) || /_log$|_planks$|_wood$|stick$/.test(item.name)) return '木头';
+  // 饰品（curios:* 标签，589 个）、帽子（simplehats 这类零标签的只能靠名字，341 个，名单核对过全是帽子）、枪（只认 forge:guns 标签 —— 名字里的 gun 会误中 gunpowder）
+  if (has(/^curios:/) || has(/^forge:guns/) || /(^|_)hat$|_hat_/.test(botName(item.name)) || /^simplehats:/.test(id)) return '工具装备';
   if (/pickaxe|_axe$|shovel|hoe$|sword|bow$|crossbow|helmet|chestplate|leggings|boots|shield|fishing_rod|shears|flint_and_steel|knife/.test(item.name) || has(/tools|weapons|armors/)) return '工具装备';
   if (bot.registry.blocksByName[item.name] || bot.registry.blocksByName[String(item.name).split(':').pop()]) return '方块';
   return '其他';
