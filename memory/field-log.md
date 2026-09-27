@@ -4583,3 +4583,17 @@ mind 日志在 `00:06:46` 和 `00:06:52` 两次调用攻击，第二次把猪的
 详细分析与行为边界同步到 `INSTINCT-OPTIMIZATION-20260927.md`。
 
 Windows 部署 `f7dded3` 后读回自动探洞与搭路均为关闭，`scaffoldKinds:0`、`scaffoldCount:0`、`allow1by1towers:false`。不存在的目标返回 `success:false, ok:false, attacked:0`。专项测试为 instinct `214/214`、调度 `36/36`、storage policy `5/5`；未用现场动物做破坏性试杀。
+
+---
+
+## P62 —— 正常箱子偶发 GoalChanged，被概括成“箱子打不开” ✅ 已修复
+
+### 证据与根因
+
+住宅箱子 `(26,128,6)` 在 `00:19:23` 的原始错误是 `The goal was changed before it could be completed!`，下一次取物才因没有窗口而失败。同一箱子在 `00:23:34` 先走近后正常打开，随后取到 91 个煤和 18 个木炭。箱子身份、右键动作和窗口解析都能工作。
+
+bridge 以前只用 `inflight` 计数，并不阻止两个 HTTP 身体命令并发。mind 被新消息换轮次时，旧请求仍在寻路；新请求再设一个 goal，两个动作便互相顶掉。
+
+### 修复
+
+增加 `body-command-lock.js`。普通身体命令重叠时，后来的请求明确返回 busy，不启动、不排队、不改变 goal；`POST /stop` 仍可立即急停。`GET /instinct.bodyCommand` 暴露当前持锁命令和持续时间。

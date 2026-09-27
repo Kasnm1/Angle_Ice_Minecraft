@@ -486,6 +486,7 @@ Example:
 
 会动身体的 POST（除 `/chat` `/instinct` `/look` `/memory` 等只读或不动身体的）执行前都会先让本能让出身体。
 `POST /stop { "hold": true }` = 站住，之后 20 秒本能也不动；不带 `hold` 的 `/stop` 只是"停下换件事"。
+同一时刻只执行一个会动身体的 HTTP 命令。重叠请求返回 `success:false`、`busy` 与当前命令，且不会替换正在执行的寻路目标；`POST /stop` 可越过此互斥立即急停。
 
 `POST /pickup` 新增 `ids`（只捡这几个实体 id）。
 

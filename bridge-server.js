@@ -59,6 +59,7 @@ const hands = require('./hands.js');
 const entityRegistry = require('./entity-registry.js');
 // 本能：不过大脑、身体自己做的事（先有拾取；战斗本能也放这里）。身体归属规矩见 instinct.js 顶部。
 const instinct = require('./instinct.js');
+const bodyCommandLock = require('./body-command-lock.js');
 // 物品账：背包每次进出记下"变了什么、为什么"（捡的 / 放进哪个箱子 / 吃掉 / 用坏…），mind 读它。见 inventory-ledger.js。
 const inventoryLedger = require('./inventory-ledger.js');
 const storagePolicy = require('./storage-policy.js');
@@ -519,6 +520,9 @@ const state = {
   connected: false,
   retries: 0,
   currentAction: null,
+  // HTTP 身体命令互斥。mind 的旧请求不会因新一轮思考自动消失；不加锁时两个
+  // pathfinder.goto 会互相替换 goal，外观就是“正常箱子突然打不开”。
+  bodyCommand: null,
   movements: null, // Movements 实例，供 /config 自检寻路器安全开关
   pfPolicy: null,  // pathing.applyPolicy 的摘要（代价 + 受保护方块数）
   pfProbe: null,   // 注册表往返自检结果（名字可不可信）
@@ -6235,6 +6239,7 @@ const handlers = {
       home: I.home,
       running: I.running ? I.running.kind : null,
       inflight: I.inflight,
+      bodyCommand: bodyCommandLock.status(state),
       quietForMs: Math.max(0, I.quietUntil - Date.now()),
       last: I.last,
       log: I.log.slice(-10),
@@ -6391,26 +6396,47 @@ const server = http.createServer((req, res) => {
       // 会动身体的命令：先让本能让出身体（打断 + 等它收拾干净），执行期间本能不出手。
       // 见 instinct.js 顶部「身体归属」。GET 只看不动，不拦。
       const bodyCmd = req.method === 'POST' && !instinct.PASSIVE_POSTS.has(key) && state.instinct;
+      // /stop 是急停，必须能越过锁；其余会动身体的 HTTP 请求严格互斥。
+      // 这里选择“明确拒绝重叠”而不是排队：调用方可能已经超时或改了主意，排队会让
+      // 一个被放弃的旧请求稍后突然执行。busy 是诚实、可重试、不会改变世界的结果。
+      let bodyToken = null;
+      if (bodyCmd && key !== 'POST /stop') {
+        const got = bodyCommandLock.claim(state, key);
+        if (!got.ok) {
+          json(res, 200, {
+            success: false,
+            ok: false,
+            error: `身体正在执行 ${got.active}（${(got.activeForMs / 1000).toFixed(1)} 秒），当前 ${key} 没有启动；等前一个动作完成后重试`,
+            busy: bodyCommandLock.status(state),
+          });
+          return;
+        }
+        bodyToken = got.token;
+      }
       let result;
-      if (bodyCmd) {
-        const y = await instinct.yieldBody(state, key, args);
-        if (y?.reject) { json(res, 200, { success: false, ok: false, error: y.reject }); return; }
-        // 反过来的打断：战斗本能要能叫停正在跑的命令（挖矿时僵尸扑上来，不能等挖完）。
-        // 给每个命令一个序号，注入 abort()：cancelCommands() 之后，序号 ≤ 被取消线的命令都该收手。
-        // 支持 abort 的 handler（/go /mine /pickup /farm…）在每一步之间问一次；其余的靠停寻路/停挖兜底。
-        const mySeq = state.cmdSeq = (state.cmdSeq || 0) + 1;
-        if (args && typeof args === 'object' && !Array.isArray(args) && args.abort === undefined) {
-          args.abort = () => (state.cmdCancelledUpTo || 0) >= mySeq;
+      try {
+        if (bodyCmd) {
+          const y = await instinct.yieldBody(state, key, args);
+          if (y?.reject) { json(res, 200, { success: false, ok: false, error: y.reject }); return; }
+          // 反过来的打断：战斗本能要能叫停正在跑的命令（挖矿时僵尸扑上来，不能等挖完）。
+          // 给每个命令一个序号，注入 abort()：cancelCommands() 之后，序号 ≤ 被取消线的命令都该收手。
+          // 支持 abort 的 handler（/go /mine /pickup /farm…）在每一步之间问一次；其余的靠停寻路/停挖兜底。
+          const mySeq = state.cmdSeq = (state.cmdSeq || 0) + 1;
+          if (args && typeof args === 'object' && !Array.isArray(args) && args.abort === undefined) {
+            args.abort = () => (state.cmdCancelledUpTo || 0) >= mySeq;
+          }
+          state.instinct.inflight++;
+          // 物品账：这个命令执行期间（+ 结束后一小会儿）背包的进出都算它的
+          const endLedger = state.ledger ? state.ledger.begin({ route: key }) : null;
+          try { result = await handler(args, qs); } finally {
+            state.instinct.inflight--;
+            if (endLedger) { endLedger(); state.ledgerKick?.(); }
+          }
+        } else {
+          result = await handler(args, qs);
         }
-        state.instinct.inflight++;
-        // 物品账：这个命令执行期间（+ 结束后一小会儿）背包的进出都算它的
-        const endLedger = state.ledger ? state.ledger.begin({ route: key }) : null;
-        try { result = await handler(args, qs); } finally {
-          state.instinct.inflight--;
-          if (endLedger) { endLedger(); state.ledgerKick?.(); }
-        }
-      } else {
-        result = await handler(args, qs);
+      } finally {
+        if (bodyToken) bodyCommandLock.release(state, bodyToken);
       }
 
       // ⚠️⚠️⚠️ 2026-09-25 修复（P44 的**架构级根因**，见 field-log）：

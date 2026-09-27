@@ -133,3 +133,9 @@ Windows 随后对一扇 `open:true` 的 `warped_door` 调用实际激活端点�
 部署提交为 `f7dded3`。Windows 重启后读回：`cave.enabled:false`、`bridge.enabled:false`、`movePolicy.scaffoldKinds:0`、`scaffoldCount:0`，寻路器同时为 `allow1by1towers:false`、`scafoldingBlocks:0`。不存在的目标实测返回 `success:false, ok:false, attacked:0`，证明“没有攻击”不会再被包装成成功。
 
 Windows 验证结果：常规自测中 pathing `418/418`、hands `51/51`、mind `85/85`、palette `69/69`、block palette `93/93`、item registry `54/54`，bridge 与 body 语法检查通过；专项 instinct `214/214`、调度 `36/36`、storage policy `5/5`。为避免改变玩家世界，没有召唤或再杀一只动物；因此“移动活物在追逐中改变方向”的现场闭环尚未用真实生物验证，现有证据是运行代码、语法检查及安全失败路径。
+
+## 现场追加：箱子偶发“打不开”是身体命令竞态
+
+`00:19:23` 对住宅箱子 `(26,128,6)` 的实际错误是 `The goal was changed before it could be completed!`，随后取物端点准确报告“没有打开的箱子”。同一只箱子在她先单独走近后于 `00:23:34` 正常打开，并成功取出煤与木炭，排除了方块身份、右键和普通箱子窗口协议损坏。
+
+根因在 bridge 的共用入口：`inflight` 只计数，没有互斥。mind 被新消息打断时，旧 HTTP 请求仍在执行；新动作同时调用 `pathfinder.goto()`，会替换旧请求的 goal。现在所有会动身体的 HTTP 命令必须先取得一把进程内互斥锁；重叠请求不会排队或触碰身体，而是返回 `success:false`、当前动作和已执行时间，让意识稍后重试。选择拒绝而非排队，是为了避免调用方已经超时或改主意后，旧请求仍在未来突然执行。`POST /stop` 保留越锁急停能力。`GET /instinct.bodyCommand` 可读当前持锁命令。
