@@ -948,7 +948,7 @@ const TOOLS = {
   },
   craft: {
     kind: 'action',
-    desc: '按本整合包的真实配方合成（背包 2×2 或附近 4 格内的工作台）。会自己挑背包里有的原料。用注册名或中文名。',
+    desc: '按本整合包的真实配方合成（背包 2×2 或附近 4 格内的工作台）。会自己挑背包里有的原料；count 是要做的次数，默认 1，除非玩家明确说数量，不要把库存总数填进去。为避免误把原料耗光，批量合成会至少留一份材料。用注册名或中文名。',
     params: { itemName: { type: 'string' }, count: { type: 'number' } }, required: ['itemName'],
     run: async ({ itemName, count }) => bridge.post('/craft2', { itemName, count: count || 1 }, CFG.actionTimeoutMs),
   },
@@ -1222,7 +1222,7 @@ const TOOLS = {
   },
   give: {
     kind: 'action',
-    desc: '把背包里的东西递给玩家：走到他身边、对准丢过去，并确认他真的接到了（没接到会报错或说明在地上）。',
+    desc: '把背包里的东西递给玩家：停在他 1～2 格外再对准丢过去，不和玩家重合；确认物品真的离开背包并尽量确认他接到（没扔出去或没接到都会如实说明）。',
     params: { itemName: { type: 'string' }, count: { type: 'number' }, player: { type: 'string' } }, required: ['itemName', 'player'],
     run: async ({ itemName, count, player }) => bridge.post('/give', { itemName, count, player }, 30000),
   },

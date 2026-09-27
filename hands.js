@@ -966,7 +966,30 @@ async function craft2 (bot, { itemName, count = 1 } = {}, withTimeout) {
 
   for (const r of cands) {
     const per = r.out.find(o => o.item === id)?.count || 1;
-    const times = Math.ceil(count / per);
+    const requestedTimes = Math.ceil(count / per);
+    // 默认给原料留一份。模型偶尔会把背包里查到的数量直接填进 count，
+    // 这会把“做一点南瓜食物”误变成“把 11 个南瓜全切成种子”。
+    // 玩家明确要做的数量仍尽量满足；只有会清空某种原料时才收敛到安全数量。
+    let times = requestedTimes;
+    if (requestedTimes > 1) {
+      let safeTimes = requestedTimes;
+      const ingredientNeeds = r.shape
+        ? Object.entries(r.shape.key).map(([ch, alts]) => ({
+          alts,
+          perCraft: r.shape.pattern.join('').split(ch).length - 1,
+        }))
+        : r.in.map(s => ({ alts: s.alts, perCraft: s.count }));
+      for (const ing of ingredientNeeds) {
+        const ids = ing.alts.flatMap(a => a.item ? [a.item] : [...(KB.tags.get(`item:${a.tag}`) || [])]);
+        const available = [...new Set(ids)].reduce((n, x) => n + (have.get(x) || 0), 0);
+        const maxKeepingOne = available > ing.perCraft
+          ? Math.floor((available - 1) / ing.perCraft)
+          : Math.floor(available / ing.perCraft);
+        safeTimes = Math.min(safeTimes, maxKeepingOne);
+      }
+      if (safeTimes > 0) times = safeTimes;
+    }
+    if (times < requestedTimes) console.log(`[craft2] 安全保留原料：${id} ${requestedTimes}→${times} 次，至少留一份材料`);
     // 每种原料挑一个背包里够数的具体物品
     const left = new Map(have);
     const pickFor = (alts, need) => {
@@ -1140,7 +1163,7 @@ async function smelt (bot, { itemName, count = 1, fuel } = {}) {
 
 /**
  * 以前的"给"= 朝玩家方向丢出去就算完。结果：玩家没接到，2 秒后她自己又捡回来，
- * 嘴上却说"给你尝尝"（实测）。现在：走到 1.5 格内 → 对准胸口丢 → 盯着这个掉落物被谁捡走。
+ * 嘴上却说"给你尝尝"（实测）。现在：停在玩家 1～2 格外 → 对准胸口丢 → 盯着这个掉落物被谁捡走。
  */
 async function give (bot, { itemName, count, player } = {}) {
   const it = findItem(bot, itemName);
@@ -1148,20 +1171,37 @@ async function give (bot, { itemName, count, player } = {}) {
   const target = bot.players[player]?.entity;
   if (!target) throw new Error(`看不见 ${player}（不在视野内）`);
   const { goals } = require('mineflayer-pathfinder');
-  if (bot.entity.position.distanceTo(target.position) > 2) {
+  const safeRange = { min: 1.15, max: 2.15 };
+  const moveToThrowRange = async () => {
+    const t = target.position;
+    const dx = bot.entity.position.x - t.x; const dz = bot.entity.position.z - t.z;
+    const len = Math.hypot(dx, dz) || 1;
+    // 目标点在玩家外侧约 1.6 格，避免 GoalNear 在玩家脚下直接判定“已到”。
+    const anchor = { x: t.x + dx / len * 1.6, y: t.y, z: t.z + dz / len * 1.6 };
+    await Promise.race([
+      bot.pathfinder.goto(new goals.GoalNear(anchor.x, anchor.y, anchor.z, 0.35)),
+      sleep(15000).then(() => { throw new Error('超时'); }),
+    ]);
+  };
+  let distance = bot.entity.position.distanceTo(target.position);
+  if (distance < safeRange.min || distance > safeRange.max) {
     try {
-      await Promise.race([
-        bot.pathfinder.goto(new goals.GoalNear(target.position.x, target.position.y, target.position.z, 1.5)),
-        sleep(15000).then(() => { throw new Error('超时'); }),
-      ]);
+      await moveToThrowRange();
     } catch (e) {
       bot.pathfinder.setGoal(null);
-      if (bot.entity.position.distanceTo(target.position) > 3.5) throw new Error(`走不到 ${player} 身边：${e.message}`);
+      distance = bot.entity.position.distanceTo(target.position);
+      if (distance < 1.0 || distance > 3.0) throw new Error(`走不到 ${player} 身边的投掷位置：${e.message}`);
     }
   }
+  distance = bot.entity.position.distanceTo(target.position);
+  if (distance < 1.0) throw new Error(`离 ${player} 太近（${distance.toFixed(1)} 格），不贴着人扔`);
   await bot.lookAt(target.position.offset(0, 1.1, 0), true);
-  const n = count ? Math.min(count, it.count) : it.count;
-  const wantId = fullId(it.name);
+  // 寻路期间背包可能变化，重新取栈，避免对过期 Item 调 toss。
+  const fresh = findItem(bot, itemName);
+  if (!fresh) throw new Error(`走到投掷位置后背包里没有 ${itemName}`);
+  const n = count ? Math.min(count, fresh.count) : fresh.count;
+  const wantId = fullId(fresh.name);
+  const beforeCount = fresh.count;
 
   // 丢出去的掉落物是一个新实体；记下它，再看 playerCollect 是谁捡的
   let dropped = null; let collector = null;
@@ -1172,11 +1212,16 @@ async function give (bot, { itemName, count, player } = {}) {
   bot.on('entitySpawn', onSpawn);
   bot.on('playerCollect', onCollect);
   try {
-    if (n >= it.count) await bot.tossStack(it); else await bot.toss(it.type, null, n);
+    if (n >= fresh.count) await bot.tossStack(fresh); else await bot.toss(fresh.type, null, n);
     for (let i = 0; i < 30 && !collector; i++) await sleep(200);   // 最多等 6 秒
   } finally {
     bot.removeListener('entitySpawn', onSpawn);
     bot.removeListener('playerCollect', onCollect);
+  }
+  const after = findItem(bot, itemName);
+  if ((after?.count || 0) >= beforeCount) {
+    const e = new Error(`已经站在 ${distance.toFixed(1)} 格处，但物品没有离开背包，投掷未生效`);
+    e.data = { given: false, throwFailed: true }; throw e;
   }
   const by = collector === target ? 'player' : collector === bot.entity ? 'self' : collector ? 'other' : null;
   if (by === 'player') return { given: wantId, count: n, to: player, confirmed: true };

@@ -901,7 +901,7 @@ const SYSTEM = `你是 Angle_ICE（安琪），住在这个 Minecraft 模组服�
   · 专心做那道菜 → focus_on；你记错了 → revise
   · 开门 / 关门 → door；下来 / 上去 → climb_down / climb；对准 / 挪一点 → nudge；绕过去 → look_around 再走
 - 存取、整理很多东西：用 store_items / take_items / sort_container / sort_inventory 一次做完，别一格一格搬（一格一次太慢了）；整理周围所有箱子、决定身上带什么，用 organize_storage。
-- 有人要你做一样东西（"把羊肉做好" = 熟羊肉，"来把铁镐"），想清楚是哪样东西，用 make_item 一次做完（它会自己看配方、去家里拿材料、做、递给他）。别一步步问他材料在哪。
+- 有人要你做一样东西（"把羊肉做好" = 熟羊肉，"来把铁镐"），想清楚是哪样东西，用 make_item 一次做完（它会自己看配方、去家里拿材料、做、递给他）。别一步步问他材料在哪。数量没说就做 1 个；不要把背包里查到的数量填进 count，更不要为了“继续做南瓜食物”把一种原料全变成种子或半成品，先留至少一份。
 - 找东西之前先想想家里有没有（【家里（你记得的）】或 home_stock），知道在哪个箱子就直接去，别挨个翻箱子。
 - 家：你认定的庇护所（set_home）。家里的箱子是仓库，分类整理过一次就固定（organize_storage 会按记住的放）；要回家用 go_home。
 - 探险：家以外的箱子，用 loot_nearby 尽量装到身上带回家，回家再 organize_storage 归位。
@@ -1142,6 +1142,9 @@ async function think (why) {
   W.lastNow = { msg: nowMsg, brief: now.brief };
   const didSay = []; const didDo = []; const noted = []; const rounds = []; let sentN = 0;
   const heardPlayer = now.ev.some(e => /说：/.test(e.text) && e.names?.length); let nudgedToSay = false;
+  // 有时模型先查配方/用途，顺手说一句“好”，然后把这一刻当成做完了。
+  // 这不是“只查资料就停”的合理结束：答应过的事要么开始做，要么说明做不到。
+  let nudgedToAct = false;
   try {
     for (let round = 0; round < CFG.maxRounds; round++) {
       W.history = repairHistory(W.history);
@@ -1189,6 +1192,14 @@ async function think (why) {
         // 全随身物品可能超过普通工具结果的 1800 字；inventory 已支持 query，完整结果仍要留够
         // 空间让矿物等靠后的条目不会被截掉，避免“其实在精妙背包里却没看到”。
         W.history.push({ role: 'tool', tool_call_id: c.id, content: clipText(JSON.stringify(out), name === 'inventory' ? 6000 : 1800) });
+      }
+      const roundSaid = calls.filter(c => c.function?.name === 'say').map(c => parseArgs(c.function?.arguments).text || '');
+      const affirmative = [...roundSaid, msg.content || ''].some(isBareAffirmative);
+      const infoOnly = !actions.length && !end && calls.some(c => kindOf(c.function?.name) === 'info');
+      if (affirmative && infoOnly && !nudgedToAct && round < CFG.maxRounds - 1) {
+        nudgedToAct = true;
+        W.history.push({ role: 'user', content: ACTION_NUDGE });
+        needMore = true;
       }
       const spokeOnly = !actions.length && !end && calls.every(c => ['speech', 'memory'].includes(kindOf(c.function?.name)));
       if (spokeOnly && round < CFG.maxRounds - 1) needMore = true;
@@ -1262,6 +1273,16 @@ async function think (why) {
 
 /** 她只在正文里"回话"时的提醒（实测：gemini 常把回话写成正文不调 say，游戏里他就看不到 —— 2026-09-26 跑分发现 52 题） */
 const SAY_NUDGE = '（你刚才写的只是心里想的，他看不见。要回他就调 say 说出来；觉得不用回也行。）';
+
+/**
+ * 她已经答应了却只做资料查询时的补问。
+ * 只触发一次，避免把正常的“我先查一下”变成连环催促；补问后仍做不到，
+ * 由模型自己调用 report_issue 或说清楚原因，不能再用一句“好”假装完成。
+ */
+const ACTION_NUDGE = '（你刚才只查了资料，还没有执行答应的事。现在根据查到的结果立即调用一个实际行动工具（例如 make_item、craft、cook_pot、goto、pickup 等）；如果当前确实做不到，就明确说出原因并调用 report_issue，不能只说“好”。）';
+function isBareAffirmative (text) {
+  return /^(好|好的|好嘞|行|可以|没问题|收到|好呀|好哦)[！!。．.、，,\s]*$/u.test(String(text || '').trim());
+}
 
 /** 他上线那一刻她的心情（只是提示，怎么说还是她自己定） */
 const JOIN_MOODS = [
