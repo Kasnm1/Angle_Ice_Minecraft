@@ -104,10 +104,11 @@
  * 用哪些命令看**服务器实际给了什么**（命令树，GET /commands）—— 这个包可能根本没开放普通玩家的传送命令，没有就走路。
  * 管理员命令一律不碰（runCommand 本来就拦着）。自动用的命令之间至少隔 cmdGapMs。
  *   · 死了：记下死在哪。重生后告诉 mind，并回去捡东西（掉落物 5 分钟就没了）：
- *       有 /back 就用；没有就在同一维度、recoverMax 格内走回去，到了把附近的掉落物都捡起来。
+ *       有 /back 就用；没有但有 /tp（同一维度）就 /tp 回死的坐标（主人："也可以 /tp 回到之前坐标"）；
+ *       都没有就在同一维度、recoverMax 格内走回去，到了把附近的掉落物都捡起来。
  *       死在岩浆里（东西烧没了）、太远、别的维度 → 不白跑，只告诉 mind。每次死只回去一次。
  *   · 家：mind 定了家、服务器有 /sethome → 她站在家里时顺手设一下（以后 /home 才回得去）
- *   · 天黑还在野外、离家太远走不回去、服务器有 /home → 用
+ *   · 天黑还在野外、离家太远走不回去、服务器有 /home → 用，并记下原来在哪；天亮了 /back 或 /tp 回去接着干
  *   · 血 ≤ 4 还在被打（战斗本能在跑开）、有 /home 或 /spawn → 传走保命
  *
  * ## 采矿按进度（主人 2026-09-27：前期煤、铁，后期钻石，也包括模组矿）
@@ -554,12 +555,13 @@ function pickCaveStep ({ cells = [], self, entry = null, visited = new Set() }, 
  * @returns { how: 'back' | 'walk' } | { skip }
  */
 function pickRecovery (c, cfg = CFG.cmd) {
-  const { death, here, dim, hasBack = false, sinceMs = 0 } = c;
+  const { death, here, dim, hasBack = false, hasTp = false, sinceMs = 0 } = c;
   if (!death) return { skip: '没死过' };
   if (death.lava) return { skip: '死在岩浆里，东西烧没了' };
   if (sinceMs > cfg.despawnMs - 20000) return { skip: '掉的东西快消失了（或者已经没了）' };
   if (hasBack) return { how: 'back' };
   if (death.dim !== dim) return { skip: `死在${death.dim}，现在在${dim}，走不回去` };
+  if (hasTp) return { how: 'tp' };
   const d = here ? Math.hypot(death.pos.x - here.x, death.pos.z - here.z) : Infinity;
   if (d > cfg.recoverMax) return { skip: `死的地方离这里 ${Math.round(d)} 格，太远了` };
   return { how: 'walk', dist: Math.round(d) };
@@ -570,14 +572,20 @@ function pickRecovery (c, cfg = CFG.cmd) {
  * @returns { cmd, why } | null
  */
 function pickCommand (c, cfg = CFG.cmd) {
-  const { cmds = new Set(), hp = 20, fleeing = false, nightOut = false, homeDist = null, atHome = false, homeSynced = false, sinceLast = Infinity } = c;
+  const { cmds = new Set(), hp = 20, fleeing = false, nightOut = false, homeDist = null, atHome = false, homeSynced = false, sinceLast = Infinity,
+    day = false, returnTo = null, sameDim = true } = c;
   if (sinceLast < cfg.cmdGapMs) return null;
   if (hp <= cfg.panicHp && fleeing) {
     if (cmds.has('home')) return { cmd: 'home', why: `血只剩 ${hp}，跑不掉了，传回家` };
     if (cmds.has('spawn')) return { cmd: 'spawn', why: `血只剩 ${hp}，跑不掉了，传回出生点` };
   }
   if (atHome && !homeSynced && cmds.has('sethome')) return { cmd: 'sethome', why: '在家，把服务器的 /home 也设在这里' };
-  if (nightOut && homeDist != null && homeDist > cfg.nightFarHome && homeSynced && cmds.has('home')) return { cmd: 'home', why: `天黑了还在野外、离家 ${Math.round(homeDist)} 格，传回家` };
+  if (nightOut && homeDist != null && homeDist > cfg.nightFarHome && homeSynced && cmds.has('home')) return { cmd: 'home', why: `天黑了还在野外、离家 ${Math.round(homeDist)} 格，传回家`, remember: true };
+  // 天亮了：回昨晚传走之前的地方接着干（/back 回的就是上一次传送前的位置；没有就 /tp 坐标）
+  if (day && returnTo && sameDim) {
+    if (cmds.has('back')) return { cmd: 'back', why: '天亮了，回昨晚离开的地方', returned: true };
+    if (cmds.has('tp')) return { cmd: `tp ${returnTo.x} ${returnTo.y} ${returnTo.z}`, why: '天亮了，回昨晚离开的地方', returned: true, selfTp: true };
+  }
   return null;
 }
 
@@ -1065,10 +1073,11 @@ function install (bot, state, deps) {
     try { const r = await deps.handlers['GET /commands'](); cmdCache = { at: Date.now(), set: new Set(r?.all || []) }; } catch (_) {}
     return cmdCache.set;
   };
-  const runCmd = async (cmd, why) => {
+  const runCmd = async (cmd, why, { selfTp = false } = {}) => {
     I.lastCmdAt = Date.now();
     let r = null;
-    try { r = await deps.handlers['POST /cmd']({ command: cmd }); } catch (e) { r = { error: e.message }; }
+    // selfTp：把她自己 /tp 回去过的坐标 —— 管理员命令里唯一放给本能的（runCommand 只认 tp x y z + 这个函数）
+    try { r = await deps.handlers['POST /cmd']({ command: cmd, ...(selfTp ? { selfTp: () => 'self-tp' } : {}) }); } catch (e) { r = { error: e.message }; }
     event('command', `${why}：用了 /${cmd}${r?.error ? `，没成：${r.error}` : (r?.serverSaid?.length ? `（服务器说：${r.serverSaid.join(' / ').slice(0, 80)}）` : '')}`, { cmd });
     return r;
   };
@@ -1092,11 +1101,12 @@ function install (bot, state, deps) {
     const d = I.death;
     if (!I.cfg.cmd.enabled || !d || d.recovered || !d.told) return null;
     const cmds = await serverCmds();
-    const pick = pickRecovery({ death: d, here: bot.entity.position, dim: dimNow(), hasBack: cmds.has('back'), sinceMs: Date.now() - d.at }, I.cfg.cmd);
+    const pick = pickRecovery({ death: d, here: bot.entity.position, dim: dimNow(), hasBack: cmds.has('back'), hasTp: cmds.has('tp'), sinceMs: Date.now() - d.at }, I.cfg.cmd);
     d.recovered = true;   // 每次死只回去一次（成不成都不来回折腾）
     if (!pick.how) { event('recover_skip', `没回去捡东西：${pick.skip}`); return { skip: pick.skip }; }
     const { r, aborted } = await runJob('recover', { instinct: 'pickup' }, async (abort) => {
       if (pick.how === 'back') await runCmd('back', '回死的地方捡东西');
+      else if (pick.how === 'tp') await runCmd(`tp ${d.pos.x} ${d.pos.y + 1} ${d.pos.z}`, '传回死的地方捡东西', { selfTp: true });
       else {
         event('recover', `走回死的地方捡东西（${pick.dist} 格）`);
         const g = await deps.handlers['POST /go']({ x: d.pos.x, y: d.pos.y, z: d.pos.z, range: 3, maxMs: 240000, abort });
@@ -1118,10 +1128,14 @@ function install (bot, state, deps) {
       homeDist: h ? Math.hypot(bot.entity.position.x - h.center.x, bot.entity.position.z - h.center.z) : null,
       atHome: inHome(bot.entity.position) === true, homeSynced: !!(h && I.homeSyncedAt && I.homeSyncedFor === `${h.center.x},${h.center.z}`),
       sinceLast: Date.now() - (I.lastCmdAt || 0),
+      day: deps.night?.phaseOf(bot.time?.timeOfDay) === 'day', returnTo: I.returnTo?.pos || null, sameDim: !I.returnTo || I.returnTo.dim === dimNow(),
     }, I.cfg.cmd);
     if (!pick) return null;
-    const r = await runCmd(pick.cmd, pick.why);
+    const from = bot.entity.position.floored();
+    const r = await runCmd(pick.cmd, pick.why, { selfTp: !!pick.selfTp });
     if (pick.cmd === 'sethome' && !r?.error) { I.homeSyncedAt = Date.now(); I.homeSyncedFor = `${h.center.x},${h.center.z}`; }
+    if (pick.remember && !r?.error) I.returnTo = { pos: { x: from.x, y: from.y, z: from.z }, dim: dimNow(), at: Date.now() };
+    if (pick.returned) I.returnTo = null;   // 成不成都只回一次，不来回传
     return { did: 'command' };
   }
 
@@ -1726,6 +1740,14 @@ function selftest () {
   check('★ 血 3、正在逃 → /home', C({ hp: 3, fleeing: true })?.cmd, 'home');
   check('服务器没给这些命令 → 什么都不用', pickCommand({ cmds: new Set(), hp: 3, fleeing: true, atHome: true }), null);
   check('刚用过命令 → 等等', C({ atHome: true, sinceLast: 1000 }), null);
+  check('★ 没有 /back 但有 /tp → /tp 回死的坐标', pickRecovery({ death, here: P3(0, 64, 0), dim: 'overworld', hasTp: true }).how, 'tp');
+  check('/tp 只在同一维度用', pickRecovery({ death: { ...death, dim: 'the_nether' }, here: P3(0, 64, 0), dim: 'overworld', hasTp: true }).how, undefined);
+  check('★ 夜里 /home 回家 → 记下原来在哪', C({ nightOut: true, homeDist: 500, homeSynced: true })?.remember, true);
+  const back = pickCommand({ cmds: new Set(['tp']), day: true, returnTo: P3(500, 70, 0) });
+  check('★ 天亮了、没有 /back → /tp 回昨晚的地方', back?.cmd, 'tp 500 70 0');
+  check('…而且是 selfTp（只传自己回坐标）', back?.selfTp, true);
+  check('天亮了、有 /back → 用 /back', pickCommand({ cmds: new Set(['back', 'tp']), day: true, returnTo: P3(500, 70, 0) })?.cmd, 'back');
+  check('还是晚上 → 不回去', pickCommand({ cmds: new Set(['tp']), day: false, returnTo: P3(500, 70, 0) }), null);
 
   // ---- 家的范围 ----
   check('房子都在半径里 → 不变', homeFootprint([3, 8, 15, 20], 24), 24);
