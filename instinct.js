@@ -76,6 +76,13 @@
  * 要塞/神庙的苔石砖裂石砖、村庄的钟、下界要塞、堡垒、末地城）→ 知道里面有宝箱，走进去，建筑附近的箱子一间间看。
  * 一路上冲她来的怪由战斗本能打（"闯关"）；血 < minHp、背包没地方、夜里在露天就不去。每座建筑只进一次。
  *
+ * ## 洞穴探险本能（主人 2026-09-27：挖矿时遇到天然洞穴应该去探险，而不是无视）
+ *
+ * 闲着、站在地下的天然洞穴里（hands.inCave：身边一大片空气、没有天光）→ 往洞里没去过的地方走一步（看得见、站得住、
+ * 旁边没岩浆、落差不大），到了插个火把（light_up 自己会按间距插）。看见矿 → 采矿本能挖；看见箱子 → 开宝箱本能开；
+ * 怪 → 战斗本能打 —— 几个本能接力，就是"逛矿洞"。每个洞（按入口所在的 32 格网格）最多走 maxSteps 步、不离入口 range 格，
+ * 逛完告诉 mind。下礦（/delve）里的逛洞是 mind 叫的，那一套归 hands.delve 管，这里不碰。
+ *
  * ## 采矿按进度（主人 2026-09-27：前期煤、铁，后期钻石，也包括模组矿）
  *
  * 还没有铁镐时：铁矿当最高价值（它就是下一步）、煤少于 32 就挖；有了铁镐之后煤按少于 16 算。
@@ -178,6 +185,16 @@ const CFG = {
     minHp: 14,
     minFree: 3,
     cooldownMs: 15000,
+  },
+  cave: {
+    enabled: process.env.MC_INSTINCT_CAVE !== 'false',
+    scan: 16,               // 往多远找下一步
+    minStep: 5,             // 每步至少走这么远（别原地挪）
+    maxDrop: 4,             // 下一步比脚下低这么多以内
+    maxSteps: 24,           // 一个洞最多走几步
+    range: 64,              // 离入口多远就不往外走了
+    minHp: 12,
+    visitCell: 4,           // "去过"按几格一格子记
   },
   minFreeSlots: 2,          // 收获、采矿至少留几个空格
   yieldWaitMs: 1500,        // 让出身体时最多等本能收拾多久
@@ -476,6 +493,24 @@ function pickLoot (c, cfg = CFG.loot) {
 }
 
 /**
+ * 洞里下一步去哪。cells：候选的落脚点 [{ pos, visible, lavaNear, dark }]（已经是"脚和头是空的、脚下实心"的格子）。
+ * 只去看得见的、没去过的、旁边没岩浆的、不太低的、不出入口 range 的；先挑暗的（没点亮 = 没人来过），再挑远一点的。
+ */
+function pickCaveStep ({ cells = [], self, entry = null, visited = new Set() }, cfg = CFG.cave) {
+  if (!self) return null;
+  const cell = (p) => `${Math.floor(p.x / cfg.visitCell)},${Math.floor(p.y / cfg.visitCell)},${Math.floor(p.z / cfg.visitCell)}`;
+  const ok = cells.filter(c => c.visible && !c.lavaNear
+    && !visited.has(cell(c.pos))
+    && self.y - c.pos.y <= cfg.maxDrop
+    && Math.hypot(c.pos.x - self.x, c.pos.z - self.z) >= cfg.minStep
+    && (!entry || Math.hypot(c.pos.x - entry.x, c.pos.y - entry.y, c.pos.z - entry.z) <= cfg.range));
+  if (!ok.length) return null;
+  ok.sort((a, b) => ((b.dark ? 1 : 0) - (a.dark ? 1 : 0))
+    || (Math.hypot(b.pos.x - self.x, b.pos.z - self.z) - Math.hypot(a.pos.x - self.x, a.pos.z - self.z)));
+  return { ...ok[0], cell: cell(ok[0].pos) };
+}
+
+/**
  * 该不该回家整理。
  * @param c.free        背包空格数
  * @param c.short       缺的 essential 标签
@@ -536,7 +571,7 @@ function install (bot, state, deps) {
     home: null,             // { center:{x,y,z}, radius }，mind 通过 POST /instinct {home} 告诉
   };
   // 跨重连保留状态；新加的本能补上默认配置（老的 state.instinct 里没有）
-  for (const k of ['pickup', 'harvest', 'mine', 'sleep', 'armor', 'gaze', 'combat', 'tidy', 'loot']) I.cfg[k] = { ...CFG[k], ...(I.cfg[k] || {}) };
+  for (const k of ['pickup', 'harvest', 'mine', 'sleep', 'armor', 'gaze', 'combat', 'tidy', 'loot', 'cave']) I.cfg[k] = { ...CFG[k], ...(I.cfg[k] || {}) };
   const spawned = new Map();   // 掉落物 id → { t, thrower }
   const fails = new Map();
   const mineFails = new Map();   // "x,y,z" → 到什么时候之前不再试
@@ -848,6 +883,58 @@ function install (bot, state, deps) {
         : `${S.label}里没找到能开的箱子${r?.arrived === false ? '（没走进去）' : ''}${sm.failed.length ? `：${sm.failed.join('；')}` : ''}`);
     }
     return { did: 'explore' };
+  }
+
+  // ---- 洞穴探险
+  async function tryCave () {
+    const C = I.cfg.cave;
+    I.caveDone ||= new Set();
+    if (!C.enabled || !deps.hands.inCave?.(bot)) return null;
+    if ((bot.health ?? 20) < C.minHp) return { skip: `血 ${bot.health}，先不逛洞` };
+    const here = bot.entity.position.floored();
+    const caveKey = (p) => `${Math.floor(p.x / 32)},${Math.floor(p.y / 32)},${Math.floor(p.z / 32)}`;
+    // 换了一个洞（离上一个洞的入口够远）：重新开始记
+    if (!I.cave || Math.hypot(here.x - I.cave.entry.x, here.y - I.cave.entry.y, here.z - I.cave.entry.z) > C.range) {
+      const key = caveKey(here);
+      if (I.caveDone.has(key)) return { skip: '这个洞逛过了' };
+      I.cave = { key, entry: { x: here.x, y: here.y, z: here.z }, steps: 0, visited: new Set() };
+      event('cave', `挖到了一个天然洞穴（${here.x},${here.y},${here.z}），进去看看`, { pos: I.cave.entry });
+    }
+    if (I.cave.steps >= C.maxSteps) {
+      if (!I.caveDone.has(I.cave.key)) { I.caveDone.add(I.cave.key); event('cave_done', `这个洞逛了 ${I.cave.steps} 步，差不多了`); }
+      return { skip: '这个洞逛完了' };
+    }
+    // 候选落脚点：附近的空气格里，脚下实心、头顶也空的
+    const airIds = ['air', 'cave_air'].map(n => bot.registry.blocksByName[n]?.id).filter(x => x != null);
+    const isLava = (p) => /lava/.test(bot.blockAt(p)?.name || '');
+    const cells = [];
+    for (const p of bot.findBlocks({ matching: airIds, maxDistance: C.scan, count: 600 })) {
+      const below = bot.blockAt(p.offset(0, -1, 0)); const head = bot.blockAt(p.offset(0, 1, 0));
+      if (!below || below.boundingBox !== 'block' || !head || head.boundingBox !== 'empty') continue;
+      const feet = bot.blockAt(p);
+      cells.push({
+        pos: p,
+        visible: bot.canSeeBlock(below),
+        lavaNear: [[1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1], [0, -1, 0]].some(([dx, dy, dz]) => isLava(p.offset(dx, dy, dz))),
+        dark: (feet?.light ?? 0) < 4,
+      });
+    }
+    const step = pickCaveStep({ cells, self: bot.entity.position, entry: I.cave.entry, visited: I.cave.visited }, C);
+    if (!step) {
+      I.caveDone.add(I.cave.key);
+      event('cave_done', `这个洞看得见的地方都走过了（${I.cave.steps} 步）`);
+      return { skip: '洞里没有新地方了' };
+    }
+    I.cave.visited.add(step.cell);
+    I.cave.visited.add(`${Math.floor(here.x / C.visitCell)},${Math.floor(here.y / C.visitCell)},${Math.floor(here.z / C.visitCell)}`);
+    I.cave.steps++;
+    const { r, aborted } = await runJob('cave', null, async (abort) => {
+      const g = await deps.handlers['POST /go']({ x: step.pos.x, y: step.pos.y, z: step.pos.z, range: 1.5, maxMs: 20000, abort });
+      if (!abort()) { try { await deps.handlers['POST /light_up']({ max: 1 }); } catch (_) {} }
+      return g;
+    });
+    note({ kind: 'cave', to: step.pos, step: I.cave.steps, aborted: aborted || undefined, arrived: r?.arrived, error: r?.error });
+    return { did: 'cave' };
   }
 
   // ---- 赶路 / 干别的时候看见值钱的矿：不打断命令，告诉 mind（一个位置一次）
@@ -1178,7 +1265,8 @@ function install (bot, state, deps) {
     if (nightOut) { I.last = { t: now, ...last, other: '夜里在露天，不收不挖' }; return; }
 
     // ④ 收获  ⑤ 开宝箱 / 进建筑  ⑥ 采矿  ⑦ 换护甲
-    for (const [k, f] of [['harvest', tryHarvest], ['loot', () => tryLoot(nightOut)], ['mine', tryMine], ['armor', tryArmor]]) {
+    // ⑧ 洞穴探险（最后：先把看得见的矿挖了、箱子开了，再往里走）
+    for (const [k, f] of [['harvest', tryHarvest], ['loot', () => tryLoot(nightOut)], ['mine', tryMine], ['armor', tryArmor], ['cave', tryCave]]) {
       const r = await f();
       if (!r) continue;
       if (r.did) { I.last = { t: now, ...last, [k]: '做了' }; return; }
@@ -1320,6 +1408,18 @@ function selftest () {
   check('身上满了但背包还空 → 去', pickLoot({ chests: 2, free: 1, packFree: 20, self: me }).mode, 'open');
   check('夜里在露天 → 不去', pickLoot({ chests: 2, nightOut: true, self: me }).mode, undefined);
 
+  // ---- 洞里下一步 ----
+  const cv = (x, y, z, extra = {}) => ({ pos: { x, y, z }, visible: true, lavaNear: false, dark: true, ...extra });
+  const here = { x: 0, y: 30, z: 0 };
+  check('往看得见、够远的地方走', pickCaveStep({ cells: [cv(8, 30, 0)], self: here })?.pos.x, 8);
+  check('★ 旁边有岩浆 → 不去', pickCaveStep({ cells: [cv(8, 30, 0, { lavaNear: true })], self: here }), null);
+  check('看不见（隔着墙）→ 不去', pickCaveStep({ cells: [cv(8, 30, 0, { visible: false })], self: here }), null);
+  check('★ 太低（落差 >4）→ 不跳', pickCaveStep({ cells: [cv(8, 20, 0)], self: here }), null);
+  check('太近（原地挪）→ 不算一步', pickCaveStep({ cells: [cv(2, 30, 0)], self: here }), null);
+  check('★ 去过的格子 → 不再去', pickCaveStep({ cells: [cv(8, 30, 0)], self: here, visited: new Set(['2,7,0']) }), null);
+  check('★ 暗的优先（没点亮 = 没人来过）', pickCaveStep({ cells: [cv(14, 30, 0, { dark: false }), cv(7, 30, 0)], self: here })?.pos.x, 7);
+  check('出了入口范围 → 不去', pickCaveStep({ cells: [cv(10, 30, 0)], self: here, entry: { x: -60, y: 30, z: 0 } }), null);
+
   // ---- 收哪些庄稼 ----
   const crop = (x, z, extra = {}) => ({ name: 'wheat', pos: { x, y: 64, z }, age: 7, maxAge: 7, harvest: 'break', farmland: true, visible: true, ...extra });
   const home = () => true; const away = () => false;
@@ -1447,7 +1547,7 @@ function selftest () {
   });
 }
 
-module.exports = { CFG, STRUCTURE_SIGNS, recognizeStructures, pickLoot, pickTidy, mobKind, attackCooldownMs, combatPlan, COMBAT_YIELD, TIER, pickaxeTier, needTier, pickOre, pickHarvest, hazardUnder, pickStepOff, armorRank, pickArmor, toolWorn, pickGaze, whoThrew, pickPickup, bodyBusy, install, yieldBody, PASSIVE_POSTS, selftest };
+module.exports = { CFG, pickCaveStep, STRUCTURE_SIGNS, recognizeStructures, pickLoot, pickTidy, mobKind, attackCooldownMs, combatPlan, COMBAT_YIELD, TIER, pickaxeTier, needTier, pickOre, pickHarvest, hazardUnder, pickStepOff, armorRank, pickArmor, toolWorn, pickGaze, whoThrew, pickPickup, bodyBusy, install, yieldBody, PASSIVE_POSTS, selftest };
 
 if (require.main === module && process.argv.includes('--selftest')) {
   selftest().then(code => process.exit(code));

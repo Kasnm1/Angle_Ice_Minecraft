@@ -3929,4 +3929,4 @@ if (require.main === module && process.argv.includes('--selftest')) {
   })();
 }
 
-module.exports = { install, routes, slotByName, foodScore, fullId, botName, startFollow, farm, kitShortfall, kitAvailable, defaultLoadout, wearingBackpack, backpackTidy, unseenChests, unseenCarts, inHomeArea };   // farm：收获本能直接调（instinct.js）
+module.exports = { install, routes, slotByName, foodScore, fullId, botName, startFollow, farm, kitShortfall, kitAvailable, defaultLoadout, wearingBackpack, backpackTidy, unseenChests, unseenCarts, inHomeArea, inCave };   // farm：收获本能直接调（instinct.js）
