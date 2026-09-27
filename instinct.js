@@ -242,6 +242,8 @@ const CFG = {
   breathe: { enabled: process.env.MC_INSTINCT_BREATHE !== 'false', at: 8, checkMs: 500, jumpMs: 6000 },
   // 中毒 / 凋零：告诉 mind；有牛奶且（凋零 或 血 ≤ milkHp）就喝；打架时按"少了几滴血"算，更早撤
   effects: { enabled: process.env.MC_INSTINCT_EFFECTS !== 'false', milkHp: 10, poisonHpCost: 4, witherHpCost: 6, checkMs: 1000 },
+  // 上岸（主人 2026-09-27）：身体空着、泡在水里超过 afterMs（或刚上浮换完气）→ 走到最近能站的陆地
+  shore: { enabled: process.env.MC_INSTINCT_SHORE !== 'false', afterMs: 3000, radius: 12, checkMs: 1000, retryMs: 8000 },
   // 天气：下雨 / 打雷 / 雨停告诉 mind；打雷在露天当夜里（白天也刷怪），打雷时在家可以睡
   weather: { enabled: process.env.MC_INSTINCT_WEATHER !== 'false' },
   // 玩家挨打：告诉 mind（同一个人 20 秒内只说一次）
@@ -723,6 +725,18 @@ function effectPlan ({ effects = null, hp = 20, hasMilk = false } = {}, cfg = CF
   const wither = bad.includes('Wither');
   const hpCost = (bad.includes('Poison') ? cfg.poisonHpCost : 0) + (wither ? cfg.witherHpCost : 0);
   return { bad, milk: hasMilk && (wither || hp <= cfg.milkHp), hpCost };
+}
+
+/**
+ * 上岸去哪。cells：候选的陆地格 [{ pos, below, feet, head }]（方块名；feet/head 已经按 isStandable 判过能站 → ok 字段）。
+ * 要求：脚下实心且不是水/岩浆/会伤人的，脚和头能站、不是水；挑水平最近的，高差小的优先（爬不上去的岸没用）。
+ */
+function pickShore (cells = [], self) {
+  const ok = cells.filter(c => c.ok && c.below && !/water|lava|magma|fire|cactus|powder_snow|campfire|air$/.test(c.below)
+    && !/water|bubble_column/.test(c.feet || '') && !/water|bubble_column/.test(c.head || ''));
+  if (!ok.length || !self) return null;
+  const cost = (c) => Math.hypot(c.pos.x + 0.5 - self.x, c.pos.z + 0.5 - self.z) + Math.max(0, c.pos.y - self.y) * 2;
+  return ok.sort((a, b) => cost(a) - cost(b))[0];
 }
 
 /** 天气变了说什么。prev / now：{ rain, thunder }（布尔）。没变 → null */
@@ -1710,8 +1724,40 @@ function install (bot, state, deps) {
       event('breathe', `在水里憋不住气了（氧气 ${bot.oxygenLevel}/20），先游上去换气`);
       const r = await deps.handlers['POST /jump']({ durationMs: I.cfg.breathe.jumpMs, stopAtOxygen: 18 });
       note({ kind: 'breathe', oxygen: r?.oxygen, jumped: r?.jumped });
+      I.breathedAt = Date.now();
     } catch (e) { I.last = { t: Date.now(), error: `breathe: ${e.message}` }; } finally { breathing = false; }
   }, CFG.breathe.checkMs);
+
+  // ---- 上岸：身体空着泡在水里 → 走到最近的陆地（刚上浮换完气也算）
+  let inWaterSince = 0;
+  const shoreTimer = setInterval(async () => {
+    const S = I.cfg.shore;
+    if (!S.enabled || !bot.entity || bot.vehicle || fighting || breathing || I.running) return;
+    const feet = bot.blockAt(bot.entity.position.floored());
+    const wet = !!bot.entity.isInWater || /water|bubble_column/.test(feet?.name || '');
+    if (!wet) { inWaterSince = 0; return; }
+    if (!inWaterSince) inWaterSince = Date.now();
+    const justBreathed = Date.now() - (I.breathedAt || 0) < 10000;
+    if (!justBreathed && Date.now() - inWaterSince < S.afterMs) return;
+    if (Date.now() < (I.shoreRetryAt || 0)) return;
+    if (bodyBusy({ inflight: I.inflight, currentAction: state.currentAction, windowOpen: !!bot.currentWindow, quietUntil: I.quietUntil })) return;
+    I.shoreRetryAt = Date.now() + S.retryMs;
+    const me = bot.entity.position.floored();
+    const cells = [];
+    for (let dx = -S.radius; dx <= S.radius; dx++) for (let dz = -S.radius; dz <= S.radius; dz++) for (let dy = -2; dy <= 3; dy++) {
+      const p = me.offset(dx, dy, dz);
+      const f = bot.blockAt(p); if (!f || /water/.test(f.name)) continue;
+      const b = bot.blockAt(p.offset(0, -1, 0)); if (!b || b.boundingBox !== 'block') continue;
+      const h = bot.blockAt(p.offset(0, 1, 0));
+      cells.push({ pos: p, below: b.name, feet: f.name, head: h?.name, ok: require('./place').isStandable(f) && require('./place').isStandable(h) });
+    }
+    const pick = pickShore(cells, me);
+    if (!pick) { note({ kind: 'shore', skip: `${S.radius} 格内没找到能上的岸` }); return; }
+    const { r, aborted } = await runJob('shore', null, (abort) => deps.handlers['POST /go']({ x: pick.pos.x, y: pick.pos.y, z: pick.pos.z, range: 1, maxMs: 20000, abort }));
+    const dry = !bot.entity.isInWater && !/water/.test(bot.blockAt(bot.entity.position.floored())?.name || '');
+    note({ kind: 'shore', to: pick.pos, ok: dry, aborted: aborted || undefined, error: r?.error });
+    if (dry) { inWaterSince = 0; event('shore', `从水里上岸了（${pick.pos.x},${pick.pos.y},${pick.pos.z}）`); }
+  }, CFG.shore.checkMs);
 
   // ---- 中毒 / 凋零
   let drinking = false;
@@ -1845,7 +1891,7 @@ function install (bot, state, deps) {
     ticking = true;
     try { await tick(); } catch (e) { I.last = { t: Date.now(), error: e.message }; } finally { ticking = false; }
   }, CFG.pickup.tickMs);
-  bot.once('end', () => { clearInterval(timer); clearInterval(gazeTimer); clearInterval(toolTimer); clearInterval(combatTimer); clearInterval(kitTimer); clearInterval(oreWatch); clearInterval(policyTimer); clearInterval(homeTimer); clearInterval(eatTimer); clearInterval(breathTimer); clearInterval(effectTimer); });
+  bot.once('end', () => { clearInterval(timer); clearInterval(gazeTimer); clearInterval(toolTimer); clearInterval(combatTimer); clearInterval(kitTimer); clearInterval(oreWatch); clearInterval(policyTimer); clearInterval(homeTimer); clearInterval(eatTimer); clearInterval(breathTimer); clearInterval(shoreTimer); clearInterval(effectTimer); });
 }
 
 /**
@@ -2029,6 +2075,13 @@ function selftest () {
   check('中毒打架按少 4 滴血算', effectPlan({ effects: ['Poison'], hp: 20 })?.hpCost, 4);
   check('没中毒 → 无事', effectPlan({ effects: ['Speed'] }), null);
   check('读不到效果 → 不猜', effectPlan({ effects: null }), null);
+  { const L = (x, z, y = 64, extra = {}) => ({ pos: { x, y, z }, below: 'grass_block', feet: 'air', head: 'air', ok: true, ...extra });
+    const me = { x: 0, y: 63, z: 0 };
+    check('★ 上岸：挑最近的岸', pickShore([L(6, 0), L(3, 0), L(0, 9)], me)?.pos.x, 3);
+    check('上岸：脚下是水的不算', pickShore([L(2, 0, 64, { below: 'water' })], me), null);
+    check('上岸：高 3 格的崖比远 2 格的平岸差', pickShore([L(2, 0, 66), L(4, 0, 64)], me)?.pos.x, 4);
+    check('上岸：站不进去的不算', pickShore([L(2, 0, 64, { ok: false })], me), null);
+    check('上岸：旁边没有岸 → null', pickShore([], me), null); }
   check('开始下雨', weatherChange({ rain: false, thunder: false }, { rain: true, thunder: false })?.kind, 'rain');
   check('★ 打雷', weatherChange({ rain: true, thunder: false }, { rain: true, thunder: true })?.kind, 'thunder');
   check('雨停', weatherChange({ rain: true, thunder: true }, { rain: false, thunder: false })?.kind, 'clear');
@@ -2190,7 +2243,7 @@ function selftest () {
   });
 }
 
-module.exports = { CFG, fillCfg, pickEat, needBreath, effectPlan, weatherChange, pickRecovery, pickCommand, homeFootprint, darkReport, mlgStep, pickCaveStep, STRUCTURE_SIGNS, recognizeStructures, pickLoot, pickTidy, mobKind, attackCooldownMs, combatPlan, COMBAT_YIELD, TIER, pickaxeTier, needTier, pickOre, pickHarvest, hazardUnder, pickStepOff, armorRank, pickArmor, toolWorn, pickGaze, whoThrew, pickPickup, bodyBusy, install, yieldBody, PASSIVE_POSTS, selftest };
+module.exports = { CFG, fillCfg, pickEat, pickShore, needBreath, effectPlan, weatherChange, pickRecovery, pickCommand, homeFootprint, darkReport, mlgStep, pickCaveStep, STRUCTURE_SIGNS, recognizeStructures, pickLoot, pickTidy, mobKind, attackCooldownMs, combatPlan, COMBAT_YIELD, TIER, pickaxeTier, needTier, pickOre, pickHarvest, hazardUnder, pickStepOff, armorRank, pickArmor, toolWorn, pickGaze, whoThrew, pickPickup, bodyBusy, install, yieldBody, PASSIVE_POSTS, selftest };
 
 if (require.main === module && process.argv.includes('--selftest')) {
   selftest().then(code => process.exit(code));
