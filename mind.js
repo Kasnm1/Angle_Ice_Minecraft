@@ -889,8 +889,8 @@ const SYSTEM = `你是 Angle_ICE（安琪），住在这个 Minecraft 模组服�
   · 命令：服务器给你开了哪些，看【你能用的命令】（run_command 执行）。回家、传送这类自己判断着用；管理员命令（give/tp/gamemode/time/weather…）只在玩家明确要你用时才用，because 写他的原话。传送石碑（waystones）也能远距离移动
   · 怪只在全黑的地方刷：家周围地面大约每 12 格插一个火把就不刷了
   · 你有自己的审美：放任何东西都先看布局（place / place_nicely 都会），一批一起放（items 列一批），不要放一个想一次
-  · 家里的布置按现在的进度规划（plan_layout）：现在用得上的先定好位置，以后的机器留空地；拿到规划里的东西就 furnish 摆上，缺的去做
-  · 盖东西、改造一片地方：先 design_build 出蓝图，再 build_work 一段一段做；不用等材料齐，手上有什么先做什么，缺的（missing）去弄来接着做
+  · 家里的布置现用现定（plan_layout）：只划分区（哪一块做仓库、厨房、冶炼…），不提前定格子；东西到手了再在对应的区里当场挑位置（furnish / place_nicely）。区"要重新想"了就重划
+  · 盖东西、改造一片地方：先 design_build 出蓝图，再 build_work 一段一段做；材料够七成才开工（不先挖坑等材料），主人要你盖的除外；开工后缺的（missing）去弄来接着做
   · 像玩家一样避开暗处：没火把别进洞、别往黑的地方走；要下矿、进矿洞，先带够火把（make_torches），走到哪亮到哪（light_up）。火把按间距插（7 格左右一个），身边已经有光就不插，别连着插
   · 【你记得的地方】是你去过、看见过的矿洞、传送石碑、村庄；有人告诉你"这是我家/那是某某的家"，用 learn 记下来（写上坐标），那里的箱子不拿
   · 挖矿：delve 会挖楼梯下去、到深度后鱼骨挖法（主道每 3 格左右各挖一条支道）、逛矿洞；到了 y=0 以下它能感知附近的矿并挖通道过去。【你记得的地方】里有老矿洞：去那附近再 delve，会先走回上次挖到的地方接着挖
@@ -937,6 +937,28 @@ function planFacts () {
   return plan.facts({ items: s.items || [], worn: Object.values(s.equipment || {}), homeItems, hasHome: !!h, foodCount: food });
 }
 /**
+ * "接下来做什么"只有长期计划这一个声音（主人 2026-09-27：工程、布置、心愿各说各的，她会东一下西一下）。
+ * 工程、布置、心愿都变成计划的候选项，她自己挑、自己排进计划。
+ */
+function planExtras () {
+  const out = [];
+  const lab = (k) => knowledge.label(k.includes(':') ? k : `minecraft:${k}`).replace(/\(.*\)$/, '');
+  for (const p of W.projects || []) {
+    const miss = Object.entries(p.missing || {}).slice(0, 3).map(([k, n]) => `${lab(k)}×${n}`).join('、');
+    out.push({ text: `接着盖「${p.name}」（完成 ${p.done}）`, why: miss ? `还缺 ${miss}` : '材料够，能接着做' });
+  }
+  for (const l of W.layouts || []) {
+    if (l.canPlaceNow?.length) out.push({ text: `把手上的 ${l.canPlaceNow.slice(0, 4).map(lab).join('、')} 摆进家里规划的区`, why: '东西到手了，现在挑位置' });
+    for (const z of l.stale || []) out.push({ text: `重新想想家里的「${z}」放哪`, why: '那一块放不下了 / 被改建了' });
+  }
+  try {
+    const c = ambition.candidates({ inventory: W.state?.items || [], knownStations: knownStations(), limit: 2 });
+    if (c?.length) out.push({ text: `心愿：做一道没做过的菜（比如 ${c.map(x => knowledge.label(x.id).replace(/\(.*\)$/, '')).join('、')}）`, why: `做遍食物的心愿 ${ambition.progress().made}/${ambition.progress().total}` });
+  } catch (_) {}
+  return out.slice(0, 5);
+}
+
+/**
  * 【长期计划】：平时一行（目标 + 正在做的一步）；闲着的时候完整给（现状 + 可以做的），让她接着做 / 改计划。
  * 主人 2026-09-27：没人找她时自己根据状况推进游戏；顺序她自己定；思考时自动更新计划；闲着接着做当前任务。
  */
@@ -945,7 +967,7 @@ function planLine (why) {
   const has = !!plan.get();
   if (why !== 'idle') return has ? `\n【长期计划】${plan.get().goal}${cur ? ` —— 正在做：${cur.text}` : '（都做完了）'}` : '';
   const f = planFacts();
-  const ideas = plan.ideas(f).slice(0, 6).map(x => `· ${x.text}（${x.why}）`).join('\n');
+  const ideas = [...plan.ideas(f).slice(0, 6), ...planExtras()].map(x => `· ${x.text}（${x.why}）`).join('\n');
   return `\n【长期计划】${has ? `\n${plan.render()}` : '还没有 —— 按这个整合包的通关主线，想好目标，用 plan_set 定下来（每步写上做成的标志）'}`
     + `\n现状：${plan.renderFacts(f)}`
     + (ideas ? `\n接下来可以做的（你自己挑、自己排）：\n${ideas}` : '')
@@ -977,9 +999,8 @@ function buildNow (why) {
   const A = ambition.state();
   const skills = mem.recallSkills(`${cue} ${A.focus || ''}`, { limit: 3 });
   // 闲着的时候想想自己的心愿；平时只惦记着正在研究的那道菜
-  const dream = why === 'idle'
-    ? ambition.summary({ inventory: W.state?.items || [], knownStations: knownStations() })
-    : A.focus ? `（心里惦记着：${knowledge.label(A.focus)}）` : '';
+  // 心愿不再单独占一段催她（闲着时它是【长期计划】里的一条候选，见 planExtras）；平时只惦记着正在研究的那道菜
+  const dream = A.focus ? `（心里惦记着：${knowledge.label(A.focus)}）` : '';
   const s = W.state;
   const me = s?.pos;
   const playerNames = new Set((s?.players || []).map(p => p.username));
@@ -1022,8 +1043,8 @@ function buildNow (why) {
     (() => { const open = (s?.doors || []).filter(d => d.open); return open.length ? `身边开着的门：${open.slice(0, 5).map(d => `${d.kind}(${d.x},${d.y},${d.z})`).join('、')}` : ''; })(),
     bodyNow(),
     (() => { const f = survivalFocus(s); return f.length ? `\n【眼下最该操心的】\n${f.map(x => `· ${x}`).join('\n')}` : ''; })(),
-    W.projects?.length ? `\n【进行中的工程】${W.projects.map(p => `${p.name}(${p.id}) 完成 ${p.done}，还要挖 ${p.toDig}、放 ${p.toPlace}${Object.keys(p.missing || {}).length ? `，缺 ${Object.entries(p.missing).slice(0, 4).map(([k, n]) => `${knowledge.label(k.includes(':') ? k : 'minecraft:' + k).replace(/\(.*\)$/, '')}×${n}`).join('、')}` : ''}`).join('；')} —— 没别的事就 build_work 接着做` : '',
-    W.layouts?.length ? `\n【家里的布置规划】${W.layouts.map(l => `${l.name}：摆好 ${l.done}/${l.total}${Object.keys(l.stillWant || {}).length ? `，还想要 ${Object.entries(l.stillWant).slice(0, 5).map(([k, n]) => `${knowledge.label(k.includes(':') ? k : 'minecraft:' + k).replace(/\(.*\)$/, '')}×${n}`).join('、')}` : ''}${l.canPlaceNow?.length ? `（手上已有 ${l.canPlaceNow.join('、')} → furnish）` : ''}`).join('；')}` : '',
+    W.projects?.length ? `\n【进行中的工程】${W.projects.map(p => `${p.name}(${p.id}) 完成 ${p.done}，还要挖 ${p.toDig}、放 ${p.toPlace}${Object.keys(p.missing || {}).length ? `，缺 ${Object.entries(p.missing).slice(0, 4).map(([k, n]) => `${knowledge.label(k.includes(':') ? k : 'minecraft:' + k).replace(/\(.*\)$/, '')}×${n}`).join('、')}` : ''}`).join('；')}` : '',
+    W.layouts?.length ? `\n【家里的布置规划】${W.layouts.map(l => `${l.name}：摆好 ${l.done}/${l.total}${Object.keys(l.stillWant || {}).length ? `，还想要 ${Object.entries(l.stillWant).slice(0, 5).map(([k, n]) => `${knowledge.label(k.includes(':') ? k : 'minecraft:' + k).replace(/\(.*\)$/, '')}×${n}`).join('、')}` : ''}${l.canPlaceNow?.length ? `（手上已有 ${l.canPlaceNow.join('、')}）` : ''}${l.stale?.length ? `；要重新想的区：${l.stale.join('、')}` : ''}`).join('；')}` : '',
     W.commands?.known ? `\n【你能用的命令】传送/回家类：${W.commands.teleport.length ? W.commands.teleport.map(c => '/' + c).join(' ') : '没有'}${W.commands.admin?.length ? `；管理员（玩家明确要求才用）：${W.commands.admin.map(c => '/' + c).join(' ')}` : ''}` : '',
     happened,
     saidLine,
@@ -1800,6 +1821,16 @@ async function selftest () {
     check('★ 背包里有了石镐 → "做到了，下一步：挖铁"', said.some(t => /「做石镐」做到了，下一步：挖铁/.test(t)), said);
     check('闲着的时候【长期计划】里有现状和下一步', /接着做「挖铁」/.test(planLine('idle')) && /现状：镐：石镐/.test(planLine('idle')), planLine('idle'));
     check('平时只一行', planLine('event'), '\n【长期计划】做铁镐 —— 正在做：挖铁');
+    // 工程、布置、心愿都进计划的候选（只有计划一个声音在说"接下来做什么"）
+    W.projects = [{ id: 'p1', name: '门口小仓库', done: '40%', toDig: 3, toPlace: 12, missing: { cobblestone: 9 } }];
+    W.layouts = [{ id: 'L1', name: '家', done: 3, total: 6, stillWant: { furnace: 1 }, canPlaceNow: ['furnace'], stale: ['仓库'] }];
+    const idle = planLine('idle');
+    check('★ 未完工的工程是候选（带缺什么）', /接着盖「门口小仓库」.*还缺/.test(idle), idle);
+    check('★ 手上能摆的家具是候选', /把手上的 .* 摆进家里规划的区/.test(idle), idle);
+    check('★ 要重新想的区是候选', /重新想想家里的「仓库」/.test(idle), idle);
+    const now = buildNow('event').text;
+    check('★ 工程/布置那两段只剩状态，不再各自催（没有"没别的事就 build_work""→ furnish"）', !/没别的事就 build_work/.test(now) && !/→ furnish/.test(now), now.slice(-600));
+    W.projects = []; W.layouts = [];
     body._setBridge(base);
     try { require('fs').unlinkSync(process.env.MC_PLAN_FILE); } catch (_) {}
   }

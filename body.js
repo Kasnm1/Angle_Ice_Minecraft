@@ -439,18 +439,50 @@ async function placeNicely ({ itemName, count = 1, items, purpose = '', x, y, z,
   const todo = list.filter(i => i.count);
   if (!todo.length) throw new Error(`身上没有 ${lacking.join('、')}，先去拿/做`);
 
-  const placed = []; const tried = [];
-  // ① 布置规划里留好的格子
-  const fr = await bridge.post('/layout/furnish', { items: todo.map(i => i.bare), maxMs: 60000 }, 90000).catch(() => null);
-  for (const p of fr?.placed || []) { placed.push({ by: '按规划', at: p }); const it = todo.find(i => p.startsWith(i.bare + '→')); if (it) it.count--; }
+  const placed = []; const tried = []; const views = []; const staled = [];
+  // ① 现用现定：布置规划里有对应分区的，就到那个区里当场看布局、挑位置（区只记"大概哪一块"，格子现在才定）
+  //    区里一个都放不下 → 标成"要重新想"（被改建了 / 满了），剩下的按没规划处理
+  if (x == null) {
+    const st = await bridge.get('/layout/status', 8000).catch(() => null);
+    const zones = (st?.layouts || []).flatMap(L => (L.zoneDetail || []).map(zd => ({ ...zd, layoutId: L.id }))).filter(zd => !zd.stale && zd.area);
+    for (const zd of zones) {
+      const mine = todo.filter(i => i.count > 0 && zd.stillWant?.[i.bare]);
+      if (!mine.length) continue;
+      const before = mine.reduce((a, i) => a + i.count, 0);
+      const r1 = await pickAndPlace(mine.map(i => ({ ...i, count: Math.min(i.count, zd.stillWant[i.bare]) })), zd.area, `这些要放进「${zd.name}」（${zd.purpose}）这一块`).catch(e => ({ placed: [], tried: [e.message] }));
+      for (const p of r1.placed) { placed.push({ ...p, zone: zd.name }); const it = todo.find(i => i.bare === p.item); if (it) it.count--; }
+      tried.push(...r1.tried); if (r1.view) views.push(`${zd.name}：${r1.view}`);
+      if (!r1.placed.length && before) {
+        staled.push(zd.name);
+        await bridge.post('/layout/zone', { id: zd.layoutId, zone: zd.name, stale: true, why: `放不下 ${mine.map(i => i.bare).join('、')}` }, 5000).catch(() => null);
+      }
+    }
+  }
   const rest = todo.filter(i => i.count > 0);
-  if (!rest.length) return { placed, note: '都摆到规划好的位置了', lacking: lacking.length ? lacking : undefined };
+  if (!rest.length) return { placed, note: '都摆进规划的区里了', view: views.join('；') || undefined, lacking: lacking.length ? lacking : undefined };
 
-  // ② 没规划的：看一眼这片，一次想好全部位置
+  // ② 没有对应分区的（或区里放不下的）：看一眼这片（给了 x/y/z 就看那片，否则看她身边），一次想好全部位置
+  const r2 = await pickAndPlace(rest, x != null && y != null && z != null ? { x, y, z, r } : { r }, '');
+  placed.push(...r2.placed); tried.push(...r2.tried);
+  if (!placed.length) throw new Error(`挑的位置都没放上：${tried.join('；')}（这片的看法：${r2.view || '-'}）—— 换个地方（x/y/z）再试`);
+  const left = rest.filter(i => i.count > 0).map(i => `${i.itemName}×${i.count}`);
+  return { placed, view: [...views, r2.view].filter(Boolean).join('；'), notPlaced: left.length ? left : undefined, tried: tried.length ? tried : undefined, lacking: lacking.length ? lacking : undefined,
+    staleZones: staled.length ? staled : undefined,
+    hint: staled.length ? `这些区放不下了、标成要重新想：${staled.join('、')}（下次 plan_layout 重划）` : (r2.placed.length ? '想让东西各归各位，先 plan_layout 划一下分区' : undefined) };
+}
+
+/**
+ * 看一眼一片地方（area：{x,y,z,r} 或只有 r = 她身边），一次想好这批东西的位置并放下。
+ * note：额外的要求（"这些要放进仓库区"）。返回 { placed:[{item,at,why}], tried:[…], view }；list 里每项的 count 会被减掉放上的数。
+ */
+async function pickAndPlace (list, area, note) {
+  const rest = list; const placed = []; const tried = [];
+  const { x, y, z } = area; const r = area.r || 7;
   const q = x != null && y != null && z != null ? `x=${x}&y=${y}&z=${z}&r=${r}` : `r=${r}`;
   const sv = await bridge.get(`/survey?${q}`, 8000);
   const user = [
     `要放：${rest.map(i => `${i.itemName}×${i.count}${i.purpose ? `（${i.purpose}）` : ''}`).join('、')}`,
+    note ? `${note}（位置挑在中心 ${x},${y},${z} 半径 ${r} 以内）` : '',
     `中心 ${sv.center.x},${sv.center.y},${sv.center.z}；${sv.orientation}`,
     `固定符号：${sv.fixed}`, `材质图例：${sv.legend}`,
     `门：${sv.doors.join(' ') || '无'}`, `光源：${sv.lights.join(' ') || '无'}`, `家具：${sv.furniture.join(' ') || '无'}`,
@@ -461,7 +493,7 @@ async function placeNicely ({ itemName, count = 1, items, purpose = '', x, y, z,
   const msg = await llm({ messages: [{ role: 'system', content: AESTHETIC_SYS }, { role: 'user', content: user }], timeoutMs: 40000, maxTokens: 1200 });
   const plan = parseJsonLoose(msg?.content);
   if (!plan || !Array.isArray(plan.placements)) throw new Error(`没想出位置（模型回的不是 JSON：${String(msg?.content || '').slice(0, 120)}）`);
-  if (!plan.placements.length) return { placed, view: plan.view, note: '看了一圈觉得不用放（已经够亮 / 没合适的地方）' };
+  if (!plan.placements.length) return { placed, tried: ['看了一圈觉得不用放（已经够亮 / 没合适的地方）'], view: plan.view };
   const meP = (await bridge.get('/position').catch(() => null)) || {};
   const clear = new Set(sv.keepClear || []);
   const key = (c) => `${Math.floor(c.x)},${Math.floor(c.y)},${Math.floor(c.z)}`;
@@ -481,10 +513,7 @@ async function placeNicely ({ itemName, count = 1, items, purpose = '', x, y, z,
       void r2; it.count--; placed.push({ item: it.bare, at: key(c), why: c.why });
     } catch (e) { tried.push(`(${key(c)})：${e.message.slice(0, 80)}`); }
   }
-  if (!placed.length) throw new Error(`挑的位置都没放上：${tried.join('；')}（这片的看法：${plan.view || '-'}）—— 换个地方（x/y/z）再试`);
-  const left = rest.filter(i => i.count > 0).map(i => `${i.itemName}×${i.count}`);
-  return { placed, view: plan.view, notPlaced: left.length ? left : undefined, tried: tried.length ? tried : undefined, lacking: lacking.length ? lacking : undefined,
-    hint: '想长期摆得整齐，先 plan_layout 规划一下家里哪儿放什么' };
+  return { placed, tried, view: plan.view };
 }
 
 
@@ -512,7 +541,7 @@ const DESIGN_SYS = `你是 Angle_ICE 自己的建筑眼光。看懂给你的这�
 rows 从北到南（z 增大），每行字符从西到东（x 增大）；每层 rows 数量和每行长度要一致；图例里没有的字符（比如 "-"）= 这格不管、保持原样。
 legend 的值必须是真实注册名（带命名空间），"air" 表示这格要挖空。不要画门、床、箱子这类会被放歪的东西（之后用 place_nicely 摆）。`;
 
-async function designBuild ({ purpose, x, y, z, r = 8 }) {
+async function designBuild ({ purpose, asked = false, x, y, z, r = 8 }) {
   if (!purpose) throw new Error('purpose 写要盖/改什么（比如：家门口一个 5×5 的小仓库、河边一段木栈道、围一圈农田）');
   const q = x != null && y != null && z != null ? `x=${x}&y=${y}&z=${z}&r=${r}` : `r=${r}`;
   const sv = await bridge.get(`/survey?${q}`, 8000);
@@ -529,7 +558,7 @@ async function designBuild ({ purpose, x, y, z, r = 8 }) {
     const bp = parseJsonLoose(msg?.content);
     if (!bp) { lastErr = '不是 JSON'; messages.push({ role: 'assistant', content: String(msg?.content || '').slice(0, 2000) }); continue; }
     try {
-      const saved = await bridge.post('/project/save', { ...bp, purpose: bp.purpose || purpose }, 10000);
+      const saved = await bridge.post('/project/save', { ...bp, purpose: bp.purpose || purpose, asked: !!asked }, 10000);
       return { ...saved, view: bp.view, origin: bp.origin, layers: bp.layers.length, next: '用 build_work 开始施工；缺的材料边做边弄' };
     } catch (e) { lastErr = e.message; messages.push({ role: 'assistant', content: JSON.stringify(bp).slice(0, 2000) }); }
   }
@@ -557,22 +586,19 @@ function furnishCatalog () {
   return FURN;
 }
 
-const LAYOUT_SYS = `你是 Angle_ICE 在给自己家做布置规划：想好哪一块做什么、每个格子放什么，拿到东西就摆到位。
-**按现在的进度规划**（主人：长期规划太难，后期还有机械动力、售货箱等一大堆，应该根据目前的进度来定）：
-- 只规划现在用得上、近期做得出来的东西（看给你的"现在的进度"：身上/家里有什么、工具到了哪一级）
-- 以后的东西（机器、自动化、大件）不具体规划，只在 view 里说一句"哪块空地留给以后"，那块别占
-- 有旧规划就在它上面续写：旧格子保留，只补这个阶段新需要的区和格子
-先读懂这片（逐层俯视图、图例、门、已有家具、必须留空的路），然后分区（这个阶段 2–5 个区）：
-- 仓库：箱子/木桶靠墙成排，可以叠两层（上层放在下层箱子上面），同一面墙对齐；数量按需要（一般 6–12 个）
-- 厨房：炉灶 + 锅（锅放在炉灶正上方才能加热）、砧板、冰箱、水槽/柜台，挨在一起成一条操作台
-- 冶炼角：熔炉/高炉/烟熏炉并排，旁边留一个箱子放燃料
-- 工作区：工作台、切石机、铁砧、锻造台… 成组
-- 照明：挂墙灯笼/火把，间距 6–8 格，照亮暗处
-- 已有的家具算进规划（保留原位，不重复）；风格跟房子搭（木屋用同木种的柜子）
-规则：格子必须是图上 '.' 的空气格；绝不能占"必须留空的路"；放地上的东西下面必须实心；挂墙的旁边要有墙；这一轮新增不超过 16 个格子。
-只输出 JSON：{"name":"短名","view":"一句话说这个家现在什么样、打算怎么布置","area":{"x":中心x,"y":中心y,"z":中心z,"r":半径},
- "zones":[{"name":"仓库","purpose":"一句话","slots":[{"item":"minecraft:chest","x":0,"y":0,"z":0,"mount":"floor|wall|ceiling","why":"一句话"}]}]}
-item 必须是给你的家具目录里的真实注册名。`;
+const LAYOUT_SYS = `你是 Angle_ICE 在给自己家做布置规划：想好**哪一块**做什么。
+**现用现定**（主人 2026-09-27：规划太超前会赶不上变化 —— 后期还有机械动力、售货箱一大堆）：
+- 只划**分区**，不定格子：每个区写用途、打算放什么（现在用得上、近期做得出来的）、大概在哪一片（中心 + 半径 2–6）
+- 具体放哪一格，等东西真到手了再当场看布局挑（place_nicely 会在这个区里挑），所以这里不要写坐标格子
+- 以后的东西（机器、自动化、大件）不划区，只在 view 里说一句"哪块空地留给以后"
+- 有旧规划就在上面续写：同名的区会被这次的替换，没提到的区保留
+先读懂这片（逐层俯视图、图例、门、已有家具、必须留空的路），再分区（这个阶段 2–5 个区）：
+- 仓库（箱子/木桶靠墙成排）、厨房（炉灶+锅挨着，砧板、冰箱、水槽成一条操作台）、冶炼角（熔炉/高炉/烟熏炉并排）、
+  工作区（工作台、切石机、铁砧、锻造台…）、照明（灯笼/火把）
+- 区的范围要落在能站、能放东西的地面上，别压在"必须留空的路"上；已有的家具算进对应的区
+只输出 JSON：{"name":"短名","view":"一句话说这个家现在什么样、打算怎么分区","area":{"x":中心x,"y":中心y,"z":中心z,"r":半径},
+ "zones":[{"name":"冶炼角","purpose":"一句话","wants":{"minecraft:furnace":2,"minecraft:blast_furnace":1},"area":{"x":0,"y":0,"z":0,"r":3}}]}
+wants 里的名字必须是给你的家具目录里的真实注册名，数量写这个阶段想要的。`;
 
 async function planLayout ({ wishes = '', x, y, z, r = 10 }) {
   const q = x != null && y != null && z != null ? `x=${x}&y=${y}&z=${z}&r=${r}` : `r=${r}`;
@@ -598,25 +624,38 @@ async function planLayout ({ wishes = '', x, y, z, r = 10 }) {
   const L = parseJsonLoose(msg?.content);
   if (!L || !Array.isArray(L.zones)) throw new Error(`没规划出来（模型回的不是 JSON：${String(msg?.content || '').slice(0, 120)}）`);
   L.area ||= { ...sv.center, r };
-  // 续写：同一个家已经有规划，就在它上面补（旧格子保留），不另开一份
+  for (const z of L.zones) delete z.slots;   // 现用现定：只要分区，模型多给的格子不要
+  // 续写：同一个家已经有规划，同名的区用这次的替换（旧区里的格子就此作废），没提到的区保留
   if (latest) {
     const full = (await bridge.get(`/layout/status?id=${latest.id}&full=1`, 8000).catch(() => null))?.full;
-    if (full) { for (const z of L.zones) { const z0 = full.zones.find(q => q.name === z.name); if (z0) z0.slots.push(...(z.slots || [])); else full.zones.push(z); } Object.assign(L, { ...full, view: L.view }); }
+    if (full) {
+      const keep = (full.zones || []).filter(z0 => !L.zones.some(z => z.name === z0.name)).map(z0 => ({ name: z0.name, purpose: z0.purpose, wants: z0.wants, area: z0.area, slots: z0.slots }));
+      L.zones = [...keep.map(z0 => (z0.slots && !z0.area ? { ...z0 } : z0)), ...L.zones];
+    }
     L.id = latest.id;
+  }
+  // 旧区还带格子的：交给 hands 按格子推出范围和想要的东西（它能读两种格式），这里把格子转成 wants/area 统一成新格式
+  for (const z of L.zones) {
+    if (z.slots?.length && !z.area) {
+      const sl = z.slots; const c = sl.reduce((a, q) => ({ x: a.x + q.x / sl.length, y: a.y + q.y / sl.length, z: a.z + q.z / sl.length }), { x: 0, y: 0, z: 0 });
+      z.area = { x: Math.round(c.x), y: Math.round(c.y), z: Math.round(c.z), r: Math.min(8, Math.max(2, Math.ceil(Math.max(...sl.map(q => Math.hypot(q.x - c.x, q.z - c.z))) + 1))) };
+      z.wants ||= sl.reduce((w, q) => ((w[q.item] = (w[q.item] || 0) + 1), w), {});
+    }
+    delete z.slots;
   }
   let saved = await bridge.post('/layout/save', L, 15000);
   // 有被退回的格子：把原因告诉她，让她换位置再补一轮
   if (saved.rejected?.length) {
     messages.push({ role: 'assistant', content: JSON.stringify(L).slice(0, 3000) },
-      { role: 'user', content: `这些格子不行：${saved.rejected.join('；')}。只给替换它们的格子，格式 {"zones":[{"name":"原区名","slots":[...]}]}，只输出 JSON。` });
+      { role: 'user', content: `这些区不行：${saved.rejected.join('；')}。只给替换它们的区（换个范围 / 换真实的方块名），格式 {"zones":[{"name":"区名","purpose":"…","wants":{…},"area":{…}}]}，只输出 JSON。` });
     const fix = parseJsonLoose((await llm({ messages, timeoutMs: 40000, maxTokens: 1500 }).catch(() => null))?.content);
     if (fix?.zones) {
-      for (const fz of fix.zones) { const z0 = L.zones.find(z => z.name === fz.name); if (z0) z0.slots.push(...(fz.slots || [])); else L.zones.push(fz); }
+      for (const fz of fix.zones) { delete fz.slots; const i = L.zones.findIndex(z => z.name === fz.name); if (i >= 0) L.zones[i] = fz; else L.zones.push(fz); }
       saved = await bridge.post('/layout/save', { ...L, id: saved.id }, 15000);
     }
   }
   const st = await bridge.get(`/layout/status?id=${saved.id}`, 8000).catch(() => null);
-  return { ...saved, view: L.view, zones: st?.layouts?.[0]?.zones, stillWant: st?.layouts?.[0]?.stillWant, next: '拿到规划里的东西就 furnish 摆上；缺的去做/去拿' };
+  return { ...saved, view: L.view, zones: st?.layouts?.[0]?.zones, stillWant: st?.layouts?.[0]?.stillWant, next: '东西到手了再 place_nicely / furnish —— 那时在对应的区里当场挑位置' };
 }
 
 async function upstairsFirst (targetY) {
@@ -1128,37 +1167,46 @@ const TOOLS = {
   },
   plan_layout: {
     kind: 'action',
-    desc: '按现在的进度给家做布置规划（分区：仓库、厨房、冶炼、工作区、照明…，每个格子放什么），存下来；进度往前走了（有新工作站、新机器）再调一次，会在旧规划上续写。wishes 写想要什么（主人的要求也写进去）。拿到东西用 furnish 摆到位。',
+    desc: '给家划分区（仓库、厨房、冶炼角、工作区、照明…）：每个区写用途、打算放什么、大概在哪一片 —— 不定具体格子（现用现定：东西到手了再在区里挑位置）。'
+      + '进度往前走了（有新工作站、新机器）或者某个区"要重新想"了，再调一次：同名的区会被替换，别的区保留。wishes 写你想要什么。',
     params: { wishes: { type: 'string' }, x: { type: 'number' }, y: { type: 'number' }, z: { type: 'number' } }, required: [],
     run: async (a) => planLayout(a),
   },
+
   furnish: {
     kind: 'action',
-    desc: '按布置规划把手上有的东西摆到规划好的格子（items 可以只摆某几样）。',
-    params: { id: { type: 'string' }, items: { type: 'array', items: { type: 'string' } } }, required: [],
-    run: async ({ id, items }) => bridge.post('/layout/furnish', { id, items }, 150000),
+    desc: '把手上有的、布置规划里想要的东西摆进对应的区（在区里当场看布局挑位置）；items 可以只摆某几样。区里放不下会标成"要重新想"。',
+    params: { items: { type: 'array', items: { type: 'string' } } }, required: [],
+    run: async ({ items }) => {
+      const st = await bridge.get('/layout/status', 8000);
+      const ready = [...new Set((st?.layouts || []).flatMap(L => L.canPlaceNow || []))].filter(k => !items || items.map(x => String(x).replace(/^minecraft:/, '')).includes(k));
+      if (!ready.length) return { ok: false, error: (st?.layouts || []).length ? '手上没有规划里还想要的东西' : '还没有布置规划（先 plan_layout）' };
+      return placeNicely({ items: ready.map(k => ({ itemName: k, count: 16 })) });
+    },
   },
+
   layout_status: {
     kind: 'info',
-    desc: '看布置规划：每个区摆了几个、还想要什么、哪些手上已经有能马上摆。',
+    desc: '看布置规划：每个区想要什么、已经摆了几个、手上有哪些能马上摆、区里还剩几格空地、哪些区"要重新想"。',
     params: { id: { type: 'string' } }, required: [],
     run: async ({ id }) => bridge.get(`/layout/status${id ? `?id=${id}` : ''}`, 10000),
   },
+
   place_nicely: {
     kind: 'action',
-    desc: '放任何东西都用这个（箱子、灯、床、工作台、熔炉、家具、装饰、方块）：有布置规划就直接摆到规划好的格子；没有就看一眼布局，一次想好全部位置（不挡路、靠墙成组、对齐、跟周围搭）再放。一批一起放：items=[{itemName,count,purpose}]，或 itemName+count。x/y/z 写大概在哪一片（默认你身边）。',
+    desc: '放任何东西都用这个（箱子、灯、床、工作台、熔炉、家具、装饰、方块）：有布置规划就到对应的区里当场看布局挑位置（区放不下会标成要重新想）；没有就看一眼布局，一次想好全部位置（不挡路、靠墙成组、对齐、跟周围搭）再放。一批一起放：items=[{itemName,count,purpose}]，或 itemName+count。x/y/z 写大概在哪一片（默认你身边）。',
     params: { itemName: { type: 'string' }, count: { type: 'number' }, items: { type: 'array', items: { type: 'object' } }, purpose: { type: 'string' }, x: { type: 'number' }, y: { type: 'number' }, z: { type: 'number' } }, required: [],
     run: async (a) => placeNicely(a),
   },
   design_build: {
     kind: 'action',
-    desc: '想盖点什么、改造一片地方（小仓库、围墙、农田围栏、路、扩建一间屋、挖平一块地）时先设计：看清这片、按你的审美出一张蓝图存下来。之后用 build_work 一点点施工。purpose 写用途和大概规模，x/y/z 写在哪一片（默认你身边）。',
-    params: { purpose: { type: 'string' }, x: { type: 'number' }, y: { type: 'number' }, z: { type: 'number' } }, required: ['purpose'],
+    desc: '想盖点什么、改造一片地方（小仓库、围墙、农田围栏、路、扩建一间屋、挖平一块地）时先设计：看清这片、按你的审美出一张蓝图存下来。之后用 build_work 一点点施工（材料够七成才开工，不先挖坑等材料；主人要你盖的写 asked:true 就马上开工）。purpose 写用途和大概规模，x/y/z 写在哪一片（默认你身边）。',
+    params: { purpose: { type: 'string' }, asked: { type: 'boolean' }, x: { type: 'number' }, y: { type: 'number' }, z: { type: 'number' } }, required: ['purpose'],
     run: async (a) => designBuild(a),
   },
   build_work: {
     kind: 'action',
-    desc: '照蓝图施工一段（默认约 90 秒）：多余的方块挖掉、缺的方块用手上有的材料补上。不用等材料齐 —— 缺什么会告诉你（missing），去弄来再接着 build_work。天黑、有怪、有人叫你就先停，回头接着做。',
+    desc: '照蓝图施工一段（默认约 90 秒）：多余的方块挖掉、缺的方块用手上有的材料补上。第一次开工要材料够七成（主人要的 asked 除外），开工之后不用等齐 —— 缺什么会告诉你（missing），去弄来再接着 build_work。天黑、有怪、有人叫你就先停，回头接着做。',
     params: { id: { type: 'string' }, seconds: { type: 'number' } }, required: [],
     run: async ({ id, seconds }) => { const ms = Math.min(Math.max(20, seconds || 90), 240) * 1000; return bridge.post('/project/work', { id, maxMs: ms }, ms + 60000); },
   },
