@@ -6060,7 +6060,7 @@ const handlers = {
     if (!I) return { installed: false };
     return {
       installed: true,
-      pickup: I.cfg.pickup, harvest: I.cfg.harvest, mine: I.cfg.mine,
+      pickup: I.cfg.pickup, harvest: I.cfg.harvest, mine: I.cfg.mine, sleep: I.cfg.sleep, armor: I.cfg.armor, gaze: I.cfg.gaze,
       home: I.home,
       running: I.running ? I.running.kind : null,
       inflight: I.inflight,
@@ -6075,13 +6075,13 @@ const handlers = {
     if (!I) return { seq: 0, events: [] };
     return { seq: I.evSeq, events: I.events.filter(e => e.seq > (+since || 0)) };
   },
-  // { pickup?, harvest?, mine?: true|false, radius?, followRadius?, home?: { center:{x,y,z}, radius } | null }
-  'POST /instinct': async ({ pickup, harvest, mine, radius, followRadius, home } = {}) => {
+  // { pickup? harvest? mine? sleep? armor? gaze?: true|false, radius?, followRadius?, home?: { center:{x,y,z}, radius } | null }
+  'POST /instinct': async (b = {}) => {
+    const { radius, followRadius, home } = b;
     const I = state.instinct;
     if (!I) throw new Error('本能还没装上（bot 还没建好）');
-    if (typeof pickup === 'boolean') I.cfg.pickup.enabled = pickup;
-    if (typeof harvest === 'boolean') I.cfg.harvest.enabled = harvest;
-    if (typeof mine === 'boolean') I.cfg.mine.enabled = mine;
+    const KINDS = ['pickup', 'harvest', 'mine', 'sleep', 'armor', 'gaze'];
+    for (const k of KINDS) if (typeof b[k] === 'boolean') I.cfg[k].enabled = b[k];
     // 家在哪（收获本能：耕地上的庄稼只收家里的）。mind 知道家，定期告诉这里
     if (home === null) I.home = null;
     else if (home && home.center && Number.isFinite(+home.center.x) && Number.isFinite(+home.center.z)) {
@@ -6089,9 +6089,8 @@ const handlers = {
     }
     if (radius !== undefined && Number.isFinite(+radius)) I.cfg.pickup.radius = Math.min(Math.max(1, +radius), 16);
     if (followRadius !== undefined && Number.isFinite(+followRadius)) I.cfg.pickup.followRadius = Math.min(Math.max(1, +followRadius), 12);
-    const off = { pickup: pickup === false, harvest: harvest === false, mine: mine === false };
-    if (I.running && off[I.running.kind]) I.running.abort();
-    return { pickup: I.cfg.pickup.enabled, harvest: I.cfg.harvest.enabled, mine: I.cfg.mine.enabled, home: I.home };
+    if (I.running && b[I.running.kind] === false) I.running.abort();
+    return { ...Object.fromEntries(KINDS.map(k => [k, I.cfg[k].enabled])), home: I.home };
   },
 
   'POST /stop': async () => {

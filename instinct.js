@@ -57,6 +57,14 @@
  *
  * 收获、采矿都只在"真闲着"时做：跟着人走的时候不做（只捡东西），夜里在露天不做。
  *
+ * ## 其他本能（主人 2026-09-27 让 WorkBuddy 补充核实后挑的，见 modpack-study/instincts/suggestions.md）
+ *
+ *   · 危险方块退开：站在岩浆块 / 营火 / 火上，或者陷在细雪、浆果丛、仙人掌边 → 挪到旁边安全的一格（最先，保命）
+ *   · 转头看人：玩家 6 格内时隔几秒看一眼；有人说话就转过去看他（只转头，不打断任何动作；抄 mindcraft idle_staring 的节奏）
+ *   · 夜里在家有床就睡：床被占了服务器会拒绝、sleepInBed 换下一张 —— 不会把人挤下床；睡不了（有怪/不是晚上）就歇几分钟再试
+ *   · 换更好的护甲：按材质排（皮 < 金 < 锁链 < 铁/海龟 < 钻石 < 下界合金），只往上换；认不出材质的模组护甲不自动换（空着的槽除外）；鞘翅不碰
+ *   · 工具快坏了告诉 mind：耐久剩 ≤ 10%（有附魔的 ≤ 20%）说一声，一件只说一次 —— 别不知不觉把附魔镐用断
+ *
  * ## 本能事件（给 mind）
  *
  * 本能做成了什么、看见什么却没做成，记进 `I.events`（带 seq），mind 按 `GET /instinct/events?since=` 读，
@@ -99,6 +107,10 @@ const CFG = {
     failCooldownMs: 600000,
     cooldownMs: 5000,
   },
+  sleep: { enabled: process.env.MC_INSTINCT_SLEEP !== 'false', retryMs: 180000 },
+  armor: { enabled: process.env.MC_INSTINCT_ARMOR !== 'false', everyMs: 15000 },
+  gaze: { enabled: process.env.MC_INSTINCT_GAZE !== 'false', radius: 6, minGapMs: 3000, maxGapMs: 6000, chatRadius: 16 },
+  toolWarn: { ratio: 0.1, enchantedRatio: 0.2, everyMs: 10000 },
   minFreeSlots: 2,          // 收获、采矿至少留几个空格
   yieldWaitMs: 1500,        // 让出身体时最多等本能收拾多久
 };
@@ -243,6 +255,68 @@ function pickHarvest (ctx, cfg = CFG.harvest) {
   return { only: ok.map(c => c.pos) };
 }
 
+// ---- 危险方块：脚下 / 脚所在那格
+const HURT_FEET = /(^|:)(sweet_berry_bush|powder_snow|fire|soul_fire|campfire|soul_campfire|cactus|wither_rose|cobweb)$/;
+const HURT_BELOW = /(^|:)(magma_block|campfire|soul_campfire)$/;
+/** 站的地方伤人吗。返回原因或 null。feet / below 是方块名（读不到给 null） */
+function hazardUnder ({ feet = null, below = null } = {}) {
+  if (feet && HURT_FEET.test(feet)) return `陷在 ${feet} 里`;
+  if (below && HURT_BELOW.test(below)) return `站在 ${below} 上`;
+  return null;
+}
+/**
+ * 往哪挪。cells：身边 8 格 [{ dx, dz, feet, head, below }]（方块名，null = 读不到）。
+ * 要求：脚和头那格是空的（空气类）、脚下是实心且不伤人、不是岩浆/水。读不到的格子不去（不猜）。
+ */
+function pickStepOff (cells = []) {
+  const open = (n) => n != null && /(^|:)(air|cave_air|void_air|short_grass|grass|tall_grass|fern|snow)$/.test(n);
+  const ok = cells.filter(c => open(c.feet) && open(c.head) && c.below != null && !/air|lava|water|fire|magma|cactus|powder_snow|campfire/.test(c.below));
+  ok.sort((a, b) => (Math.abs(a.dx) + Math.abs(a.dz)) - (Math.abs(b.dx) + Math.abs(b.dz)));   // 先直的，再斜的
+  return ok[0] || null;
+}
+
+// ---- 护甲：按材质排。认不出材质 = null（不自动换下已穿的）
+const ARMOR_RANK = [[/leather/, 1], [/golden|gold_/, 2], [/chainmail/, 3], [/turtle/, 4], [/iron/, 4], [/diamond/, 5], [/netherite/, 6]];
+function armorRank (name) {
+  const bare = String(name || '').replace(/^.*:/, '');
+  for (const [re, r] of ARMOR_RANK) if (re.test(bare)) return r;
+  return null;
+}
+/**
+ * 哪个槽换哪件。worn：{ head, torso, legs, feet } 现在穿的（名字或 null）；items：背包里的 [{ name, slot }]（slot 由 slotByName 算）。
+ * 只往上换；空槽穿任何认得出槽位的；鞘翅不碰（胸甲和鞘翅是主人自己挑的）。
+ */
+function pickArmor (worn = {}, items = []) {
+  const out = [];
+  for (const slot of ['head', 'torso', 'legs', 'feet']) {
+    const cur = worn[slot];
+    if (cur && /elytra/.test(cur)) continue;
+    const curRank = cur ? armorRank(cur) : 0;
+    const cands = items.filter(i => i.slot === slot && !/elytra/.test(i.name))
+      .map(i => ({ ...i, rank: armorRank(i.name) }))
+      .filter(i => (cur ? (i.rank != null && curRank != null && i.rank > curRank) : true))
+      .sort((a, b) => (b.rank ?? 0) - (a.rank ?? 0));
+    if (cands.length) out.push({ slot, name: cands[0].name, from: cur || null });
+  }
+  return out;
+}
+
+/** 工具快坏了没有。item：{ name, durabilityUsed, maxDurability, enchanted } */
+function toolWorn (it, cfg = CFG.toolWarn) {
+  if (!it || !it.maxDurability || it.durabilityUsed == null) return null;
+  const left = it.maxDurability - it.durabilityUsed;
+  const ratio = left / it.maxDurability;
+  return ratio <= (it.enchanted ? cfg.enchantedRatio : cfg.ratio) ? { left, max: it.maxDurability } : null;
+}
+
+/** 看谁：6 格内最近的玩家；没到下次看的时间就不看 */
+function pickGaze ({ players = [], self, now = Date.now(), next = 0 }, cfg = CFG.gaze) {
+  if (!self || now < next) return null;
+  const d = (p) => Math.hypot(p.pos.x - self.x, p.pos.y - self.y, p.pos.z - self.z);
+  const near = players.filter(p => p?.pos && d(p) <= cfg.radius).sort((a, b) => d(a) - d(b));
+  return near[0] || null;
+}
+
 /**
  * 身体空不空。返回 null = 空着；否则是一句"为什么不空"。
  * following 的时候算空（本能会打断跟随，干完再接上）。
@@ -275,7 +349,7 @@ function install (bot, state, deps) {
     home: null,             // { center:{x,y,z}, radius }，mind 通过 POST /instinct {home} 告诉
   };
   // 跨重连保留状态；新加的本能补上默认配置（老的 state.instinct 里没有）
-  for (const k of ['pickup', 'harvest', 'mine']) I.cfg[k] = { ...CFG[k], ...(I.cfg[k] || {}) };
+  for (const k of ['pickup', 'harvest', 'mine', 'sleep', 'armor', 'gaze']) I.cfg[k] = { ...CFG[k], ...(I.cfg[k] || {}) };
   const spawned = new Map();   // 掉落物 id → { t, thrower }
   const fails = new Map();
   const mineFails = new Map();   // "x,y,z" → 到什么时候之前不再试
@@ -468,8 +542,120 @@ function install (bot, state, deps) {
     return { did: 'mine' };
   }
 
+  // ---- 危险方块退开（保命：连"刚被叫停"也不拦它）
+  async function tryStepOff () {
+    const f = bot.entity.position.floored();
+    const nm = (p) => bot.blockAt(p)?.name ?? null;
+    const why = hazardUnder({ feet: nm(f), below: nm(f.offset(0, -1, 0)) });
+    if (!why) return null;
+    const cells = [];
+    for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]]) {
+      const c = f.offset(dx, 0, dz);
+      cells.push({ dx, dz, feet: nm(c), head: nm(c.offset(0, 1, 0)), below: nm(c.offset(0, -1, 0)) });
+    }
+    const to = pickStepOff(cells);
+    if (!to) { event('hazard_stuck', `${why}，旁边也没有能站的地方`); return { skip: why }; }
+    const { goals } = require('mineflayer-pathfinder');
+    await runJob('stepoff', null, async () => {
+      await Promise.race([bot.pathfinder.goto(new goals.GoalBlock(f.x + to.dx, f.y, f.z + to.dz)), new Promise(r => setTimeout(r, 2500))]);
+      try { bot.pathfinder.setGoal(null); } catch (_) {}
+    });
+    note({ kind: 'stepoff', why });
+    return { did: 'stepoff' };
+  }
+
+  // ---- 夜里在家有床就睡
+  async function trySleep () {
+    const S = I.cfg.sleep;
+    if (!S.enabled || bot.isSleeping || Date.now() < (I.sleepRetryAt || 0)) return null;
+    if (deps.night?.phaseOf(bot.time?.timeOfDay) !== 'night') return null;
+    if (inHome(bot.entity.position) !== true) return { skip: '不在家（或不知道家在哪）' };
+    const { r } = await runJob('sleep', null, () => deps.handlers['POST /sleep']({ home: I.home }));
+    if (r?.sleeping || r?.already) event('sleep', '天黑了，在家上床睡了');
+    else {
+      I.sleepRetryAt = Date.now() + S.retryMs;
+      if (!I.sleepToldNight || Date.now() - I.sleepToldNight > 600000) {
+        I.sleepToldNight = Date.now();
+        event('sleep_failed', `天黑了想睡，没睡成：${String(r?.error || '不知道为什么').slice(0, 80)}（过几分钟再试）`);
+      }
+    }
+    return { did: 'sleep' };
+  }
+
+  // ---- 换更好的护甲
+  async function tryArmor () {
+    const A = I.cfg.armor;
+    if (!A.enabled || Date.now() - (I.lastArmorAt || 0) < A.everyMs) return null;
+    I.lastArmorAt = Date.now();
+    const sl = bot.inventory.slots;
+    const worn = { head: sl[5]?.name ?? null, torso: sl[6]?.name ?? null, legs: sl[7]?.name ?? null, feet: sl[8]?.name ?? null };
+    const items = bot.inventory.items().map(i => ({ name: i.name, slot: deps.hands.slotByName(i.name) })).filter(i => ['head', 'torso', 'legs', 'feet'].includes(i.slot));
+    const plan = pickArmor(worn, items);
+    if (!plan.length) return null;
+    const p0 = plan[0];
+    const { r } = await runJob('armor', { route: 'POST /wear' }, async () => {
+      const it = bot.inventory.items().find(i => i.name === p0.name);
+      if (!it) return { error: '背包里没了' };
+      await bot.equip(it, p0.slot);
+      await new Promise(res => setTimeout(res, 300));
+      const idx = { head: 5, torso: 6, legs: 7, feet: 8 }[p0.slot];
+      return { worn: bot.inventory.slots[idx]?.name === p0.name };
+    });
+    note({ kind: 'armor', ...p0, ok: !!r?.worn });
+    if (r?.worn) event('armor', `换上了 ${p0.name}${p0.from ? `（原来穿的是 ${p0.from}）` : ''}`);
+    return { did: 'armor' };
+  }
+
+  // ---- 转头看人（独立的小节拍：只转头，不占身体、不打断任何动作）
+  let nextGaze = 0;
+  const lookAtPlayer = (ent) => {
+    try { bot.lookAt(ent.position.offset(0, (ent.height || 1.8) * 0.9, 0), true); } catch (_) {}
+  };
+  const idleEyes = () => !I.running && !I.inflight && !bot.isSleeping && !bot.currentWindow && !bot.pathfinder?.isMoving?.() && !bot.targetDigBlock;
+  const gazeTimer = setInterval(() => {
+    try {
+      const G = I.cfg.gaze;
+      if (!G.enabled || !bot.entity || !idleEyes()) return;
+      const players = Object.values(bot.players || {}).filter(p => p.entity && p.entity !== bot.entity).map(p => ({ ent: p.entity, pos: p.entity.position }));
+      const g = pickGaze({ players, self: bot.entity.position, now: Date.now(), next: nextGaze }, G);
+      if (!g) return;
+      lookAtPlayer(g.ent);
+      nextGaze = Date.now() + G.minGapMs + Math.random() * (G.maxGapMs - G.minGapMs);
+    } catch (_) {}
+  }, 1000);
+  bot.on('chat', (username) => {
+    try {
+      const G = I.cfg.gaze;
+      if (!G.enabled || username === bot.username || !idleEyes()) return;
+      const ent = bot.players[username]?.entity;
+      if (!ent || ent.position.distanceTo(bot.entity.position) > G.chatRadius) return;
+      lookAtPlayer(ent);
+      nextGaze = Date.now() + G.maxGapMs;
+    } catch (_) {}
+  });
+
+  // ---- 工具快坏了：告诉 mind（一件只说一次；修好 / 换了新的再坏会再说）
+  const toolTimer = setInterval(() => {
+    try {
+      for (const it of bot.inventory.items()) {
+        const w = toolWorn({ name: it.name, durabilityUsed: it.durabilityUsed, maxDurability: it.maxDurability, enchanted: (it.enchants || []).length > 0 });
+        const k = `${it.name}@${it.slot}`;
+        if (!w) { I.toolWarned?.delete(k); continue; }
+        I.toolWarned ||= new Set();
+        if (I.toolWarned.has(k)) continue;
+        I.toolWarned.add(k);
+        event('tool_worn', `${it.name} 快坏了（还剩 ${w.left}/${w.max}）${(it.enchants || []).length ? '，有附魔，别用断了' : ''}`, { item: it.name });
+      }
+    } catch (_) {}
+  }, CFG.toolWarn.everyMs);
+
   async function tick () {
-    if (I.running || !bot.entity) return;
+    if (I.running || !bot.entity || bot.isSleeping) return;
+    // ⓪ 危险方块：身体没被命令占着就挪开（不看"刚被叫停"—— 站在岩浆块上不能听"别动"）
+    if (!I.inflight && !bot.currentWindow && (!state.currentAction || /^following /.test(state.currentAction))) {
+      const h = await tryStepOff();
+      if (h?.did) { I.last = { t: Date.now(), hazard: '挪开了' }; return; }
+    }
     const P = I.cfg.pickup;
     const busy = bodyBusy({
       inflight: I.inflight, currentAction: state.currentAction,
@@ -505,12 +691,16 @@ function install (bot, state, deps) {
       last.pickup = pick.skip || `捡 ${pick.ids.length} 堆`;
       if (pick.ids) { I.last = { t: now, ...last }; await runPickup(pick.ids, followName); return; }
     }
-    // 跟着人走、夜里在露天：只捡东西，不收庄稼不挖矿
+    // 跟着人走：只捡东西
     if (followName) { I.last = { t: now, ...last, other: `跟着 ${followName}，只捡东西` }; return; }
+    // ② 夜里在家就睡（在自家院子的露天处也算 —— 所以放在"夜里露天不做事"之前）
+    const sl = await trySleep();
+    if (sl?.did) { I.last = { t: now, ...last, sleep: '做了' }; return; }
+    if (sl?.skip) last.sleep = sl.skip;
     if (nightOut) { I.last = { t: now, ...last, other: '夜里在露天，不收不挖' }; return; }
 
-    // ② 收获  ③ 采矿
-    for (const [k, f] of [['harvest', tryHarvest], ['mine', tryMine]]) {
+    // ③ 收获  ④ 采矿  ⑤ 换护甲
+    for (const [k, f] of [['harvest', tryHarvest], ['mine', tryMine], ['armor', tryArmor]]) {
       const r = await f();
       if (!r) continue;
       if (r.did) { I.last = { t: now, ...last, [k]: '做了' }; return; }
@@ -525,7 +715,7 @@ function install (bot, state, deps) {
     ticking = true;
     try { await tick(); } catch (e) { I.last = { t: Date.now(), error: e.message }; } finally { ticking = false; }
   }, CFG.pickup.tickMs);
-  bot.once('end', () => clearInterval(timer));
+  bot.once('end', () => { clearInterval(timer); clearInterval(gazeTimer); clearInterval(toolTimer); });
 }
 
 /**
@@ -632,6 +822,41 @@ function selftest () {
   check('野生的（不在耕地上）→ 收', pickHarvest({ self: me, crops: [crop(1, 0, { farmland: false }), crop(2, 0, { farmland: false }), crop(3, 0, { farmland: false })] }).only?.length, 3);
   check('★ 右键摘的（浆果丛）→ 不打掉', pickHarvest({ self: me, crops: [1, 2, 3].map(x => crop(x, 0, { harvest: 'use' })), inHome: home }).only, undefined);
 
+  // ---- 危险方块 ----
+  check('★ 站在岩浆块上 → 要挪', typeof hazardUnder({ feet: 'air', below: 'magma_block' }), 'string');
+  check('陷在浆果丛里 → 要挪', typeof hazardUnder({ feet: 'sweet_berry_bush', below: 'grass_block' }), 'string');
+  check('陷在细雪里 → 要挪', typeof hazardUnder({ feet: 'minecraft:powder_snow', below: 'stone' }), 'string');
+  check('站在草地上 → 没事', hazardUnder({ feet: 'air', below: 'grass_block' }), null);
+  check('读不到 → 不当危险（不猜）', hazardUnder({}), null);
+  const cell = (dx, dz, below, feet = 'air', head = 'air') => ({ dx, dz, feet, head, below });
+  check('★ 挪到旁边能站的格子', pickStepOff([cell(1, 0, 'lava'), cell(-1, 0, 'stone')])?.dx, -1);
+  check('先直的再斜的', pickStepOff([cell(1, 1, 'stone'), cell(0, 1, 'stone')])?.dz, 1);
+  check('★ 旁边全是岩浆块 / 空 → 不挪（别挪进更糟的地方）', pickStepOff([cell(1, 0, 'magma_block'), cell(0, 1, 'air')]), null);
+  check('读不到的格子不去', pickStepOff([cell(1, 0, null)]), null);
+  check('头顶被挡 → 不去', pickStepOff([cell(1, 0, 'stone', 'air', 'stone')]), null);
+
+  // ---- 护甲 ----
+  check('铁 > 皮', armorRank('iron_chestplate') > armorRank('leather_tunic'), true);
+  check('模组护甲认不出材质 → null', armorRank('somemod:void_chestplate'), null);
+  const up = pickArmor({ torso: 'leather_chestplate' }, [{ name: 'iron_chestplate', slot: 'torso' }]);
+  check('★ 皮胸甲 → 换铁的', up[0]?.name, 'iron_chestplate');
+  check('只往上换：穿着钻石的，背包里的铁不换', pickArmor({ torso: 'diamond_chestplate' }, [{ name: 'iron_chestplate', slot: 'torso' }]).length, 0);
+  check('★ 穿着认不出的模组胸甲 → 不自动换（可能是主人给的）', pickArmor({ torso: 'somemod:void_chestplate' }, [{ name: 'netherite_chestplate', slot: 'torso' }]).length, 0);
+  check('空槽 → 穿上（模组的也行）', pickArmor({}, [{ name: 'somemod:void_boots', slot: 'feet' }])[0]?.name, 'somemod:void_boots');
+  check('鞘翅不碰', pickArmor({ torso: 'elytra' }, [{ name: 'netherite_chestplate', slot: 'torso' }]).length, 0);
+
+  // ---- 工具耐久 ----
+  check('★ 铁镐剩 5% → 提醒', !!toolWorn({ maxDurability: 250, durabilityUsed: 238 }), true);
+  check('剩一半 → 不说', toolWorn({ maxDurability: 250, durabilityUsed: 125 }), null);
+  check('★ 附魔的剩 15% 就提醒（更早）', !!toolWorn({ maxDurability: 1561, durabilityUsed: 1330, enchanted: true }), true);
+  check('没有耐久数据（模组物品）→ 不说（不猜）', toolWorn({ durabilityUsed: 10 }), null);
+
+  // ---- 转头看人 ----
+  const V = (x, y, z) => ({ x, y, z });
+  check('6 格内有人 → 看他', pickGaze({ players: [{ pos: V(3, 64, 0) }], self: V(0, 64, 0) })?.pos.x, 3);
+  check('太远 → 不看', pickGaze({ players: [{ pos: V(20, 64, 0) }], self: V(0, 64, 0) }), null);
+  check('刚看过（没到下次）→ 不看', pickGaze({ players: [{ pos: V(3, 64, 0) }], self: V(0, 64, 0), now: 0, next: 100 }), null);
+
   // ---- 身体空不空 ----
   check('什么都没在做 → 空', bodyBusy({}), null);
   check('跟随中 → 算空（捡完接着跟）', bodyBusy({ currentAction: 'following starwish' }), null);
@@ -661,7 +886,7 @@ function selftest () {
   });
 }
 
-module.exports = { CFG, TIER, pickaxeTier, needTier, pickOre, pickHarvest, whoThrew, pickPickup, bodyBusy, install, yieldBody, PASSIVE_POSTS, selftest };
+module.exports = { CFG, TIER, pickaxeTier, needTier, pickOre, pickHarvest, hazardUnder, pickStepOff, armorRank, pickArmor, toolWorn, pickGaze, whoThrew, pickPickup, bodyBusy, install, yieldBody, PASSIVE_POSTS, selftest };
 
 if (require.main === module && process.argv.includes('--selftest')) {
   selftest().then(code => process.exit(code));
