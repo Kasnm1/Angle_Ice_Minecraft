@@ -409,7 +409,8 @@ const AESTHETIC_SYS = `你是 Angle_ICE 在 Minecraft 里摆东西时自己的�
 - 室外：沿路边、围栏边、屋角，间隔均匀；别在别人的建筑上乱放
 - 和周围材质、风格搭（木屋配木质家具、暖色灯）
 坐标必须是图上 '.'（空气）的格子（'@' 是你自己站的格子，不能选），旁边或下面有能附着的实心块；放地上的东西下面必须是实心块。
-只输出 JSON：{"view":"一句话说这片是什么样、缺什么","candidates":[{"x":0,"y":0,"z":0,"mount":"wall|floor|ceiling","why":"一句话"}],"best":0}（mount：挂墙/放地上/吊顶，火把灯笼要写），candidates 2–3 个，best 是最好的那个的下标。`;
+只输出 JSON：{"view":"一句话说这片是什么样、缺什么","placements":[{"item":"注册名","x":0,"y":0,"z":0,"mount":"wall|floor|ceiling","why":"一句话"}]}
+要放几个就给几个 placements（同一种东西多个时排整齐：同一面墙、同一高度、挨着或等距）；觉得不用放（比如已经够亮）就给空数组。`;
 
 function parseJsonLoose (text) {
   const t = String(text || '');
@@ -419,18 +420,37 @@ function parseJsonLoose (text) {
   try { return JSON.parse(m[0].replace(/,\s*([}\]])/g, '$1')); } catch (_) { return null; }
 }
 
-async function placeNicely ({ itemName, purpose = '', x, y, z, r = 7 }) {
-  if (!itemName) throw new Error('itemName 要写放什么');
-  const bare = String(itemName).replace(/^minecraft:/, '');
-  const haveIt = async () => ((await bridge.get('/inventory')).items || []).some(i => i.name === bare || i.name === itemName);
-  if (!await haveIt()) {
-    if (/(^|:)torch$/.test(itemName)) await bridge.post('/make_torches', { count: 8 }, 60000).catch(() => null);
-    if (!await haveIt()) throw new Error(`身上没有 ${itemName}，先去拿/做`);
+/**
+ * 有审美地放一批东西。先看有没有布置规划里留好的空格子（有就直接摆，不用再想）；
+ * 剩下的一次想好全部位置再挨个放（主人：不应该放一个箱子布局一次）。
+ * items: [{ itemName, count, purpose }]，或者 itemName + count。
+ */
+async function placeNicely ({ itemName, count = 1, items, purpose = '', x, y, z, r = 7 }) {
+  const list = (items && items.length ? items : [{ itemName, count, purpose }]).filter(i => i && i.itemName)
+    .map(i => ({ itemName: i.itemName, bare: String(i.itemName).replace(/^minecraft:/, ''), count: Math.min(Math.max(1, +i.count || 1), 16), purpose: i.purpose || purpose }));
+  if (!list.length) throw new Error('itemName 要写放什么（或 items 列一批）');
+  const inv = async () => { const m = {}; for (const it of (await bridge.get('/inventory')).items || []) m[it.name.replace(/^minecraft:/, '')] = (m[it.name.replace(/^minecraft:/, '')] || 0) + it.count; return m; };
+  let have = await inv();
+  for (const it of list) {
+    if (!have[it.bare] && /(^|:)torch$/.test(it.itemName)) { await bridge.post('/make_torches', { count: 8 }, 60000).catch(() => null); have = await inv(); }
+    it.count = Math.min(it.count, have[it.bare] || 0);
   }
+  const lacking = list.filter(i => !i.count).map(i => i.itemName);
+  const todo = list.filter(i => i.count);
+  if (!todo.length) throw new Error(`身上没有 ${lacking.join('、')}，先去拿/做`);
+
+  const placed = []; const tried = [];
+  // ① 布置规划里留好的格子
+  const fr = await bridge.post('/layout/furnish', { items: todo.map(i => i.bare), maxMs: 60000 }, 90000).catch(() => null);
+  for (const p of fr?.placed || []) { placed.push({ by: '按规划', at: p }); const it = todo.find(i => p.startsWith(i.bare + '→')); if (it) it.count--; }
+  const rest = todo.filter(i => i.count > 0);
+  if (!rest.length) return { placed, note: '都摆到规划好的位置了', lacking: lacking.length ? lacking : undefined };
+
+  // ② 没规划的：看一眼这片，一次想好全部位置
   const q = x != null && y != null && z != null ? `x=${x}&y=${y}&z=${z}&r=${r}` : `r=${r}`;
   const sv = await bridge.get(`/survey?${q}`, 8000);
   const user = [
-    `要放：${itemName}${purpose ? `，用途：${purpose}` : ''}`,
+    `要放：${rest.map(i => `${i.itemName}×${i.count}${i.purpose ? `（${i.purpose}）` : ''}`).join('、')}`,
     `中心 ${sv.center.x},${sv.center.y},${sv.center.z}；${sv.orientation}`,
     `固定符号：${sv.fixed}`, `材质图例：${sv.legend}`,
     `门：${sv.doors.join(' ') || '无'}`, `光源：${sv.lights.join(' ') || '无'}`, `家具：${sv.furniture.join(' ') || '无'}`,
@@ -438,32 +458,33 @@ async function placeNicely ({ itemName, purpose = '', x, y, z, r = 7 }) {
     `必须留空的路（门前后、梯子口、走道，这些格子绝不能放东西）：${(sv.keepClear || []).join(' ') || '无'}`,
     '', sv.layers,
   ].join('\n');
-  const msg = await llm({ messages: [{ role: 'system', content: AESTHETIC_SYS }, { role: 'user', content: user }], timeoutMs: 30000, maxTokens: 700 });
+  const msg = await llm({ messages: [{ role: 'system', content: AESTHETIC_SYS }, { role: 'user', content: user }], timeoutMs: 40000, maxTokens: 1200 });
   const plan = parseJsonLoose(msg?.content);
-  if (plan && Array.isArray(plan.candidates) && !plan.candidates.length) return { placed: null, view: plan.view, note: '看了一圈觉得不用放（已经够亮 / 没合适的地方）' };
-  if (!plan || !Array.isArray(plan.candidates) || !plan.candidates.length) throw new Error(`没想出位置（模型回的不是 JSON：${String(msg?.content || '').slice(0, 120)}）`);
+  if (!plan || !Array.isArray(plan.placements)) throw new Error(`没想出位置（模型回的不是 JSON：${String(msg?.content || '').slice(0, 120)}）`);
+  if (!plan.placements.length) return { placed, view: plan.view, note: '看了一圈觉得不用放（已经够亮 / 没合适的地方）' };
   const meP = (await bridge.get('/position').catch(() => null)) || {};
-  const onMe = (c) => Math.floor(c.x) === meP.x && Math.floor(c.z) === meP.z && (Math.floor(c.y) === meP.y || Math.floor(c.y) === meP.y + 1);
   const clear = new Set(sv.keepClear || []);
-  const onPath = (c) => !/torch|lantern/.test(itemName) && clear.has(`${Math.floor(c.x)},${Math.floor(c.y)},${Math.floor(c.z)}`);   // 挂墙的灯不占地，可以在路边
-  const blocked = plan.candidates.filter(onPath).map(c => `(${c.x},${c.y},${c.z}) 在路上`);
-  const order = [plan.best || 0, ...plan.candidates.keys()].filter((v, i, a) => a.indexOf(v) === i && plan.candidates[v] && !onMe(plan.candidates[v]) && !onPath(plan.candidates[v]));
-  if (!order.length) throw new Error(`挑的位置都不行：${blocked.join('；') || '都是自己站的格子'}（这片的看法：${plan.view || '-'}）—— 换个地方（x/y/z）再试`);
-  const tried = [];
-  for (const i of order) {
-    const c = plan.candidates[i];
+  const key = (c) => `${Math.floor(c.x)},${Math.floor(c.y)},${Math.floor(c.z)}`;
+  for (const c of plan.placements) {
+    const it = rest.find(i => i.count > 0 && (i.bare === String(c.item || '').replace(/^minecraft:/, '') || rest.length === 1));
+    if (!it) continue;
+    if (clear.has(key(c)) && !/torch|lantern/.test(it.bare)) { tried.push(`(${key(c)}) 在路上`); continue; }
+    if (Math.floor(c.x) === meP.x && Math.floor(c.z) === meP.z && (Math.floor(c.y) === meP.y || Math.floor(c.y) === meP.y + 1)) { tried.push(`(${key(c)}) 是自己站的格子`); continue; }
     try {
       await bridge.post('/go', { x: c.x, y: c.y, z: c.z, range: 3 }, 60000).catch(() => null);
       let r2;
-      try { r2 = await bridge.post('/place', { itemName, x: c.x, y: c.y, z: c.z, mount: c.mount }, 20000); } catch (e) {
+      try { r2 = await bridge.post('/place', { itemName: it.itemName, x: c.x, y: c.y, z: c.z, mount: c.mount }, 20000); } catch (e) {
         if (!/holding|Not carrying/i.test(e.message)) throw e;
-        await new Promise(res => setTimeout(res, 800));      // 刚做出来/刚换手还没同步：同一位置再试一次
-        r2 = await bridge.post('/place', { itemName, x: c.x, y: c.y, z: c.z, mount: c.mount }, 20000);
+        await new Promise(res => setTimeout(res, 800));
+        r2 = await bridge.post('/place', { itemName: it.itemName, x: c.x, y: c.y, z: c.z, mount: c.mount }, 20000);
       }
-      return { placed: itemName, at: { x: c.x, y: c.y, z: c.z }, why: c.why, view: plan.view, alternatives: plan.candidates.filter((_, j) => j !== i).map(a => `(${a.x},${a.y},${a.z}) ${a.why}`), tried, result: summarize(r2) };
-    } catch (e) { tried.push(`(${c.x},${c.y},${c.z})：${e.message.slice(0, 80)}`); }
+      void r2; it.count--; placed.push({ item: it.bare, at: key(c), why: c.why });
+    } catch (e) { tried.push(`(${key(c)})：${e.message.slice(0, 80)}`); }
   }
-  throw new Error(`挑的几个位置都没放上：${tried.join('；')}（这片的看法：${plan.view || '-'}）`);
+  if (!placed.length) throw new Error(`挑的位置都没放上：${tried.join('；')}（这片的看法：${plan.view || '-'}）—— 换个地方（x/y/z）再试`);
+  const left = rest.filter(i => i.count > 0).map(i => `${i.itemName}×${i.count}`);
+  return { placed, view: plan.view, notPlaced: left.length ? left : undefined, tried: tried.length ? tried : undefined, lacking: lacking.length ? lacking : undefined,
+    hint: '想长期摆得整齐，先 plan_layout 规划一下家里哪儿放什么' };
 }
 
 
@@ -513,6 +534,89 @@ async function designBuild ({ purpose, x, y, z, r = 8 }) {
     } catch (e) { lastErr = e.message; messages.push({ role: 'assistant', content: JSON.stringify(bp).slice(0, 2000) }); }
   }
   throw new Error(`设计没成：${lastErr}`);
+}
+
+
+// ------------------------------------------------------------------ 布置规划：想好家里哪儿放什么
+// 主人 2026-09-27：「也可以自己规划长期布局，想放什么箱子 / 什么炉灶 / 什么冰箱等」
+// 家具目录 knowledge/furnishings.json（WorkBuddy 整理）；没有就用下面这份基础的
+const BASIC_FURNISH = {
+  storage: ['minecraft:chest', 'minecraft:barrel', 'farmersdelight:oak_cabinet', 'cookingforblockheads:fridge'],
+  kitchen: ['farmersdelight:stove', 'farmersdelight:cooking_pot', 'farmersdelight:skillet', 'farmersdelight:cutting_board', 'cookingforblockheads:fridge', 'cookingforblockheads:sink', 'cookingforblockheads:counter'],
+  smelting: ['minecraft:furnace', 'minecraft:blast_furnace', 'minecraft:smoker'],
+  workstation: ['minecraft:crafting_table', 'minecraft:stonecutter', 'minecraft:anvil', 'minecraft:smithing_table', 'minecraft:enchanting_table', 'minecraft:brewing_stand', 'minecraft:loom', 'minecraft:grindstone'],
+  lighting: ['minecraft:lantern', 'minecraft:torch'],
+};
+let FURN = null;
+function furnishCatalog () {
+  if (FURN) return FURN;
+  try {
+    const c = JSON.parse(require('fs').readFileSync(path.join(__dirname, 'knowledge', 'furnishings.json'), 'utf8'));
+    FURN = Object.entries(c).filter(([k, v]) => Array.isArray(v)).map(([k, v]) => `${k}：${v.slice(0, 25).map(x => `${x.id}=${x.zh || ''}${x.use ? `(${String(x.use).slice(0, 24)})` : ''}${x.size && x.size !== '1格' ? `[${x.size}]` : ''}`).join('；')}`).join('\n');
+  } catch (_) { FURN = Object.entries(BASIC_FURNISH).map(([k, v]) => `${k}：${v.join('；')}`).join('\n'); }
+  return FURN;
+}
+
+const LAYOUT_SYS = `你是 Angle_ICE 在给自己家做布置规划：想好哪一块做什么、每个格子放什么，拿到东西就摆到位。
+**按现在的进度规划**（主人：长期规划太难，后期还有机械动力、售货箱等一大堆，应该根据目前的进度来定）：
+- 只规划现在用得上、近期做得出来的东西（看给你的"现在的进度"：身上/家里有什么、工具到了哪一级）
+- 以后的东西（机器、自动化、大件）不具体规划，只在 view 里说一句"哪块空地留给以后"，那块别占
+- 有旧规划就在它上面续写：旧格子保留，只补这个阶段新需要的区和格子
+先读懂这片（逐层俯视图、图例、门、已有家具、必须留空的路），然后分区（这个阶段 2–5 个区）：
+- 仓库：箱子/木桶靠墙成排，可以叠两层（上层放在下层箱子上面），同一面墙对齐；数量按需要（一般 6–12 个）
+- 厨房：炉灶 + 锅（锅放在炉灶正上方才能加热）、砧板、冰箱、水槽/柜台，挨在一起成一条操作台
+- 冶炼角：熔炉/高炉/烟熏炉并排，旁边留一个箱子放燃料
+- 工作区：工作台、切石机、铁砧、锻造台… 成组
+- 照明：挂墙灯笼/火把，间距 6–8 格，照亮暗处
+- 已有的家具算进规划（保留原位，不重复）；风格跟房子搭（木屋用同木种的柜子）
+规则：格子必须是图上 '.' 的空气格；绝不能占"必须留空的路"；放地上的东西下面必须实心；挂墙的旁边要有墙；这一轮新增不超过 16 个格子。
+只输出 JSON：{"name":"短名","view":"一句话说这个家现在什么样、打算怎么布置","area":{"x":中心x,"y":中心y,"z":中心z,"r":半径},
+ "zones":[{"name":"仓库","purpose":"一句话","slots":[{"item":"minecraft:chest","x":0,"y":0,"z":0,"mount":"floor|wall|ceiling","why":"一句话"}]}]}
+item 必须是给你的家具目录里的真实注册名。`;
+
+async function planLayout ({ wishes = '', x, y, z, r = 10 }) {
+  const q = x != null && y != null && z != null ? `x=${x}&y=${y}&z=${z}&r=${r}` : `r=${r}`;
+  const sv = await bridge.get(`/survey?${q}`, 10000);
+  const old = await bridge.get('/layout/status', 8000).catch(() => null);
+  // 现在的进度：身上有什么、工具到了哪一级、家里存着什么（规划只管这个阶段）
+  const items = ((await bridge.get('/inventory').catch(() => null))?.items || []).map(i => i.name.replace(/^minecraft:/, ''));
+  const tier = ['netherite', 'diamond', 'iron', 'stone', 'wooden'].find(t => items.some(n => n.startsWith(`${t}_pickaxe`))) || '还没有镐子';
+  const homeStock = (() => { try { return mem.renderHomeStock(null, (id) => id.replace(/^minecraft:/, ''), 30).slice(0, 800); } catch (_) { return ''; } })();
+  const progress = `现在的进度：工具等级 ${tier}；身上有 ${[...new Set(items)].slice(0, 40).join('、') || '没什么'}${homeStock ? `；家里存着 ${homeStock.replace(/\n/g, ' ')}` : ''}`;
+  const latest = old?.layouts?.slice().sort((a, b) => (b.updated || 0) - (a.updated || 0))[0];
+  const user = [
+    progress,
+    wishes ? `想要：${wishes}` : '按一个正常人的家来规划',
+    `中心 ${sv.center.x},${sv.center.y},${sv.center.z}；${sv.orientation}`, `固定符号：${sv.fixed}`, `材质图例：${sv.legend}`,
+    `门：${sv.doors.join(' ') || '无'}`, `光源：${sv.lights.join(' ') || '无'}`, `已有家具：${sv.furniture.join(' ') || '无'}`,
+    `必须留空的路：${(sv.keepClear || []).join(' ') || '无'}`,
+    old?.layouts?.length ? `已有的规划：${old.layouts.map(l => `${l.name}（${l.zones.join('；')}）`).join(' / ')}` : '',
+    '', sv.layers, '', '——家具目录——', furnishCatalog(),
+  ].join('\n');
+  const messages = [{ role: 'system', content: LAYOUT_SYS }, { role: 'user', content: user }];
+  const msg = await llm({ messages, timeoutMs: 60000, maxTokens: 3500 });
+  const L = parseJsonLoose(msg?.content);
+  if (!L || !Array.isArray(L.zones)) throw new Error(`没规划出来（模型回的不是 JSON：${String(msg?.content || '').slice(0, 120)}）`);
+  L.area ||= { ...sv.center, r };
+  // 续写：同一个家已经有规划，就在它上面补（旧格子保留），不另开一份
+  if (latest) {
+    const full = (await bridge.get(`/layout/status?id=${latest.id}&full=1`, 8000).catch(() => null))?.full;
+    if (full) { for (const z of L.zones) { const z0 = full.zones.find(q => q.name === z.name); if (z0) z0.slots.push(...(z.slots || [])); else full.zones.push(z); } Object.assign(L, { ...full, view: L.view }); }
+    L.id = latest.id;
+  }
+  let saved = await bridge.post('/layout/save', L, 15000);
+  // 有被退回的格子：把原因告诉她，让她换位置再补一轮
+  if (saved.rejected?.length) {
+    messages.push({ role: 'assistant', content: JSON.stringify(L).slice(0, 3000) },
+      { role: 'user', content: `这些格子不行：${saved.rejected.join('；')}。只给替换它们的格子，格式 {"zones":[{"name":"原区名","slots":[...]}]}，只输出 JSON。` });
+    const fix = parseJsonLoose((await llm({ messages, timeoutMs: 40000, maxTokens: 1500 }).catch(() => null))?.content);
+    if (fix?.zones) {
+      for (const fz of fix.zones) { const z0 = L.zones.find(z => z.name === fz.name); if (z0) z0.slots.push(...(fz.slots || [])); else L.zones.push(fz); }
+      saved = await bridge.post('/layout/save', { ...L, id: saved.id }, 15000);
+    }
+  }
+  const st = await bridge.get(`/layout/status?id=${saved.id}`, 8000).catch(() => null);
+  return { ...saved, view: L.view, zones: st?.layouts?.[0]?.zones, stillWant: st?.layouts?.[0]?.stillWant, next: '拿到规划里的东西就 furnish 摆上；缺的去做/去拿' };
 }
 
 async function upstairsFirst (targetY) {
@@ -1022,10 +1126,28 @@ const TOOLS = {
     params: { x: { type: 'number' }, y: { type: 'number' }, z: { type: 'number' }, r: { type: 'number' } }, required: [],
     run: async (a) => bridge.get(`/survey?${Object.entries(a).filter(([, v]) => v != null).map(([k, v]) => `${k}=${v}`).join('&')}`, 8000),
   },
+  plan_layout: {
+    kind: 'action',
+    desc: '按现在的进度给家做布置规划（分区：仓库、厨房、冶炼、工作区、照明…，每个格子放什么），存下来；进度往前走了（有新工作站、新机器）再调一次，会在旧规划上续写。wishes 写想要什么（主人的要求也写进去）。拿到东西用 furnish 摆到位。',
+    params: { wishes: { type: 'string' }, x: { type: 'number' }, y: { type: 'number' }, z: { type: 'number' } }, required: [],
+    run: async (a) => planLayout(a),
+  },
+  furnish: {
+    kind: 'action',
+    desc: '按布置规划把手上有的东西摆到规划好的格子（items 可以只摆某几样）。',
+    params: { id: { type: 'string' }, items: { type: 'array', items: { type: 'string' } } }, required: [],
+    run: async ({ id, items }) => bridge.post('/layout/furnish', { id, items }, 150000),
+  },
+  layout_status: {
+    kind: 'info',
+    desc: '看布置规划：每个区摆了几个、还想要什么、哪些手上已经有能马上摆。',
+    params: { id: { type: 'string' } }, required: [],
+    run: async ({ id }) => bridge.get(`/layout/status${id ? `?id=${id}` : ''}`, 10000),
+  },
   place_nicely: {
     kind: 'action',
-    desc: '放东西（火把、灯、箱子、床、工作台、熔炉、家具、装饰）都用这个：先看这一片布局，想 2–3 个位置挑最好看又顺手的放下（不挡门和路、靠墙成组、对称、跟周围搭）。purpose 写用途（照亮门口 / 厨房里 / 床边…），x/y/z 写大概在哪一片（默认你身边）。',
-    params: { itemName: { type: 'string' }, purpose: { type: 'string' }, x: { type: 'number' }, y: { type: 'number' }, z: { type: 'number' } }, required: ['itemName'],
+    desc: '放任何东西都用这个（箱子、灯、床、工作台、熔炉、家具、装饰、方块）：有布置规划就直接摆到规划好的格子；没有就看一眼布局，一次想好全部位置（不挡路、靠墙成组、对齐、跟周围搭）再放。一批一起放：items=[{itemName,count,purpose}]，或 itemName+count。x/y/z 写大概在哪一片（默认你身边）。',
+    params: { itemName: { type: 'string' }, count: { type: 'number' }, items: { type: 'array', items: { type: 'object' } }, purpose: { type: 'string' }, x: { type: 'number' }, y: { type: 'number' }, z: { type: 'number' } }, required: [],
     run: async (a) => placeNicely(a),
   },
   design_build: {
@@ -1054,11 +1176,10 @@ const TOOLS = {
   },
   place: {
     kind: 'action',
-    desc: '把背包里的方块放到一个确定的坐标（4.5 格内、有实心邻块）。垫脚、堵洞、照着蓝图施工时用；摆家具、插火把、装饰用 place_nicely。',
-    params: { itemName: { type: 'string' }, x: { type: 'number' }, y: { type: 'number' }, z: { type: 'number' } }, required: ['itemName', 'x', 'y', 'z'],
-    // 家具、箱子、灯这类摆设：就算她直接给了坐标也走 place_nicely（她图快用 place 自己报坐标，箱子堵了路，2026-09-27）；
-    // 坐标只当"大概放在这附近"。建材（垫脚、堵洞、施工）照原样放
-    run: async (a) => (FURNISH_RE.test(String(a.itemName || '')) ? placeNicely({ itemName: a.itemName, purpose: a.purpose || '放在这附近', x: a.x, y: a.y, z: a.z, r: 5 }) : bridge.post('/place', a)),
+    desc: '放东西：会先看布局、挑不挡路的位置（和 place_nicely 一样）。只有垫脚、堵洞这种必须放在确定格子的，才写 exact=true，按坐标原样放。',
+    params: { itemName: { type: 'string' }, x: { type: 'number' }, y: { type: 'number' }, z: { type: 'number' }, exact: { type: 'boolean' } }, required: ['itemName'],
+    // 有实体的东西一律先看布局（主人 2026-09-27：只要是有实体的都应该看布局）；exact=true（垫脚/堵洞）才按坐标原样放
+    run: async (a) => (a.exact ? bridge.post('/place', a) : placeNicely({ itemName: a.itemName, count: a.count, purpose: a.purpose || '放在这附近', x: a.x, y: a.y, z: a.z, r: 5 })),
   },
 };
 
