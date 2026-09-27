@@ -355,6 +355,8 @@ async function look () {
   if (!W.projAt || Date.now() - W.projAt > 60000) {
     W.projAt = Date.now(); const pj = await safe('/project/status'); W.projects = pj?.projects || [];
     const ly = await safe('/layout/status'); W.layouts = ly?.layouts || [];
+    // 任务书进度（主线做到哪了）：读不到就是 null（不知道），不是"一个都没做"
+    const fq = await safe('/ftbq/completed'); W.ftbq = fq?.known ? new Set(fq.completed || []) : null;
   }
   if (!st) { W.state = null; return; }
   W.state = {
@@ -942,6 +944,12 @@ function planFacts () {
  */
 function planExtras () {
   const out = [];
+  // 通关主线（香草纪元）排最前：前置都做完、自己还没做的
+  try {
+    const ms = plan.mainlineStatus({ completed: W.ftbq || null, items: W.state?.items || [] });
+    if (ms.prereq) out.push({ text: `准备：${ms.prereq.title}`, why: ms.prereq.hint || ms.prereq.why || '进主线之前的准备' });
+    for (const q of ms.next.filter(x => !x.optional).slice(0, 3)) out.push({ text: `主线：${q.title}`, why: q.hint || (q.needs[0] ? `要 ${q.needs[0]}` : '') });
+  } catch (_) {}
   const lab = (k) => knowledge.label(k.includes(':') ? k : `minecraft:${k}`).replace(/\(.*\)$/, '');
   for (const p of W.projects || []) {
     const miss = Object.entries(p.missing || {}).slice(0, 3).map(([k, n]) => `${lab(k)}×${n}`).join('、');
@@ -955,7 +963,7 @@ function planExtras () {
     const c = ambition.candidates({ inventory: W.state?.items || [], knownStations: knownStations(), limit: 2 });
     if (c?.length) out.push({ text: `心愿：做一道没做过的菜（比如 ${c.map(x => knowledge.label(x.id).replace(/\(.*\)$/, '')).join('、')}）`, why: `做遍食物的心愿 ${ambition.progress().made}/${ambition.progress().total}` });
   } catch (_) {}
-  return out.slice(0, 5);
+  return out.slice(0, 7);
 }
 
 /**
@@ -965,10 +973,12 @@ function planExtras () {
 function planLine (why) {
   const cur = plan.current();
   const has = !!plan.get();
-  if (why !== 'idle') return has ? `\n【长期计划】${plan.get().goal}${cur ? ` —— 正在做：${cur.text}` : '（都做完了）'}` : '';
+  let mlLine = '';
+  try { const ms = plan.mainlineStatus({ completed: W.ftbq || null, items: W.state?.items || [] }); mlLine = `（通关主线 ${ms.done}/${ms.total}${ms.known ? '' : '，任务书进度没读到，按背包估的'}）`; } catch (_) {}
+  if (why !== 'idle') return has ? `\n【长期计划】${plan.get().goal}${cur ? ` —— 正在做：${cur.text}` : '（都做完了）'}${mlLine}` : '';
   const f = planFacts();
   const ideas = [...plan.ideas(f).slice(0, 6), ...planExtras()].map(x => `· ${x.text}（${x.why}）`).join('\n');
-  return `\n【长期计划】${has ? `\n${plan.render()}` : '还没有 —— 按这个整合包的通关主线，想好目标，用 plan_set 定下来（每步写上做成的标志）'}`
+  return `\n【长期计划】${mlLine}${has ? `\n${plan.render()}` : '还没有 —— 按这个整合包的通关主线，想好目标，用 plan_set 定下来（每步写上做成的标志）'}`
     + `\n现状：${plan.renderFacts(f)}`
     + (ideas ? `\n接下来可以做的（你自己挑、自己排）：\n${ideas}` : '')
     + `\n没人找你的时候：${cur ? `接着做「${cur.text}」` : '定下一步'}；做完了 / 情况变了就改计划（plan_step / plan_set）。有人找你就先陪人。`;
@@ -1820,7 +1830,10 @@ async function selftest () {
     const said = W.pending.slice(n0).map(x => x.text);
     check('★ 背包里有了石镐 → "做到了，下一步：挖铁"', said.some(t => /「做石镐」做到了，下一步：挖铁/.test(t)), said);
     check('闲着的时候【长期计划】里有现状和下一步', /接着做「挖铁」/.test(planLine('idle')) && /现状：镐：石镐/.test(planLine('idle')), planLine('idle'));
-    check('平时只一行', planLine('event'), '\n【长期计划】做铁镐 —— 正在做：挖铁');
+    check('平时只一行', /^\n【长期计划】做铁镐 —— 正在做：挖铁（通关主线 \d+\/64/.test(planLine('event')), planLine('event'));
+    W.ftbq = new Set(['362E2399F791D149']);   // 做完了"致富之路"
+    check('★ 读到任务书进度 → 主线下一个出现在候选里（白手起家）', /主线：白手起家/.test(planLine('idle')), planLine('idle'));
+    W.ftbq = null;
     // 工程、布置、心愿都进计划的候选（只有计划一个声音在说"接下来做什么"）
     W.projects = [{ id: 'p1', name: '门口小仓库', done: '40%', toDig: 3, toPlace: 12, missing: { cobblestone: 9 } }];
     W.layouts = [{ id: 'L1', name: '家', done: 3, total: 6, stillWant: { furnace: 1 }, canPlaceNow: ['furnace'], stale: ['仓库'] }];

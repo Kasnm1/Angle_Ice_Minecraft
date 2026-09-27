@@ -39,10 +39,10 @@ Minecraft 陪伴型 AI。游戏内 ID 固定 **`Angle_ICE`**，跑在 Forge 1.20
 
 | 分区 | 文件 | 相关目录 | Subagent |
 |---|---|---|---|
-| **① 桥 / 协议 / 注册表**（手+眼） | `bridge-server.js` `hands.js` `fml-handshake.js` `registry-probe.js` `block-palette.js` `palette-registry.js` `item-registry.js` `entity-registry.js` `instinct.js` `inventory-ledger.js` `reconnect.js` | [`registry/`](registry/) [`references/`](references/) | `mc-bridge` |
+| **① 桥 / 协议 / 注册表**（手+眼） | `bridge-server.js` `hands.js` `fml-handshake.js` `registry-probe.js` `block-palette.js` `palette-registry.js` `item-registry.js` `entity-registry.js` `instinct.js` `inventory-ledger.js` `commonsense.js` `ftbq-sync.js` `reconnect.js` | [`registry/`](registry/) [`references/`](references/) | `mc-bridge` |
 | **② 寻路 / 放置 / 站位**（几何） | `pathing.js` `place.js` | — | `mc-pathing` |
 | **③ 脑干**（规则自主循环） | `autopilot.js` `decision.js` `reflex.js` `events.js` `journal.js` | — | `mc-autopilot` |
-| **④ 意识 / 人格**（LLM 层） | `mind.js` `body.js` `memory-store.js` `speech.js` `ambition.js` `self-review.js` `llm-codex.js` `llm-workbuddy.js` `night.js` `brain.js`(旧) `PERSONA.md` | [`memory/`](memory/) | `mc-mind` |
+| **④ 意识 / 人格**（LLM 层） | `mind.js` `body.js` `memory-store.js` `speech.js` `ambition.js` `self-review.js` `llm-codex.js` `llm-workbuddy.js` `night.js` `plan.js` `brain.js`(旧) `PERSONA.md` | [`memory/`](memory/) | `mc-mind` |
 | **⑤ 知识库**（整合包真值） | `knowledge.js` | [`knowledge/`](knowledge/) | `mc-knowledge` |
 | **⑥ 运维 / 诊断 / 台账** | `scripts/start.sh` `stop.sh` `probe-*.js` | [`scripts/`](scripts/) `logs/` [`memory/field-log.md`](memory/field-log.md) | 主会话自己做 |
 
@@ -88,6 +88,7 @@ NODE=/Users/starwish/.workbuddy-ai/binaries/node/versions/22.22.2-2/bin/node
 $NODE item-registry.js --selftest;  $NODE block-palette.js --selftest
 $NODE entity-registry.js --selftest                         # 模组生物补名 + 仇恨判据
 $NODE instinct.js --selftest; $NODE inventory-ledger.js --selftest   # 本能（拾取 / 让出身体）；物品账
+$NODE commonsense.js --selftest; $NODE ftbq-sync.js --selftest      # 装水倒水锄地；任务书进度包（按反编译格式造包读回）
 $NODE palette-registry.js --selftest; $NODE reconnect.js --selftest
 $NODE scripts/fml-snapshot-test.js; $NODE scripts/palette-guard-test.js
 $NODE scripts/angelpal-to-palette.js --selftest
@@ -101,7 +102,7 @@ $NODE autopilot.js --selftest; $NODE decision.js --selftest; $NODE reflex.js --s
 $NODE events.js --selftest; $NODE journal.js --selftest; $NODE scripts/jev-contract-test.js
 # ④ 意识
 $NODE mind.js --selftest; $NODE brain.js --selftest; $NODE memory-store.js --selftest
-$NODE night.js --selftest; $NODE speech.js --selftest; $NODE ambition.js --selftest; $NODE self-review.js --selftest; $NODE --check body.js
+$NODE night.js --selftest; $NODE plan.js --selftest; $NODE speech.js --selftest; $NODE ambition.js --selftest; $NODE self-review.js --selftest; $NODE --check body.js
 $NODE llm-codex.js --selftest; $NODE llm-workbuddy.js --selftest   # --live 会真调一次（花额度）
 # ⑤ 知识
 $NODE knowledge.js --selftest

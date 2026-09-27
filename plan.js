@@ -131,6 +131,47 @@ function ideas (f) {
   return out;
 }
 
+// ------------------------------------------------------------------ 通关主线（香草纪元，knowledge/mainline.json）
+//
+// 主人 2026-09-27：长期计划要以这个整合包的通关为骨干。主线 64 个任务、依赖、完成条件由 WorkBuddy 整理（import_mainline.js 导入）。
+// 做完没做完，按证据强弱：① FTB 任务书同步来的已完成表（ftbq-sync.js，最准）② 没读到进度时，看背包里有没有要交的东西
+// ③ 只能靠财产点数 / 结构 / 打勾判断的，读不到进度就算"不知道"，不当成做完。
+
+let ML = null;
+function mainline () {
+  if (ML) return ML;
+  try { ML = JSON.parse(fs.readFileSync(path.join(__dirname, 'knowledge', 'mainline.json'), 'utf8')); } catch (_) { ML = { quests: [], prereq: [] }; }
+  return ML;
+}
+
+/**
+ * @param completed  FTB 已完成的 id（Set）；null = 没读到进度
+ * @param items      背包 [{name,count}]
+ * @returns { known, done, total, next:[{id,title,hint,stage,needs}], prereq:{title,hint}|null }
+ */
+function mainlineStatus ({ completed = null, items = [] } = {}, data = mainline()) {
+  const qs = data.quests || [];
+  const isDone = (q) => {
+    if (completed) return completed.has(q.id);
+    if (q.done?.have && !q.done.money && !q.done.structure) return doneBy({ have: q.done.have }, items);
+    return false;   // 点数 / 结构 / 打勾：读不到进度就不知道 → 不算做完
+  };
+  const doneSet = new Set(qs.filter(isDone).map(q => q.id));
+  const inMain = new Set(qs.map(q => q.id));
+  // 前置：主线里的看有没有做完；在别的章节的，读到进度就按进度，读不到当作不挡路（查不到，不猜成"没做"）
+  const depOk = (d) => (inMain.has(d) ? doneSet.has(d) : (completed ? completed.has(d) : true));
+  const next = qs.filter(q => !doneSet.has(q.id) && (q.deps || []).every(depOk))
+    .sort((a, b) => (a.optional - b.optional))
+    .map(q => ({ id: q.id, title: q.title, hint: q.hint, stage: q.stage, needs: q.needs || [], optional: q.optional }));
+  // 准备阶段：主线一个都还没做成时，从零开始的那几步里第一个没达到的
+  let prereq = null;
+  if (!doneSet.size) {
+    const st = (data.prereq || []).find(s => s.done?.have && !doneBy({ have: s.done.have }, items));
+    if (st) prereq = { title: st.title, hint: st.hint, why: st.why };
+  }
+  return { known: !!completed, done: doneSet.size, total: qs.length, next, prereq };
+}
+
 // ------------------------------------------------------------------ 计划
 
 /** "做成的标志"达成了没有。have 的物品名按"名字结尾"比（sword → iron_sword 也算，log → oak_log 也算） */
@@ -264,6 +305,29 @@ function selftest () {
   check('换计划 → 旧的记进历史', history().some(h => /换了计划/.test(h.text)), true);
   check('计划存盘了（重新读得出来）', (() => { P = null; return get()?.goal; })(), '安家');
   check('render 写得出目标和当前步骤', /目标：安家/.test(render()) && /→ 0\. 找块平地/.test(render()), true);
+  // 通关主线
+  const D = { quests: [
+    { id: 'A', title: '致富之路', deps: [], done: { checkmark: true } },
+    { id: 'B', title: '白手起家', deps: ['A'], done: { have: { crafting_table: 1 } } },
+    { id: 'C', title: '钻石', deps: ['B'], done: { have: { diamond: 1 } } },
+    { id: 'D', title: '挖掘等级', deps: ['B'], optional: true, done: { have: { diamond_pickaxe: 1 } } },
+    { id: 'E', title: '跨章前置', deps: ['X'], done: { money: 100 } },
+  ], prereq: [{ id: 'p1', title: '撸原木', done: { have: { log: 3 } }, hint: '打树' }] };
+  let ms = mainlineStatus({ completed: new Set(['A']), items: [] }, D);
+  check('★ 读到 FTB 进度：做完了致富之路 → 下一个是白手起家', ms.next[0]?.title, '白手起家');
+  check('前置没做完的不列（钻石）', ms.next.some(q => q.title === '钻石'), false);
+  check('跨章前置读到进度且没做 → 挡住', ms.next.some(q => q.title === '跨章前置'), false);
+  ms = mainlineStatus({ completed: new Set(['A', 'B']) }, D);
+  check('可选的排在后面', ms.next.map(q => q.title).join(','), '钻石,挖掘等级');
+  check('进度 2/5', `${ms.done}/${ms.total}`, '2/5');
+  ms = mainlineStatus({ completed: null, items: I({ crafting_table: 1 }) }, D);
+  check('★ 读不到进度：打勾类不算做完（不知道）', ms.done, 1);
+  check('…背包里有工作台 → 白手起家算做完', ms.next.some(q => q.title === '白手起家'), false);
+  check('读不到进度时跨章前置不挡路（查不到，不猜）', ms.next.some(q => q.title === '跨章前置'), true);
+  ms = mainlineStatus({ completed: new Set(), items: [] }, D);
+  check('★ 什么都没做 → 给准备阶段的第一步', ms.prereq?.title, '撸原木');
+  check('读到了进度 → known', ms.known, true);
+
   let threw = false; try { setPlan({}); } catch (_) { threw = true; }
   check('没目标 → 报错', threw, true);
   try { fs.unlinkSync(process.env.MC_PLAN_FILE); } catch (_) {}
@@ -272,6 +336,6 @@ function selftest () {
   return fail ? 1 : 0;
 }
 
-module.exports = { facts, renderFacts, ideas, doneBy, setPlan, updateStep, current, autoCheck, render, get, history, _reset, selftest };
+module.exports = { mainline, mainlineStatus, facts, renderFacts, ideas, doneBy, setPlan, updateStep, current, autoCheck, render, get, history, _reset, selftest };
 
 if (require.main === module && process.argv.includes('--selftest')) process.exit(selftest());

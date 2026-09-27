@@ -1,0 +1,1392 @@
+{
+ "source": "modpack-study/mainline（WorkBuddy 2026-09-27）",
+ "quests": [
+  {
+   "id": "362E2399F791D149",
+   "title": "致富之路",
+   "deps": [],
+   "optional": false,
+   "stage": "early",
+   "done": {
+    "checkmark": true
+   },
+   "hint": "点对号。顺手按 O 打开商店看一眼财产点数。",
+   "needs": []
+  },
+  {
+   "id": "107B99F9A5419859",
+   "title": "白手起家",
+   "deps": [
+    "362E2399F791D149"
+   ],
+   "optional": false,
+   "stage": "early",
+   "done": {
+    "have": {
+     "xiangcaomengjia:wood_selling_bin": 1
+    },
+    "money": 100
+   },
+   "hint": "做木出货箱，然后种点作物卖，攒到 100 财产点数。",
+   "needs": [
+    "橡木原木×4",
+    "100 财产点数",
+    "能卖的作物"
+   ]
+  },
+  {
+   "id": "03536397E5DABCEB",
+   "title": "财大气粗",
+   "deps": [
+    "107B99F9A5419859"
+   ],
+   "optional": false,
+   "stage": "mid",
+   "done": {
+    "money": 1000
+   },
+   "hint": "继续种作物卖钱，攒到 1000。多种几种轮流卖，价更好。",
+   "needs": [
+    "1000 财产点数",
+    "出货箱（卖作物换点数）"
+   ]
+  },
+  {
+   "id": "3EFA85DEC75D235C",
+   "title": "装备精进",
+   "deps": [],
+   "optional": false,
+   "stage": "early",
+   "done": {
+    "checkmark": true
+   },
+   "hint": "点一下任务书的对号就行，不用交东西。",
+   "needs": []
+  },
+  {
+   "id": "0103E9ED6D505D07",
+   "title": "初来乍到",
+   "deps": [
+    "3EFA85DEC75D235C"
+   ],
+   "optional": false,
+   "stage": "early",
+   "done": {
+    "have": {
+     "minecraft:crafting_table": 1
+    }
+   },
+   "hint": "砍一棵树 → 做工作台（原木→木板→工作台），交上去。这是主线第一格。",
+   "needs": [
+    "任意原木×1",
+    "斧（可选，砍树快）"
+   ]
+  },
+  {
+   "id": "6C980DE9AA63087D",
+   "title": "精致存储",
+   "deps": [
+    "0103E9ED6D505D07"
+   ],
+   "optional": false,
+   "stage": "early",
+   "done": {
+    "have": {
+     "expandedstorage:iron_chest": 1
+    }
+   },
+   "hint": "先挖铁矿烧 8 个铁锭，做铁箱子交掉。",
+   "needs": [
+    "石镐（挖铁矿）"
+   ]
+  },
+  {
+   "id": "6DF1D42A289CD2F9",
+   "title": "钻石",
+   "deps": [
+    "6C980DE9AA63087D"
+   ],
+   "optional": false,
+   "stage": "mid",
+   "done": {
+    "have": {
+     "minecraft:diamond": 1
+    }
+   },
+   "hint": "带铁镐下到 y<0 挖钻石，挖 1 颗交掉。挖到就顺手做钻石镐。",
+   "needs": [
+    "铁镐",
+    "下矿到 y<0"
+   ]
+  },
+  {
+   "id": "0AD505310ADC00D5",
+   "title": "高级附魔台",
+   "deps": [
+    "0103E9ED6D505D07"
+   ],
+   "optional": false,
+   "stage": "mid",
+   "done": {
+    "have": {
+     "enchantinginfuser:enchanting_infuser": 1
+    }
+   },
+   "hint": "做高级附魔台：要 2 颗钻石和黑曜石（黑曜石可以打黑曜石鱼拿，比挖快）。",
+   "needs": [
+    "钻石×2",
+    "黑曜石（或黑曜石鱼）"
+   ]
+  },
+  {
+   "id": "49AA11AF9FD721F4",
+   "title": "传送石",
+   "deps": [
+    "0103E9ED6D505D07"
+   ],
+   "optional": false,
+   "stage": "mid",
+   "done": {
+    "have": {
+     "waystones:warp_stone": 1
+    }
+   },
+   "hint": "做传送石（末影珍珠×4+紫水晶×4+绿宝石×1）。早期做不出来就先攒材料。",
+   "needs": [
+    "末影珍珠×4 + 紫水晶碎片×4 + 绿宝石×1"
+   ]
+  },
+  {
+   "id": "0EBEA88A20FDCC8D",
+   "title": "传送卷轴",
+   "deps": [
+    "49AA11AF9FD721F4"
+   ],
+   "optional": false,
+   "stage": "mid",
+   "done": {
+    "have": {
+     "waystones:warp_scroll": 1
+    }
+   },
+   "hint": "传送石做好后，传送卷轴很简单，跟着做。",
+   "needs": [
+    "传送石"
+   ]
+  },
+  {
+   "id": "2ACC56E94647750A",
+   "title": "进阶高级附魔台",
+   "deps": [
+    "0AD505310ADC00D5"
+   ],
+   "optional": false,
+   "stage": "late",
+   "done": {
+    "have": {
+     "enchantinginfuser:advanced_enchanting_infuser": 1
+    }
+   },
+   "hint": "在高级附魔台基础上做进阶版，要下界材料。",
+   "needs": [
+    "高级附魔台",
+    "下界材料（凋零残骸/粗金）"
+   ]
+  },
+  {
+   "id": "747BBEFBA7B7C6ED",
+   "title": "灌注合成（厨神献祭）",
+   "deps": [
+    "6DF1D42A289CD2F9"
+   ],
+   "optional": false,
+   "stage": "early",
+   "done": {
+    "have": {
+     "ars_nouveau:imbuement_chamber": 1,
+     "ars_nouveau:arcane_pedestal": 1,
+     "ars_nouveau:sourcestone": 1
+    }
+   },
+   "hint": "按任务书要求提交物品。",
+   "needs": [
+    "至高木（群系：至高木森林）",
+    "至高木",
+    "魔源宝石"
+   ]
+  },
+  {
+   "id": "726395B012524C13",
+   "title": "远古残骸",
+   "deps": [
+    "747BBEFBA7B7C6ED"
+   ],
+   "optional": false,
+   "stage": "mid",
+   "done": {
+    "have": {
+     "minecraft:ancient_debris": 1,
+     "minecraft:netherite_ingot": 1
+    }
+   },
+   "hint": "下界主线：远古残骸 + 下界合金锭各 1 个。捷径是打「下界铁掌」直接掉下界合金锭。",
+   "needs": [
+    "下界",
+    "可替代：厨锅 奶×4+凋零残骸×4 → 远古残骸×4",
+    "远古残骸碎片×4 + 金锭×4",
+    "下界铁掌（可直接掉落，可选捷径）"
+   ]
+  },
+  {
+   "id": "095969F71941C652",
+   "title": "前往结构：棱光池塘",
+   "deps": [
+    "726395B012524C13"
+   ],
+   "optional": false,
+   "stage": "mid",
+   "done": {
+    "have": {
+     "terramity:prism_solution_bucket": 1
+    },
+    "structure": "terramity:prismatic_pond"
+   },
+   "hint": "下到 y=-17~-14 找棱光池塘，拿桶装一桶，顺便在那个结构里站一下（有第二条「找到结构」条件）。",
+   "needs": [
+    "下到 y=-17~-14",
+    "找到结构 terramity:prismatic_pond",
+    "桶"
+   ]
+  },
+  {
+   "id": "066F1715417CBE01",
+   "title": "强化回响碎片",
+   "deps": [
+    "726395B012524C13"
+   ],
+   "optional": false,
+   "stage": "mid",
+   "done": {
+    "have": {
+     "deeperdarker:reinforced_echo_shard": 1
+    }
+   },
+   "hint": "去深暗之域打监守者，掉强化回响碎片。",
+   "needs": [
+    "监守者（打）",
+    "深暗之域"
+   ]
+  },
+  {
+   "id": "508E0442A4A5DD23",
+   "title": "龙鳞",
+   "deps": [
+    "726395B012524C13"
+   ],
+   "optional": false,
+   "stage": "late",
+   "done": {
+    "have": {
+     "dragonloot:dragon_scale": 1
+    }
+   },
+   "hint": "去末地打末影龙，掉 1 个龙鳞。",
+   "needs": [
+    "末影龙（打）",
+    "末地"
+   ]
+  },
+  {
+   "id": "4FC4C3295EB19EF7",
+   "title": "幽邃锭",
+   "deps": [
+    "726395B012524C13"
+   ],
+   "optional": false,
+   "stage": "late",
+   "done": {
+    "have": {
+     "terramity:dimlite_ingot": 1
+    }
+   },
+   "hint": "幽邃锭：挖深层幽邃矿，或者 infested_lab 箱子、打试炼守护者。需要下界合金镐级。",
+   "needs": [
+    "下界合金镐及以上",
+    "银鱼/试炼守护者等掉幽邃粒 或 infested_lab_loot 箱子"
+   ]
+  },
+  {
+   "id": "2E8068024BBBB625",
+   "title": "维伦合金锭",
+   "deps": [
+    "726395B012524C13"
+   ],
+   "optional": false,
+   "stage": "late",
+   "done": {
+    "have": {
+     "terramity:virentium_alloy_ingot": 1
+    }
+   },
+   "hint": "维伦合金锭 = 盖亚矿簇×4 + 远古残骸碎片×4。盖亚矿石用钻石镐就能挖。",
+   "needs": [
+    "下界合金镐及以上",
+    "盖亚矿簇×4（盖亚矿石，钻石镐）+ 远古残骸碎片×4"
+   ]
+  },
+  {
+   "id": "355BAAED20AF9E93",
+   "title": "寰宇锭",
+   "deps": [
+    "726395B012524C13"
+   ],
+   "optional": false,
+   "stage": "late",
+   "done": {
+    "have": {
+     "terramity:cosmilite_ingot": 1
+    }
+   },
+   "hint": "寰宇锭：去末地挖 end_cosmilite_ore，配金锭做。",
+   "needs": [
+    "下界合金镐及以上",
+    "末地（terramity:end_cosmilite_ore）"
+   ]
+  },
+  {
+   "id": "07EFA40E703EF8F1",
+   "title": "铱锭",
+   "deps": [
+    "095969F71941C652"
+   ],
+   "optional": false,
+   "stage": "late",
+   "done": {
+    "have": {
+     "terramity:iridium": 1
+    }
+   },
+   "hint": "铱锭：去挖铱矿（深层/下界/末地都有），但必须先用幽邃/维伦合金/寰宇/龙鳞/监守者级的镐。",
+   "needs": [
+    "铱碎块×4",
+    "挖铱矿的镐（幽邃/维伦合金/寰宇/龙鳞/监守者级）",
+    "深层铱矿/下界铱矿/末地铱矿 任一，或大法师·甘道夫/究极嗅探兽掉落"
+   ]
+  },
+  {
+   "id": "78CB32205F586C7C",
+   "title": "以太矿石",
+   "deps": [
+    "07EFA40E703EF8F1"
+   ],
+   "optional": false,
+   "stage": "late",
+   "done": {
+    "have": {
+     "enigmaticlegacy:etherium_ore": 1
+    }
+   },
+   "hint": "以太矿石在末地城的宝箱里，拿到 1 个就行。注意要先做末影龙料理任务才解锁。",
+   "needs": [
+    "末地城（end_city_treasure 宝箱）",
+    "钻石镐",
+    "末影龙料理任务（跨章前置 288E205F1BE38E55）"
+   ]
+  },
+  {
+   "id": "772411391A896DF3",
+   "title": "虚空合金锭",
+   "deps": [
+    "07EFA40E703EF8F1"
+   ],
+   "optional": false,
+   "stage": "late",
+   "done": {
+    "have": {
+     "terramity:void_alloy": 1
+    }
+   },
+   "hint": "虚空合金锭 = 铱锭×4 + 黑物质 + 虚无本质×4。",
+   "needs": [
+    "铱锭×4 + 黑物质×1 + 虚无本质×4",
+    "铱锭任务完成（解锁商店虚无本质/电路板/幽冥水晶）"
+   ]
+  },
+  {
+   "id": "50CC8943AC454132",
+   "title": "聚电锭",
+   "deps": [
+    "07EFA40E703EF8F1"
+   ],
+   "optional": false,
+   "stage": "late",
+   "done": {
+    "have": {
+     "terramity:conductite": 1
+    }
+   },
+   "hint": "聚电锭 = 铱锭×4 + 黑物质 + 电路板×4。",
+   "needs": [
+    "铱锭×4 + 黑物质×1 + 电路板×4"
+   ]
+  },
+  {
+   "id": "26F15191836BF92E",
+   "title": "地狱合金锭",
+   "deps": [
+    "07EFA40E703EF8F1"
+   ],
+   "optional": false,
+   "stage": "late",
+   "done": {
+    "have": {
+     "terramity:hellspec_alloy": 1
+    }
+   },
+   "hint": "地狱合金锭 = 铱锭×4 + 黑物质 + 幽冥水晶×4。",
+   "needs": [
+    "铱锭×4 + 黑物质×1 + 幽冥水晶×4"
+   ]
+  },
+  {
+   "id": "3756F5AD589B0E24",
+   "title": "传说中的金属",
+   "deps": [
+    "78CB32205F586C7C"
+   ],
+   "optional": false,
+   "stage": "late",
+   "done": {
+    "have": {
+     "terramity:reverium": 1,
+     "terramity:nyxium": 1,
+     "terramity:exodium_superalloy": 1
+    }
+   },
+   "hint": "三种传说中的金属：材料主要去商店买。前提是先做出「终界甲壳烧」和「掌上明猪腿」来解锁反棱柱和炽炎锭的购买。",
+   "needs": [
+    "炽炎锭 + 反棱柱（商店买）",
+    "商店（财产点数）",
+    "商店（财产点数）或【异世界相关】任务"
+   ]
+  },
+  {
+   "id": "71391D052B663576",
+   "title": "冥河夜神骑士套装",
+   "deps": [
+    "3756F5AD589B0E24"
+   ],
+   "optional": false,
+   "stage": "late",
+   "done": {
+    "have": {
+     "terramity:nyxium_knight_helmet": 1,
+     "terramity:nyxium_knight_chestplate": 1,
+     "terramity:nyxium_knight_leggings": 1,
+     "terramity:nyxium_knight_boots": 1
+    }
+   },
+   "hint": "做全套冥河夜神骑士套装（头盔/胸甲/护腿/靴子）。",
+   "needs": [
+    "冥河夜神锭"
+   ]
+  },
+  {
+   "id": "60A7B54CB6CB1B34",
+   "title": "异维术士套装",
+   "deps": [
+    "3756F5AD589B0E24"
+   ],
+   "optional": false,
+   "stage": "late",
+   "done": {
+    "have": {
+     "terramity:exodium_warlock_helmet": 1,
+     "terramity:exodium_warlock_chestplate": 1,
+     "terramity:exodium_warlock_leggings": 1,
+     "terramity:exodium_warlock_boots": 1
+    }
+   },
+   "hint": "做全套异维术士套装。",
+   "needs": [
+    "异维锭"
+   ]
+  },
+  {
+   "id": "45A79678A872D39D",
+   "title": "尊神圣堂武士套装",
+   "deps": [
+    "3756F5AD589B0E24"
+   ],
+   "optional": false,
+   "stage": "late",
+   "done": {
+    "have": {
+     "terramity:reverium_paladin_helmet": 1,
+     "terramity:reverium_paladin_chestplate": 1,
+     "terramity:reverium_paladin_leggings": 1,
+     "terramity:reverium_paladin_boots": 1
+    }
+   },
+   "hint": "做全套尊神圣堂武士套装。胸甲还要天使之羽+龙鳞+鞘翅。",
+   "needs": [
+    "尊神锭",
+    "尊神锭 + 天使之羽 + 龙鳞 + 鞘翅",
+    "鞘翅（末地船）"
+   ]
+  },
+  {
+   "id": "1D49545EC696A7A8",
+   "title": "富甲一方",
+   "deps": [
+    "03536397E5DABCEB"
+   ],
+   "optional": false,
+   "stage": "mid",
+   "done": {
+    "money": 10000
+   },
+   "hint": "攒到 10000 财产点数。可以睡觉快速度过价格周期。",
+   "needs": [
+    "10000 财产点数"
+   ]
+  },
+  {
+   "id": "2AA687BB0B1E0FAE",
+   "title": "沃野千里",
+   "deps": [
+    "1D49545EC696A7A8"
+   ],
+   "optional": false,
+   "stage": "late",
+   "done": {
+    "money": 50000
+   },
+   "hint": "攒到 50000。这时候该考虑自动化作物售卖（看「致富之路」章）。",
+   "needs": [
+    "50000 财产点数"
+   ]
+  },
+  {
+   "id": "55CA2CBD8FC37042",
+   "title": "钟鸣鼎食",
+   "deps": [
+    "2AA687BB0B1E0FAE"
+   ],
+   "optional": false,
+   "stage": "end",
+   "done": {
+    "money": 75000
+   },
+   "hint": "攒到 75000，全链最贵的一格。",
+   "needs": [
+    "75000 财产点数"
+   ]
+  },
+  {
+   "id": "65D6238974A8A7F5",
+   "title": "挖掘等级：钻石",
+   "deps": [
+    "6DF1D42A289CD2F9"
+   ],
+   "optional": false,
+   "stage": "mid",
+   "done": {
+    "have": {
+     "minecraft:diamond_pickaxe": 1
+    }
+   },
+   "hint": "做一把钻石镐交掉 —— 这是能挖黑曜石和远古残骸的门槛。",
+   "needs": [
+    "钻石×3"
+   ]
+  },
+  {
+   "id": "261D3C06556073F8",
+   "title": "挖掘等级：下界合金",
+   "deps": [
+    "65D6238974A8A7F5"
+   ],
+   "optional": true,
+   "stage": "mid",
+   "done": {
+    "have": {
+     "minecraft:netherite_pickaxe": 1,
+     "additionaladditions:gilded_netherite_pickaxe": 1,
+     "terramity:hellrok_gigaton_hammer": 1,
+     "aquaculture:neptunium_pickaxe": 1
+    }
+   },
+   "hint": "去下界挖凋零残骸（或用厨锅煮牛奶+凋零残骸得远古残骸），做下界合金镐。",
+   "needs": [
+    "下界（远古残骸）",
+    "厨锅（牛奶烹煮凋零残骸得远古残骸）"
+   ]
+  },
+  {
+   "id": "36F4F971978BFD7F",
+   "title": "挖掘等级：(铱)下界合金+1",
+   "deps": [
+    "261D3C06556073F8"
+   ],
+   "optional": true,
+   "stage": "mid",
+   "done": {
+    "have": {
+     "dragonloot:dragon_pickaxe": 1,
+     "terramity:dimlite_pickaxe": 1,
+     "terramity:virentium_pickaxe": 1,
+     "terramity:cosmilite_pickaxe": 1,
+     "terramity:iridium_pickaxe": 1,
+     "deeperdarker:warden_pickaxe": 1,
+     "ltc2:hotaurum_pickaxe": 1
+    }
+   },
+   "hint": "这一格是可选：最便宜的做法是打监守者做监守者之镐，或者去末地打龙做龙镐。",
+   "needs": [
+    "铱碎块×12",
+    "挖铱矿的镐（幽邃/维伦合金/寰宇/龙鳞/监守者级）",
+    "下界合金镐",
+    "监守者（强化回响碎片）"
+   ]
+  },
+  {
+   "id": "1916D2AA918A9AD5",
+   "title": "挖掘等级：(炽炎)下界合金+2",
+   "deps": [
+    "36F4F971978BFD7F"
+   ],
+   "optional": true,
+   "stage": "late",
+   "done": {
+    "have": {
+     "enigmaticlegacy:etherium_pickaxe": 1,
+     "terramity:hellspec_pickaxe": 1,
+     "terramity:conductite_pickaxe": 1,
+     "terramity:void_pickaxe": 1,
+     "composite_material:primitive_pickaxe": 1,
+     "composite_material:echoium_pickaxe": 1
+    }
+   },
+   "hint": "可选格：等有了以太镐/虚空合金镐再回来点。",
+   "needs": []
+  },
+  {
+   "id": "58B31B3C0AAA36EB",
+   "title": "挖掘等级：(最终)下界合金+3",
+   "deps": [
+    "1916D2AA918A9AD5"
+   ],
+   "optional": true,
+   "stage": "end",
+   "done": {
+    "have": {
+     "terramity:exodium_pickaxe": 1,
+     "terramity:reverium_pickaxe": 1,
+     "terramity:nyxium_pickaxe": 1,
+     "composite_material:etherite_pickaxe": 1,
+     "terramity:devastation": 1,
+     "composite_material:allay_steel_pickaxe": 1
+    }
+   },
+   "hint": "可选格：要传说中的金属系列，很后期了。",
+   "needs": []
+  },
+  {
+   "id": "63489B50BBF2A74A",
+   "title": "赛博空间固定终端",
+   "deps": [
+    "6C980DE9AA63087D"
+   ],
+   "optional": false,
+   "stage": "mid",
+   "done": {
+    "have": {
+     "cyberspace:terminal": 1
+    }
+   },
+   "hint": "做赛博空间固定终端（要回响碎片，得先打监守者）。",
+   "needs": [
+    "回响碎片×2 + 恶魔碎块 + 红石",
+    "末影之后（恶魔碎块）"
+   ]
+  },
+  {
+   "id": "6171B33E2BD3A869",
+   "title": "移动空间终端",
+   "deps": [
+    "63489B50BBF2A74A"
+   ],
+   "optional": false,
+   "stage": "late",
+   "done": {
+    "have": {
+     "cyberspace:mobile_terminal": 1
+    }
+   },
+   "hint": "做移动空间终端，还要聚电块和灵魂水晶。",
+   "needs": [
+    "聚电块 + 灵魂水晶"
+   ]
+  },
+  {
+   "id": "3DD8CF9E08EFB317",
+   "title": "末影箱果",
+   "deps": [],
+   "optional": false,
+   "stage": "mid",
+   "done": {
+    "have": {
+     "dimensional_stomach:stomach_upgrade_1_to_2": 1
+    }
+   },
+   "hint": "做末影箱果升级次元之胃。",
+   "needs": [
+    "黑曜石 + 蓝花美耳草 等"
+   ]
+  },
+  {
+   "id": "6AE4654832854633",
+   "title": "悬赏板",
+   "deps": [
+    "107B99F9A5419859"
+   ],
+   "optional": false,
+   "stage": "early",
+   "done": {
+    "have": {
+     "bountiful:bountyboard": 1
+    }
+   },
+   "hint": "做悬赏板（要 1 颗钻石），放家里或者去村庄拿一个。",
+   "needs": [
+    "钻石×1"
+   ]
+  },
+  {
+   "id": "2A71606EE65DEFF4",
+   "title": "第一次灌注合成：学习制作无暇宝石",
+   "deps": [
+    "747BBEFBA7B7C6ED"
+   ],
+   "optional": false,
+   "stage": "early",
+   "done": {
+    "have": {
+     "dream_relics:flawless_gem": 1
+    }
+   },
+   "hint": "灌注第一课：做无暇宝石 = 钻石 + 虹彩铋晶×3。虹彩铋晶做任意料理就能得。",
+   "needs": [
+    "钻石×1 + 虹彩铋晶×3",
+    "灌注室（前置）"
+   ]
+  },
+  {
+   "id": "2DBD8793540E2A94",
+   "title": "矿物探测仪",
+   "deps": [
+    "6DF1D42A289CD2F9"
+   ],
+   "optional": false,
+   "stage": "mid",
+   "done": {
+    "have": {
+     "smc:ore_detector": 1
+    }
+   },
+   "hint": "做矿物探测仪，要幽匿感测体（去深暗之域挖）。",
+   "needs": [
+    "幽匿感测体（深暗之域）",
+    "粗珀金×6"
+   ]
+  },
+  {
+   "id": "550D6E662AD78219",
+   "title": "！⸮无法破坏？！",
+   "deps": [
+    "6DF1D42A289CD2F9"
+   ],
+   "optional": true,
+   "stage": "end",
+   "done": {
+    "have": {
+     "enigmaticaddons:forger_gem": 1,
+     "makit_better:titanium_anvil": 1,
+     "makit_better:immortal_stone": 1,
+     "composite_material:etherite_totem": 1,
+     "enigmaticaddons:lost_engine": 1
+    }
+   },
+   "hint": "可选格：无法破坏系列，都是后期物品。",
+   "needs": [
+    "钻石×2 + 下界材料",
+    "钛合金（商店）",
+    "末影龙后物品",
+    "以太合金（后期物品）"
+   ]
+  },
+  {
+   "id": "4F520766542C29D4",
+   "title": "远古锻造台",
+   "deps": [
+    "726395B012524C13"
+   ],
+   "optional": false,
+   "stage": "mid",
+   "done": {
+    "have": {
+     "smc:ancient_smithing_table": 1
+    }
+   },
+   "hint": "做远古锻造台，或者去云中花园找一个。",
+   "needs": [
+    "云中花园（结构）或合成"
+   ]
+  },
+  {
+   "id": "0BC1A615831B627B",
+   "title": "进化源质",
+   "deps": [
+    "3756F5AD589B0E24"
+   ],
+   "optional": false,
+   "stage": "late",
+   "done": {
+    "have": {
+     "composite_material:evolutium": 1
+    }
+   },
+   "hint": "做进化源质 = 珀金锭 + 风暴精华 + 熔岩能量核心。",
+   "needs": []
+  },
+  {
+   "id": "05E36EEA4E379EBA",
+   "title": "进化的力量",
+   "deps": [
+    "0BC1A615831B627B"
+   ],
+   "optional": false,
+   "stage": "late",
+   "done": {
+    "have": {
+     "composite_material:allay_steel_sword_reinforced": 1,
+     "composite_material:obsidian_sword_reinforced": 1,
+     "composite_material:primitive_sword_reinforced": 1
+    }
+   },
+   "hint": "做三把强化剑（共振/全知者/荒芜）。",
+   "needs": [
+    "进化源质（前置）"
+   ]
+  },
+  {
+   "id": "68283F317A9343AE",
+   "title": "狂野生长精华",
+   "deps": [
+    "55CA2CBD8FC37042"
+   ],
+   "optional": false,
+   "stage": "mid",
+   "done": {
+    "have": {
+     "enigmaticlegacy:infinimeal": 1
+    }
+   },
+   "hint": "按任务书要求提交物品。",
+   "needs": [
+    "商店「下一世代」购买（需先完成钟鸣鼎食）"
+   ]
+  },
+  {
+   "id": "510D9A794E7CD06C",
+   "title": "厨神证章",
+   "deps": [
+    "0BC1A615831B627B",
+    "68283F317A9343AE"
+   ],
+   "optional": false,
+   "stage": "end",
+   "done": {
+    "have": {
+     "vefc:immortal_medal": 1
+    },
+    "money": 150000
+   },
+   "hint": "做厨神之证章节的料理拿厨神证章，再攒 15 万点数。这是个大工程。",
+   "needs": [
+    "厨神之证章节的料理（112 个任务的奖励）",
+    "15 万财产点数"
+   ]
+  },
+  {
+   "id": "658DE10886414F62",
+   "title": "以太合金锭/幻灭结晶",
+   "deps": [
+    "510D9A794E7CD06C"
+   ],
+   "optional": false,
+   "stage": "end",
+   "done": {
+    "have": {
+     "composite_material:etherite_ingot": 1,
+     "composite_material:vanitatium_crystal": 1
+    }
+   },
+   "hint": "以太合金锭和幻灭结晶各做 1 个：都要 3 种传说中的金属各 1 个 + 进化源质。",
+   "needs": [
+    "3 种传说中的金属 各 1 + 以太锭 + 进化源质",
+    "进化源质（商店解锁）",
+    "3 种传说中的金属 各 1 + 虚无宝珠 + 进化源质"
+   ]
+  },
+  {
+   "id": "29455B153417BD9C",
+   "title": "炉火纯青",
+   "deps": [
+    "658DE10886414F62"
+   ],
+   "optional": false,
+   "stage": "end",
+   "done": {
+    "have": {
+     "vefc:immortal_crystal": 1,
+     "composite_material:primitive_nostrum": 1
+    }
+   },
+   "hint": "炉火纯青：厨神魂晶 + 荒古秘药。荒古秘药要深暗之园的蘑菇和远古城市的金魔法果。",
+   "needs": [
+    "商店「下一世代」用厨神证章兑换",
+    "厨神魂晶 + 荒古坚材 + 深暗之园蘑菇 + 金魔法果",
+    "深暗之园维度",
+    "远古城市（金魔法果）"
+   ]
+  },
+  {
+   "id": "64B4013049DDF05B",
+   "title": "结束了吗？",
+   "deps": [
+    "29455B153417BD9C"
+   ],
+   "optional": false,
+   "stage": "end",
+   "done": {
+    "have": {
+     "lethality:pixie_alloy": 1
+    }
+   },
+   "hint": "用厨锅把以太合金和厨神魂晶融合，做出仙灵注魔合金。",
+   "needs": [
+    "厨锅",
+    "以太合金 + 厨神魂晶"
+   ]
+  },
+  {
+   "id": "3AC39AA9E7FFA279",
+   "title": "我即永恒",
+   "deps": [
+    "64B4013049DDF05B"
+   ],
+   "optional": false,
+   "stage": "end",
+   "done": {
+    "have": {
+     "vefc:immortal_crystal": 1
+    }
+   },
+   "hint": "用厨神魂晶兑换，前提是完成「永恒的回忆」章节。",
+   "needs": [
+    "商店「下一世代」用厨神证章兑换"
+   ]
+  },
+  {
+   "id": "4F14E10A227F3F7B",
+   "title": "无尽财富",
+   "deps": [
+    "64B4013049DDF05B"
+   ],
+   "optional": false,
+   "stage": "end",
+   "done": {
+    "have": {
+     "vefc:immortal_crystal": 1
+    }
+   },
+   "hint": "用厨神魂晶兑换，前提是完成「厨神之证」章节。",
+   "needs": [
+    "商店「下一世代」用厨神证章兑换"
+   ]
+  },
+  {
+   "id": "5AD80E2027332AA1",
+   "title": "无限战力",
+   "deps": [
+    "64B4013049DDF05B"
+   ],
+   "optional": false,
+   "stage": "end",
+   "done": {
+    "have": {
+     "vefc:immortal_crystal": 1
+    }
+   },
+   "hint": "用厨神魂晶兑换，前提是完成「异界神器库」章节。",
+   "needs": [
+    "商店「下一世代」用厨神证章兑换"
+   ]
+  },
+  {
+   "id": "1F7A936D4D6881BA",
+   "title": "完全掌控！创造之心！",
+   "deps": [
+    "4F14E10A227F3F7B",
+    "3AC39AA9E7FFA279",
+    "5AD80E2027332AA1"
+   ],
+   "optional": false,
+   "stage": "end",
+   "done": {
+    "have": {
+     "vefc:the_ash": 6
+    }
+   },
+   "hint": "交 6 个浩劫余烬换创造之心。浩劫余烬有 9 条收集途径，见任务说明。",
+   "needs": [
+    "浩劫余烬 ×6（收集链）"
+   ]
+  },
+  {
+   "id": "53D4EE77D9D5DBDF",
+   "title": "§l§a香§b草§c之§d心",
+   "deps": [
+    "1F7A936D4D6881BA"
+   ],
+   "optional": false,
+   "stage": "end",
+   "done": {
+    "have": {
+     "vefc:immortal_heart": 1
+    }
+   },
+   "hint": "最终目标：做出香草之心。",
+   "needs": [
+    "完成浩劫余烬收集（创造之心）"
+   ]
+  },
+  {
+   "id": "642441AC4717ED64",
+   "title": "后日谈",
+   "deps": [
+    "53D4EE77D9D5DBDF"
+   ],
+   "optional": false,
+   "stage": "end",
+   "done": {
+    "have": {
+     "sophisticatedbackpacks:survival_infinity_upgrade": 1
+    }
+   },
+   "hint": "主线收官：做生存模式无限升级（不消耗香草之心）。",
+   "needs": [
+    "香草之心（但不消耗）"
+   ]
+  },
+  {
+   "id": "4A4A9F2DDDCA3864",
+   "title": "荒古系列",
+   "deps": [
+    "29455B153417BD9C"
+   ],
+   "optional": false,
+   "stage": "end",
+   "done": {
+    "have": {
+     "composite_material:primitive_totem": 1,
+     "composite_material:primitive_upgrade_smithing_template": 1
+    }
+   },
+   "hint": "荒古系列：荒古庇护图腾 + 荒古升级模板。",
+   "needs": [
+    "荒古系列（承自炉火纯青）",
+    "荒古系列"
+   ]
+  },
+  {
+   "id": "38C7945BC364287E",
+   "title": "收割姬蛋",
+   "deps": [
+    "29455B153417BD9C"
+   ],
+   "optional": false,
+   "stage": "end",
+   "done": {
+    "have": {
+     "smc:chicken_harvester_egg": 1
+    }
+   },
+   "hint": "收割姬蛋：姬排合成 + 姬尾羽去云中花园箱子拿。",
+   "needs": [
+    "姬排（合成）+ 姬尾羽（Cloudy Garden 云中花园箱子）"
+   ]
+  },
+  {
+   "id": "5D93F02C86267784",
+   "title": "以太合金套装",
+   "deps": [
+    "658DE10886414F62"
+   ],
+   "optional": false,
+   "stage": "end",
+   "done": {
+    "have": {
+     "composite_material:etherite_upgrade_smithing_template": 1,
+     "composite_material:etherite_helmet": 1,
+     "composite_material:etherite_chestplate": 1,
+     "composite_material:etherite_leggings": 1,
+     "composite_material:etherite_boots": 1
+    }
+   },
+   "hint": "做全套以太合金套装（含锻造模板）。",
+   "needs": [
+    "以太合金锭"
+   ]
+  },
+  {
+   "id": "57AF927516628CF3",
+   "title": "幻灭套装",
+   "deps": [
+    "658DE10886414F62"
+   ],
+   "optional": false,
+   "stage": "end",
+   "done": {
+    "have": {
+     "composite_material:vanitatium_upgrade_smithing_template": 1,
+     "composite_material:vanitatium_helmet": 1,
+     "composite_material:vanitatium_chestplate": 1,
+     "composite_material:vanitatium_leggings": 1,
+     "composite_material:vanitatium_boots": 1
+    }
+   },
+   "hint": "做全套幻灭套装（含锻造模板）。",
+   "needs": [
+    "幻灭结晶"
+   ]
+  },
+  {
+   "id": "12DC195792464905",
+   "title": "回响之锭",
+   "deps": [
+    "78CB32205F586C7C"
+   ],
+   "optional": false,
+   "stage": "late",
+   "done": {
+    "have": {
+     "composite_material:echoium_ingot": 1,
+     "composite_material:lacerator": 1
+    }
+   },
+   "hint": "回响之锭 = 回响颗粒×9，外加一把撕裂之弓（要下界之星）。",
+   "needs": [
+    "回响颗粒×9",
+    "回响颗粒 + 下界之星"
+   ]
+  },
+  {
+   "id": "11CFA6C4D080F742",
+   "title": "永恒燃料",
+   "deps": [
+    "07EFA40E703EF8F1"
+   ],
+   "optional": false,
+   "stage": "late",
+   "done": {
+    "have": {
+     "smc:infinite_fuel": 1
+    }
+   },
+   "hint": "永恒燃料 = 煤炭 + 地狱合金块 + 粗珀金。",
+   "needs": [
+    "地狱合金块 + 粗珀金"
+   ]
+  },
+  {
+   "id": "391F205905857F6D",
+   "title": "寻宝仪",
+   "deps": [
+    "6DF1D42A289CD2F9"
+   ],
+   "optional": false,
+   "stage": "mid",
+   "done": {
+    "have": {
+     "smc:treasure_detector": 1
+    }
+   },
+   "hint": "做寻宝仪 = 粗金×6 + 棱柱水晶簇 + 绿宝石×9 + 红石。",
+   "needs": [
+    "棱柱水晶簇 + 绿宝石×9"
+   ]
+  }
+ ],
+ "prereq": [
+  {
+   "id": "p1-punch-wood",
+   "title": "徒手打树叶拿树苗 / 直接打原木（也可徒手撸原木）",
+   "why": "一切从木头开始：工作台、工具、木棍都要原木。",
+   "done": {
+    "have": {
+     "minecraft:oak_log": 3
+    }
+   },
+   "hint": "对着树干长按左键打，打 3 个原木。顺手把树苗捡了，以后种树。"
+  },
+  {
+   "id": "p2-crafting-table",
+   "title": "做工作台",
+   "why": "主线第一个任务「初来乍到」就是交 1 个工作台；而且后面所有 3×3 配方都要它。",
+   "done": {
+    "have": {
+     "minecraft:crafting_table": 1
+    }
+   },
+   "hint": "原木 → 木板（背包 2×2 就能做）→ 木板×4 → 工作台。做完先别急着交，把木镐做出来再交也行。"
+  },
+  {
+   "id": "p3-wood-pickaxe",
+   "title": "木镐 + 木斧（+木剑）",
+   "why": "木镐挖圆石 → 石镐 → 才能挖铁。木斧砍树快得多。木剑防身。",
+   "done": {
+    "have": {
+     "minecraft:wooden_pickaxe": 1,
+     "minecraft:wooden_axe": 1
+    }
+   },
+   "hint": "木棍 = 木板×2 → 木棍×4。木镐 = 木板×3 + 木棍×2（工作台摆）。木斧 = 木板×3 + 木棍×2 摆另一行。"
+  },
+  {
+   "id": "p4-stone-tools",
+   "title": "挖圆石 → 石镐 + 石剑 + 石斧 + 石锹",
+   "why": "石镐是挖铁的最低门槛（knowledge.js obtain 铁矿石写明「石镐或更好」）。",
+   "done": {
+    "have": {
+     "minecraft:stone_pickaxe": 1,
+     "minecraft:cobblestone": 3
+    }
+   },
+   "hint": "木镐挖 3 个以上圆石，做石镐（圆石×3+木棍×2）。本包石镐还能用安山岩/闪长岩/花岗岩做。"
+  },
+  {
+   "id": "p5-furnace",
+   "title": "做熔炉（圆石×8）",
+   "why": "熔炉烧铁锭、烧炭、烧熟食都要它。铁箱子任务也要先能烧铁。",
+   "done": {
+    "have": {
+     "minecraft:furnace": 1
+    }
+   },
+   "hint": "挖 8 个以上圆石，工作台摆成 3×3 空心方框。"
+  },
+  {
+   "id": "p6-light-torches",
+   "title": "做火把（煤炭或木炭 ×1 + 木棍 ×1 → 火把 ×4）",
+   "why": "晚上和矿洞里没光就刷怪。火把是保命物资，永远备一组。",
+   "done": {
+    "have": {
+     "minecraft:torch": 8
+    }
+   },
+   "hint": "没挖到煤就用熔炉烧原木得木炭，一样能做火把。边走边插，大概 8~12 格一根。"
+  },
+  {
+   "id": "p7-food",
+   "title": "弄吃的（生肉烤熟 / 面包）",
+   "why": "饿到没血就跑不动、打不过。这包「饱食度满后继续吃能加生命上限」（任务书「必看提示」第 3 条）。",
+   "done": {
+    "have": {
+     "minecraft:bread": 2
+    }
+   },
+   "hint": "打羊/猪/牛拿生肉，用熔炉烤熟。或者打草拿小麦×3，背包里就能做面包。"
+  },
+  {
+   "id": "p8-shelter",
+   "title": "有个能过夜的地方（小屋 / 睡袋）",
+   "why": "晚上在外面会被僵尸打死（survival/report.md 的调研起因就是「晚上在外被僵尸打死」）。",
+   "done": {
+    "have": {
+     "comforts:sleeping_bag_white": 1
+    }
+   },
+   "hint": "最省：杀 1 只羊拿 3 羊毛 → 做睡袋（羊毛×3，工作台一行）。或者去点「新手礼包and游玩须知 → 新手小屋」任务白拿一栋带床的房子（点对号即可，不花材料）。"
+  },
+  {
+   "id": "p9-iron-tools",
+   "title": "挖铁 → 烧铁锭 → 铁镐",
+   "why": "铁镐才能挖钻石（knowledge.js obtain 钻石「铁镐或更好」），主线「钻石」任务在前面等着。",
+   "done": {
+    "have": {
+     "minecraft:iron_pickaxe": 1
+    }
+   },
+   "hint": "挖粗铁，用熔炉烧成铁锭。铁镐 = 铁锭×3 + 木棍×2。顺手做铁剑、铁胸甲。"
+  },
+  {
+   "id": "p10-iron-armor-sword",
+   "title": "铁装备（铁剑 + 铁胸甲/铁护腿/铁靴子）",
+   "why": "这包原版敌对怪没有被禁（survival/report.md 第 3 节核验 badmobs allowNormalSpawning 全为 true），下矿前要有防身。",
+   "done": {
+    "have": {
+     "minecraft:iron_sword": 1,
+     "minecraft:iron_chestplate": 1
+    }
+   },
+   "hint": "铁锭够的话把四件套凑齐。铁剑 = 铁锭×2 + 木棍×1。"
+  },
+  {
+   "id": "p11-chest-storage",
+   "title": "储物：箱子 + 记住家的坐标",
+   "why": "这包没有 /home 也没有 /sethome（survival/report.md 第 2 节已确认不存在），回家只能靠自己记坐标或用传送石碑。",
+   "done": {
+    "have": {
+     "minecraft:chest": 1
+    }
+   },
+   "hint": "箱子 = 木板×8。家放好后把坐标记下来（F3 看坐标，或者在小地图上做个路径点）。"
+  },
+  {
+   "id": "p12-iron-chest",
+   "title": "铁箱子（主线「精致存储」要交）",
+   "why": "主线第 3 个任务「精致存储」要求提交 1 个铁箱子。",
+   "done": {
+    "have": {
+     "expandedstorage:iron_chest": 1
+    }
+   },
+   "hint": "要 8 个铁锭 + 2 个原木。先在背包把箱子做出来，再升级成铁箱子。"
+  },
+  {
+   "id": "p13-waystone",
+   "title": "【长期目标】传送石碑 —— 这个包唯一的「回家」手段",
+   "why": "没有命令传送，Waystones 是唯一可靠的回家方式。早期做不出来就先在村庄激活一座现成的。",
+   "done": {
+    "have": {
+     "waystones:warp_stone": 1
+    }
+   },
+   "hint": "石碑 = 石砖 + 石碑核心(warp_stone: 末影珍珠×4+紫水晶碎片×4+绿宝石×1) + 黑曜石×3。材料贵，先攒；没攒够就去村庄右键激活村庄的石碑当临时锚点。"
+  },
+  {
+   "id": "p14-backpack",
+   "title": "【长期目标】精妙背包 + 拾取升级",
+   "why": "挖矿/砍树掉落自动入包，不用一个个走过去捡 —— 对她自主行动帮助很大。",
+   "done": {
+    "have": {
+     "sophisticatedbackpacks:pickup_upgrade": 1
+    }
+   },
+   "hint": "先做空白升级（3 线+5 铁锭+1 皮革），再做拾取升级。升级必须装到**穿在胸甲槽**的背包上才生效（拿在手里不生效）。"
+  }
+ ]
+}

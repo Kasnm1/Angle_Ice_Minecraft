@@ -54,6 +54,8 @@ const entityRegistry = require('./entity-registry.js');
 const instinct = require('./instinct.js');
 // 物品账：背包每次进出记下"变了什么、为什么"（捡的 / 放进哪个箱子 / 吃掉 / 用坏…），mind 读它。见 inventory-ledger.js。
 const inventoryLedger = require('./inventory-ledger.js');
+// FTB 任务书进度：哪些任务做完了（长期计划看主线做到哪了）。格式见 ftbq-sync.js（反编译核对过）
+const ftbqSync = require('./ftbq-sync.js');
 // 天色与遮蔽：/status 给 phase（day/dusk/night/dawn）和 exposure（头顶有没有东西挡着），mind 据此安排夜里做什么。见 night.js。
 const night = require('./night.js');
 let mineflayer, pathfinderPlugin, Movements, goals, Vec3;
@@ -1247,6 +1249,7 @@ function createBot() {
   hands.install(state.bot, state);
   installEntitySense(state.bot);
   installLedger(state.bot);
+  ftbqSync.install(state.bot, state);
   instinct.install(state.bot, state, { handlers, hands, pathing, isPlayerBuilt, isDropEntity, droppedItemOf, aggroOf, exposureOf, night, cancelCommands, pickAutoEquip });
 
   // ---- 身体反射插件 ----------------------------------------------------------
@@ -6067,6 +6070,15 @@ const handlers = {
     if (!state.ledger) return { seq: 0, entries: [] };
     const r = state.ledger.since(+since || 0);
     return { ...r, lines: r.entries.map(e => inventoryLedger.render(e)) };
+  },
+
+  // 任务书进度：已完成的任务 id（和 quests.json 同样的 16 位十六进制）。known=false = 还没收到服务器的进度（不是"一个都没做"）
+  // ?refresh=1 主动向服务器要一份（ftbquests:request_team_data）
+  'GET /ftbq/completed': async ({ refresh } = {}) => {
+    if (refresh && state.ftbqRequest) { state.ftbqRequest(); await new Promise(r => setTimeout(r, 1500)); }
+    const f = state.ftbq;
+    return f ? { known: true, count: f.completed.size, completed: [...f.completed], team: f.teamName, at: f.at }
+      : { known: false, error: state.ftbqError || null, requestedAt: state.ftbqRequestedAt || null };
   },
 
   // 本能的开关与现状：她为什么捡 / 为什么没捡，最近做了什么
