@@ -253,6 +253,42 @@ function combatInstinct (s) {
   return { name, since: now.since || null, killed: now.killed || 0, engaged: now.engaged || 0 };
 }
 
+/**
+ * 战斗状态是不是"新的、可信的"（codex R-fix4-7）。
+ *
+ * 问题：`beforeAttack` 以前只看 `combatInstinct(W.state)`。而 `/instinct` 是慢轮询 ——
+ *   · 读失败时 `W.state.instinct === null`，看起来就像"没在打架"；
+ *   · 战斗刚开始、还没轮到下一次轮询时，也还是 null。
+ *   这两种情况她都会照样把 `/attack` 发出去，只能靠 bridge 后端再拒一次。
+ *
+ * 判据（AGENTS §5：证据不足时保守）：
+ *   · 本能层根本没**成功读到过**（`instinct === null` 且从来没读到过）→ 视为"未知"；
+ *   · 状态太旧（超过 freshnessMs）→ 视为"未知"；
+ *   · 只要"未知"且**附近有敌对目标**（战斗迹象）→ 保守认为可能在打架，先别 attack。
+ *
+ * @param s              W.state
+ * @param o.freshnessMs  状态多久算旧（默认 6 秒；/instinct 大约这一量级轮询一次）
+ * @returns {unknown:boolean, stale:boolean, hostile:boolean, ci:object|null}
+ */
+function combatGuard (s, { freshnessMs = 6000 } = {}) {
+  const hostile = (s?.nearby || []).some(e => e.kind === 'hostile');
+  const at = s?.instinct?.readAt || 0;
+  const stale = !at || (Date.now() - at > freshnessMs);
+  const ci = combatInstinct(s);
+  return { unknown: !s?.instinct || stale, stale, hostile, ci };
+}
+
+/**
+ * `beforeAttack` 的判据本体（抽出来好离线测 —— 自测里也是它，不另抄一份）。
+ * 返回''=放行；返回非空字符串=拦下并说明原因（body 会把它当错误回给模型）。
+ */
+function attackGuardReason (s) {
+  const g = combatGuard(s);
+  if (g.ci) return `本能在打${g.ci.name}，不用插手`;
+  if (g.unknown && g.hostile) return '战斗状态还没读准、身边又有怪，这一下先别挥（等本能/下一拍状态）';
+  return '';
+}
+
 function survivalFocus (s) {
   if (!s || !s.pos) return [];
   const out = [];
@@ -415,6 +451,13 @@ async function look () {
     connected: !!st.connected, health: st.health, food: st.food, isDay: st.isDay,
     phase: st.phase || null, time: st.gameTime ?? null, exposure: st.exposure?.kind || null,
     following: /^following (.+)$/.exec(st.currentAction || '')?.[1] || null,
+    // ⚠️ currentAction / 载具 / 是否开着界面要显式带出来（codex R-fix4-6）：
+    //   groupsFromBody 的"场景自动激活"要能看见"在挖矿""骑着船""开着箱子"这些身体状态，
+    //   不能只靠猜关键词。
+    currentAction: st.currentAction || null,
+    vehicle: st.vehicle ?? null,
+    windowOpen: !!st.windowOpen,
+    containerOpen: !!st.containerOpen,
     pos: st.position ? { x: Math.round(st.position.x), y: Math.round(st.position.y), z: Math.round(st.position.z) } : null,
     items: inv?.items || [],
     nearby: (near?.entities || []).slice(0, 12),
@@ -425,8 +468,9 @@ async function look () {
     backpack: eq?.backpack || null,
     unseenChests: boxes?.chests || [],
     light: lit?.light || null, dark: !!lit?.dark, torches: lit?.torches ?? null, lastBright: lit?.lastBright || null,
-    // 本能层此刻在做什么：战斗本能在打的时候，她不该再伸手（见 combatInstinct / attack 工具）
-    instinct: insNow && insNow.installed !== false ? { combatNow: insNow.combatNow || null, urgent: insNow.urgent || null, running: insNow.running || null } : null,
+    // 本能层此刻在做什么：战斗本能在打的时候，她不该再伸手（见 combatInstinct / attack 工具）。
+    // `readAt` 是这次成功读到的时刻 —— combatGuard 用它判"状态新不新鲜"（codex R-fix4-7）。
+    instinct: insNow && insNow.installed !== false ? { combatNow: insNow.combatNow || null, urgent: insNow.urgent || null, running: insNow.running || null, readAt: Date.now() } : null,
   };
   // 天色变了（太阳下山 / 天黑 / 天亮）：说一声，连同今晚的安排。边沿触发，一晚只说一次
   const pev = night.phaseEvent(W.phase, W.state.phase);
@@ -917,20 +961,22 @@ for (const [g, list] of Object.entries(GROUPS)) {
 const UNGROUPED = Object.keys(ALL).filter(n => !TOOL_GROUPS[n]);
 for (const n of UNGROUPED) (TOOL_GROUPS[n] ||= []).push('core');
 
-const ON_DEMAND = Object.keys(GROUPS).filter(g => g !== 'core');
 // 这一轮带出来的按需组还有几轮有效（tools(group) 叫进来的组管 N 轮；自动激活的只这一轮）
 const GROUP_ROUNDS = 8;
 W.groupActive = {};   // { [组名]: 到期轮次序号 }
 
 /** 场景关键词 → 该带哪些按需组（从聊天/事件的原话里认） */
+// ⚠️ 关键词要够具体（codex R-fix4-8）：以前有单字"地""远""存""挖"，
+//    普通一句闲聊就能把 farm / travel / store 全激活，分组省位置的意义就没了
+//    （实测：说"我在远处的地里存了点东西"→ 三组全开）。改成多字的具体词。
 const GROUP_CUES = [
-  { re: /钓|魚|鱼|船|boat|划船/i, groups: ['farm'] },
-  { re: /种|耕|地|庄稼|田|麦|小麥|胡萝卜|馬鈴薯|南瓜|西瓜|甘蔗|牧|牛|羊|鸡|豬|猪|马|馬|驯|養|养|钓|烤|煮|菜|饭|飯|吃/i, groups: ['farm'] },
-  { re: /箱子|箱|柜|櫃|存|放进去|拿出来|整理|分类|骨粉盒|仓库|倉庫|背包|装进|裝進/i, groups: ['store'] },
-  { re: /造|建|盖|蓋|盖房|房子|房|墙|牆|楼|樓|地板|屋顶|屋頂|装修|裝修|摆|擺|布置|佈置|家具|火把|点亮|點亮|设计|設計|图纸|圖紙/i, groups: ['build', 'store'] },
-  { re: /任务|任務|任务书|任務書|任务奖励|章节|章節|FTBQ|提交|交任务/i, groups: ['quest'] },
-  { re: /矿洞|礦洞|下矿|下礦|洞穴|探险|探險|遗迹|遺跡|远|遠|出门|出門|挖矿|挖礦|钻石|鑽石|装备|裝備|附魔/i, groups: ['travel'] },
-  { re: /技能|记下做法|記下做法|存成|下次照做/i, groups: ['skill'] },
+  { re: /钓鱼|釣魚|渔船|漁船|划船|坐船/u, groups: ['farm'] },
+  { re: /种地|種地|耕地|庄稼|莊稼|农田|農田|小麦|小麥|胡萝卜|胡蘿蔔|马铃薯|馬鈴薯|南瓜|西瓜|甘蔗|养牛|養牛|畜牧|驯服|馴服|喂食|餵食|收割|播种|播種|浇水|澆水/u, groups: ['farm'] },
+  { re: /箱子|箱子里|柜子|櫃子|骨粉盒|仓库|倉庫|储藏|儲藏|整理背包|装进背包|裝進背包|放进去|拿出来的/u, groups: ['store'] },
+  { re: /建造|盖房|蓋房|盖房子|蓋房子|建房子|造房子|盖起来|蓋起來|盖个|蓋個|盖一面|蓋一面|砌墙|砌牆|搭墙|搭牆|面墙|面牆|铺地板|鋪地板|盖屋顶|蓋屋頂|装修|裝修|布置|佈置|家具|图纸|圖紙|施工|动工|動工/u, groups: ['build', 'store'] },
+  { re: /任务|任務|任务书|任務書|任务奖励|FTBQ|提交任务|交任务|章节奖励|章節獎勵/u, groups: ['quest'] },
+  { re: /下矿|下礦|挖矿|挖礦|矿洞|礦洞|洞穴|探险|探險|遗迹|遺跡|远门|遠門|出门远行|出門遠行|钻石|鑽石|附魔|古代残骸/u, groups: ['travel'] },
+  { re: /技能|记下做法|記下做法|存成技能|下次照做/u, groups: ['skill'] },
 ];
 /** 身体状态 → 该带哪些按需组 */
 function groupsFromBody (s) {
@@ -938,13 +984,20 @@ function groupsFromBody (s) {
   if (!s) return g;
   // 脚边有箱子/桶（或开着 GUI）：仓储那组带上
   if ((s.unseenChests || []).length || (s.nearby || []).some(e => /chest|barrel|shulker|hopper|drawer/i.test(e.name || ''))) g.add('store');
-  // 手里拿着能放的东西、又在家：建造那组带上
-  const holding = String(s.equipment?.mainhand || s.items?.[0]?.name || '');
+  // ⚠️ 手持字段是 `equipment.hand`（hands.js 的 equipment() 返回 hand），
+  //    不是 `mainhand` —— 以前读 mainhand 恒为 undefined，
+  //    "拿着木板/火把的时候就该带建造组"这条从来没生效过（codex R-fix4-6）。
+  const holding = String(s.equipment?.hand || s.equipment?.mainhand || s.items?.[0]?.name || '');
   if (holding && /torch|lantern|planks|brick|stone|glass|slab|stairs|fence|door|bed|chest|carpet|wool|sign|flower|pot|frame|candle|lamp/i.test(holding)) { g.add('build'); }
   // 骑着东西 / 在身上有船（水里）：载具钓鱼那组
-  if (/boat|minecart/i.test(holding) || (s.nearby || []).some(e => /boat|minecart/i.test(e.name || ''))) g.add('farm');
+  // ⚠️ 骑乘要看 body 给的载具状态（以前只从手里/附近的名字猜，识别不到"真的骑着"）
+  if (s.vehicle || /boat|minecart/i.test(holding) || (s.nearby || []).some(e => /boat|minecart/i.test(e.name || ''))) g.add('farm');
   // 身边有动物：农牧那组
   if ((s.nearby || []).some(e => e.kind === 'animal' || /cow|sheep|chicken|pig|horse|rabbit|bee|villager/i.test(e.name || ''))) g.add('farm');
+  // 开着界面（箱子/工作站/熔炉…）：仓储 + 建造都可能用得上
+  if (s.windowOpen || s.containerOpen) { g.add('store'); g.add('build'); }
+  // 真的在挖矿/下矿（本能或当前动作）：探险那组
+  if (/dig|mine|delve/i.test(String(s.currentAction || ''))) g.add('travel');
   // 很暗 / 身上没火把 —— 点亮（light_up / make_torches）就在建造组里，不带出来她这时候就使不上
   const hasTorch = (s.items || []).some(i => /torch|lantern/i.test(i.name || '')) || /torch|lantern/i.test(holding);
   if (s.dark || s.torches === 0 || (!hasTorch && (s.items || []).some(i => /coal|charcoal|stick|planks|log/i.test(i.name || '')))) g.add('build');
@@ -1377,14 +1430,25 @@ async function think (why) {
   // 有时模型先查配方/用途，顺手说一句“好”，然后把这一刻当成做完了。
   // 这不是“只查资料就停”的合理结束：答应过的事要么开始做，要么说明做不到。
   let nudgedToAct = false;
+  // ⚠️ 403 压缩的历史边界（codex R-fix4-2）：压缩"发不出去的那段"要保留**上一轮已经成功
+  //    写入 history 的全部内容**（含 assistant 的 tool_calls 与配对的 tool 结果）。
+  //    · historyStart = 本事件（这一轮 user 事件）开始前的位置 —— 这是**稳定**的边界，
+  //      第一轮就被 403 挡住时从这里掐，不会像以前那样从 0 开始把启动日记和全部历史删光。
+  //    · 一次"成功写完的轮次"结束后才把 blockedFrom 推进到那一刻的 history 长度，
+  //      保证 tool_call / tool_result 成对保留，不会把上一轮成功的记录误删。
+  const historyStart = Math.max(0, W.history.length - (nowMsg ? 1 : 0));   // nowMsg 刚 push 进去
+  if (!(W.blockedFrom > 0) || W.blockedFrom > historyStart) W.blockedFrom = historyStart;
   try {
     for (let round = 0; round < CFG.maxRounds; round++) {
       W.history = repairHistory(W.history);
       // 每一轮都重算：她这一轮里新叫的组（tools）要立刻生效
       const msg = await body.llm({ messages: [{ role: 'system', content: SYSTEM }, ...W.history], tools: specsForRound(), timeoutMs: CFG.llmTimeoutMs, signal: ctl.signal });
-      // 线路通了：把失败计数清零，并记住"这次成功时意识流到哪了"——
-      // 以后再被 403 挡住，就从这里往后把发不出去的那段掐掉（见 catch 里的压缩）
-      W.failStreak = 0; W.auditStreak = 0; W.failUntil = 0; W.blockedFrom = W.history.length;
+      // 线路通了：把失败计数清零。
+      // ⚠️ `blockedFrom` **不在这里**更新（codex R-fix4-2）：这里还只是"模型回了话"，
+      //    本轮的 assistant / tool 消息**还没写进 history**。以前在这里取 `W.history.length`，
+      //    后续 403 压缩就会把上一轮成功写下的 assistant/tool 记录一起删掉。
+      //    正确的边界是"本事件开始前"的位置（historyStart），压缩完一个完整轮次后再推进它。
+      W.failStreak = 0; W.auditStreak = 0; W.failUntil = 0;
       const calls = msg.tool_calls || [];
       rounds.push(calls.length ? calls.map(c => c.function?.name).join('+') : (msg.content ? '只写了正文' : '空回复'));
       W.history.push({ role: 'assistant', content: msg.content || '', ...(calls.length ? { tool_calls: calls } : {}) });
@@ -1469,6 +1533,9 @@ async function think (why) {
         if (out.ok) { didSay.push(args.text || args.message); sentN += (out.sent || []).length; }
         W.history.push({ role: 'tool', tool_call_id: c.id, content: clipText(JSON.stringify(out)) });
       }
+      // 这一轮的 assistant / tool 消息**全部写完**了 —— 现在才推进压缩边界。
+      // 下一次 403 掐历史时，这一轮（含配对的 tool_calls / tool_result）会被完整保留（codex R-fix4-2）。
+      W.blockedFrom = W.history.length;
       if (end || !needMore) break;
     }
   } catch (e) {
@@ -1480,12 +1547,19 @@ async function think (why) {
       log(`❌ 想的时候出错：${e.message}`);
       review.record({ kind: 'llm_error', error: e.message, errKind: e.kind, retry: now.ev.some(x => x.retried), ...scene(3) });
       const talked = now.ev.some(x => x.names.length && /说：/.test(x.text));
+      // ⚠️ 不是内容审计就把 auditStreak 清零（codex R-fix4-3）：
+      //    以前只在成功时清零，"403 → 502 → 403"会被当成"连续两次 403"而误触发压缩，
+      //    把一段本来没问题的历史掐掉。任何非 content 错误都打断"连续审计"这个计数。
+      if (!isAudit) W.auditStreak = 0;
       if (isAudit) {
         W.auditStreak++;
         if (W.auditStreak >= 2) {
-          const from = W.blockedFrom || 0;
+          // 从本事件开始前的稳定边界往后掐（W.blockedFrom 见 think 开头）。
+          // 绝不从 0 掐 —— 那会把启动日记和全部既有历史删光（codex R-fix4-2）。
+          const from = Math.max(0, Math.min(W.blockedFrom || 0, W.history.length));
           if (W.history.length > from) {
             const dropped = W.history.length - from;
+            // 保留整段：从 from 往后整片切掉，避免只留半个 tool_call/tool_result 对
             W.history = W.history.slice(0, from);
             W.history.push({ role: 'user', content: '（有一段内容发不出去，已略过）', keep: true });
             W.lastNow = null;
@@ -1787,10 +1861,7 @@ async function main () {
   };
   // 战斗本能在打：身体不在她手上，attack 这一下直接回给她，不发 HTTP（2026-09-28 审计：她连打 22 次同一只骷髅，
   // 全是在跟本能抢手；本能自己会打完）。要她逃就说逃 —— 逃是 stop / goto，不是 attack。
-  body.hooks.beforeAttack = () => {
-    const ci = combatInstinct(W.state);
-    return ci ? `本能在打${ci.name}，不用插手` : '';
-  };
+  body.hooks.beforeAttack = () => attackGuardReason(W.state);
   // 2026-09-27 用户现场纠错：旧版探洞事件把“人在洞里”写成“挖到了洞”。
   // 修正由程序写入的那条假经历；“我说过什么”保留为真实对话记录。
   const loadedMemory = mem.load();
@@ -2247,6 +2318,46 @@ async function selftest () {
     check('确实掐掉了这一轮新进的（压缩前更长）', peak > 3, peak);
     check('最早的经历不会被连累丢掉', W.history.some(m => /早上他给我鸡蛋/.test(m.content)));
 
+    // ---- ★ R-fix4-2：第一次 403 不能从 0 开始掐（那会删掉启动日记和全部历史）
+    reset();
+    // 模拟"她已经有一段很长的既有历史（启动日记 + 之前多轮）"，blockedFrom 还是初始 0
+    W.history = [
+      { role: 'user', content: '【启动】她醒了，记下了今天的打算' },
+      { role: 'assistant', content: '早上好' },
+      { role: 'user', content: '昨天我们一起种了小麦' },
+      { role: 'assistant', content: '记得，长势不错' },
+    ];
+    W.blockedFrom = 0;   // ← 关键：初始值 0（正是出问题的状态）
+    let h0len = 0;
+    body._setLLM(async () => { h0len = W.history.length; throw err('模型报错 403：content_policy_violation', { retryable: false, kind: 'content', status: 403 }); });
+    W.pending = [evt()];
+    await think('event');
+    check('★ 第一轮就是 403：既有历史（启动日记）**不能**被删光',
+      W.history.some(m => /启动.*她醒了/.test(String(m.content))) && W.history.some(m => /昨天我们一起种了小麦/.test(String(m.content))),
+      W.history.map(m => String(m.content).slice(0, 18)));
+    W.pending = [evt()];
+    await think('event');
+    check('★ 第二次 403 压缩后，既有历史仍然在（只掐这一轮新进的）',
+      W.history.some(m => /启动.*她醒了/.test(String(m.content))) && W.history.some(m => /有一段内容发不出去，已略过/.test(String(m.content))),
+      W.history.map(m => String(m.content).slice(0, 18)));
+    check('★ 压缩不会把历史清成 0（至少留既有那几条 + 一行略过）', W.history.length >= 5, W.history.length);
+
+    // ---- ★ R-fix4-3：非 content 错误要打断"连续 403"计数（403 → 502 → 403 不该压缩）
+    reset();
+    W.history = [{ role: 'user', content: '既有' }];
+    W.blockedFrom = 1; W.auditStreak = 0;
+    body._setLLM(async () => { throw err('模型报错 403：content_policy_violation', { retryable: false, kind: 'content', status: 403 }); });
+    W.pending = [evt()]; await think('event');
+    check('第一次 403 → auditStreak=1', W.auditStreak === 1, W.auditStreak);
+    body._setLLM(async () => { throw err('模型报错 502：上游挂了', { retryable: true, kind: 'transient', status: 502 }); });
+    W.pending = [evt()]; await think('event');
+    check('★ 中间夹一次 502 → auditStreak 清零（不再算连续 403）', W.auditStreak === 0, W.auditStreak);
+    body._setLLM(async () => { throw err('模型报错 403：content_policy_violation', { retryable: false, kind: 'content', status: 403 }); });
+    W.pending = [evt()]; await think('event');
+    check('★ 再来一次 403 只是第 1 次，**不压缩**（以前会当成连续第 2 次误压）',
+      W.auditStreak === 1 && !W.history.some(m => /有一段内容发不出去，已略过/.test(String(m.content))),
+      { streak: W.auditStreak, hist: W.history.map(m => String(m.content).slice(0, 14)) });
+
     // 四、不可重试：400 请求格式错不安排重试，别空转
     reset();
     W.pending = [evt()];
@@ -2307,7 +2418,7 @@ async function selftest () {
     check('combatInstinct 没有战斗时返回 null', combatInstinct(W.state) === null);
 
     // attack 工具：本能在打 → 直接回话，不发 HTTP
-    body.hooks.beforeAttack = () => { const x = combatInstinct(W.state); return x ? `本能在打${x.name}，不用插手` : ''; };
+    body.hooks.beforeAttack = () => attackGuardReason(W.state);
     W.state = withSkeleton();
     const posted = [];
     const oldBridge = body.bridge;
@@ -2318,10 +2429,25 @@ async function selftest () {
     check('如实标成没打成（不是假装成功）', blocked.ok === false && blocked.guarded === true, blocked);
 
     // 本能没在打：照常发 HTTP
-    W.state = { ...withSkeleton(), instinct: { combatNow: null, urgent: null, running: null } };
+    W.state = { ...withSkeleton(), instinct: { combatNow: null, urgent: null, running: null, readAt: Date.now() } };
     posted.length = 0;
     await body.TOOLS.attack.run({ target: 'zombie', radius: 6 });
     check('本能没在打：attack 照常发出去', posted.some(([p]) => p === '/attack'), posted);
+
+    // ---- ★ R-fix4-7：状态未知/过期时，身边有怪要保守拦下
+    W.state = { ...withSkeleton(), instinct: null };
+    check('★ /instinct 读不到（null）→ 判成"未知"', combatGuard(W.state).unknown === true, combatGuard(W.state));
+    check('★ 未知 + 身边有怪 → 保守拦下 attack', /先别挥/.test(attackGuardReason(W.state)), attackGuardReason(W.state));
+    W.state = { ...withSkeleton(), instinct: { combatNow: null, urgent: null, running: null, readAt: Date.now() - 60000 } };
+    check('★ 状态过期（60s 前读的）→ 也算未知', combatGuard(W.state).stale === true, combatGuard(W.state));
+    W.state = { ...withSkeleton(), instinct: { combatNow: null, urgent: null, running: null, readAt: Date.now() } };
+    check('状态新鲜 → 不拦', !combatGuard(W.state).unknown, combatGuard(W.state));
+    check('状态新鲜 + 没在打 + 身边有怪 → 不拦（轮询结果可信，交给她决定）',
+      attackGuardReason({ ...withSkeleton(), instinct: { combatNow: null, urgent: null, running: null, readAt: Date.now() } }) === '',
+      attackGuardReason({ ...withSkeleton(), instinct: { combatNow: null, urgent: null, running: null, readAt: Date.now() } }));
+    W.state = { ...withSkeleton(), nearby: [], instinct: null };
+    check('状态未知但身边没怪 → 不拦（没有战斗迹象，别误伤）', attackGuardReason(W.state) === '', attackGuardReason(W.state));
+
     body._setBridge(mockBridge());
 
     body.hooks.beforeAttack = savedHook;
@@ -2387,6 +2513,14 @@ async function selftest () {
     check('每个按需组都至少有一条自动激活的路（关键词或身体）', Object.keys(GROUPS).filter(g => g !== 'core').every(g => autoByCue.has(g) || autoByBody.has(g)), Object.keys(GROUPS).filter(g => g !== 'core' && !autoByCue.has(g) && !autoByBody.has(g)));
     check('暗处 / 要火把：建造组带出来（不然 light_up、make_torches 使不上）', groupsFromBody({ dark: true, nearby: [], items: [], equipment: {} }).has('build'));
     check('身上有煤木棍但没火把：建造组也带出来（能做火把）', groupsFromBody({ dark: false, torches: 0, nearby: [], items: [{ name: 'coal', count: 3 }], equipment: {} }).has('build'));
+    // ---- ★ R-fix4-6：手持字段是 equipment.hand（不是 mainhand）
+    check('★ 手持 oak_planks（equipment.hand）→ 建造组带出来', groupsFromBody({ nearby: [], items: [], equipment: { hand: 'minecraft:oak_planks' } }).has('build'));
+    check('★ 手持火把（equipment.hand）→ 建造组带出来', groupsFromBody({ nearby: [], items: [], equipment: { hand: 'minecraft:torch' } }).has('build'));
+    check('手持石头照旧不误触发 farm', groupsFromBody({ nearby: [], items: [], equipment: { hand: 'minecraft:stone' } }).has('farm') === false, [...groupsFromBody({ nearby: [], items: [], equipment: { hand: 'minecraft:stone' } })]);
+    check('★ 骑着船（vehicle）→ 农牧组带出来', groupsFromBody({ nearby: [], items: [], equipment: {}, vehicle: 'oak_boat' }).has('farm'));
+    check('★ 开着箱子界面（windowOpen）→ 仓储组带出来', groupsFromBody({ nearby: [], items: [], equipment: {}, windowOpen: true }).has('store'));
+    check('★ 正在挖矿（currentAction）→ 远行组带出来', groupsFromBody({ nearby: [], items: [], equipment: {}, currentAction: 'delve: 挖矿中' }).has('travel'));
+    check('什么都没干：不乱带', groupsFromBody({ nearby: [], items: [], equipment: {}, currentAction: 'idle' }).size === 0, [...groupsFromBody({ nearby: [], items: [], equipment: {}, currentAction: 'idle' })]);
     // 四、激活 / 过期
     W.groupActive = {}; W.groupRound = 0;
     check('一开始没有按需组是激活的', activeGroups().size === 0);
@@ -2409,9 +2543,17 @@ async function selftest () {
     const hit = (t) => GROUP_CUES.filter(c => c.re.test(t)).flatMap(c => c.groups);
     check('他说"去钓鱼/拿船" → 农活组', hit('带我去钓鱼').includes('farm'));
     check('他说"把东西放进箱子" → 仓储组', hit('把这些放进箱子里').includes('store'));
-    check('他说"帮我把墙盖起来" → 建造组', hit('帮我把这面墙盖起来').includes('build'));
+    check('他说"帮我把这面墙盖起来" → 建造组', hit('帮我把这面墙盖起来').includes('build'));
     check('他说"任务书交一下" → 任务组', hit('任务书那个交一下').includes('quest'));
     check('他说"我们下矿吧" → 远行组', hit('我们下矿吧').includes('travel'));
+    // ---- ★ R-fix4-8：关键词要够具体，普通闲聊不能乱开枪
+    check('★ 普通闲聊"我在远处的地里存了点东西" → 不再全开',
+      [...new Set(hit('我在远处的地里存了点东西'))].filter(g => ['farm', 'travel', 'store', 'build'].includes(g)).length === 0, [...new Set(hit('我在远处的地里存了点东西'))]);
+    check('★ 单个"地"不再触发农活组', hit('这地方不错').includes('farm') === false, hit('这地方不错'));
+    check('★ 单个"存"不再触发仓储组', hit('我存在这里吧').includes('store') === false, hit('我存在这里吧'));
+    check('★ 单个"远"不再触发远行组', hit('太远了').includes('travel') === false, hit('太远了'));
+    check('"种地"仍然是农活组（具体词该命中）', hit('我们去种地').includes('farm'));
+    check('"建造"仍然是建造组', hit('开始建造房子').includes('build'));
     check('纯闲聊不乱带组', hit('你在干嘛呀').length === 0, hit('你在干嘛呀'));
     // 六、省了多少
     W.groupActive = {}; W.groupRound = 0;
@@ -2616,4 +2758,4 @@ if (require.main === module) {
   else main();
 }
 
-module.exports = { W, emit, think, buildNow, matchFast, humanState, learnFromDoing, repetitionHint, SYSTEM, SPECS, SAY_NUDGE, ALL, MIND_TOOLS, GROUPS, pickSpecs, groupsFromBody, activeGroups, activateGroup, TOOL_GROUPS, GROUP_CUES };   // SYSTEM/SPECS 给 scripts/dialogue-eval.js 离线跑分用
+module.exports = { W, emit, think, buildNow, matchFast, humanState, learnFromDoing, repetitionHint, SYSTEM, SPECS, SAY_NUDGE, ALL, MIND_TOOLS, GROUPS, pickSpecs, groupsFromBody, activeGroups, activateGroup, TOOL_GROUPS, GROUP_CUES, combatInstinct, combatGuard, attackGuardReason };   // SYSTEM/SPECS 给 scripts/dialogue-eval.js 离线跑分用

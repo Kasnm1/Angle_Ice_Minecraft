@@ -137,5 +137,23 @@ console.log('fml-snapshot-test');
     s.ids.get('minecraft:stone') !== 300, s.ids.get('minecraft:stone'));
 }
 
+// 6. finish() 汇总：0 个配置文件也要打一行（R-fix5-中）
+{
+  const { createHandshake } = require('../fml-handshake.js');
+  const lines = [];
+  const hs = createHandshake((m) => lines.push(String(m)));
+  hs.finish();
+  ok('files=0 时 finish() 也打一行汇总（不再"没有证据"）',
+    lines.some(l => /收到 0 个配置文件/.test(l)), lines);
+  ok('finish() 幂等：再调一次不重复打', (() => { const n = lines.length; hs.finish(); return lines.length === n; })(), lines);
+
+  // 有文件时打数量
+  const lines2 = [];
+  const hs2 = createHandshake((m) => lines2.push(String(m)));
+  hs2.state.configData.files = 3; hs2.state.configData.bytes = 2048;
+  hs2.finish();
+  ok('有 3 个配置文件 → 汇总写 3 个 / 2.0 KB', lines2.some(l => /收到 3 个配置文件.*2\.0 KB/.test(l)), lines2);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

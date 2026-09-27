@@ -68,17 +68,25 @@ function load (file = FILE()) {
 function save (file = FILE()) {
   if (!S || !dirty) return;
   fs.mkdirSync(path.dirname(file), { recursive: true });
+  // .bak 节流：距上次备份超过 10 分钟才复制一次（见 BACKUP_INTERVAL_MS）。
+  //
+  // ⚠️ 顺序是关键（2026-09-28 codex 复查 R-fix5-高）：
+  //    必须在 `rename` **之前**把**旧的主文件**复制到 `.bak`。
+  //    以前是 rename 之后才 copyFileSync(file, file + '.bak') —— 那时 file 已经是**新**内容，
+  //    ".bak" 存的根本不是"保存前的那一版"，丢了一份真实回滚点。
+  //    首次保存（主文件还不存在）没有旧版本可备份：这时不动 .bak（让它保持不存在），
+  //    不要凭空造一个"新内容的备份"冒充旧版本。
+  const now = Date.now();
+  const existing = fs.existsSync(file);
+  if (existing && now - lastBackupAt >= BACKUP_INTERVAL_MS) {
+    try { fs.copyFileSync(file, file + '.bak'); lastBackupAt = now; } catch (_) {}
+  }
   // 先写 .tmp 再 rename：rename 在同一文件系统上是原子的，断电 / 被 kill 时
   // 要么是旧的完整文件、要么是新的完整文件，**不会**留下半截 JSON。
   // 原来的 writeFileSync(file) 是先截断再写 —— 写一半断电，记忆就整份没了。
   const tmp = file + '.tmp';
   fs.writeFileSync(tmp, JSON.stringify(S, null, 1));
   fs.renameSync(tmp, file);
-  // .bak 节流：距上次备份超过 10 分钟才复制一次（见 BACKUP_INTERVAL_MS）
-  const now = Date.now();
-  if (now - lastBackupAt >= BACKUP_INTERVAL_MS) {
-    try { fs.copyFileSync(file, file + '.bak'); lastBackupAt = now; } catch (_) {}
-  }
   dirty = false;
 }
 
@@ -415,22 +423,35 @@ function selftest () {
     save(f);
     check('save() 后主文件存在', fsp.existsSync(f));
     check('save() 后 .tmp 已被 rename 掉（不留半截文件）', !fsp.existsSync(f + '.tmp'));
-    check('第一次 save 顺带备份出 .bak', fsp.existsSync(f + '.bak'));
-    const bak1 = fsp.readFileSync(f + '.bak', 'utf8');
+    // ★ R-fix5-高：首次保存没有旧版本可备份 —— **不能**凭空造一个"新内容的 .bak"冒充旧版
+    check('★ 首次 save（主文件原先不存在）不造假 .bak', !fsp.existsSync(f + '.bak'));
+    check('主文件写进了第一条', /第一条/.test(fsp.readFileSync(f, 'utf8')));
 
-    // 第二次：改一点内容再 save —— 应写新文件，但不该再动 .bak（未满 10 分钟）
+    // 第二次：改一点内容再 save。因为"保存前主文件已存在"，
+    // 这次必须把**旧内容（只有第一条）**备份进 .bak —— 这才是"保存前的那一版"。
     learn({ kind: 'fact', text: '原子写测试用的第二条' });
     save(f);
-    check('连续 save 不重复备份 .bak（10 分钟内只备份一次）', fsp.readFileSync(f + '.bak', 'utf8') === bak1);
     check('第二次 save 的 .tmp 也没留下', !fsp.existsSync(f + '.tmp'));
     check('主文件确实写进了新内容', /第二条/.test(fsp.readFileSync(f, 'utf8')));
-    check('.bak 里是没有第二条的旧内容', !/第二条/.test(bak1));
+    const bak1 = fsp.readFileSync(f + '.bak', 'utf8');
+    // ★ 核心回归断言：.bak 必须是"保存**前**"的那一版（含第一条、不含第二条）
+    check('★ .bak 是保存**前**的旧内容（有第一条）', /第一条/.test(bak1));
+    check('★ .bak 里**没有**本次新写进去的第二条（以前 bug：.bak 存的是新内容）', !/第二条/.test(bak1));
 
-    // 距上次备份超过 10 分钟 → 再 save 会备份一次新的
-    lastBackupAt = Date.now() - BACKUP_INTERVAL_MS - 1000;
+    // 10 分钟节流：紧接着再存一次，不该再动 .bak（主文件已变，但 .bak 还是那份旧版）
     learn({ kind: 'fact', text: '原子写测试用的第三条' });
     save(f);
-    check('超过 10 分钟后再 save 会刷新 .bak', /第二条/.test(fsp.readFileSync(f + '.bak', 'utf8')));
+    check('连续 save 不重复备份 .bak（10 分钟内只备份一次）',
+      fsp.readFileSync(f + '.bak', 'utf8') === bak1, '应当仍是含第一条、不含第二条的那份');
+    check('主文件写进了第三条（.bak 不受影响）', /第三条/.test(fsp.readFileSync(f, 'utf8')));
+
+    // 距上次备份超过 10 分钟 → 再 save 会刷新 .bak（这次备份的是"保存前"=含第二条、第三条的版本）
+    lastBackupAt = Date.now() - BACKUP_INTERVAL_MS - 1000;
+    learn({ kind: 'fact', text: '原子写测试用的第四条' });
+    save(f);
+    const bak2 = fsp.readFileSync(f + '.bak', 'utf8');
+    check('★ 超过 10 分钟后再 save 会刷新 .bak', /第三条/.test(bak2));
+    check('★ 刷新后的 .bak 仍不含最新那条（备份的是保存前版本）', !/第四条/.test(bak2));
 
     for (const p of [f, f + '.bak', f + '.tmp']) { try { fsp.unlinkSync(p); } catch (_) {} }
     _reset();

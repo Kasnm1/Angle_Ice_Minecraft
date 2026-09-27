@@ -199,14 +199,83 @@ const recent = [];
 const noTemp = new Set();   // 不接受 temperature 参数的模型（报过 400 的记住，以后不发）
 const usage = { calls: 0, inTok: 0, outTok: 0, inChars: 0, cachedTok: 0, cachedKnown: 0, since: Date.now(), byModel: {} };
 
+/**
+ * HTTP 状态 → { retryable, kind }。**先按状态判，再按响应体内容判**（codex R-fix4-1 / R-fix4-4）。
+ *
+ * 为什么要单独抽出来：以前"是不是 400/403/404"和"响应体像不像 HTML / JSON 解析失败"
+ * 是两条互不相干的判断 —— HTML 分支和"不是 JSON"分支直接 `retryable = true`，
+ * 把**请求格式错的 400** 也当成了一时的过载去重试。同一份错的请求重发几次都一样。
+ *
+ * @param status HTTP 状态码
+ * @param text   响应体原文（用来认内容审计 / 过载提示词）
+ * @returns {{retryable:boolean, kind:string}}
+ *   kind ∈ 'content'（内容审计，掐内容还有救）| 'request'（请求本身错，重试无用）
+ *          | 'transient'（限流/网关/过载，重试有用）| 'unknown'
+ */
+function classifyHttpStatus (status, text = '') {
+  // ① 内容审计（403 content_policy_violation）：原样重试没用，只有掐掉那段内容才可能过。
+  //    但它**不是**普通的 retryable —— mind 单独走压缩分支，所以标记成 content。
+  if (status === 403 && /content_policy_violation|content[_ ]?filter|safety|审核/i.test(text)) {
+    return { retryable: false, kind: 'content' };
+  }
+  // ② 中转站排队 / 高负载有时也回 400（"当前模型高负载队列排队中，请稍候重试"）——
+  //    这种是**一时**的：重试 / 换备用有用，必须在"400 = 请求错"之前先认出来。
+  if (/overload|负载|排队|稍候重试|busy|capacity/i.test(text)) return { retryable: true, kind: 'transient' };
+  // ③ 权限 / 不存在 / 请求格式错：同一份请求发给谁都一样，重试和换线路都没用。
+  if (status === 400 || status === 403 || status === 404) return { retryable: false, kind: 'request' };
+  // ④ 限流 / 网关 / 过载：重试有用，换线路也可能过。
+  if (status === 429 || status >= 500) return { retryable: true, kind: 'transient' };
+  return { retryable: false, kind: 'unknown' };
+}
+
+/**
+ * 统一记账（codex R-fix4-5）。
+ *
+ * 以前 `inChars` 只在"成功解析到正常 message"之后才累计 —— 失败的请求、走本机
+ * 命令行兜底的请求**只加了 `calls`、没加字符数**，于是审计报告里"每次 prompt 发出多少字符"
+ * 对失败那部分完全是空的。现在**请求真正发出去之前**就记一次 prompt 字符数，
+ * 让每条线路（主 / 备用 / 本地）都走同一个函数。
+ *
+ * @param route    线路名（main / backup / fallback / 本机命令行名）
+ * @param model    模型名
+ * @param inChars  这一轮 prompt 的字符数（必填，失败也要记）
+ * @param inTok    真实 prompt token（有就记，没有记 0 —— 失败请求通常没有 usage）
+ * @param outTok   真实 completion token（同上）
+ * @param cached   命中前缀缓存的 token（undefined = 这条线路不给，不计入 cachedKnown）
+ */
+function recordUsage ({ route, model, inChars = 0, inTok = 0, outTok = 0, cached } = {}) {
+  usage.calls++;
+  usage.inChars += inChars;
+  // 无 usage 的失败/兜底请求只记字符数，token 记 0（**不要**把 undefined 加进去变 NaN）
+  usage.inTok += Number.isFinite(inTok) ? inTok : 0;
+  usage.outTok += Number.isFinite(outTok) ? outTok : 0;
+  const bm = usage.byModel[`${route}:${model}`] ||= { calls: 0, inTok: 0, outTok: 0, inChars: 0, cachedTok: 0, cachedKnown: 0 };
+  bm.calls++; bm.inChars += inChars;
+  bm.inTok += Number.isFinite(inTok) ? inTok : 0; bm.outTok += Number.isFinite(outTok) ? outTok : 0;
+  if (Number.isFinite(cached)) { usage.cachedTok += cached; usage.cachedKnown++; bm.cachedTok += cached; bm.cachedKnown++; }
+}
+
+/** 成功拿到 usage 时补记真实 token / 缓存（字符数已在 recordUsage 里记过，不重复） */
+function recordTokens ({ route, model, inTok, outTok, cached } = {}) {
+  usage.inTok += Number.isFinite(inTok) ? inTok : 0;
+  usage.outTok += Number.isFinite(outTok) ? outTok : 0;
+  const bm = usage.byModel[`${route}:${model}`] ||= { calls: 0, inTok: 0, outTok: 0, inChars: 0, cachedTok: 0, cachedKnown: 0 };
+  bm.inTok += Number.isFinite(inTok) ? inTok : 0; bm.outTok += Number.isFinite(outTok) ? outTok : 0;
+  if (Number.isFinite(cached)) { usage.cachedTok += cached; usage.cachedKnown++; bm.cachedTok += cached; bm.cachedKnown++; }
+}
+
 async function callLLM ({ model, messages, tools, timeoutMs, signal, maxTokens = 1200, route = 'main' }) {
   const baseUrl = route === 'backup' ? CFG.backupBaseUrl : route === 'fallback' ? CFG.fallbackBaseUrl : CFG.baseUrl;
   const apiKey = route === 'backup' ? CFG.backupApiKey : route === 'fallback' ? CFG.fallbackApiKey : CFG.apiKey;
   if (!baseUrl || !apiKey) throw new Error('没配 LLM_BASE_URL / LLM_API_KEY');
+  // ⚠️ 先算好 prompt 字符数，并在**发出去之前**记账（失败也要算上 —— R-fix4-5）。
+  //    成功分支不再重复累计，只补真实 token / 缓存字段。
+  const promptChars = JSON.stringify(messages).length;
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), timeoutMs);
   const onAbort = () => ctl.abort();
   signal?.addEventListener('abort', onAbort);
+  recordUsage({ route, model, inChars: promptChars });
   try {
     const res = await fetch(baseUrl + '/chat/completions', {
       method: 'POST',
@@ -218,11 +287,17 @@ async function callLLM ({ model, messages, tools, timeoutMs, signal, maxTokens =
     let data;
     if (/^\s*data:/.test(text)) data = parseSSE(text);
     else if (/^\s*</.test(text)) {
-      // 网关 / 限流页（HTML）：当成过载，走重试和备用线路
-      const e = new Error(`模型线路返回了网页（HTTP ${res.status}，多半是限流或网关出错）`); e.retryable = true; e.kind = 'transient'; e.status = res.status; throw e;
+      // 网关 / 限流页（HTML）。⚠️ 但**不能一律当成过载**（codex R-fix4-4）：
+      // 先按 HTTP 状态判 400/403/404 —— 那些是"这份请求本身就不对"，重试和换线路都没用；
+      // 只有 429/5xx 这类才真的是限流/网关抖了。
+      const st = classifyHttpStatus(res.status, text);
+      const e = new Error(`模型线路返回了网页（HTTP ${res.status}，多半是限流或网关出错）`);
+      e.retryable = st.retryable; e.kind = st.kind; e.status = res.status; throw e;
     } else {
       try { data = JSON.parse(text); } catch (_) {
-        const e = new Error(`模型返回的不是 JSON（HTTP ${res.status}）：${text.slice(0, 120)}`); e.retryable = true; e.kind = 'transient'; e.status = res.status; throw e;
+        const st = classifyHttpStatus(res.status, text);
+        const e = new Error(`模型返回的不是 JSON（HTTP ${res.status}）：${text.slice(0, 120)}`);
+        e.retryable = st.retryable; e.kind = st.kind; e.status = res.status; throw e;
       }
     }
     if (!res.ok || data.error) {
@@ -230,18 +305,9 @@ async function callLLM ({ model, messages, tools, timeoutMs, signal, maxTokens =
         noTemp.add(model);   // 换个参数马上再来一次，不算失败
         return callLLM({ model, messages, tools, timeoutMs, signal, maxTokens, route });
       }
+      const st = classifyHttpStatus(res.status, text);
       const e = new Error(`模型报错 ${res.status}：${JSON.stringify(data.error || data).slice(0, 200)}`);
-      // 中转站排队 / 高负载有时回 400（"当前模型高负载队列排队中，请稍候重试"）—— 是一时的，要重试、换备用
-      const transient = res.status === 429 || res.status >= 500 || /overload|负载|排队|稍候重试|busy|capacity/i.test(text);
-      // 内容审计拒绝（403 content_policy_violation）：同一段上下文原样再发还是一样被拒，
-      // 重试没有意义 —— 只有把发不出去的那段掐掉再试才可能过。见 mind.js 里的压缩逻辑。
-      // （换一家模型审计规则不同，多半能过，所以还是要让它去试备用线路。）
-      const audit = res.status === 403 && /content_policy_violation|content[_ ]?filter|safety|审核/i.test(text);
-      // 400 请求格式错：同一份请求发给谁都是错的，重试和换线路都没用。403 权限/404 同理。
-      const fatal = !audit && (res.status === 400 || res.status === 403 || res.status === 404);
-      e.retryable = audit ? true : (transient || !fatal);
-      e.kind = audit ? 'content' : fatal ? 'request' : transient ? 'transient' : 'unknown';
-      e.status = res.status;
+      e.retryable = st.retryable; e.kind = st.kind; e.status = res.status;
       throw e;
     }
     const msg = data.choices?.[0]?.message;
@@ -259,17 +325,9 @@ async function callLLM ({ model, messages, tools, timeoutMs, signal, maxTokens =
     // inChars：这一轮发出去多少字符（审计报告量 token 用的就是它）；
     // cachedTok / cachedKnown：命中前缀缓存的部分（以前只记 prompt/completion，看不出缓存有没有生效）。
     // 中转站有的给 cached_tokens、有的给 prompt_tokens_details.cached_tokens，都给不到就记 0 并标 cachedKnown=0。
-    const inChars = JSON.stringify(messages).length;
     const cached = data.usage?.cached_tokens ?? data.usage?.prompt_tokens_details?.cached_tokens;
-    usage.calls++;
-    usage.inTok += data.usage?.prompt_tokens || 0;
-    usage.outTok += data.usage?.completion_tokens || 0;
-    usage.inChars += inChars;
-    if (Number.isFinite(cached)) { usage.cachedTok += cached; usage.cachedKnown++; }
-    const bm = usage.byModel[`${route}:${model}`] ||= { calls: 0, inTok: 0, outTok: 0, inChars: 0, cachedTok: 0, cachedKnown: 0 };
-    bm.calls++; bm.inTok += data.usage?.prompt_tokens || 0; bm.outTok += data.usage?.completion_tokens || 0;
-    bm.inChars += inChars;
-    if (Number.isFinite(cached)) { bm.cachedTok += cached; bm.cachedKnown++; }
+    // 字符数已经在发出去之前记过了（recordUsage 上面那次）；这里只补真实 token / 缓存字段
+    recordTokens({ route, model, inTok: data.usage?.prompt_tokens, outTok: data.usage?.completion_tokens, cached });
     return msg;
   } catch (e) {
     if (e.name === 'AbortError') {
@@ -315,24 +373,32 @@ let llm = async function (opts) {
     for (const m of CFG.backupModels) {
       try { return await callLLM({ ...opts, model: m, route: 'backup' }); } catch (e) {
         if (e.message === 'aborted') throw e;
-        last = new Error(`${last.message}；teamorouter ${m} 也没成：${e.message}`); last.retryable = true; last.kind = e.kind || last.kind;
+        // ⚠️ 保留**原始**的 retryable / kind（codex R-fix4-1）：
+        //    以前无条件 `last.retryable = true`，把"请求本身错 / 内容审计"这类
+        //    不可重试的错误在包装时又标回可重试，上层于是对着同一份发不出去的输入反复重试。
+        //    审计（content）要保住 kind，mind 才会走压缩分支；request 类保持不可重试。
+        const keepRetryable = last?.retryable === false;
+        last = new Error(`${last.message}；teamorouter ${m} 也没成：${e.message}`);
+        last.retryable = keepRetryable ? false : (e.retryable !== false);
+        last.kind = (last.kind === 'content' || e.kind === 'content') ? 'content' : (e.kind || last.kind);
       }
     }
   }
   // susu 整条线路都不通（两个模型都在它上面）：按顺序找本机的命令行兜底（另一家后端，慢，10–20 秒）
   if (last?.message !== 'aborted' && last?.retryable !== false) {
+    const localChars = JSON.stringify(opts.messages).length;
     for (const name of localFallbacks()) {
       const L = LOCAL[name];
       if (!L.available()) continue;
       try {
         const r = await L.chat({ messages: opts.messages, tools: opts.tools, timeoutMs: LOCAL_TIMEOUT[name], signal: opts.signal });
         recent.push({ t: Date.now(), route: name, model: L.MODEL, raw: r.raw }); if (recent.length > 8) recent.shift();
-        usage.calls++;
-        const bm = usage.byModel[`${name}:${L.MODEL}`] ||= { calls: 0, inTok: 0, outTok: 0 };
-        bm.calls++;
+        // 本机兜底也是"发出去了一次 prompt"—— 走同一个记账函数（以前只加 calls，字符数没记，R-fix4-5）
+        recordUsage({ route: name, model: L.MODEL, inChars: localChars });
         return r.message;
       } catch (e) {
         if (e.message === 'aborted') throw e;
+        recordUsage({ route: name, model: L.MODEL, inChars: localChars });   // 失败的兜底也记（它确实发了）
         last = new Error(`${last.message}；${name} 兜底也没成：${e.message}`); last.retryable = true; last.kind = e.kind || last.kind;
       }
     }
@@ -1371,4 +1437,59 @@ module.exports = {
   CFG, TOOLS, hooks, bridge, httpJson, parseArgs, normalizeArgs, toolSpec, summarize, humanizeIds,
   usage, recent, llm: (...a) => llm(...a), _setLLM: (f) => { llm = f; }, _setBridge: (b) => { Object.assign(bridge, b); }, _personalInventory: personalInventory,
   _callLLM: callLLM,   // 自测用：直接走一次真实请求解析（不动全局 llm）
+  classifyHttpStatus, recordUsage, recordTokens,   // 自测用（R-fix4）
 };
+
+// --------------------------------------------------------------------------- 自测
+// 只用纯函数 / 记账函数，**不发真实请求**（body.js 一进来就 install()，--selftest 也不连网）。
+function selftest () {
+  let pass = 0; let total = 0;
+  const check = (name, got, want) => {
+    total++;
+    const ok = JSON.stringify(got) === JSON.stringify(want);
+    if (ok) pass++; else console.log(`  FAIL  ${name}\n        实得 ${JSON.stringify(got)}，期望 ${JSON.stringify(want)}`);
+  };
+
+  console.log('\n[1] HTTP 状态分类：先按状态，再按响应体（R-fix4-1 / R-fix4-4）');
+  {
+    check('★ 403 内容审计 → kind=content，且**不可重试**（以前标 retryable:true）',
+      classifyHttpStatus(403, '{"error":{"code":"content_policy_violation"}}'), { retryable: false, kind: 'content' });
+    check('★ 403 权限型（不是审计）→ request / 不可重试',
+      classifyHttpStatus(403, '{"error":"forbidden"}'), { retryable: false, kind: 'request' });
+    check('★ 400 请求格式错 → request / 不可重试（HTML 也是）',
+      classifyHttpStatus(400, '<html><body>Bad Request</body></html>'), { retryable: false, kind: 'request' });
+    check('★ 400 但内容是"高负载排队" → transient（这一种真的要重试）',
+      classifyHttpStatus(400, '{"error":"当前模型高负载队列排队中，请稍候重试"}'), { retryable: true, kind: 'transient' });
+    check('404 → request / 不可重试', classifyHttpStatus(404, 'not found'), { retryable: false, kind: 'request' });
+    check('429 → transient / 可重试', classifyHttpStatus(429, 'too many'), { retryable: true, kind: 'transient' });
+    check('500 → transient / 可重试', classifyHttpStatus(500, 'boom'), { retryable: true, kind: 'transient' });
+    check('HTML 网关页 502 → transient', classifyHttpStatus(502, '<html>bad gateway</html>'), { retryable: true, kind: 'transient' });
+    check('200 但正文说 overload → transient（按内容兜住）', classifyHttpStatus(200, '{"error":"overload"}'), { retryable: true, kind: 'transient' });
+  }
+
+  console.log('\n[2] 记账：失败的请求也要算 prompt 字符数（R-fix4-5）');
+  {
+    const snap = () => JSON.parse(JSON.stringify(usage));
+    const before = snap();
+    recordUsage({ route: 'main', model: 'test-model-x', inChars: 1234 });
+    const after1 = snap();
+    check('calls +1', after1.calls - before.calls, 1);
+    check('★ inChars 记上去了（以前失败请求不记）', after1.inChars - before.inChars, 1234);
+    check('没有 usage 时不写 NaN', Number.isFinite(after1.inTok), true);
+    const bm = (k) => (after1.byModel[k] || {});
+    check('按线路:模型分开记', bm('main:test-model-x').inChars, 1234);
+    // 成功的 usage 补记 token（char 不重复加）
+    const c0 = usage.inChars;
+    recordTokens({ route: 'main', model: 'test-model-x', inTok: 900, outTok: 40, cached: 100 });
+    check('★ recordTokens 不重复累加字符数', usage.inChars - c0, 0);
+    check('recordTokens 补上 token', usage.inTok >= 900, true);
+    check('cached 只记有限的数', usage.cachedKnown >= 1, true);
+    // 清掉这次测试留下的记录，免得影响别的
+    delete usage.byModel['main:test-model-x'];
+  }
+
+  console.log(`\n  ${pass}/${total} 通过`);
+  process.exit(pass === total ? 0 : 1);
+}
+
+if (require.main === module && process.argv.includes('--selftest')) selftest();

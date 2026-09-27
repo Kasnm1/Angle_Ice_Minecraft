@@ -398,10 +398,19 @@ function createHandshake (log = () => {}, onSnapshot = null) {
    *
    * 只打一次：connection 断开在 reconnect.js 里会走多次（'end' / 'close' 都可能
    * 触发），没有这个旗标同一行汇总会印两遍。
+   *
+   * ⚠️ `files === 0` 也要打（2026-09-28 codex 复查 R-fix5-中）：
+   *    以前这里直接 return，于是"服务端一个配置文件都没发"和"汇总还没跑"
+   *    在日志里长得一模一样 —— 排查时**分不清**是"真没有"还是"没走到 / 读不到"。
+   *    现在无论数量是否为 0 都打一行，并用同一个幂等旗标挡住重复。
    */
   function finish () {
-    if (state.configSummaryLogged || state.configData.files === 0) return
+    if (state.configSummaryLogged) return
     state.configSummaryLogged = true
+    if (state.configData.files === 0) {
+      log('[fml] 收到 0 个配置文件（服务端没发 S2CConfigData，或还停在更早的握手上）')
+      return
+    }
     log(`[fml] 收到 ${state.configData.files} 个配置文件，共 ${(state.configData.bytes / 1024).toFixed(1)} KB`)
   }
 

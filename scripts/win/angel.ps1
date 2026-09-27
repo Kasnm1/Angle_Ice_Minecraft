@@ -35,7 +35,12 @@ $LogKeep = 3   # 留 bridge.log.1 .2 .3，加上当前的 bridge.log 共 4 份�
 function Rotate-Log($path) {
   if (-not (Test-Path $path)) { return }
   $len = (Get-Item $path).Length
-  if ($len -lt $LogRotateBytes) { return }
+  # 只在**超过** 20MB 时轮替。
+  # ⚠️ 2026-09-28 codex R-fix5-低：这里写 `-le`（小于等于就 return）**才是对的** ——
+  #    等价于"只有 $len > $LogRotateBytes 才往下走"。原来写的是 `-lt`：
+  #    恰好等于 20MB 时 `-lt` 为假 → 不 return → 也会轮替，与"超过 20MB"不符。
+  #    改成 `-le` 后，等于 20MB 不再轮替（严格大于才轮）。
+  if ($len -le $LogRotateBytes) { return }
   # 从最老的一份开始往回挪：先删掉 .3（滚出去的那份），再把 .2 → .3、.1 → .2，最后当前 → .1
   $oldest = "$path.$LogKeep"
   if (Test-Path $oldest) { Remove-Item $oldest -Force }

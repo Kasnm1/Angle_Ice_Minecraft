@@ -736,11 +736,34 @@ function pickTidy (c, cfg = CFG.tidy) {
 
 /**
  * 一次拾取之后，哪些掉落物算"她没捡到"（要记失败、累计到 maxFails 就先放下）。
- * 被打断（aborted / r.stopped）的一律不算；只算"试过"的（r.tried，旧版 bridge 没有这个字段就退回全部 ids）、还在地上的。
+ * 被打断（aborted / r.stopped）的一律不算；只算"试过"的、还在地上的。
+ *
+ * ⚠️ 2026-09-28 审计（codex fix0 #3）：`r.tried` **缺失**时不再"退回全部 ids"。
+ *
+ *    旧行为是：`Array.isArray(r?.tried) ? new Set(r.tried) : null`，
+ *    `null` 在下面被当成"没这个字段 → 全部算试过"。这对**旧版 bridge**（真的
+ *    不返回 `tried`）是兼容，但对**异常 / 不完整响应**（handler 抛了、连不上、
+ *    返回 `{error}`）就是误伤：会把全部 id 记成失败 → 拉黑一分钟。
+ *    两者在旧判据里长得一模一样，分不开。
+ *
+ *    现在按**响应来自哪一版 bridge** 区分，而不是"字段在不在"：
+ *      · 有 `tried` 数组 → 就按它算（新 bridge 的正常路径）；
+ *      · 响应**明确是本次调用的正常返回**（有 `found`/`walkedTo` 这些本端点
+ *        自有的字段）却没有 `tried` → 视为"说不清，一条都不记"（保守，
+ *        AGENTS §5：证据不足不累计失败）；
+ *      · 其余（handler 异常 / `{error}` / `null`）→ 一条都不记。
+ *    真正的旧版 bridge 兼容改由 `found` 字段做锚点 —— 旧版也有 `found`
+ *    但没有 `tried`，那种情况**只有**在调用方显式声明 `legacyOk` 时才按全部算。
+ *
+ * @param r         `POST /pickup` 的返回（可能为 null / {error}）
+ * @param legacyOk  调用方确认"对面是旧版 bridge"时才为 true（默认 false）
  */
-function pickupFailIds ({ ids = [], r = null, aborted = false, exists = () => true } = {}) {
+function pickupFailIds ({ ids = [], r = null, aborted = false, exists = () => true, legacyOk = false } = {}) {
   if (aborted || r?.stopped === 'aborted') return [];
-  const tried = Array.isArray(r?.tried) ? new Set(r.tried) : null;
+  if (!r || typeof r !== 'object' || r.error) return [];      // 异常 / 不完整响应：不记
+  const tried = Array.isArray(r.tried) ? new Set(r.tried) : null;
+  // 没有 tried、又不是旧版：说不清她试过哪些 → 一条都不记（不误伤、不误冷却）
+  if (!tried && !legacyOk) return [];
   return ids.filter(id => (!tried || tried.has(id)) && exists(id));
 }
 
@@ -916,6 +939,28 @@ async function settleJob (job, ms = 800) {
   } finally { clearTimeout(timer); }
 }
 
+/**
+ * 一个 job 结束收尾时，**它还有没有资格动身体**（清寻路目标 / 清 `I.running` 标记）。
+ *
+ * ⚠️ 2026-09-28 审计（codex fix0 #4）：抽出来是因为原来的原地判据只保住了"标记"、
+ *    保不住"寻路目标"。战斗的 `finally` 里无条件 `bot.pathfinder.setGoal(null)` ——
+ *    战斗被叫停、等旧动作超时、新命令已经接管身体时，旧战斗的 `finally` 仍会跑，
+ *    把**新命令的**寻路目标一起清掉（新命令刚 `setGoal` 完就发现自己没目标了）。
+ *
+ *    正确的判据是"**当前 owner 还是不是我**"：
+ *      · `I.running === myJob` → 期间没人接管 → 还是我，可以清；
+ *      · 否则（被打断 / 被 yieldBody 换成新 job）→ 不是我的了 → 别动。
+ *
+ *    这是**纯函数**，所以能离线自测（见 selftest 的"收尾资格"一节）。
+ *
+ * @param {object} I        state.instinct
+ * @param {object} myJob    本次要收尾的 job（拿到时的引用）
+ * @returns {boolean} 还有没有资格动身体
+ */
+function ownsBodyAtCleanup (I, myJob) {
+  return !!I && I.running === myJob && myJob != null;
+}
+
 function install (bot, state, deps) {
   const I = state.instinct = state.instinct || {
     cfg: {},
@@ -1012,9 +1057,14 @@ function install (bot, state, deps) {
 
   const event = (kind, text, extra = {}) => {
     const at = Date.now();
-    I.events.push({ seq: ++I.evSeq, t: at, kind, text, ...extra });
+    // ⚠️ 2026-09-28 审计（codex fix1 #3）：**先把换行拍平再截断**。
+    //    原来只 `slice(0, 300)` —— 异常消息里带 `\r\n` 时会输出成多行，
+    //    破坏"一条事件一行日志"的格式（mind 侧按行读，多行会被误当成多条）。
+    //    先 `replace(/[\r\n]+/g, ' ')` 再截断，保证单行。
+    const line = String(text ?? '').replace(/[\r\n]+/g, ' ');
+    I.events.push({ seq: ++I.evSeq, t: at, kind, text: line, ...extra });
     if (I.events.length > 50) I.events.shift();
-    try { console.log(`[instinct-event ${hhmmss(at)}] ${kind} ${text}`.slice(0, 300)); } catch (_) {}
+    try { console.log(`[instinct-event ${hhmmss(at)}] ${kind} ${line}`.slice(0, 300)); } catch (_) {}
   };
 
   /**
@@ -1870,12 +1920,25 @@ function install (bot, state, deps) {
         await sleepMs(C.loopMs);
       }
     })();
-    const mine = { kind: 'combat', abort: () => { aborted = true; try { bot.pathfinder.setGoal(null); } catch (_) {} }, done: job };
+    const mine = {
+      kind: 'combat',
+      abort: () => { aborted = true; try { bot.pathfinder.setGoal(null); } catch (_) {} },
+      done: job,
+    };
     I.running = mine;
+    // ⚠️ 2026-09-28 审计（codex fix0 #4）：**路径目标清理也要认 owner**。
+    //    原来 `finally` 里无条件 `bot.pathfinder.setGoal(null)` —— 战斗被叫停、
+    //    等旧动作超时、新命令已经接管身体时，旧战斗的 `finally` 仍会跑，
+    //    把**新命令的**寻路目标一起清掉（新命令刚 setGoal 完就发现自己没目标了）。
+    //    `I.running === mine` 只保住了"标记"，保不住"寻路目标" —— 两者要同一个判据。
+    //    判据抽成纯函数 `ownsBodyAtCleanup`（有独立自测），"标记清理"和"目标清理"
+    //    走**同一句**判断，不会再分叉。
     try { await job; } catch (_) {} finally {
       shield(false);
-      try { bot.pathfinder.setGoal(null); } catch (_) {}
-      if (I.running === mine) I.running = null;   // 只清自己的（打断后新任务可能已经占上了）
+      if (ownsBodyAtCleanup(I, mine)) {
+        try { bot.pathfinder.setGoal(null); } catch (_) {}
+        I.running = null;   // 只清自己的（打断后新任务可能已经占上了）
+      }
     }
     const cb = I.combat;
     const names = [...new Set(cb.killed)];
@@ -1965,9 +2028,17 @@ function install (bot, state, deps) {
       // 保命不能等：旧动作 800ms 内没收尾也照样往上跳（它已经被 abort、寻路目标也清了；以前这里 return，下一拍再等，会一直等到淹死）
       const settled = await settleJob(old);
       if (ended || I.urgent !== 'breathe') return;
-      const jump = (abort) => deps.handlers['POST /jump']({ durationMs: I.cfg.breathe.jumpMs, stopAtOxygen: 18, abort });
-      const { r } = settled ? await runJob('breathe', null, jump) : { r: await jump(() => ended) };
+      // ⚠️ 2026-09-28 审计（codex fix0 #5）：**强制上浮也要有自己的 owner**。
+      //    原来旧动作没收尾时走 `{ r: await jump(() => ended) }` —— 直接调 handler，
+      //    **绕过 runJob**：上浮期间 `I.running` 还挂在**旧** job 上（甚至一直是 null），
+      //    于是没有 owner 管它，旧 job 的 finally 也可能在并行清理状态。
+      //    现在统一经 `runJob('breathe', ...)`：上浮自己成为当前 `I.running` owner，
+      //    旧 job 的 finally 里"只清自己"的判据（`I.running === mine`）就会放行、
+      //    不再与新上浮抢状态。`settled` 只用来标记"这次是强制的"（诊断用），
+      //    两种情形走同一条有 owner 的路径。
       if (!settled) d.forced = true;
+      const { r } = await runJob('breathe', null, (abort) =>
+        deps.handlers['POST /jump']({ durationMs: I.cfg.breathe.jumpMs, stopAtOxygen: 18, abort }));
       note({ kind: 'breathe', oxygen: r?.oxygen, jumped: r?.jumped });
       I.breathedAt = Date.now();
     } catch (e) { I.last = { t: Date.now(), error: `breathe: ${e.message}` }; } finally { breathing = false; if (I.urgent === 'breathe') I.urgent = null; }
@@ -2386,7 +2457,12 @@ function selftest () {
   check('★ 拾取被打断 → 一个都不记失败', pickupFailIds({ ids: [1, 2], aborted: true }).length, 0);
   check('★ 预算用完没轮到的 → 不记', pickupFailIds({ ids: [1, 2, 3], r: { tried: [1], stopped: 'budget' } }).join(), '1');
   check('试过、还在地上 → 记', pickupFailIds({ ids: [1, 2], r: { tried: [1, 2] }, exists: (i) => i === 2 }).join(), '2');
-  check('旧版 bridge 没有 tried → 按全部', pickupFailIds({ ids: [1, 2], r: {} }).length, 2);
+  // ⚠️ 2026-09-28 审计（codex fix0 #3）：`r.tried` 缺失的三种情形要分开 ——
+  //    旧版 bridge（调用方显式声明 legacyOk）才按全部算；异常/不完整响应一条都不记。
+  check('★ handler 异常（{error}）→ 一条都不记（不误伤拉黑）', pickupFailIds({ ids: [1, 2], r: { error: 'boom' } }).length, 0);
+  check('★ 响应是 null（连不上）→ 一条都不记', pickupFailIds({ ids: [1, 2], r: null }).length, 0);
+  check('★ 新 bridge 正常返回但缺 tried → 也一条都不记（说不清就保守）', pickupFailIds({ ids: [1, 2], r: { found: 2, walkedTo: 0, picked: 0 } }).length, 0);
+  check('旧版 bridge（显式 legacyOk）没有 tried → 才按全部', pickupFailIds({ ids: [1, 2], r: { found: 2, walkedTo: 1 }, legacyOk: true }).length, 2);
   check('★ 饥饿 16（掉了 2 格）、身体空着 → 吃', pickEat({ food: 16 })?.eat, true);
   check('饥饿 17 → 不饿', pickEat({ food: 17 }), null);
   check('饥饿 12、在忙 → 等忙完', typeof pickEat({ food: 12, busy: '在挖矿' })?.skip, 'string');
@@ -2582,6 +2658,34 @@ function selftest () {
     check('/stop {hold} → 一段时间站着别动', st.instinct.quietUntil > Date.now(), true);
     check('chat 不碰身体', PASSIVE_POSTS.has('POST /chat'), true);
     check('pickup 会动身体', PASSIVE_POSTS.has('POST /pickup'), false);
+
+    // ---- 收尾资格（codex fix0 #4：战斗 finally 不能清掉别人的寻路目标）----
+    // ⚠️ 回归点：改前 `finally` 无条件 setGoal(null)，`ownsBodyAtCleanup` 这条判据
+    //    不存在。现在"清标记"和"清目标"共用它 —— 不是当前 owner 就一个都不动。
+    const myJob = { kind: 'combat' };
+    const I1 = { running: myJob };
+    check('★ 收尾时还是当前 owner → 有资格动身体', ownsBodyAtCleanup(I1, myJob), true);
+    const otherJob = { kind: 'mine' };
+    const I2 = { running: otherJob };            // 被新命令/新 job 接管了
+    check('★ 已被别人接管 → 没资格（不清目标、不误清标记）', ownsBodyAtCleanup(I2, myJob), false);
+    const I3 = { running: null };                // 标记已被别人提前清掉
+    check('★ 标记为 null → 没资格', ownsBodyAtCleanup(I3, myJob), false);
+    check('myJob 为空（没拿到 job）→ 没资格', ownsBodyAtCleanup({ running: null }, null), false);
+    check('I 为空也不抛', ownsBodyAtCleanup(null, myJob), false);
+
+    // ---- 源码形状锁：修好的两处"绕过 owner"不许改回去 ----
+    const srcText = require('fs').readFileSync(__filename, 'utf8');
+    // fix0 #4：战斗 finally 里的清目标必须在 ownsBodyAtCleanup 判断之内
+    check('★ 战斗 finally 用 ownsBodyAtCleanup 判据（不再无条件 setGoal(null)）',
+      /finally \{[\s\S]{0,200}ownsBodyAtCleanup\(I, mine\)[\s\S]{0,200}setGoal\(null\)/.test(srcText), true);
+    // fix0 #5：强制上浮也必须经 runJob（有自己的 owner），不再裸调 handler
+    check('★ 憋气强制上浮也走 runJob（不再裸调 POST /jump）',
+      /settled[\s\S]{0,400}runJob\('breathe'/.test(srcText)
+      && !/settled \? await runJob\('breathe'[^)]*\) : \{ r: await jump\(/.test(srcText), true);
+    // fix1 #3：event() 先拍平换行
+    check('★ event() 会拍平换行（一条事件一行）',
+      /replace\(\/\[\\r\\n\]\+\/g, ' '\)/.test(srcText), true);
+
     console.log(`\n${pass} passed, ${fail} failed`);
     return fail ? 1 : 0;
   });
@@ -2589,7 +2693,7 @@ function selftest () {
 
 // isHostileEntity 是**转导出**（上面从 entity-registry 拿的），不是本能层自己实现的 ——
 // 保留在导出里是为了不破坏既有引用（hands.js / 自测）。
-module.exports = { caveBoundary, settleJob, syncSleepState, createCheck, CFG, fillCfg, pickEat, pickShore, shoreRingOffsets, needBreath, effectPlan, weatherChange, pickRecovery, pickCommand, homeFootprint, darkReport, mlgStep, pickCaveStep, STRUCTURE_SIGNS, recognizeStructures, pickLoot, pickTidy, isHostileEntity, mobKind, attackCooldownMs, combatPlan, COMBAT_YIELD, TIER, pickaxeTier, carriedNames, carriedTally, needTier, pickOre, pickHarvest, hazardUnder, pickStepOff, armorRank, pickArmor, toolWorn, pickGaze, whoThrew, pickPickup, bodyBusy, install, yieldBody, PASSIVE_POSTS, selftest };
+module.exports = { caveBoundary, settleJob, ownsBodyAtCleanup, syncSleepState, createCheck, CFG, fillCfg, pickEat, pickShore, shoreRingOffsets, needBreath, effectPlan, weatherChange, pickRecovery, pickCommand, homeFootprint, darkReport, mlgStep, pickCaveStep, STRUCTURE_SIGNS, recognizeStructures, pickLoot, pickTidy, isHostileEntity, mobKind, attackCooldownMs, combatPlan, COMBAT_YIELD, TIER, pickaxeTier, carriedNames, carriedTally, needTier, pickOre, pickHarvest, hazardUnder, pickStepOff, armorRank, pickArmor, toolWorn, pickGaze, whoThrew, pickPickup, bodyBusy, install, yieldBody, PASSIVE_POSTS, selftest };
 
 if (require.main === module && process.argv.includes('--selftest')) {
   selftest().then(code => process.exit(code));

@@ -68,6 +68,25 @@ function invCounts (bot) {
   return m;
 }
 
+/**
+ * 从**这个界面**里数她自己的物品栏（`inventoryStart..inventoryEnd`）有几件、按 predicate 计。
+ *
+ * ⚠️ 为什么不能拿 `bot.inventory` 当依据（2026-09-28 codex 审计 R-fix3-2）：
+ *   光打开模组界面时 mineflayer 把 `bot.inventory` **整体替换成当前窗口**，
+ *   但精妙背包的格子走它自己的同步通道，`bot.inventory` **不会**被那些 `window_items`
+ *   更新到 —— 于是"shift+左键把背包格子收进物品栏"这件事在 `bot.inventory` 上**看不见**，
+ *   搬运成功却被判成"没搬过来"、返回 `unknown`。
+ *   这个界面的 `w.slots[inventoryStart..inventoryEnd)` 才是这次点击真正落到的地方。
+ *   （和 `deposit` 里那段 `mine()` 是同一个判据 —— `w.__sophisticated ? 700 : 300` 等同步也是。）
+ */
+function winInvCount (w, predicate) {
+  let n = 0;
+  if (!w || !Array.isArray(w.slots)) return n;
+  const end = Math.min(Number.isInteger(w.inventoryEnd) ? w.inventoryEnd : w.slots.length, w.slots.length);
+  for (let i = w.inventoryStart; i < end; i++) { const it = w.slots[i]; if (it && predicate(it)) n += it.count; }
+  return n;
+}
+
 function delta (before, after) {
   const gained = {}; const lost = {};
   for (const k of new Set([...before.keys(), ...after.keys()])) {
@@ -1081,7 +1100,7 @@ function pickFuel (bot, avoid, need) {
   return (enough || items.sort((a, b) => b.v * b.i.count - a.v * a.i.count)[0]);
 }
 
-async function smelt (bot, { itemName, count = 1, fuel } = {}) {
+async function smelt (bot, { itemName, count = 1, fuel } = {}, state = null) {
   const k = K(); const KB = k.load();
   const input = findItem(bot, itemName);
   if (!input) throw new Error(`背包里没有 ${itemName}`);
@@ -1122,9 +1141,11 @@ async function smelt (bot, { itemName, count = 1, fuel } = {}) {
     const existing = furnace.fuelItem() ? fuelValue(bot, furnace.fuelItem()) * furnace.fuelItem().count : 0;
     const need = Math.max(0, n - existing);
     if (need > 0) {
-      // 燃料可能在精妙背包里（N-9：日志里 `没有燃料` ×5）—— 先把它当"随身物品"补齐再判"没有"
-      const FUEL_RE = /(^|:)(coal|charcoal|_log|_planks|stick|coal_block|blaze_rod|lava_bucket|dried_kelp_block|bamboo)$/;
-      if (state) await ensureCarried(bot, state, (it) => FUEL_RE.test(fullId(it.name)), Math.max(1, Math.ceil(need / 8)));
+      // 燃料可能在精妙背包里（N-9：日志里 `没有燃料` ×5）—— 先把它当"随身物品"补齐再判"没有"。
+      // 判据用 fuelValue（K() 的 itemTags：logs / planks / logs_that_burn …），
+      // **不自己重写正则** —— 以前那条 `/(^|:)(...|_log|_planks|...)$/` 是完整匹配项，
+      // `minecraft:oak_log` / `minecraft:oak_planks` 一律匹配不上，背包里的木头燃料被误判成"没有"。
+      if (state) await ensureCarried(bot, state, (it) => fuelValue(bot, it) > 0, Math.max(1, Math.ceil(need / 8)));
       const f = fuel ? (() => { const it = findItem(bot, fuel); return it ? { i: it, v: fuelValue(bot, it) || 1 } : null; })()
         : pickFuel(bot, fullId(input.name), need);
       if (!f && !existing) throw new Error('没有燃料（煤、木炭、原木、木板、木棍都行）');
@@ -2295,6 +2316,33 @@ async function click (bot, slot, button = 0, mode = 0) {
   await sleep(40);
 }
 
+/**
+ * 背包界面操作的串行闸（codex R-fix3-8）。
+ *
+ * 背包的"打开 → 点击 → 等同步 → 关窗"是一串**有状态**的动作：界面是全局的
+ * （`bot.currentWindow` 只有一个），点击落到哪个窗口、快照 `state.lastSophSync`
+ * 属于哪一次，全靠"期间没有别人动过界面"这个假设。
+ * 两个并发动作（下矿途中补火把 + 命令触发的 /equip）同时进来就会互相关窗、
+ * 覆盖 `lastSophSync`，把点击打到错误窗口、把错误快照写回。
+ *
+ * 做法：背包操作走一条串行链（不重入、按调用顺序排队），**并且每次点击前核对
+ * `bot.currentWindow === w`** —— 窗口被换掉就明确报错，而不是继续往错的窗口点。
+ * 只包住"需要界面的那几步"，不把整条上层流程（寻路、挖矿）塞进去。
+ */
+let backpackChain = Promise.resolve();
+function withBackpackLock (fn) {
+  const run = backpackChain.then(fn, fn);
+  // 链尾吞掉异常，免得一次失败让后面全部 reject（真正的错误已由 run 的调用方拿到）
+  backpackChain = run.then(() => {}, () => {});
+  return run;
+}
+
+/** 点击前确认界面还是我们打开的那个 —— 被别的动作换掉就报错，不往错窗口点 */
+function clickIn (bot, w, slot, button = 0, mode = 0) {
+  if (!w || bot.currentWindow?.id !== w.id) throw new Error('背包界面被别的动作换掉了，停止存取（避免点错窗口）');
+  return click(bot, slot, button, mode);
+}
+
 function tally (list) {
   const m = {};
   for (const it of list) m[fullId(it.name)] = (m[fullId(it.name)] || 0) + it.count;
@@ -2596,7 +2644,7 @@ function loadoutTargetShortfall (bot, items, loadout = defaultLoadout()) {
 }
 /** 背没背着精妙背包（饰品栏 / 胸甲槽）。饰品栏是上线时摸过一次记下的（install 里 curiosList） */
 function wearingBackpack (bot, state) {
-  return (state.curiosWorn || []).some(x => /backpack/.test(x)) || /backpack/.test(bot.inventory.slots[6]?.name || '');
+  return (state?.curiosWorn || []).some(x => /backpack/.test(x)) || /backpack/.test(bot.inventory.slots[6]?.name || '');
 }
 
 /**
@@ -2695,37 +2743,49 @@ async function backpackTidy (bot, state, { abort = null, stash = true, restock =
 async function fetchFromBackpack (bot, state, name, count = 1) {
   if (!name) throw new Error('fetchFromBackpack：要给物品名');
   const want = fullId(name);
+  const match = (it) => fullId(it.name) === want;
+  // ⚠️ 核对"有没有搬过来"要读**这个界面**的她自己的那几格（`winInvCount`），
+  //    不能读 `bot.inventory` —— 精妙背包不更新它，成功会被判成没搬过来（codex R-fix3-2）。
   const before = invCounts(bot);
   const had = before.get(want) || 0;
   // count = Infinity 表示"能拿多少拿多少"（垫脚方块这类不挑数量的场景）
-  let need = count === Infinity ? Infinity : Math.max(1, +count || 1);
-  await backpackOpen(bot, state);          // 打开 + 校验边界；失败会抛（背包没开 / 边界认不出）
-  const w = bot.currentWindow;
-  if (!w || !w.__sophisticated || !w.__sophBoundaryValid || !(w.inventoryStart > 0)) {
-    throw new Error('背包界面认不出玩家物品栏边界，不敢从里面拿东西（避免搬错格）');
-  }
-  let moved = 0;
-  try {
-    // 背包自己的格子在前段 0..inventoryStart-1；同种的整堆从左到右拿，直到够
-    for (let i = 0; i < w.inventoryStart && need > 0; i++) {
-      const it = w.slots[i];
-      if (!it || fullId(it.name) !== want) continue;
-      const n0 = invCounts(bot).get(want) || 0;
-      await click(bot, i, 0, 1);           // shift+左键：服务器把整组塞进玩家物品栏
-      await sleep(180);                    // 精妙背包的格子走自己的封包，点完立刻读会看漏（同 deposit 注释）
-      const n1 = invCounts(bot).get(want) || 0;
-      if (n1 > n0) { moved += n1 - n0; need -= n1 - n0; } else if (!w.slots[i]) { break; }   // 格子空了还是没变多：异常，停
+  const reqNeed = count === Infinity ? Infinity : Math.max(1, +count || 1);
+  // 整段界面操作（开 → 点 → 等同步 → 关）串行，别和别的背包动作抢同一个界面（codex R-fix3-8）
+  return withBackpackLock(async () => {
+    let need = reqNeed;
+    await backpackOpen(bot, state);          // 打开 + 校验边界；失败会抛（背包没开 / 边界认不出）
+    const w = bot.currentWindow;
+    if (!w || !w.__sophisticated || !w.__sophBoundaryValid || !(w.inventoryStart > 0)) {
+      throw new Error('背包界面认不出玩家物品栏边界，不敢从里面拿东西（避免搬错格）');
     }
-  } finally {
-    noteBackpack(state, w);                // 记下背包现在还有多少（这次打开后的真实状态）
+    const winHad = winInvCount(w, match);    // 打开那一刻她自己那几格里已经有几件
+    let moved = 0;
+    try {
+      // 背包自己的格子在前段 0..inventoryStart-1；同种的整堆从左到右拿，直到够
+      for (let i = 0; i < w.inventoryStart && need > 0; i++) {
+        const it = w.slots[i];
+        if (!it || !match(it)) continue;
+        const n0 = winInvCount(w, match);
+        clickIn(bot, w, i, 0, 1);             // shift+左键：服务器把整组塞进玩家物品栏（点前核对窗口）
+        await sleep(w.__sophisticated ? 700 : 300);   // 精妙背包的格子走自己的封包，点完立刻读会看漏（同 deposit 注释）
+        const n1 = winInvCount(w, match);
+        if (n1 > n0) { moved += n1 - n0; need -= n1 - n0; } else if (!w.slots[i]) { break; }   // 格子空了还是没变多：异常，停
+      }
+    } finally {
+      noteBackpack(state, w);                // 记下背包现在还有多少（这次打开后的真实状态）
+    }
+    // 关窗前再读一次界面里的真实增量（≥ 0）；关窗后同步进 bot.inventory，才信"到手"
+    const gainedNow = Math.max(0, winInvCount(w, match) - winHad);
     if (bot.currentWindow?.id === w.id) bot.closeWindow(w);
-  }
-  const gained = (invCounts(bot).get(want) || 0) - had;
-  // 不信"点成功了"：身上真多了才算拿到
-  if (gained <= 0) {
-    return { fetched: {}, took: {}, note: `背包里没找到 ${name}（或者没搬过来）` };
-  }
-  return { fetched: { [want]: gained }, took: tally([{ name: want, count: gained }]), moved };
+    // 尽量把界面的增量同步进普通库存：mineflayer 关窗后会做，但模组界面的同步不保证，
+    // 所以这里以**界面增量**为准（gainedNow），而不是拿 `bot.inventory` 反推。
+    const gained = gainedNow > 0 ? gainedNow : Math.max(0, (invCounts(bot).get(want) || 0) - had);
+    // 不信"点成功了"：真多了才算拿到
+    if (gained <= 0) {
+      return { fetched: {}, took: {}, note: `背包里没找到 ${name}（或者没搬过来）` };
+    }
+    return { fetched: { [want]: gained }, took: tally([{ name: want, count: gained }]), moved };
+  });
 }
 
 /**
@@ -2742,17 +2802,33 @@ async function fetchFromBackpack (bot, state, name, count = 1) {
  *
  * 决策部分抽成 `decideCarry()` 纯函数，好离线穷举（自测测的就是真跑的那份）。
  */
-function decideCarry ({ carried, backpack, specKind = 'item' }) {
+/**
+ * 该不该"直接用身上的"。
+ *
+ * ⚠️ 判据是 `carried >= need`，**不是 `carried > 0`**（2026-09-28 codex 审计 R-fix3-3）：
+ *   以前身上有 1 根火把、请求 16 根也直接返回 `source:'carried'`，
+ *   永远不去背包补剩下的 15 根 —— "要 16 根"被她当成"有就行"。
+ *   `need = Infinity`（垫脚方块"能拿多少拿多少"）时，身上 ≥ 1 就算够（没有上限可追）。
+ *
+ * @param carried  身上有几件（null = 读不到）
+ * @param backpack 背包记录里有几件（null = 读不到）
+ * @param need     要几件（默认 1）
+ */
+function decideCarry ({ carried, backpack, need = 1 }) {
   // carried / backpack 都是 null = 读不到
   const had = carried == null ? 0 : carried;
-  if (had > 0) return { action: 'use', reason: '身上就有' };
-  if (backpack == null) return { action: 'unknown', reason: '身上没有，背包读不到' };
-  if (backpack > 0) return { action: 'fetch', reason: '身上没有，背包里有' };
-  return { action: 'none', reason: '身上和背包里都没有' };
+  const want = need === Infinity ? 1 : Math.max(1, +need || 1);
+  if (had >= want) return { action: 'use', reason: '身上就够了' };
+  if (backpack == null) return { action: 'unknown', reason: had > 0 ? `身上只有 ${had}，背包读不到` : '身上没有，背包读不到' };
+  if (backpack > 0) return { action: 'fetch', reason: had > 0 ? `身上只有 ${had}，背包里有` : '身上没有，背包里有' };
+  // 背包读得到、但一件都没有：身上有多少算多少（够不着就如实说）
+  return had > 0
+    ? { action: 'use', reason: `背包里也没有，身上这 ${had} 先用着` }
+    : { action: 'none', reason: '身上和背包里都没有' };
 }
 
 /** 从 state.backpackSeen 里数出 spec 能在背包里找到几个；读不到给 null（不是 0） */
-function countInBackpackSeen (bot, state, spec, predicate) {
+function countInBackpackSeen (state, spec, predicate) {
   const seen = state?.backpackSeen;
   if (!seen || !seen.items) return null;                 // 从没打开过/没记录 → 读不到
   const items = Object.entries(seen.items).map(([name, count]) => ({ name, count }));
@@ -2761,63 +2837,113 @@ function countInBackpackSeen (bot, state, spec, predicate) {
   return items.filter(it => fullId(it.name) === want).reduce((a, it) => a + it.count, 0);
 }
 
+/**
+ * 把物品名解析成规范 ID（`'石镐'` → `'minecraft:iron_pickaxe'`，`'torch'` → `'minecraft:torch'`）。
+ * 先原样 `fullId`（已经是规范 ID 的走这条，不动）；再交给知识库解析一次 ——
+ * 以前 ensureCarried 只做 `fullId(spec)`，`石镐` 被拼成 `minecraft:石镐`，
+ * 永远匹配不上 `iron_pickaxe`，`/equip`、`/place` 照样报 `Not carrying 石镐`（codex R-fix3-7）。
+ */
+function resolveCarryId (name) {
+  if (!name || typeof name !== 'string') return null;
+  const direct = fullId(name);
+  const items = K().load()?.items;
+  if (items && (items.has(direct) || items.has(name))) return direct;
+  const id = K().resolve(name, 1)[0];
+  return id || direct;   // 解析不出来就退回原样，至少不改变旧行为
+}
+
 async function ensureCarried (bot, state, spec, count = 1) {
   const predicate = typeof spec === 'function' ? spec : null;
-  const want = predicate ? null : fullId(spec);
+  const want = predicate ? null : resolveCarryId(spec);
   const carriedNow = () => predicate
     ? bot.inventory.items().filter(predicate).reduce((a, i) => a + i.count, 0)
     : (invCounts(bot).get(want) || 0);
+  const need = count === Infinity ? Infinity : Math.max(1, +count || 1);
   const had = carriedNow();
-  const inPack = countInBackpackSeen(bot, state, spec, predicate);
-  const d = decideCarry({ carried: had, backpack: inPack });
-  if (d.action === 'use') return { have: had, got: had, source: 'carried', needed: count };
+  let inPack = countInBackpackSeen(state, want, predicate);
+  let d = decideCarry({ carried: had, backpack: inPack, need });
+  // 背包记录读不到 → 按任务要求"背着背包就打开看一眼"（codex R-fix3-4）：
+  // 以前直接返回 unknown，新会话即使身上确实背着背包，也永远发现不了里面的东西。
   if (d.action === 'unknown') {
-    return { have: 0, got: 0, source: 'unknown', absenceProven: false, why: d.reason, needed: count };
+    const opened = await lookIntoBackpack(bot, state);
+    if (opened) {
+      inPack = countInBackpackSeen(state, want, predicate);
+      d = decideCarry({ carried: carriedNow(), backpack: inPack, need });
+    }
+  }
+  if (d.action === 'use') { const n = carriedNow(); return { have: n, got: n, source: 'carried', needed: need }; }
+  if (d.action === 'unknown') {
+    return { have: 0, got: 0, source: 'unknown', absenceProven: false, why: d.reason, needed: need };
   }
   if (d.action === 'none') {
-    return { have: 0, got: 0, source: 'none', absenceProven: true, why: d.reason, needed: count };
+    return { have: 0, got: 0, source: 'none', absenceProven: true, why: d.reason, needed: need };
   }
-  // 背包里有：真去拿（没背背包的会在这里明确抛）
+  // 背包里有：真去拿（没背背包的会在这里明确抛）。
+  // 只补差额 —— 身上已经有几件时不必再搬 count 件（decideCarry 已保证 had < need）。
+  const short = need === Infinity ? Infinity : Math.max(1, need - carriedNow());
   let r;
   try {
     r = predicate
-      ? await fetchAnyFromBackpack(bot, state, predicate, count)
-      : await fetchFromBackpack(bot, state, want, count);
+      ? await fetchAnyFromBackpack(bot, state, predicate, short)
+      : await fetchFromBackpack(bot, state, want, short);
   } catch (e) {
-    return { have: 0, got: 0, source: 'unknown', absenceProven: false, why: `背包里有记录，但没拿出来：${e.message}`, needed: count };
+    return { have: 0, got: 0, source: 'unknown', absenceProven: false, why: `背包里有记录，但没拿出来：${e.message}`, needed: need };
   }
   const now = carriedNow();
-  if (now <= 0) return { have: 0, got: 0, source: 'unknown', absenceProven: false, why: r?.note || '背包里有记录，但没拿到身上', needed: count };
-  return { have: now, got: now, source: 'backpack', fetched: r?.fetched || null, needed: count };
+  if (now <= 0) return { have: 0, got: 0, source: 'unknown', absenceProven: false, why: r?.note || '背包里有记录，但没拿到身上', needed: need };
+  // 拿到了但不一定够（背包里就那么多）——如实报现状，不假装够
+  return { have: now, got: now, source: 'backpack', fetched: r?.fetched || null, needed: need, short: now < need ? need - now : undefined };
+}
+
+/**
+ * 打开背包看一眼、把快照写进 `state.backpackSeen`，然后马上关掉。
+ * 只在"从没记录过 / 记录读不到"时用（拿东西时不要走这里，免得开了又关）。
+ * 没背背包（或打不开）返回 false —— **不声称"没有"**，让上层如实报 unknown。
+ */
+async function lookIntoBackpack (bot, state) {
+  if (!state || !wearingBackpack(bot)) return false;      // 没背着背包：不打开，也不假装看过
+  try {
+    const w = await backpackOpen(bot, state);             // 打开 + 校验边界 + noteBackpack 写快照
+    void w;
+    if (bot.currentWindow) bot.closeWindow(bot.currentWindow);
+    return !!state.backpackSeen;
+  } catch (_) { return false; }
 }
 
 /** 按 predicate 从背包里找任意一种拿（燃料、垫脚方块这种"随便哪种都行"的） */
 async function fetchAnyFromBackpack (bot, state, predicate, count = 1) {
-  const before = bot.inventory.items().filter(predicate).reduce((a, i) => a + i.count, 0);
-  await backpackOpen(bot, state);
-  const w = bot.currentWindow;
-  if (!w || !w.__sophisticated || !w.__sophBoundaryValid || !(w.inventoryStart > 0)) {
-    throw new Error('背包界面认不出玩家物品栏边界，不敢从里面拿东西（避免搬错格）');
-  }
-  let need = count === Infinity ? Infinity : Math.max(1, +count || 1);
-  let moved = 0;
-  try {
-    for (let i = 0; i < w.inventoryStart && need > 0; i++) {
-      const it = w.slots[i];
-      if (!it || !predicate(it)) continue;
-      const n0 = bot.inventory.items().filter(predicate).reduce((a, x) => a + x.count, 0);
-      await click(bot, i, 0, 1);
-      await sleep(180);
-      const n1 = bot.inventory.items().filter(predicate).reduce((a, x) => a + x.count, 0);
+  const carried = () => bot.inventory.items().filter(predicate).reduce((a, i) => a + i.count, 0);
+  const before = carried();
+  const reqNeed = count === Infinity ? Infinity : Math.max(1, +count || 1);
+  return withBackpackLock(async () => {
+    let need = reqNeed;
+    await backpackOpen(bot, state);
+    const w = bot.currentWindow;
+    if (!w || !w.__sophisticated || !w.__sophBoundaryValid || !(w.inventoryStart > 0)) {
+      throw new Error('背包界面认不出玩家物品栏边界，不敢从里面拿东西（避免搬错格）');
+    }
+    // 和 fetchFromBackpack 同理：核对读**这个界面**的她自己的格，不读 bot.inventory
+    const winHad = winInvCount(w, predicate);
+    let moved = 0;
+    try {
+      for (let i = 0; i < w.inventoryStart && need > 0; i++) {
+        const it = w.slots[i];
+        if (!it || !predicate(it)) continue;
+        const n0 = winInvCount(w, predicate);
+        clickIn(bot, w, i, 0, 1);
+        await sleep(w.__sophisticated ? 700 : 300);
+      const n1 = winInvCount(w, predicate);
       if (n1 > n0) { moved += n1 - n0; need -= n1 - n0; } else if (!w.slots[i]) break;
     }
-  } finally {
-    noteBackpack(state, w);
+    } finally {
+      noteBackpack(state, w);
+    }
+    const gainedNow = Math.max(0, winInvCount(w, predicate) - winHad);
     if (bot.currentWindow?.id === w.id) bot.closeWindow(w);
-  }
-  const gained = bot.inventory.items().filter(predicate).reduce((a, i) => a + i.count, 0) - before;
-  if (gained <= 0) return { fetched: {}, took: {}, note: '背包里没有符合条件的东西' };
-  return { fetched: { predicate: gained }, took: {}, moved };
+    const gained = gainedNow > 0 ? gainedNow : Math.max(0, carried() - before);
+    if (gained <= 0) return { fetched: {}, took: {}, note: '背包里没有符合条件的东西' };
+    return { fetched: { predicate: gained }, took: {}, moved };
+  });
 }
 
 /** 箱子里有没有能补上这几项的（items 同上） */
@@ -3337,7 +3463,7 @@ function sensedOres (bot, want, radius, skip) {
 }
 
 /** 朝一个方块挖 1×2 通道过去（高度差一步一格地上下），直到够得着；不直着往脚下挖，遇水/岩浆就停 */
-async function tunnelTo (bot, target, maxSteps = 24) {
+async function tunnelTo (bot, target, maxSteps = 24, state = null) {
   for (let i = 0; i < maxSteps; i++) {
     const t0 = bot.blockAt(target);
     if (eyeDist(bot, t0 || { position: target }) <= REACH) return { ok: true, steps: i };
@@ -3351,7 +3477,8 @@ async function tunnelTo (bot, target, maxSteps = 24) {
     const floor = bot.blockAt(dest.offset(0, -1, 0));
     if (isLiquid(floor)) return { ok: false, why: '前面脚下是液体', steps: i, stop: /lava/.test(floor.name) };
     for (const c of cells) { const why = await clearCell(bot, c); if (why) return { ok: false, why, steps: i, stop: /岩浆/.test(why) }; }
-    if (airish(floor)) { const it = fillerItem(bot); if (it) { try { await placeFiller(bot, dest.offset(0, -1, 0)); } catch (_) {} } }
+    // 垫脚方块也可能在精妙背包里：先补齐再放（以前只看 bot.inventory，背包里的石头用不上）
+    if (airish(floor)) { if (await ensureFiller(bot, state)) { try { await placeFiller(bot, dest.offset(0, -1, 0), state); } catch (_) {} } }
     if (!await stepTo(bot, dest)) return { ok: false, why: `挖开了走不进 (${dest.x},${dest.y},${dest.z})`, steps: i };
   }
   return { ok: false, why: `挖了 ${maxSteps} 步还没到`, steps: maxSteps };
@@ -3424,7 +3551,7 @@ async function delve (bot, state, { target = null, targetY = null, maxMs = 12000
   const DIRS = [[0, -1], [1, 0], [0, 1], [-1, 0]];
   if (!D.heading) { const yaw = bot.entity.yaw; const vx = -Math.sin(yaw); const vz = -Math.cos(yaw); D.heading = Math.abs(vx) > Math.abs(vz) ? [Math.sign(vx), 0] : [0, Math.sign(vz)]; }
   // 下矿先备火把（主人：真要去暗处，就带着火把把那里点亮）
-  const prep = await makeTorches(bot, 16);
+  const prep = await makeTorches(bot, 16, state);
   if (!prep.torches) throw new Error(`没带火把，不下去（${prep.note || '做不出来'}）—— 先弄点煤/木炭做火把（煤/木炭 + 木棍 → 4 个火把）`);
   const invBefore = invCounts(bot);
   const oreSkip = new Set(); const oreAttempts = new Map(); const chests = []; const log = []; let reason = null; let turns = 0; let caveMoves = 0; let dug = 0;
@@ -3464,7 +3591,7 @@ async function delve (bot, state, { target = null, targetY = null, maxMs = 12000
     // 3. 在矿洞里：逛
     if (inCave(bot) && caveMoves < 12) {
       const m = await caveStep(bot, D, ty);
-      if (m) { caveMoves++; log.push(`矿洞里走到 (${m.to.x},${m.to.y},${m.to.z})`); const lu = await lightUp(bot); if (lu.placed) log.push('矿洞里插了个火把'); continue; }
+      if (m) { caveMoves++; log.push(`矿洞里走到 (${m.to.x},${m.to.y},${m.to.z})`); const lu = await lightUp(bot, { max: 1, state }); if (lu.placed) log.push('矿洞里插了个火把'); continue; }
     }
 
     // 4. 挖楼梯往下 / 挖矿道往前（到了深度用鱼骨：主道每 3 格向左、向右各挖一条 BRANCH 格的支道，再回主道）
@@ -4908,13 +5035,26 @@ if (require.main === module && process.argv.includes('--selftest')) {
       check('读不到和没有的 reason 不同', [decideCarry({ carried: 0, backpack: null }).reason, decideCarry({ carried: 0, backpack: 0 }).reason], ['身上没有，背包读不到', '身上和背包里都没有']);
       check('身上有但背包读不到 → 仍然 use（读不到不影响已有的）', decideCarry({ carried: 1, backpack: null }).action, 'use');
 
+      // ---- ★ R-fix3-3：请求的 count 必须当回事（以前只看 carried>0）
+      check('★ 身上 1 根、要 16 根 → 该去背包补（不能拿 1 根充数）', decideCarry({ carried: 1, backpack: 15, need: 16 }).action, 'fetch');
+      check('★ 身上 16 根、要 16 根 → 够了，直接用', decideCarry({ carried: 16, backpack: 0, need: 16 }).action, 'use');
+      check('★ 身上 1 根、要 16 根、背包也读不到 → unknown（不是 use）', decideCarry({ carried: 1, backpack: null, need: 16 }).action, 'unknown');
+      check('要多少有多少（need=Infinity）：身上 ≥1 就行', decideCarry({ carried: 1, backpack: null, need: Infinity }).action, 'use');
+      check('★ 身上不够、背包也空 → 按现状用（身上有多少用多少，不硬报没有）', decideCarry({ carried: 2, backpack: 0, need: 16 }), { action: 'use', reason: '背包里也没有，身上这 2 先用着' });
+
       // ---- countInBackpackSeen：读不到给 null，不是 0
-      const bot = { inventory: { items: () => [] } };
-      check('从没打开过背包 → null（读不到）', countInBackpackSeen(bot, {}, 'torch', null), null);
-      check('背包记录里没这件 → 0（真的没有）', countInBackpackSeen(bot, { backpackSeen: { items: { 'minecraft:coal': 4 } } }, 'torch', null), 0);
-      check('背包记录里有火把 → 数出来', countInBackpackSeen(bot, { backpackSeen: { items: { 'minecraft:torch': 12 } } }, 'torch', null), 12);
-      check('带 minecraft: 前缀也能查到', countInBackpackSeen(bot, { backpackSeen: { items: { 'minecraft:torch': 5 } } }, 'minecraft:torch', null), 5);
-      check('predicate（垫脚方块这种任意一种）', countInBackpackSeen(bot, { backpackSeen: { items: { 'minecraft:cobblestone': 64, 'minecraft:torch': 3 } } }, null, (it) => /cobblestone/.test(it.name)), 64);
+      check('从没打开过背包 → null（读不到）', countInBackpackSeen({}, 'torch', null), null);
+      check('背包记录里没这件 → 0（真的没有）', countInBackpackSeen({ backpackSeen: { items: { 'minecraft:coal': 4 } } }, 'torch', null), 0);
+      check('背包记录里有火把 → 数出来', countInBackpackSeen({ backpackSeen: { items: { 'minecraft:torch': 12 } } }, 'torch', null), 12);
+      check('带 minecraft: 前缀也能查到', countInBackpackSeen({ backpackSeen: { items: { 'minecraft:torch': 5 } } }, 'minecraft:torch', null), 5);
+      check('predicate（垫脚方块这种任意一种）', countInBackpackSeen({ backpackSeen: { items: { 'minecraft:cobblestone': 64, 'minecraft:torch': 3 } } }, null, (it) => /cobblestone/.test(it.name)), 64);
+
+      // ---- winInvCount：核对搬运要看**这个界面**的她自己的格，不是 bot.inventory（R-fix3-2）
+      const Wt = (slots, start, end) => ({ slots, inventoryStart: start, inventoryEnd: end });
+      const S = (name, count) => ({ name, count });
+      check('winInvCount 只数 inventoryStart..inventoryEnd 段', winInvCount(Wt([S('torch', 3), S('torch', 5), S('coal', 9)], 1, 3), (it) => it.name === 'torch'), 5);
+      check('背包自己的格（0..start）不算进去', winInvCount(Wt([S('torch', 99)], 1, 2), (it) => it.name === 'torch'), 0);
+      check('没有界面时给 0，不抛', winInvCount(null, () => true), 0);
 
       // ---- ensureCarried 本体（用假 bot，背包读得到时不必真去点界面）
       const mkBot = (carried) => {
@@ -4932,6 +5072,42 @@ if (require.main === module && process.argv.includes('--selftest')) {
       const cantOpen = await ensureCarried(empty, { backpackSeen: { items: { 'minecraft:torch': 9 } } }, 'torch', 1);
       check('背包有记录但没拿出来 → unknown（不许说没有）', { source: cantOpen.source, absenceProven: cantOpen.absenceProven }, { source: 'unknown', absenceProven: false });
       check('拿不到时把原因带上', cantOpen.why.includes('没拿出来'), true);
+
+      // ★ R-fix3-4：没背背包时 lookIntoBackpack 不打开、也不声称看过
+      check('★ 没背背包 → lookIntoBackpack 返回 false（不假装开过）', await lookIntoBackpack(mkBot([]), {}), false);
+
+      // ---- ★ R-fix3-3 端到端：身上 1 根火把、背包记录里有 15 根、要 16 根
+      //      决策必须走 fetch（而不是 use）；开不了界面 → unknown，绝不是 use
+      const oneCarried = mkBot([{ name: 'torch', count: 1 }]);
+      const r3 = await ensureCarried(oneCarried, { backpackSeen: { items: { 'minecraft:torch': 15 } } }, 'torch', 16);
+      check('★ 要 16 根、身上只有 1、背包有记录 → 不能报 carried/use', r3.source !== 'carried', true);
+
+      // ---- ★ R-fix3-7：中文名要解析成规范 ID 再比对（以前 `石镐` → `minecraft:石镐`）
+      check('★ 中文名解析成规范 ID（石镐 → stone_pickaxe）', resolveCarryId('石镐'), 'minecraft:stone_pickaxe');
+      check('★ 中文名解析成规范 ID（铁镐 → iron_pickaxe）', resolveCarryId('铁镐'), 'minecraft:iron_pickaxe');
+      check('已是规范 ID 的不改变旧行为', resolveCarryId('minecraft:torch'), 'minecraft:torch');
+      check('中文名也能在 ensureCarried 里对上（身上就有 → carried）',
+        (await ensureCarried(mkBot([{ name: 'minecraft:stone_pickaxe', count: 1 }]), {}, '石镐', 1)).source, 'carried');
+    }
+
+    console.log('\n[0d] 熔炼的燃料判据（R-fix3-1 未声明 state / R-fix3-5 燃料正则漏掉命名空间）');
+    {
+      // ---- ★ R-fix3-1：smelt 现在收 state 参数，缺燃料时读 state 不再 ReferenceError
+      //      真跑一条 smelt，假 bot 没有背包原料 → 在开炉子之前就抛"没有"，但关键是**不抛 ReferenceError**
+      const badBot = { inventory: { items: () => [], slots: [] }, registry: { blocksByName: {} } };
+      let e1 = null;
+      try { await smelt(badBot, { itemName: 'raw_iron', count: 1 }, null); } catch (e) { e1 = e; }
+      check('★ smelt 收 state 参数，不会抛 ReferenceError: state is not defined',
+        !/state is not defined/.test(e1 ? e1.message : ''), true);
+      check('smelt 缺原料时给的是业务错（不是崩溃）', /背包里没有/.test(e1 ? e1.message : ''), true);
+
+      // ---- ★ R-fix3-5：fuelValue 认带命名空间的原木/木板（以前 FUEL_RE 的 `_log`/`_planks` 是完整匹配项，匹配不上）
+      const fb = { registry: { blocksByName: {} } };
+      check('★ minecraft:oak_log 算燃料（以前不认）', fuelValue(fb, { name: 'minecraft:oak_log' }) > 0, true);
+      check('★ minecraft:oak_planks 算燃料（以前不认）', fuelValue(fb, { name: 'minecraft:oak_planks' }) > 0, true);
+      check('模组原木也算（regions_unexplored:dead_log）', fuelValue(fb, { name: 'regions_unexplored:dead_log' }) > 0, true);
+      check('煤 / 木炭照旧', [fuelValue(fb, { name: 'coal' }) > 0, fuelValue(fb, { name: 'charcoal' }) > 0], [true, true]);
+      check('石头不算燃料', fuelValue(fb, { name: 'minecraft:stone' }), 0);
     }
 
     console.log(`\n  ${pass}/${total} 通过`);
@@ -4939,4 +5115,4 @@ if (require.main === module && process.argv.includes('--selftest')) {
   })();
 }
 
-module.exports = { zoneArea, zoneWants, install, installDoorHabit, routes, slotByName, foodScore, fullId, botName, startFollow, farm, kitShortfall, kitAvailable, defaultLoadout, wearingBackpack, backpackTidy, fetchFromBackpack, ensureCarried, decideCarry, countInBackpackSeen, unseenChests, unseenCarts, inHomeArea, inCave, SCAFFOLD_IDS, scaffoldIds, isFiller };   // farm：收获本能直接调（instinct.js）
+module.exports = { zoneArea, zoneWants, install, installDoorHabit, routes, slotByName, foodScore, fullId, botName, startFollow, farm, kitShortfall, kitAvailable, defaultLoadout, wearingBackpack, backpackTidy, fetchFromBackpack, ensureCarried, decideCarry, countInBackpackSeen, resolveCarryId, winInvCount, lookIntoBackpack, fuelValue, smelt, unseenChests, unseenCarts, inHomeArea, inCave, SCAFFOLD_IDS, scaffoldIds, isFiller };   // farm：收获本能直接调（instinct.js）

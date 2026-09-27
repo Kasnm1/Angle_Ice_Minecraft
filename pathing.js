@@ -1725,10 +1725,25 @@ function createGoalOwner () {
   let selfChanges = 0;
   let externalChanges = 0;
   let begins = 0;
+  let refused = 0;         // 被拒的 begin 次数（并发争用时才 >0）
 
   return {
-    /** 取所有权。返回 token（后续 release/classify 要用）。 */
+    /**
+     * 取所有权。**真正的互斥锁**：已有持有者时**不抢占**，直接拒绝。
+     *
+     * ⚠️ 2026-09-28 审计（codex fix2 #3）：原来 `begin()` **无条件覆盖**
+     *    `current = { id: ++begins }` —— 名叫"互斥锁"实际只是"计数 + 换 owner"。
+     *    后果：两个并发 goto 都能 `begin()` 成功，但只有后一个的 token 是
+     *    `current`；先一个结束时 `classify` 会判 `stale`，它的 self/external 归因
+     *    全丢、`hasOwner` 也被后一个提前清掉 —— owner 统计与归因错配。
+     *    当前主要靠外层 `bodyCommandLock` 挡着，但直接调用 / `/stop` / 内部动作
+     *    仍可能绕过它（正是审计指出的路径）。
+     *    现在：已有 owner 时返回 `null`（调用方**必须**检查返回值）。
+     *
+     * @returns {object|null} token；已有人持有时为 null（调用方应放弃本次 goto）
+     */
     begin () {
+      if (current !== null) { refused++; return null; }
       begins++;
       current = { id: begins, startedAt: Date.now() };
       selfChange = false;
@@ -1752,13 +1767,18 @@ function createGoalOwner () {
       const mine = current && token && current.id === token.id;
       const selfInitiated = mine && selfChange;
       if (mine) current = null;
-      if (!errName) return { reason: 'ok', selfInitiated: false };
+      // ⚠️ 与 classifyGotoOutcome 同口径（codex fix2 #1）：`null` 才是"没出错"，
+      //    读不到错误名（undefined/空串）保守不算成功。
+      if (errName === null || errName === undefined) {
+        return { reason: mine ? 'ok' : 'stale', selfInitiated };
+      }
+      if (!String(errName)) return { reason: mine ? 'external' : 'stale', selfInitiated };
       if (!mine) return { reason: 'stale', selfInitiated };   // 已经不是当前持有者了
       if (selfInitiated) return { reason: 'selfAbort', selfInitiated: true };
       return { reason: 'external', selfInitiated: false };
     },
     stats () {
-      return { begins, selfChanges, externalChanges, hasOwner: current !== null };
+      return { begins, selfChanges, externalChanges, hasOwner: current !== null, refused };
     },
   };
 }
@@ -1771,18 +1791,35 @@ function createGoalOwner () {
  *
  *   · `'aborted'` —— 我们自己收手（取消/让出身体）。**不是失败**：
  *     不报错、不计失败、上层不该重试（重试 = 拿已经作废的任务再跑一遍）。
- *   · `'failed'`  —— 真的没走成（别人抢了目标、超时、卡住）。照旧失败。
+ *   · `'ok'`      —— **只有调用方明确说"没出错"**（`errName` 严格为 `null`）才是 ok。
+ *   · `'failed'`  —— 真的没走成（别人抢了目标、超时、卡住）。
  *
- * ⚠️ 判据只看**错误名 + 是否自己发起**两样，不做任何猜测：
- *    读不到（`err` 为空）时保守按 `'failed'`（AGENTS §5：证据不足保守为假）。
+ * ⚠️⚠️ 2026-09-28 审计（codex fix2 #1）：**"读不到错误名"改判 `failed`**。
  *
- * @param {string} errName    错误名
+ *    原来 `if (!errName) return 'ok'` —— `!errName` 同时涵盖了 `null`（明确没出错）
+ *    与 `undefined`（**读不到**，`e?.name` 缺失）。于是 `catch` 里一个没有 `name`
+ *    的异常（`classifyGotoOutcome(undefined, true)`）会被判成 `ok`，
+ *    `gotoWithBudget` 随后不设 `failure` → **异常路径被当成成功返回**，
+ *    `/collect` 等调用方误以为"已到达"。这与上面注释声称的"读不到时保守按失败"相反。
+ *
+ *    现在把两者分开：
+ *      · `null`      → 调用方明确表示"这次没出错" → `'ok'`
+ *      · `undefined` / `''` / 其他读不到 → 证据不足 → `'failed'`（AGENTS §5）
+ *      · `'PathStopped'` + 自己发起 → 同 `GoalChanged` 一样算 `'aborted'`
+ *        （库在 `stop()` 里可能报这个，也是我们自己收手）
+ *
+ * @param {string|null} errName    错误名（`null` = 明确没出错）
  * @param {boolean} selfInitiated  这次目标变更是否我们自己发起
  * @returns {'ok'|'aborted'|'failed'}
  */
 function classifyGotoOutcome (errName, selfInitiated) {
-  if (!errName) return 'ok';
-  const goalChanged = errName === 'GoalChanged' || errName === 'PathStopped';
+  if (errName === null || errName === undefined) {
+    // 明确传 null（调用方知道没出错）→ ok；读不到（undefined）→ 保守按失败
+    return errName === null ? 'ok' : 'failed';
+  }
+  const name = String(errName);
+  if (!name) return 'failed';   // 空字符串也是"读不到"
+  const goalChanged = name === 'GoalChanged' || name === 'PathStopped';
   if (goalChanged && selfInitiated) return 'aborted';
   return 'failed';
 }
@@ -1810,12 +1847,23 @@ function classifyGotoOutcome (errName, selfInitiated) {
  * 把 `physicsTick` 上的 pathfinder 监听换成**带 try-catch 的包装**：
  * 崩了记一行、清干净寻路状态、**继续跑**（下一 tick 重新规划）。
  *
- * 判据是"这条监听来自 pathfinder"，按函数来源判断（`toString()` 里带模块路径），
- * 不按名字 —— 名字在压缩/改名后会漂。**读不到就不假装装上**：返回
- * `installed:false` 并带上原因（AGENTS §5：不做无证据的成功声明）。
+ * 判据是"这条监听来自 pathfinder"。**2026-09-28 审计（codex fix2 #4）改了识别方式**：
+ *
+ *   原来是纯 `toString()` 源码包含 `monitorMovement` / `mineflayer-pathfinder` ——
+ *   宽松，可能把**别的插件**里恰好同名的监听也误包进去、吞掉它的异常
+ *   （违反"只兜 pathfinder 那条"）。而且自测里给假函数挂自定义 `toString`
+ *   对 `Function.prototype.toString.call(fn)` 根本不起作用，测试覆盖是假的。
+ *
+ *   现在按**可靠性分层**识别，优先用安装时登记的真身份：
+ *     ① `opts.isPathfinderListener(fn)` —— 调用方（bridge）在 `loadPlugin` 之后
+ *        用 pathfinder 插件自己导出的监听引用登记进来。**最可靠**，命中即认定。
+ *     ② `fn.__pfMonitor === true` —— 若上游/我们给监听打过标记。
+ *     ③ 源码判据**收紧**：必须**同时**出现 `monitorMovement` **且**出现
+ *        `pathfinder`（模块名或其路径片段），而不是任一命中。
+ *   三层都不中 → **不假装装上**（返回 `installed:false` + 原因，AGENTS §5）。
  *
  * @param {object} bot          真 bot（EventEmitter）
- * @param {object} [opts]       { onError(err), label }
+ * @param {object} [opts]       { onError(err), label, isPathfinderListener(fn) }
  * @returns {{installed:boolean, wrapped:number, reason?:string}}
  */
 function installPhysicsTickGuard (bot, opts = {}) {
@@ -1826,9 +1874,14 @@ function installPhysicsTickGuard (bot, opts = {}) {
     if (bot.__pfCrashGuard) return { installed: true, wrapped: bot.__pfCrashGuard.wrapped, reason: '已装过' };
     const raw = bot.rawListeners('physicsTick') || [];
     const isPfMovement = (fn) => {
+      // ① 调用方登记的权威身份（最可靠）
+      try { if (typeof opts.isPathfinderListener === 'function' && opts.isPathfinderListener(fn)) return true; } catch (_) {}
+      // ② 上游/我们打的标记
+      if (fn && fn.__pfMonitor === true) return true;
+      // ③ 源码判据（收紧：两个关键词都要在，避免误包别的插件）
       try {
         const src = Function.prototype.toString.call(fn);
-        return src.includes('mineflayer-pathfinder') || /monitorMovement/.test(src);
+        return /monitorMovement/.test(src) && /pathfinder/i.test(src);
       } catch (_) { return false; }
     };
     const victims = raw.filter(isPfMovement);
@@ -3122,6 +3175,46 @@ if (require.main === module && process.argv.includes('--selftest')) {
   check('clearPathfinderGoal 确实同时做了 stop 与 setGoal(null)',
     /pf\.stop\(\);[\s\S]{0,120}pf\.setGoal\(null\)/.test(src), true);
 
+  // ---- 跨文件源码形状锁（bridge-server 不能 --selftest，只能靠这里锁住）--------
+  //
+  // ⚠️ 为什么放这里：任务硬规矩规定 `bridge-server.js` **绝不能** `--selftest`
+  //    （一跑就真起服务器、连游戏）。但 fix0/fix2 的修复点就在 bridge 里，
+  //    没有测试就等于没护栏。pathing.js 是 bridge 的依赖、且能离线自测，
+  //    把"这两个修复点还在不在"锁在这里 —— 属于**形状锁**（grep 级），
+  //    它不能证明逻辑对（逻辑由纯函数自测证明），只防"改回去"。
+  {
+    let bsrc = '';
+    try { bsrc = require('fs').readFileSync(require('path').join(__dirname, 'bridge-server.js'), 'utf8'); } catch (_) {}
+    if (bsrc) {
+      // fix0 #1：严格预算 —— 必须有 `budgetLeftMs`，且不再出现旧的 `budgetMs - (Date.now() - t0)` 形式
+      check('★ bridge /pickup 有严格预算 budgetLeftMs（fix0 #1）', /budgetLeftMs/.test(bsrc), true);
+      check('★ bridge /pickup 不再用旧的「剩余预算」写法（fix0 #1）',
+        /Math\.min\(timeoutMs, Math\.max\(1000, budgetMs - \(Date\.now\(\) - t0\)\)\)/.test(bsrc), false);
+      // fix0 #2：空掉落物返回完整结构 + stopped 明写 null
+      check('★ bridge /pickup 空掉落物也回 tried/reached/stopped/ms（fix0 #2）',
+        /if \(!drops\.length\) \{[\s\S]{0,300}tried: \[\], reached: \[\], stopped: null, ms: 0/.test(bsrc), true);
+      check('★ bridge /pickup 正常返回 stopped 明写 null（不靠 undefined 被丢）',
+        /tried, reached, stopped: stopped \|\| null, ms: Date\.now\(\) - t0/.test(bsrc), true);
+      // fix0 #3：tried.push 在 isValid 检查之后
+      check('★ bridge /pickup 先确认实体有效再记 tried（fix0 #3）',
+        /if \(!d\.isValid \|\| !d\.position\) continue;\s*\n\s*tried\.push\(d\.id\);/.test(bsrc), true);
+      // fix2 #2：否决响应先展开 result，再贴 success/ok
+      check('★ bridge 否决响应顺序：...result 在前、success/ok 在后（fix2 #2）',
+        /\.\.\.result,\s*\n\s*success: false,\s*\n\s*ok: false,/.test(bsrc), true);
+      check('★ bridge 否决响应不再是有缺陷的 success/ok 在前（fix2 #2）',
+        /success: false,\s*\n\s*ok: false,\s*\n\s*\.\.\.result,/.test(bsrc), false);
+      // fix2 #3：gotoWithBudget 处理 begin() 返回 null
+      check('★ bridge gotoWithBudget 处理 begin() 被拒（fix2 #3）',
+        /const token = owner\.begin\(\);\s*\n\s*if \(!token\)/.test(bsrc), true);
+      // fix1 #2：/nearby 复用 aggro（不再把 aggroOf 函数传进去算第二遍）
+      check('★ bridge /nearby 复用 aggro 结果（fix1 #2）',
+        /isHostileEntity\(e, \(\) => aggro\)/.test(bsrc), true);
+      // fix2 #4：崩溃兜底按 loadPlugin 前后快照认定监听身份
+      check('★ bridge 崩溃兜底按 before 快照认定 pathfinder 监听（fix2 #4）',
+        /isPathfinderListener: \(fn\) => !beforeSet\.has\(fn\)/.test(bsrc), true);
+    }
+  }
+
   // ---- 目标所有权登记簿 + 失败分类（N-1：mine goto 80/81 次 GoalChanged）------
   //
   // 这一节测的是**判据本身**：一次"目标被换掉"到底是"我们自己收手"还是"真的失败"。
@@ -3147,10 +3240,23 @@ if (require.main === module && process.argv.includes('--selftest')) {
     check('超时永远是失败，与谁发起无关',
       classifyGotoOutcome('Timeout', true), 'failed');
     check('卡住永远是失败', classifyGotoOutcome('Stuck', true), 'failed');
-    check('读不到错误名时保守按成功（不会凭空报失败）',
-      classifyGotoOutcome(undefined, true), 'ok');
-    check('没出错时即使 selfInitiated 也不报失败',
-      classifyGotoOutcome(null, true), 'ok');
+    // ⚠️ 2026-09-28 回归（codex fix2 #1）：`null`（明确没出错）才是 ok；
+    //    `undefined`（读不到，catch 里 e.name 缺失）必须保守按 failed —— 改前是 ok。
+    check('★ 明确没出错（null）→ ok', classifyGotoOutcome(null, false), 'ok');
+    check('★ 读不到错误名（undefined）→ 保守 failed（改前误判 ok）',
+      classifyGotoOutcome(undefined, true), 'failed');
+    check('★ 空字符串错误名 → 同样保守 failed', classifyGotoOutcome('', true), 'failed');
+
+    // ⚠️ 2026-09-28 回归（codex fix2 #3）：begin() 必须是**真互斥锁** ——
+    //    已有 owner 时拒绝（返回 null），不再覆盖 token。改前第二次 begin 会拿到新 token。
+    const ownerMx = createGoalOwner();
+    const tA = ownerMx.begin();
+    check('★ 第一次 begin 拿到 token', tA !== null, true);
+    check('★ 已有 owner 时再 begin 被拒（返回 null）', ownerMx.begin(), null);
+    check('★ 被拒也计入 stats.refused', ownerMx.stats().refused, 1);
+    check('★ 被拒不改当前持有者（还是 A）', ownerMx.owner().id, tA.id);
+    ownerMx.classify(tA, null);
+    check('★ 释放后可以再 begin', ownerMx.begin() !== null, true);
 
     // 外部变更：先 begin 再 noteExternalChange
     const owner2 = createGoalOwner();
@@ -3161,6 +3267,7 @@ if (require.main === module && process.argv.includes('--selftest')) {
     // 过期的 token（已经不是当前持有者）不能误判成"自己人"
     const owner3 = createGoalOwner();
     const stale = owner3.begin();
+    owner3.classify(stale, null);            // 先正常释放（begin 现在是互斥锁，不能再抢一次）
     const fresh = owner3.begin();
     owner3.noteSelfChange();
     check('过期 token → stale（不冒领）', owner3.classify(stale, 'GoalChanged').reason, 'stale');
@@ -3188,19 +3295,18 @@ if (require.main === module && process.argv.includes('--selftest')) {
       return bot;
     };
     // 模拟库 index.js:538 —— `placingBlock.y`，而 placingBlock 是 undefined。
-    // 函数体里带上 'mineflayer-pathfinder' 字样，让兜底的判据能认出它（和真实来源一致）。
+    // ⚠️ 2026-09-28（codex fix2 #4）：源码判据现在是"`monitorMovement` **且**
+    //    `pathfinder`（大小写不敏感）**都**出现"。真实函数体里本来就有
+    //    `mineflayer-pathfinder` 这条 require 痕迹（下面用变量名带出来），
+    //    所以**不需要**伪造 toString —— 造假的 toString 对
+    //    `Function.prototype.toString.call(fn)` 根本不起作用，原来的自测是假覆盖。
     const makePfMovement = () => function monitorMovement () {
       // eslint-disable-next-line no-unused-vars
-      const mineflayerPathfinderPlacingBlock = undefined;
+      const mineflayerPathfinderPlacingBlock = undefined;   // 源码含 'pathfinder'，函数名含 'monitorMovement'
       return mineflayerPathfinderPlacingBlock.y;   // 抛：Cannot read properties of undefined (reading 'y')
     };
-    // 用 Function 构造，确保 toString() 里带模块路径字符串（判据依赖它）。
-    const makePfMovementTagged = () => {
-      const fn = new Function('return function monitorMovement(){ const b = undefined; return b.y }')();
-      // 贴上模块路径痕迹：真实监听来自该模块，toString 会含这段字符串。
-      Object.defineProperty(fn, 'toString', { value: () => 'function monitorMovement(){} /* mineflayer-pathfinder */' });
-      return fn;
-    };
+    // 只用"调用方登记的身份"（最可靠的一层）来识别 —— 模拟 bridge 用 before/after 快照。
+    const mkIsPf = (...fns) => (fn) => fns.includes(fn);
 
     // ① 正常情况下：没兜底时，抛出的异常会从 emit 冒出来
     {
@@ -3214,8 +3320,9 @@ if (require.main === module && process.argv.includes('--selftest')) {
     {
       const bot = mkFakeBot();
       const errs = [];
-      bot.on('physicsTick', makePfMovement());
-      const r = installPhysicsTickGuard(bot, { onError: e => errs.push(e) });
+      const pf = makePfMovement();
+      bot.on('physicsTick', pf);
+      const r = installPhysicsTickGuard(bot, { onError: e => errs.push(e), isPathfinderListener: mkIsPf(pf) });
       check('兜底装上了（wrapped=1）', `${r.installed}/${r.wrapped}`, 'true/1');
       let threw = false;
       try { bot.emit('physicsTick'); } catch (_) { threw = true; }
@@ -3226,14 +3333,35 @@ if (require.main === module && process.argv.includes('--selftest')) {
       check('崩溃后松了按键', bot.cleared, 1);
     }
     // ③ 非 pathfinder 的监听不能被误吞（别人的异常照旧抛）
+    //    ⚠️ 而且这里**故意**让别人的函数体里出现 monitorMovement 字样 ——
+    //       证明"收紧了源码判据"之后，不会因为同名就误包它。
     {
       const bot = mkFakeBot();
-      bot.on('physicsTick', makePfMovement());
-      bot.on('physicsTick', function someOtherPluginTick () { throw new Error('别人的 bug'); });
-      installPhysicsTickGuard(bot, {});
+      const pf = makePfMovement();
+      // 别人的监听：函数名恰好也叫 monitorMovement（模拟"别的插件同名"），而且会抛
+      function monitorMovement () { throw new Error('别人的 bug'); }
+      bot.on('physicsTick', pf);
+      bot.on('physicsTick', monitorMovement);
+      installPhysicsTickGuard(bot, { isPathfinderListener: mkIsPf(pf) });
       let msg = null;
       try { bot.emit('physicsTick'); } catch (e) { msg = e.message; }
-      check('★ 只兜 pathfinder 那条：别人的异常照旧抛', msg, '别人的 bug');
+      check('★ 只兜 pathfinder 那条：同名监听（monitorMovement）的异常照旧抛', msg, '别人的 bug');
+    }
+    // ③b 没有 ① 登记时，收紧的源码判据仍能认出真 pathfinder（函数名 monitorMovement + 源码含 pathfinder）
+    {
+      const bot = mkFakeBot();
+      const pf = makePfMovement();
+      bot.on('physicsTick', pf);
+      const r = installPhysicsTickGuard(bot, {});   // 不给 isPathfinderListener
+      check('★ 没登记时靠收紧源码判据也能装上（monitorMovement + pathfinder）', `${r.installed}/${r.wrapped}`, 'true/1');
+    }
+    // ③c 源码判据"收紧"的反例：函数名/源码里只有 monitorMovement、没有 pathfinder → 不误包
+    {
+      const bot = mkFakeBot();
+      function monitorMovement () { throw new Error('只有 monitorMovement，别的插件的监听'); }
+      bot.on('physicsTick', monitorMovement);
+      const r = installPhysicsTickGuard(bot, {});
+      check('★ 只含 monitorMovement、不含 pathfinder → 不误包（installed:false）', r.installed, false);
     }
     // ④ 读不到 pathfinder 监听时不假装装上（保守，AGENTS §5）
     {
@@ -3246,9 +3374,10 @@ if (require.main === module && process.argv.includes('--selftest')) {
     // ⑤ 重复装不套娃
     {
       const bot = mkFakeBot();
-      bot.on('physicsTick', makePfMovementTagged());
-      installPhysicsTickGuard(bot, {});
-      const r2 = installPhysicsTickGuard(bot, {});
+      const pf = makePfMovement();
+      bot.on('physicsTick', pf);
+      installPhysicsTickGuard(bot, { isPathfinderListener: mkIsPf(pf) });
+      const r2 = installPhysicsTickGuard(bot, { isPathfinderListener: mkIsPf(pf) });
       check('重复装不套娃', `${r2.installed}/${r2.wrapped}`, 'true/1');
     }
     // ⑥ 不是 EventEmitter 也不抛

@@ -1274,12 +1274,21 @@ function createBot() {
     },
   });
 
+  // ⚠️ 2026-09-28 审计（codex fix2 #4）：记下 `loadPlugin` **之前**的 physicsTick 监听，
+  //    供下面的崩溃兜底按"引用身份"认出 pathfinder 新增的那条（见 guardPathfinderCrash）。
+  try { state.pfListenersBeforeLoad = state.bot.rawListeners('physicsTick').slice(); } catch (_) { state.pfListenersBeforeLoad = []; }
   state.bot.loadPlugin(pathfinderPlugin);
   // 兜住寻路库在 physicsTick 里的崩溃（一条没 catch 的异常会杀掉整个进程，
   // 见 guardPathfinderCrash 的说明）。必须在 loadPlugin **之后** —— 那时
   // monitorMovement 才注册在 physicsTick 上，才拦得到它。
   {
-    const g = guardPathfinderCrash(state.bot, state);
+    // ⚠️ 2026-09-28 审计（codex fix2 #4）：**用 before/after 快照认出 pathfinder 那条监听**。
+    //    `loadPlugin` 会同步地把 `monitorMovement` 挂到 `physicsTick` 上
+    //    （库 `index.js:166`），但它**不导出**那个函数、也没打标记 ——
+    //    所以刚才在 `loadPlugin` **之前**已经把当时的监听列表存下来了
+    //    （见下面 `pfListenersBeforeLoad`）。新增的那几条就是 pathfinder 的，
+    //    按**引用身份**认定，比读 `toString()` 可靠得多。
+    const g = guardPathfinderCrash(state.bot, state, state.pfListenersBeforeLoad || []);
     state.pfCrashGuard = g;
     console.log(g.installed
       ? `[pathfinder] 崩溃兜底已装（包住 ${g.wrapped} 条 physicsTick 监听）`
@@ -1831,7 +1840,15 @@ async function gotoWithBudget (state, goal, opts = {}) {
   // 所以：出错时只要 `opts.abort()` 为真，这次 GoalChanged 就是**有序中止**，
   // 不是失败。上层据此**不重试整条链**（重试 = 拿作废的任务再跑一遍，就是 80/81）。
   const owner = state.__goalOwner || (state.__goalOwner = pathing.createGoalOwner());
+  // ⚠️ 2026-09-28 审计（codex fix2 #3）：`begin()` 现在是**真互斥锁**，可能返回 null。
+  //    已有 owner 时说明**另一次 goto 正在跑** —— 我们不能抢（抢了会让先一次的
+  //    token 变 stale、归因错配）。如实拒绝，让调用方知道"此刻拿不到身体"。
   const token = owner.begin();
+  if (!token) {
+    const held = owner.owner();
+    const heldMs = held?.startedAt ? Date.now() - held.startedAt : null;
+    throw new Error(`GoalBusy: 已有一次寻路在跑${heldMs != null ? `（${heldMs}ms）` : ''}，本次不并发`);
+  }
   const isAborted = () => {
     try { return typeof opts.abort === 'function' && !!opts.abort(); } catch (_) { return false; }
   };
@@ -2030,9 +2047,20 @@ const sleepMs = ms => new Promise(r => setTimeout(r, ms));
  * 这条监听挂在 `setInterval` 驱动的 `physicsTick` 上，抛出的异常没人 catch →
  * **Node 进程退出**（一次开门就能杀掉 bridge）。`placingBlock` 是库的闭包变量，
  * 我们在外面够不到，所以只能兜异常（**不改 node_modules**）。
+ *
+ * ⚠️ 2026-09-28 审计（codex fix2 #4）：**识别"哪条是 pathfinder 的"要可靠**。
+ *    `before` 是 `loadPlugin` 之前的 physicsTick 监听快照 —— 之后**新增**的那些
+ *    就是这一次 loadPlugin 挂上的（pathfinder 只挂一条 `monitorMovement`）。
+ *    按引用身份认定，不依赖 `toString()` 文本匹配（后者可能误包同名监听、
+ *    吞掉别的插件的异常）。快照为空/不可用时退回 `pathing` 里的收紧源码判据。
+ *
+ * @param {Array} before  loadPlugin 之前的 physicsTick 原始监听（可选）
  */
-function guardPathfinderCrash (bot, state) {
+function guardPathfinderCrash (bot, state, before = []) {
+  const beforeSet = new Set(Array.isArray(before) ? before : []);
   return pathing.installPhysicsTickGuard(bot, {
+    // 快照比对：不在 before 里的 → 本次 loadPlugin 新增的 → pathfinder 的
+    isPathfinderListener: (fn) => !beforeSet.has(fn),
     onError: (err) => {
       state.pfCrashCount = (state.pfCrashCount || 0) + 1;
       state.lastPfCrash = { t: Date.now(), message: err?.message || String(err), at: 'monitorMovement' };
@@ -2953,6 +2981,11 @@ const handlers = {
     isSleeping: !!state.bot?.isSleeping,
     inventoryCount: state.bot?.inventory?.items()?.length ?? 0,
     currentAction: state.currentAction,
+    // 载具 / 是否开着界面：mind 的"场景自动激活"（groupsFromBody）要能看见这两个身体状态，
+    // 否则"骑着船"和"开着箱子"她认不出来（codex R-fix4-6）。
+    vehicle: state.bot?.vehicle ? (state.bot.vehicle.name || state.bot.vehicle.displayName || 'vehicle') : null,
+    windowOpen: !!state.bot?.currentWindow,
+    containerOpen: !!(state.bot?.currentWindow && state.bot.currentWindow.type !== 'minecraft:inventory'),
     bridgeVersion: BRIDGE_VERSION,
     // 重连状态：`gaveUpReconnecting` 为 true 说明自动重试已经放弃（30 次 × 5s ≈ 2.5 分钟），
     // 此时她**不会**自己回去 —— 服务端恢复后要调 POST /reconnect。
@@ -3276,11 +3309,16 @@ const handlers = {
           //   2026-09-28：判据收到 entity-registry.isHostileEntity 一处（AGENTS.md §5）——
           //   以前这里的 `e.type === 'hostile' || aggro` 与 instinct / hands 各写各的、
           //   名单还不一致（模组怪漏一半）。现在三处同一份实现。
+          // ⚠️ 2026-09-28 审计（codex fix1 #2）：**复用已经算好的 `aggro`**。
+          //    原来这里传 `aggroOf` **函数**进去，`isHostileEntity` 内部又调一次 ——
+          //    同一实体每轮 `aggroOf()` 跑两遍：白算一次仇恨（读 metadata），
+          //    而且两次之间实体状态可能变（读到不同瞬间 → `aggro` 字段与 `kind`
+          //    之间自相矛盾）。现在把上面那次的**结果**用闭包传进去。
           kind: drop
             ? 'drop'
             : (e.type === 'player'
               ? 'player'
-              : (entityRegistry.isHostileEntity(e, aggroOf)
+              : (entityRegistry.isHostileEntity(e, () => aggro)
                 ? 'hostile'
                 : (e.type === 'mob' || e.type === 'animal' || e.type === 'water_creature'
                   ? 'mob'
@@ -3861,7 +3899,19 @@ const handlers = {
       .sort((a, b) => a.position.distanceTo(self.position) - b.position.distanceTo(self.position))
       .slice(0, count);
 
-    if (!drops.length) return { found: 0, walkedTo: 0, picked: 0, message: `${radius} 格内没有掉落物` };
+    // ⚠️ 2026-09-28 审计（codex fix0 #2）：**空掉落物也要回完整的结构**。
+    //    原来这里直接 `return { found: 0, walkedTo: 0, picked: 0, message }` ——
+    //    没有 `tried/reached/stopped/ms`。调用方（`instinct.pickupFailIds`、
+    //    autopilot）拿到的形状随"地上有没有东西"而变，没法当固定契约用
+    //    （`r.tried` 缺失还会被旧协议兜底逻辑读成"全部失败"，见 instinct.js）。
+    //    现在所有返回路径都保证有这四个字段：数组、数组、`null` 或字符串、数字。
+    if (!drops.length) {
+      return {
+        found: 0, walkedTo: 0, picked: 0,
+        tried: [], reached: [], stopped: null, ms: 0,
+        message: `${radius} 格内没有掉落物`,
+      };
+    }
 
     // ⚠️⚠️⚠️ P32（2026-09-25 实机抓出）：**必须自己统计"捡到了几个"。**
     //
@@ -3890,12 +3940,29 @@ const handlers = {
     const failed = [];
     const tried = []; const reached = []; let stopped = null;
     const t0 = Date.now();
+    // ⚠️ 2026-09-28 审计（codex fix0 #1）：**严格总预算**。
+    //    原来是 `if (Date.now() - t0 > budgetMs) { stopped='budget'; break; }` ——
+    //    它有两个洞：
+    //      ① 每次 goto 的超时被 `Math.max(1000, budgetMs - elapsed)` 托底成 1000ms，
+    //         于是最后一项即使只剩 50ms，仍会再跑满 1 秒，总时长可超预算约 1 秒；
+    //      ② 如果那一项正好是**最后一项**，循环自然结束，`stopped` 永远停在
+    //         `null` —— 调用方看不出"其实是预算用光了，没轮完"。
+    //    现在：用明确 deadline；剩余不足 1 秒就**不再发起新的 goto**（记 `stopped:'budget'`
+    //    并 break）；每次 goto 返回后**补判一次预算**，把"最后一项也吃超了"记成 `budget`
+    //    而不是误报成正常跑完。
+    const deadline = t0 + Math.max(0, +budgetMs);
+    const budgetLeftMs = () => deadline - Date.now();
     try {
-      for (const d of drops) {
+      for (let i = 0; i < drops.length; i++) {
+        const d = drops[i];
         if (typeof abort === 'function' && abort()) { stopped = 'aborted'; break; }
-        if (Date.now() - t0 > budgetMs) { stopped = 'budget'; break; }
-        tried.push(d.id);
+        // 严格：剩余不到 1 秒（goto 的最小可用超时）就停下，不再发起新目标
+        if (budgetLeftMs() <= 1000) { stopped = 'budget'; break; }
+        // ⚠️ 2026-09-28 审计（codex fix0 #3）：**确认它是"能试的有效目标"再记 tried**。
+        //    原来 `tried.push(d.id)` 在读 `isValid` 之前 —— 实体已经失效/位置读不到时
+        //    她其实**一步没试**，却仍被记成"试过但没捡到"，进而记失败、进冷却。
         if (!d.isValid || !d.position) continue;
+        tried.push(d.id);
         // ⚠️⚠️⚠️ 2026-09-25 实战（P25）：这个循环里踩了**三层**坑，
         //     全部围绕"`goto()` 的 promise 什么时候算结束"。写清楚，别再犯：
         //
@@ -4044,7 +4111,11 @@ const handlers = {
             ? new goals.GoalBlock(p.x, wantY, p.z)     // ★ "走到/下到那一格去"
             : new goals.GoalNear(p.x, targetY, p.z, reachRadius);
 
-          const r = await withTimeout(state.bot.pathfinder.goto(goal), Math.min(timeoutMs, Math.max(1000, budgetMs - (Date.now() - t0))));
+          // ⚠️ 严格预算（codex fix0 #1）：超时取"剩余预算 + 1s 余量"，但绝不无限托底。
+          //    到这一行时 `budgetLeftMs() > 1000` 已经由循环头保证，所以
+          //    `Math.min(timeoutMs, budgetLeftMs())` 不会退化成负数/0；
+          //    再兜一个 1000ms 下限，避免极端抖动把单次 goto 压成 0。
+          const r = await withTimeout(state.bot.pathfinder.goto(goal), Math.min(timeoutMs, Math.max(1000, budgetLeftMs())));
           walkedTo++;
           reached.push(d.id);
           // 挖到/走到之后**立刻试着真正拾取一次**：有些情况下服务端要等到
@@ -4061,6 +4132,11 @@ const handlers = {
         //   `setTimeout(..., 0)`，不等的话下一个 goto 会撞上尚未摘掉的 listener。
         try { state.bot.pathfinder.stop(); } catch (_) {}
         await sleep(0);
+        // ⚠️ 2026-09-28 审计（codex fix0 #1）：**每次动作结束补判预算**。
+        //    这一项若已经是最后一项、且它自己吃超了预算，循环会自然结束 ——
+        //    原来 `stopped` 就停在 `null`，调用方误以为"全部轮完了"。
+        //    现在把"预算已耗尽但还有没轮到的"如实记成 `budget`。
+        if (i < drops.length - 1 && budgetLeftMs() <= 1000 && stopped === null) { stopped = 'budget'; break; }
       }
     } finally {
       // 循环彻底结束，**此时没有任何 goto 在等** —— 这是唯一安全的清理位置。
@@ -4084,7 +4160,10 @@ const handlers = {
       // 判据：走到了、但背包没变 → **明确报失败**，让上层能退避。
       // 只"走到"不算数 —— 这正是 P32 要修的那个谎。
       ok: picked > 0,
-      tried, reached, stopped: stopped || undefined, ms: Date.now() - t0,
+      // ⚠️ 2026-09-28 审计（codex fix0 #2）：`stopped` 原来写 `stopped || undefined`，
+      //    正常跑完时被序列化成"字段不存在"（JSON 里 undefined 会被丢掉）。
+      //    调用方没法区分"没停"和"字段没实现"，所以现在明写 `null`（= 没被停过）。
+      tried, reached, stopped: stopped || null, ms: Date.now() - t0,
       failed: failed.length ? failed : undefined,
       note: picked > 0
         ? undefined
@@ -6376,7 +6455,7 @@ const handlers = {
     return {
       installed: true,
       pickup: I.cfg.pickup, harvest: I.cfg.harvest, mine: I.cfg.mine, sleep: I.cfg.sleep, armor: I.cfg.armor, gaze: I.cfg.gaze, combat: I.cfg.combat, tidy: I.cfg.tidy, loot: I.cfg.loot, cave: I.cfg.cave, bridge: I.cfg.bridge, mlg: I.cfg.mlg, dig: I.cfg.dig, homeGrow: I.cfg.home, cmd: I.cfg.cmd, death: I.death || null, movePolicy: I.movePolicy || null,
-      combatNow: I.combat && I.running?.kind === 'combat' ? { since: I.combat.started, engaged: I.combat.engaged.size, killed: I.combat.killed } : null,
+      combatNow: I.combat && I.running?.kind === 'combat' ? { since: I.combat.started, at: Date.now(), engaged: I.combat.engaged.size, killed: I.combat.killed } : null,
       lastCancel: state.lastCancel || null,
       diagnostics: I.diagnostics || {},
       scheduler: I.scheduler || null,
@@ -6617,15 +6696,27 @@ const server = http.createServer((req, res) => {
         const why = result.ok === false
           ? 'handler 的 ok:false'
           : 'handler 的 success:false';
+        // ⚠️⚠️ 2026-09-28 审计（codex fix2 #2）：**先展开 result，再把否决字段放最后**。
+        //
+        //    原来写的是 `{ success:false, ok:false, ...result }` —— `...result` 在后面，
+        //    **会把否决字段覆盖回去**。反例：handler 返回
+        //    `{ ok: false, success: true }`（只显式否了 ok）→ 最终响应变成
+        //    `{ success: true, ok: false }` —— `success:true` 又冒出来了，
+        //    违反"任一 false 都算失败"。
+        //
+        //    顺序必须是：结果打底 → 判据字段收口。这样无论 handler 自己写了什么
+        //    `ok/success`，最终**一定**是 `success:false, ok:false`。
+        //    handler 的其它字段（`reason`/`error`/业务数据）仍完整保留。
         json(res, 200, {
+          ...result,
           success: false,
           ok: false,
-          ...result,                       // result 自己的字段优先（含它自己的 ok/success）
           _successNote:
             `success 由 ${why} 否决 —— 它明确表示这个动作**没有在世界里生效**。`
             + '（以前这里只看 ok，只回 success:false 的 handler 走不进否决分支；'
             + '更早则无条件贴 success:true，语义只是"handler 没抛异常"，'
-            + '被调用方误读成"做成了"，见 field-log P44 / codex P-5）',
+            + '被调用方误读成"做成了"，见 field-log P44 / codex P-5；'
+            + 'codex fix2 #2：字段顺序改为 result 在前，防 ...result 覆盖否决）',
         });
       } else {
         json(res, 200, { success: true, ...result });

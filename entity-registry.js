@@ -70,7 +70,20 @@ const META_HEALTH = 9;
 const META_MOB_FLAGS = 15;
 const FLAG_AGGRESSIVE = 0x04;
 
-const normName = (n) => (String(n).startsWith('minecraft:') ? String(n).slice(10) : String(n));
+// ⚠️ 2026-09-28 审计（codex fix1 #1）：**两个用途要分开**，别再合并成一个函数。
+//
+//   · `stripVanillaPrefix` —— 只剥 `minecraft:`（用于 `patchEntity` 补名与
+//     `buildIndex` 的原版核对）。模组名**必须保留命名空间**（`twilightforest:naga`），
+//     和物品一致；原版名本来就不带前缀。
+//   · `normName` —— 用于**敌意判据**：剥掉**任意**命名空间。
+//     原实现只剥 `minecraft:`，于是整合包里的 `mod:skeleton`、`mod:creeper`
+//     在 `HOSTILE_NAMES` 里查不到 → 被判非敌对 → 战斗本能 / `threatNear` /
+//     `/nearby` 三处一起漏判模组怪。
+const stripVanillaPrefix = (n) => {
+  const s = String(n);
+  return s.startsWith('minecraft:') ? s.slice(10) : s;
+};
+const normName = (n) => String(n).replace(/^.*:/, '');
 
 // ------------------------------------------------------------------ ① 名字
 
@@ -103,7 +116,7 @@ function buildIndex (snapshot, registry) {
     const got = byId.get(id);
     if (got === undefined) continue;   // 快照里没有这个 id：少一个不算错位
     checked++;
-    if (normName(got) !== e.name) mismatch.push({ id, local: e.name, server: got });
+    if (stripVanillaPrefix(got) !== e.name) mismatch.push({ id, local: e.name, server: got });
   }
   if (mismatch.length) {
     return { ok: false, reason: `原版实体 id 对不上 ${mismatch.length}/${checked}（例：${JSON.stringify(mismatch[0])}）`, byId: new Map(), mismatch };
@@ -123,7 +136,7 @@ function patchEntity (entity, index) {
   if (entity.name !== 'unknown' || typeof entity.entityType !== 'number') return false;
   const name = index.byId.get(entity.entityType);
   if (!name) return false;
-  entity.name = normName(name);
+  entity.name = stripVanillaPrefix(name);
   entity.displayName = entity.name;
   entity.angelNamed = true;   // 名字是我们补的；type 仍是 'other'（快照不带类别，不编）
   return true;
@@ -359,6 +372,28 @@ function selftest () {
   check('掉落物（名字=物品名）→ 不敌对', isHostileEntity({ name: 'oak_log', type: 'object' }), false);
   check('三处旧名单并集都在：bogged/breeze/warden/endermite',
     ['bogged', 'breeze', 'warden', 'endermite'].every(n => isHostileEntity({ name: n, type: 'other' })), true);
+  // ⚠️ 2026-09-28 回归（codex fix1 #1）：模组命名空间必须能剥掉，否则模组怪漏判。
+  //    改前 `normName` 只剥 `minecraft:`，这两条会红。
+  check('★ 模组命名空间的骷髅（mod:skeleton）→ 判敌对', isHostileEntity({ name: 'mod:skeleton', type: 'other' }), true);
+  check('★ 模组命名空间的苦力怕（mod:creeper）→ 判敌对', isHostileEntity({ name: 'mod:creeper', type: 'other' }), true);
+  check('★ 原版前缀仍能剥（minecraft:zombie）→ 判敌对', isHostileEntity({ name: 'minecraft:zombie', type: 'other' }), true);
+  check('★ 模组命名空间的被动动物（mod:cow）→ 仍不敌对', isHostileEntity({ name: 'mod:cow', type: 'animal' }), false);
+  check('★ 模组命名空间 + 无仇恨证据的非敌对（mod:cat）→ 保守 false', isHostileEntity({ name: 'mod:cat', type: 'other' }), false);
+  // 补名（patchEntity）仍必须**保留**模组命名空间 —— 别让 fix1 #1 顺手把它改坏。
+  check('★ 补名保留模组命名空间（twilightforest:naga 不被剥）',
+    (() => {
+      const idx = { ok: true, byId: new Map([[999, 'twilightforest:naga']]) };
+      const e = { name: 'unknown', entityType: 999 };
+      patchEntity(e, idx);
+      return e.name;
+    })(), 'twilightforest:naga');
+  check('补名仍剥原版前缀（minecraft:zombie → zombie）',
+    (() => {
+      const idx = { ok: true, byId: new Map([[54, 'minecraft:zombie']]) };
+      const e = { name: 'unknown', entityType: 54 };
+      patchEntity(e, idx);
+      return e.name;
+    })(), 'zombie');
 
   console.log(`\n${pass} passed, ${fail} failed`);
   return fail ? 1 : 0;
