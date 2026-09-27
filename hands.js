@@ -2262,16 +2262,113 @@ function findStorage (bot, radius) {
 const TIERS = ['netherite', 'diamond', 'iron', 'stone', 'golden', 'wooden'];
 const tierOf = (name) => { const i = TIERS.findIndex(t => name.includes(t)); return i < 0 ? 3.5 : i; };
 
-/** 默认随身装备：最好的镐/斧/剑、一组最顶饱的吃的、16 火把、32 建材 */
+/**
+ * 默认随身装备：最好的镐/斧/剑、一组最顶饱的吃的、16 火把、32 搭脚方块（主人 2026-09-27：至少带武器、工具、食物、搭脚方块）。
+ * essential = 缺了值得专程回家拿（随身物品本能用，见 instinct.js）；其余缺了只记着，顺路整理时补。
+ */
+const SCAFFOLD_IDS = ['cobblestone', 'dirt', 'cobbled_deepslate', 'stone', 'andesite', 'diorite', 'granite', 'deepslate', 'tuff', 'netherrack', 'blackstone'].map(n => `minecraft:${n}`);
 function defaultLoadout () {
   return [
-    { kind: 'best', re: /pickaxe$/, count: 1, label: '最好的镐' },
+    { kind: 'best', re: /pickaxe$/, count: 1, label: '最好的镐', essential: true },
     { kind: 'best', re: /(^|_)axe$/, count: 1, label: '最好的斧' },
     { kind: 'best', re: /sword$/, count: 1, label: '最好的剑' },
-    { kind: 'food', count: 16, label: '吃的' },
+    { kind: 'food', count: 16, min: 4, label: '吃的', essential: true },
     { kind: 'id', id: 'minecraft:torch', count: 16, label: '火把' },
-    { kind: 'any', ids: ['minecraft:cobblestone', 'minecraft:dirt', 'minecraft:cobbled_deepslate'], count: 32, label: '建材' },
+    { kind: 'any', ids: SCAFFOLD_IDS, count: 32, min: 8, label: '搭脚方块', essential: true },
   ];
+}
+// 只用来查缺不缺，不参与整理时"留哪几件"：剑和斧有一样就算有武器
+const WEAPON_CHECK = { kind: 'best', re: /(sword|(^|_)axe)$/, count: 1, label: '武器', essential: true };
+
+/** 这件东西算不算装备单里的这一项（整理、补齐、查缺三处共用这一个判据） */
+function kitMatch (bot, L, it) {
+  if (L.kind === 'best') return L.re.test(it.name);
+  if (L.kind === 'food') return categoryOf(bot, it) === '食物' && foodScore(it) > 0;
+  if (L.kind === 'id') return fullId(it.name) === L.id;
+  if (L.kind === 'any') return L.ids.includes(fullId(it.name));
+  return L.m(it);
+}
+
+/**
+ * 装备单缺什么。items：[{ name, count }]（背包的，或者箱子里记着的）。
+ * 缺 = 少于 min（没给 min 就是 count；best 类就是一件没有）。返回 [{ label, have, need, essential }]。
+ */
+function kitShortfall (bot, items, loadout = defaultLoadout()) {
+  const out = [];
+  for (const L of [...loadout, WEAPON_CHECK]) {
+    const have = items.filter(it => kitMatch(bot, L, it)).reduce((a, it) => a + (it.count || 1), 0);
+    const need = L.kind === 'best' ? 1 : (L.min ?? L.count);
+    if (have < need) out.push({ label: L.label, have, need, essential: !!L.essential });
+  }
+  // 有武器（剑或斧）就不单说"缺剑""缺斧"是急事 —— 本来它俩也不是 essential
+  return out;
+}
+/** 背没背着精妙背包（饰品栏 / 胸甲槽）。饰品栏是上线时摸过一次记下的（install 里 curiosList） */
+function wearingBackpack (bot, state) {
+  return (state.curiosWorn || []).some(x => /backpack/.test(x)) || /backpack/.test(bot.inventory.slots[6]?.name || '');
+}
+
+/**
+ * 用背着的精妙背包倒腾（主人 2026-09-27：她有精妙背包 —— 身上满了先装背包，缺的先从背包里找，不用每次跑回家）。
+ *   ① 身上不在装备单里的整组 → 塞进背包（装备单里的一件不动；部分要留的整组留着，不拆）
+ *   ② 装备单缺的 → 背包里有就拿出来
+ * 用的是 shift+左键整组搬（精妙背包的格子走自己的通道同步，transfer 拆组不可靠，见 deposit 的注释）。
+ */
+// unpack：反过来，把背包里的东西倒到身上（在家整理时用：倒出来再由 organizeStorage 放进箱子；身上留 2 格余量）
+async function backpackTidy (bot, state, { abort = null, stash = true, restock = true, unpack = false } = {}) {
+  const stop = () => typeof abort === 'function' && abort();
+  await backpackOpen(bot, state);
+  const w = bot.currentWindow;
+  if (!w || !w.__sophisticated) throw new Error('背包没打开');
+  let stashed = 0; let took = 0; let unpacked = 0;
+  const myFree = () => { let n = 0; for (let i = w.inventoryStart; i < w.inventoryEnd; i++) if (!w.slots[i]) n++; return n; };
+  try {
+    if (unpack) {
+      for (let i = 0; i < w.inventoryStart; i++) {
+        if (stop() || myFree() <= 2) break;
+        if (!w.slots[i]) continue;
+        await click(bot, i, 0, 1); unpacked++;
+      }
+      await sleep(700);
+    }
+    if (stash && !unpack) {
+      const inv = []; for (let i = w.inventoryStart; i < w.inventoryEnd; i++) if (w.slots[i]) inv.push({ slot: i, item: w.slots[i] });
+      const keep = pickLoadout(bot, inv, defaultLoadout());
+      for (const e of inv) {
+        if (stop()) break;
+        if (keep.has(e.slot)) continue;
+        if (!w.slots.slice(0, w.inventoryStart).some(x => !x)) break;   // 背包满了
+        await click(bot, e.slot, 0, 1); stashed++;
+      }
+      await sleep(700);
+    }
+    if (restock && !stop()) {
+      const mine = []; for (let i = w.inventoryStart; i < w.inventoryEnd; i++) if (w.slots[i]) mine.push(w.slots[i]);
+      for (const sf of kitShortfall(bot, mine)) {
+        const L = [...defaultLoadout(), WEAPON_CHECK].find(x => x.label === sf.label);
+        for (let i = 0; i < w.inventoryStart && L; i++) {
+          const it = w.slots[i];
+          if (!it || !kitMatch(bot, L, it)) continue;
+          await click(bot, i, 0, 1); took++;   // 整组拿出来
+          break;
+        }
+      }
+      await sleep(700);
+    }
+  } finally {
+    noteBackpack(state, w);
+    if (bot.currentWindow?.id === w.id) bot.closeWindow(w);
+  }
+  const bp = state.backpackSeen;
+  return { stashed, took, unpacked, backpackFree: bp ? bp.slots - bp.used : null };
+}
+
+/** 箱子里有没有能补上这几项的（items 同上） */
+function kitAvailable (bot, items, labels, loadout = defaultLoadout()) {
+  return labels.filter(label => {
+    const L = [...loadout, WEAPON_CHECK].find(x => x.label === label);
+    return L && items.some(it => kitMatch(bot, L, it));
+  });
 }
 
 /** 从一堆物品里挑出装备单要留下的：返回 Map(slotIndex → 要留几个) */
@@ -2280,11 +2377,9 @@ function pickLoadout (bot, entries, loadout) {
   const add = (e, n) => keep.set(e.slot, (keep.get(e.slot) || 0) + n);
   for (const L of loadout) {
     let pool = entries.filter(e => !keep.has(e.slot));
-    if (L.kind === 'best') pool = pool.filter(e => L.re.test(e.item.name)).sort((a, b) => tierOf(a.item.name) - tierOf(b.item.name));
-    else if (L.kind === 'food') pool = pool.filter(e => categoryOf(bot, e.item) === '食物' && foodScore(e.item) > 0).sort((a, b) => foodScore(b.item) - foodScore(a.item));
-    else if (L.kind === 'id') pool = pool.filter(e => fullId(e.item.name) === L.id);
-    else if (L.kind === 'any') pool = pool.filter(e => L.ids.includes(fullId(e.item.name)));
-    else if (L.kind === 'spec') pool = pool.filter(e => L.m(e.item));
+    pool = pool.filter(e => kitMatch(bot, L, e.item));
+    if (L.kind === 'best') pool.sort((a, b) => tierOf(a.item.name) - tierOf(b.item.name));
+    else if (L.kind === 'food') pool.sort((a, b) => foodScore(b.item) - foodScore(a.item));
     let need = L.count;
     for (const e of pool) { if (need <= 0) break; const n = Math.min(need, e.item.count); add(e, n); need -= n; }
   }
@@ -2307,8 +2402,10 @@ function storageKey (bot, block) {
   return doorKey(pair[0]);
 }
 
-async function organizeStorage (bot, state, { radius = 12, assign = {}, loadout = null, maxPasses = 4, dryRun = false, only = null, allFloors = false, skip = [] } = {}) {
+// abort：进程内调用才能传（随身物品本能被命令打断时用），每开一个箱子之前问一次
+async function organizeStorage (bot, state, { radius = 12, assign = {}, loadout = null, maxPasses = 4, dryRun = false, only = null, allFloors = false, skip = [], abort = null } = {}) {
   const t0 = Date.now();
+  const stop = () => typeof abort === 'function' && abort();
   const log = [];
   const kit = loadout ? [].concat(loadout).map(x => (typeof x === 'object' ? { kind: 'spec', m: matcher(bot, x.item || x.name), count: +x.count || 1, label: x.item || x.name } : { kind: 'spec', m: matcher(bot, x), count: 64, label: x })) : defaultLoadout();
 
@@ -2323,6 +2420,7 @@ async function organizeStorage (bot, state, { radius = 12, assign = {}, loadout 
   const boxes = []; const covered = new Set();
   const skipSet = new Set([].concat(skip).map(x => String(x).replace(/[()\s]/g, '')));   // 上次是空的、又没分到类的：这次不去看
   for (const b of blocks) {
+    if (stop()) throw new Error('被新的命令打断（还没开始搬）');
     const k = storageKey(bot, b);
     if (covered.has(k) || covered.has(doorKey(b.position))) continue;
     if (skipSet.has(k)) { covered.add(k); boxes.push({ pos: b.position.clone(), key: k, name: b.name, slots: /chest/.test(b.name) && k !== doorKey(b.position) ? 54 : 27, cats: {}, used: 0, items: [], skipped: true }); continue; }
@@ -2393,6 +2491,7 @@ async function organizeStorage (bot, state, { radius = 12, assign = {}, loadout 
       .sort((a, b) => bot.entity.position.distanceTo(a.pos) - bot.entity.position.distanceTo(b.pos));
     if (!todo.length) break;
     for (const box of todo) {
+      if (stop()) { log.push('被新的命令打断'); break; }
       if (!(misplaced(box) > 0 || invWants(box))) continue;
       visits++;
       try { await containerOpen(bot, state, box.pos); } catch (e) { log.push(`第 ${pass + 1} 轮打不开 ${box.key}：${e.message}`); continue; }
@@ -2428,17 +2527,18 @@ async function organizeStorage (bot, state, { radius = 12, assign = {}, loadout 
 
   // ④ 每个箱子里面再排好；⑤ 随身装备缺的从箱子里拿（空箱子不去）
   for (const box of boxes.filter(b => b.used > 0)) {
+    if (stop()) break;
     try { await containerOpen(bot, state, box.pos); } catch (_) { continue; }
     const w = bot.currentWindow;
     await sortRange(bot, w, 0, w.inventoryStart);
     const have = []; for (let i = w.inventoryStart; i < w.inventoryEnd; i++) if (w.slots[i]) have.push({ slot: i, item: w.slots[i] });
     for (const L of kit) {
-      const got = have.filter(e => (L.kind === 'best' ? L.re.test(e.item.name) : L.kind === 'food' ? categoryOf(bot, e.item) === '食物' && foodScore(e.item) > 0 : L.kind === 'id' ? fullId(e.item.name) === L.id : L.kind === 'any' ? L.ids.includes(fullId(e.item.name)) : L.m(e.item))).reduce((a, e) => a + e.item.count, 0);
+      const got = have.filter(e => kitMatch(bot, L, e.item)).reduce((a, e) => a + e.item.count, 0);
       if (got >= (L.kind === 'best' ? 1 : L.count)) continue;
       for (let i = 0; i < w.inventoryStart; i++) {
         const it = w.slots[i];
         if (!it) continue;
-        const ok = L.kind === 'best' ? L.re.test(it.name) : L.kind === 'food' ? categoryOf(bot, it) === '食物' && foodScore(it) > 0 : L.kind === 'id' ? fullId(it.name) === L.id : L.kind === 'any' ? L.ids.includes(fullId(it.name)) : L.m(it);
+        const ok = kitMatch(bot, L, it);
         if (!ok) continue;
         const n = Math.min(it.count, (L.kind === 'best' ? 1 : L.count) - got);
         if (n <= 0) break;
@@ -2623,6 +2723,15 @@ function visibleOres (bot, want, radius, skip) {
     .sort((a, b) => ((want && b.name.includes(want)) - (want && a.name.includes(want))) || me.distanceTo(a.position) - me.distanceTo(b.position));
 }
 
+const MINES_FILE = require('path').join(__dirname, 'memory', 'mines.json');
+function mines (state) {
+  if (!state.__mines) { try { state.__mines = JSON.parse(require('fs').readFileSync(MINES_FILE, 'utf8')); } catch (_) { state.__mines = {}; } }
+  return state.__mines;
+}
+function saveMines (state) {
+  try { const fs = require('fs'); const tmp = MINES_FILE + '.tmp'; fs.writeFileSync(tmp, JSON.stringify(state.__mines || {}, null, 1)); fs.renameSync(tmp, MINES_FILE); } catch (_) {}
+}
+
 /** y<0 感知：附近的矿（不要求看得见），想要的在前、近的在前 */
 function sensedOres (bot, want, radius, skip) {
   const ids = Object.values(bot.registry.blocksByName).filter(b => ORE_RE.test(b.name)).map(b => b.id);
@@ -2700,9 +2809,23 @@ async function delve (bot, state, { target = null, targetY = null, maxMs = 12000
   const t0 = Date.now();
   const want = target ? String(target).replace(/^.*:/, '').replace(/^deepslate_/, '').replace(/_ore$/, '') : null;
   const ty = targetY != null ? +targetY : (ORE_Y[Object.keys(ORE_Y).find(k => want?.includes(k))] ?? 16);
-  const D = state.delve && state.delve.last && bot.entity.position.distanceTo(state.delve.last) < 32 ? state.delve
-    : (state.delve = { heading: null, visited: new Set(), steps: 0, last: null });
-  if (inHomeArea(home, bot.entity.position)) throw new Error(`在家附近（离家中心 ${home.radius} 格内）不往下挖 —— 先走远一点再挖`);
+  // 矿洞存盘（memory/mines.json）：以前方向、进度只在内存里，重启就忘，下次在原地另挖一条楼梯。
+  // 现在在一个老矿洞附近（入口或上次停下的地方 48 格内）就接着它：先走回上次停下的地方，按原方向接着挖
+  const here = bot.entity.position;
+  const near = (a, r) => a && Math.hypot(a.x - here.x, a.z - here.z) <= r;
+  let D = state.delve && state.delve.last && here.distanceTo(state.delve.last) < 32 ? state.delve : null;
+  let resumed = false;
+  if (!D) {
+    const old = Object.values(mines(state)).filter(m => near(m.last, 48) || near(m.entry, 48))
+      .sort((a, b) => Math.hypot(a.last.x - here.x, a.last.z - here.z) - Math.hypot(b.last.x - here.x, b.last.z - here.z))[0];
+    if (old) { D = state.delve = { ...old, visited: new Set(), last: new Vec3(old.last.x, old.last.y, old.last.z) }; resumed = true; }
+    else D = state.delve = { heading: null, visited: new Set(), steps: 0, last: null, entry: { x: Math.floor(here.x), y: Math.floor(here.y), z: Math.floor(here.z) }, deepest: Math.floor(here.y) };
+  }
+  if (!resumed && inHomeArea(home, bot.entity.position)) throw new Error(`在家附近（离家中心 ${home.radius} 格内）不往下挖 —— 先走远一点再挖`);
+  if (resumed && here.distanceTo(D.last) > 4) {
+    const err = await pathTo(bot, D.last, 1, 90000);
+    if (err && bot.entity.position.distanceTo(D.last) > 6) throw new Error(`想回上次挖到的地方 (${D.last.x},${D.last.y},${D.last.z}) 没走到：${err}`);
+  }
   const DIRS = [[0, -1], [1, 0], [0, 1], [-1, 0]];
   if (!D.heading) { const yaw = bot.entity.yaw; const vx = -Math.sin(yaw); const vz = -Math.cos(yaw); D.heading = Math.abs(vx) > Math.abs(vz) ? [Math.sign(vx), 0] : [0, Math.sign(vz)]; }
   // 下矿先备火把（主人：真要去暗处，就带着火把把那里点亮）
@@ -2713,7 +2836,7 @@ async function delve (bot, state, { target = null, targetY = null, maxMs = 12000
   const y0 = bot.entity.position.y;
 
   while (Date.now() - t0 < maxMs) {
-    D.last = bot.entity.position.clone();
+    D.last = bot.entity.position.clone(); D.deepest = Math.min(D.deepest ?? 999, Math.floor(D.last.y));
     if (bot.health < 8) { reason = `血只剩 ${Math.round(bot.health)}`; break; }
     const mob = Object.values(bot.entities).find(e => e !== bot.entity && HOSTILE_RE.test(e.name || '') && e.position.distanceTo(bot.entity.position) < 8);
     if (mob) { reason = `${mob.name} 在 ${mob.position.distanceTo(bot.entity.position).toFixed(0)} 格外`; break; }
@@ -2783,10 +2906,16 @@ async function delve (bot, state, { target = null, targetY = null, maxMs = 12000
     if (!torchItem(bot)) { reason = '火把用完了，别再往暗处挖 —— 回去补火把'; break; }
   }
   if (!reason) reason = `时间到（${Math.round((Date.now() - t0) / 1000)} 秒），可以接着挖`;
+  {
+    const f = bot.entity.position.floored();
+    D.last = bot.entity.position.clone(); D.deepest = Math.min(D.deepest ?? f.y, f.y);
+    if (D.entry) { mines(state)[`${D.entry.x},${D.entry.y},${D.entry.z}`] = { entry: D.entry, last: { x: f.x, y: f.y, z: f.z }, heading: D.heading, steps: D.steps, deepest: D.deepest, updated: Date.now() }; saveMines(state); }
+  }
   const d = delta(invBefore, invCounts(bot));
   const p = bot.entity.position;
   return {
     ok: true, reason, at: { x: Math.floor(p.x), y: Math.floor(p.y), z: Math.floor(p.z) }, fromY: Math.floor(y0), targetY: ty,
+    entry: D.entry, deepest: D.deepest, resumed,
     heading: D.heading, steps: D.steps, oresDug: dug, torchesLeft: torchCount(bot), gained: d.gained, chests: chests.length ? chests : undefined, log: log.slice(-8),
   };
 }
@@ -3440,6 +3569,7 @@ function routes ({ state, withTimeout }) {
     // 最近看过的箱子里有什么（since：只要这之后看的）
     'GET /containers/seen': async (_, q) => ({ seen: [...(state.seenContainers || new Map()).values()].filter(c => c.at > (+q?.since || 0)) }),
     'POST /storage/organize': async (b = {}) => organizeStorage(bot(), state, b),
+    'POST /backpack/tidy': async (b = {}) => backpackTidy(bot(), state, b),
     'POST /storage/loot': async (b = {}) => lootNearby(bot(), state, b),
     'POST /delve': async (b = {}) => delve(bot(), state, b),
     'GET /debug/craftgrid': async () => ({ serverInv: state.invItems || null, clientSlots: bot().inventory.slots.length, clientFilled: bot().inventory.slots.map((it, i) => it && `${i}:${it.type}x${it.count}`).filter(Boolean), grid: bot().inventory.slots.slice(0, 5).map((it, i) => it ? { slot: i, name: it.name, count: it.count } : null), window: bot().currentWindow?.type || null, stateId: bot().inventory.stateId, slotLog: (state.slotLog || []).slice(-20) }),
@@ -3713,4 +3843,4 @@ if (require.main === module && process.argv.includes('--selftest')) {
   })();
 }
 
-module.exports = { install, routes, slotByName, foodScore, fullId, botName, startFollow, farm };   // farm：收获本能直接调（instinct.js）
+module.exports = { install, routes, slotByName, foodScore, fullId, botName, startFollow, farm, kitShortfall, kitAvailable, defaultLoadout, wearingBackpack, backpackTidy };   // farm：收获本能直接调（instinct.js）

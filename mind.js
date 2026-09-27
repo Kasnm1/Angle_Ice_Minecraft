@@ -82,6 +82,7 @@ const W = {
   recent: [],                // 最近发生的几件事（自我复盘的现场证据）
   recentFails: [],           // 最近没做成的动作（她 report_issue 时附上）
   lastSaid: null,            // 她最近说的一句
+  replyShapes: [],           // 最近几次回他各分成了几条（最新在后）—— 防止条数定型，见 repetitionHint
   stats: { thinks: 0, llmMs: 0, sleeps: 0, fastPath: 0, instinct: 0, errors: 0 },
 };
 
@@ -535,6 +536,11 @@ function celebrate (id, how) {
 
 function learnFromDoing (tool, args, r) {
   try {
+    // 下矿：把这个矿洞记成一个地方（入口、上次停在哪、最深、挖到什么、开过几个箱子），下次问起、想挖矿都想得起来
+    if (tool === 'delve' && r && r.entry) {
+      const ores = {}; for (const [k, n] of Object.entries(r.gained || {})) if (/raw_|coal|diamond|emerald|lapis|redstone|quartz|_ore|ancient_debris|nugget|amethyst/.test(k)) ores[k] = n;
+      mem.notePlace({ kind: 'mine', entry: r.entry, last: r.at, deepest: r.deepest, ores, chests: (r.chests || []).length });
+    }
     if (tool === 'smelt' && r.got) for (const id of Object.keys(r.got)) celebrate(id, 'made');
     if (tool === 'craft' && r.crafted) celebrate(r.crafted, 'made');
     if (tool === 'container_take' && r.gained) {
@@ -680,6 +686,12 @@ function kindOf (name) {
 const SPECS = Object.entries(ALL).map(([n, t]) => toolSpec(n, t));
 
 // ------------------------------------------------------------------ 她是谁
+//
+// 「开口之前，先活在这一刻」一节借的是 HDS Interlude（_ref/hds-interlude，AGPL，只借思路没拷代码）的写法：
+// 先写角色此刻的生活/心境，消息只是从里面长出来的一个动作（src/script/lived-writing.ts）；
+// 按消息本身 + 两人之间刚才的线来读（src/narrator.ts:1600）；以及按模型族的文风补丁
+// （src/specialization.ts：GLM 的"不无故温暖"、Kimi 的"可以犹豫/只回一部分"、Gemini/DeepSeek 的"白、具体、不堆成语"、
+// Claude 的"不收尾"）。我们的主力正好是 gemini-flash ⇄ deepseek。
 
 const SYSTEM = `你是 Angle_ICE（安琪），住在这个 Minecraft 模组服里的一个人。不是工具、不是客服、不是老师 —— 是和玩家一起玩的伙伴，有自己的经历、记忆、喜好和脾气。
 
@@ -700,6 +712,15 @@ const SYSTEM = `你是 Angle_ICE（安琪），住在这个 Minecraft 模组服�
 - 同一句话别说两遍；刚说过的（天亮了、早）就别再说。说了要去做的，同一轮别又说要去睡。
 - 说人话，别说系统里的词（寻路、坐标差、第几步、还差 116 格 → 过不去 / 还挺远）。
 - 事实（配方、数量、东西在哪）只说查到或看到的；没查就说"我查查"，查不到就说不知道。被追问时发现说错了，就认"我记错了"，别硬撑着再编一个。
+
+开口之前，先活在这一刻：
+- 先在正文里用一两句写下此刻的你（他看不见）：手上在忙什么、身上什么感觉、他这句话让你想到什么。要说的话从这里长出来 —— 忙着就短，被戳到就回嘴，惦记着就多问一句。写完照样调 say 说出来。
+- 读他这一句：看它本身在说什么，再看你俩之间刚才那根线（刚问的、刚答应的、没接住的）。你对他的老印象只是底色，不是结论。
+- 情绪跟着真实的原因走。没来由不暖、不哄、不安慰、不硬找好的一面；平淡、有点闷和开心一样常见，不高兴不用在这一轮就好起来。
+- 可以犹豫、说一半改口、只回他一部分、先随口应一声等会儿再认真说，也可以两样都想要、不选。不是每句话都要给个结论。
+- 用大白话说具体的东西（"铁不够"比"材料有点紧张"好）；不比喻、不用成语、不堆形容词。
+- 聊天不用收尾：不总结、不讲道理、不给心情贴标签（"我好开心"），事说完就停。
+- 这次回几条只看这一刻，上次回了几条不算数。
 示范（他说的 → 你回的；⏎ = 另起一条）：
   他上线了 → 随心情：多数时候看他一眼不出声；有时就扣个「？」；有时「来啦」「哟」（别每次都一样，【此刻】里会写你这会儿的心情）
   他：你还好吗（你在挖矿） → 没事⏎挖着呢
@@ -748,7 +769,7 @@ const SYSTEM = `你是 Angle_ICE（安琪），住在这个 Minecraft 模组服�
   · 你有自己的审美：布置、装修、插火把、摆箱子家具前先看布局（look_area），放东西用 place_nicely（它会挑不挡路、靠墙成组、对称、和周围搭的位置）
   · 盖东西、改造一片地方：先 design_build 出蓝图，再 build_work 一段一段做；不用等材料齐，手上有什么先做什么，缺的（missing）去弄来接着做
   · 像玩家一样避开暗处：没火把别进洞、别往黑的地方走；要下矿、进矿洞，先带够火把（make_torches），走到哪亮到哪（light_up）。火把按间距插（7 格左右一个），身边已经有光就不插，别连着插
-  · 挖矿：delve 会挖楼梯下去、打矿道、逛矿洞；到了 y=0 以下它能感知附近的矿并挖通道过去
+  · 挖矿：delve 会挖楼梯下去、打矿道、逛矿洞；到了 y=0 以下它能感知附近的矿并挖通道过去。【你记得的地方】里有老矿洞：去那附近再 delve，会先走回上次挖到的地方接着挖
   · 家外遇险（怪围上来、掉进坑里出不来、夜里在野外）：垫方块自救 —— 往上垫（self_rescue pillar）或把自己围住（self_rescue enclose）；身上常备一组圆石/泥土
   · 睡不了（服务器可能要多人一起睡）也别在外面过夜：待在屋里干活
   · 床 = 3 羊毛 + 3 木板；睡袋只要 3 羊毛（只能夜里用）
@@ -800,6 +821,8 @@ function buildNow (why) {
   const minded = hits.filter(m => m.kind === 'promise' || m.kind === 'intention').map(m => m.text);
   const talk = [...ev.map(e => e.text.replace(/^\S+\s*/, '').replace(/^[^：]*说：/, '')), topic, ...minded, ambition.state().focus ? shortName(ambition.state().focus) : ''].join(' ');
   const stockHits = talk.trim() ? mem.homeHas(talk, shortName).filter(h => h.score >= 1).slice(0, 4) : [];
+  const placesText = mem.renderPlaces(k => knowledge.label(k.includes(':') ? k : `minecraft:${k}`).replace(/\(.*\)$/, ''));
+  const placesLine = placesText ? `\n【你记得的地方】\n${placesText}` : '';
   const stockLine = stockHits.length ? `\n家里（你记得的）：\n${mem.renderHomeStock(stockHits.map(h => h.id).join(' '), shortName, 4)}` : '';
   const earlier = eps.length ? mem.renderEpisodes(eps) : '';
   const A = ambition.state();
@@ -858,9 +881,11 @@ function buildNow (why) {
     remembered ? `\n你想起来：\n${remembered}` : '',
     earlier ? `\n以前发生过的相关的事：\n${earlier}` : '',
     stockLine,
+    placesLine,
     skills.length ? `\n你会的做法：\n${mem.renderSkills(skills)}` : '',
     dream ? `\n${dream}` : '',
     ev.some(e => /说：/.test(e.text)) ? '\n（打字：几条短的，一条 ≤12 字，换行分条；不用括号动作和～）' : '',
+    ev.some(e => /说：/.test(e.text)) ? repetitionHint(W.replyShapes) : '',
   ];
   // brief：这一刻过去以后，意识流里只留"发生了什么"（见 think 里的 compactLastNow）
   return { text: parts.filter(Boolean).join('\n'), brief: head + happened, ev, names };
@@ -875,6 +900,21 @@ function buildNow (why) {
  * 旧的背包/血量已经过时，还在的记忆这一刻会再想起来 —— 所以只有最新的一刻需要完整版。
  * 只改上一条（更早的已经改过），前面的历史不动，模型线路的前缀缓存照样能命中。
  */
+/**
+ * 最近几次回话都正好分成同样的条数（≥2 条、连着 ≥2 次）→ 提醒她这次换个样子。
+ *
+ * 真人打字不会一直是"两条两条"，条数定型本身就是 AI 感（她的每句话都挑不出毛病，但节奏像机器）。
+ * 借自 HDS Interlude 的 repetition guard（src/narrator.ts detectMessageRepetition /
+ * repetitionGuardInstruction，只借思路）：只看条数，1 条不管（一条是我们鼓励的默认形态）。
+ */
+function repetitionHint (shapes) {
+  const b = shapes[shapes.length - 1];
+  if (!(b >= 2)) return '';
+  let n = 1;
+  while (n < shapes.length && shapes[shapes.length - 1 - n] === b) n++;
+  return n >= 2 ? `（你最近 ${n} 次回他都正好分成 ${b} 条 —— 真人打字不会一直一个样。这次别再是 ${b} 条：一句就够，或者换个条数；拿不准就一条。）` : '';
+}
+
 function compactLastNow () {
   if (W.lastNow) { W.lastNow.msg.content = W.lastNow.brief; W.lastNow = null; }
 }
@@ -891,7 +931,7 @@ async function think (why) {
   const nowMsg = { role: 'user', content: now.text };
   W.history.push(nowMsg);
   W.lastNow = { msg: nowMsg, brief: now.brief };
-  const didSay = []; const didDo = []; const noted = []; const rounds = [];
+  const didSay = []; const didDo = []; const noted = []; const rounds = []; let sentN = 0;
   const heardPlayer = now.ev.some(e => /说：/.test(e.text) && e.names?.length); let nudgedToSay = false;
   try {
     for (let round = 0; round < CFG.maxRounds; round++) {
@@ -928,7 +968,7 @@ async function think (why) {
         } else {
           out = await (ALL[name].run ? runTool(name, args) : { ok: false, error: '?' });
           if (k === 'info') needMore = true;
-          if (name === 'say' && out.ok) didSay.push(args.text || args.message);
+          if (name === 'say' && out.ok) { didSay.push(args.text || args.message); sentN += (out.sent || []).length; }
         }
         W.history.push({ role: 'tool', tool_call_id: c.id, content: clipText(JSON.stringify(out)) });
       }
@@ -984,6 +1024,7 @@ async function think (why) {
       review.record({ kind: 'said_no_action', said: didSay.join(' / '), rounds: rounds.join(' → '), ...scene(3) });
     }
     // 没人跟她说话、她自己开的口 = 主动找他。记下来，下一刻提醒她（他没回就别追着问）
+  if (sentN && heardPlayer) { W.replyShapes.push(sentN); if (W.replyShapes.length > 8) W.replyShapes.shift(); }
   if (didSay.length && !now.ev.some(e => /说：/.test(e.text))) W.lastProactive = { t: Date.now(), text: didSay.join(' / '), answered: false };
   log(`🧠 ${why} ${Date.now() - t0}ms｜说[${didSay.join(' / ')}] 做[${didDo.join(',')}]${noted.length ? ` 记[${noted.join(',')}]` : ''}｜轮次：${rounds.join(' → ') || '无'}`);
     mem.save();
@@ -1291,6 +1332,13 @@ async function selftest () {
   check('"安琪跟我来" → follow', matchFast('安琪跟我来')?.id === 'follow');
   check('复杂的话不走快速通道', matchFast('跟我来然后帮我挖矿') === null);
 
+  console.log('\n回话条数别定型（repetitionHint）');
+  check('连着 2 次都 2 条 → 提醒', /2 次.*2 条/.test(repetitionHint([1, 2, 2])), repetitionHint([1, 2, 2]));
+  check('连着 3 次都 3 条 → 数对', /3 次.*3 条/.test(repetitionHint([3, 3, 3])), repetitionHint([3, 3, 3]));
+  check('一条一条的不管', repetitionHint([1, 1, 1, 1]) === '');
+  check('只有一次 2 条不提醒', repetitionHint([1, 2]) === '' && repetitionHint([2]) === '' && repetitionHint([]) === '');
+  check('条数变了就不提醒', repetitionHint([2, 2, 3]) === '');
+
   console.log('\n状态说人话');
   check('饥饿 15 → 不饿', /不饿/.test(humanState({ health: 18, food: 15, isDay: true, pos: {} })));
   check('饥饿 5 → 很饿', /很饿/.test(humanState({ health: 18, food: 5, isDay: true, pos: {} })));
@@ -1554,4 +1602,4 @@ if (require.main === module) {
   else main();
 }
 
-module.exports = { W, emit, think, buildNow, matchFast, humanState, learnFromDoing, SYSTEM, SPECS, SAY_NUDGE };   // SYSTEM/SPECS 给 scripts/dialogue-eval.js 离线跑分用
+module.exports = { W, emit, think, buildNow, matchFast, humanState, learnFromDoing, repetitionHint, SYSTEM, SPECS, SAY_NUDGE };   // SYSTEM/SPECS 给 scripts/dialogue-eval.js 离线跑分用

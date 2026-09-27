@@ -375,6 +375,15 @@ function selftest () {
   check('中文切词能对上', similar('烤鸡蛋', '鸡蛋烤好了') > 0);
   check('id 的后半段能对上', keys('minecraft:egg').has('egg'));
 
+  // 地点：同一个矿洞只更新不重复；远处的另记一个
+  notePlace({ kind: 'mine', entry: { x: 100, y: 70, z: 100 }, last: { x: 110, y: 20, z: 100 }, deepest: 20, ores: { 'minecraft:coal': 3 } });
+  notePlace({ kind: 'mine', entry: { x: 105, y: 70, z: 98 }, last: { x: 120, y: 12, z: 100 }, deepest: 12, ores: { 'minecraft:coal': 2, 'minecraft:raw_iron': 4 } });
+  notePlace({ kind: 'mine', entry: { x: 400, y: 70, z: 400 }, deepest: 50 });
+  const pls = places();
+  check('同一个矿洞合并成一条、远处另记', pls.length === 2, pls.length);
+  check('合并后：最深取更深、矿累加、停在最新处', pls[0].deepest === 12 && pls[0].ores['minecraft:coal'] === 5 && pls[0].last.x === 120 && pls[0].visits === 2, pls[0]);
+  check('渲染出来带入口和最深', /入口\(100,70,100\).*最深 y=12/.test(renderPlaces()), renderPlaces());
+
   console.log(`\n  ${pass}/${total} 通过`);
   process.exit(pass === total ? 0 : 1);
 }
@@ -466,6 +475,39 @@ function inHome (pos) {
   const h = getHome();
   if (!h || !pos) return false;
   return Math.hypot(pos.x - h.center.x, pos.z - h.center.z) <= h.radius && Math.abs(pos.y - h.center.y) <= 16;
+}
+
+// ------------------------------------------------------------------ 记得的地方（矿洞、营地…）
+//
+// 主人 2026-09-27：「她为什么不记得昨天的矿洞，有些事情是不是应该写进记忆」。
+// 以前下矿只留一条经历（"做完了：delve{...} → at…"），不含"矿洞"两个字、又会淡忘，问起来想不起。
+// 地点单独存：按世界分，同一个地方（入口 48 格内）只更新不重复，常驻在提示里。
+
+function places () { load(); return ((S.places || {})[worldKey] || []); }
+
+/** 记一个地方。kind: mine / camp / spot；entry 是入口，last 是上次停在哪 */
+function notePlace ({ kind = 'mine', name, entry, last, deepest, ores = {}, chests = 0, note } = {}) {
+  if (!entry) return null;
+  load();
+  S.places ||= {}; const list = (S.places[worldKey] ||= []);
+  const d = (a, b) => Math.hypot(a.x - b.x, a.z - b.z);
+  let pl = list.find(x => x.kind === kind && (d(x.entry, entry) <= 48 || (last && x.last && d(x.last, last) <= 24)));
+  if (!pl) { pl = { id: list.length + 1, kind, name: name || (kind === 'mine' ? `矿洞${list.filter(x => x.kind === 'mine').length + 1}` : '地方'), entry, ores: {}, chests: 0, visits: 0, created: Date.now() }; list.push(pl); }
+  if (last) pl.last = last;
+  if (deepest != null) pl.deepest = Math.min(pl.deepest ?? 999, deepest);
+  for (const [k, n] of Object.entries(ores || {})) pl.ores[k] = (pl.ores[k] || 0) + n;
+  pl.chests += chests || 0; pl.visits++; pl.updated = Date.now();
+  if (note) pl.note = String(note).slice(0, 120);
+  touch();
+  return pl;
+}
+
+function renderPlaces (label = (x) => x) {
+  const list = places().slice().sort((a, b) => (b.updated || 0) - (a.updated || 0)).slice(0, 6);
+  return list.map(p => {
+    const ores = Object.entries(p.ores || {}).sort((a, b) => b[1] - a[1]).slice(0, 4).map(([k, n]) => `${label(k)}×${n}`).join('、');
+    return `· ${p.name}：入口(${p.entry.x},${p.entry.y},${p.entry.z})${p.last ? `，上次停在(${p.last.x},${p.last.y},${p.last.z})` : ''}${p.deepest != null ? `，最深 y=${p.deepest}` : ''}${ores ? `，挖到过 ${ores}` : ''}${p.chests ? `，开过 ${p.chests} 个箱子` : ''}（去过 ${p.visits} 次，${when(p.updated)}）${p.note ? `；${p.note}` : ''}`;
+  }).join('\n');
 }
 
 /** 记住家里箱子的分类：{ "x,y,z": ["食物"], … }（合并，不整个覆盖） */
@@ -582,4 +624,4 @@ function renderEpisodes (eps) {
 
 if (require.main === module && process.argv.includes('--selftest')) selftest();
 
-module.exports = { noteHomeBox, homeHas, renderHomeStock, roughly, setWorld, setHome, getHome, inHome, setHomeStorage, learnSkill, skillResult, getSkill, recallSkills, renderSkills, load, save, touch, learn, revise, judge, sawPlayer, meet, episode, recallEpisodes, renderEpisodes, when, diary, recall, person, renderRecall, forReview, stats, keys, _reset, KINDS };
+module.exports = { places, notePlace, renderPlaces, noteHomeBox, homeHas, renderHomeStock, roughly, setWorld, setHome, getHome, inHome, setHomeStorage, learnSkill, skillResult, getSkill, recallSkills, renderSkills, load, save, touch, learn, revise, judge, sawPlayer, meet, episode, recallEpisodes, renderEpisodes, when, diary, recall, person, renderRecall, forReview, stats, keys, _reset, KINDS };

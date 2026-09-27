@@ -84,3 +84,4 @@ knowledge/generated/
 __pycache__/
 memory/containers-seen.json*
 memory/projects.json*
+memory/mines.json*
