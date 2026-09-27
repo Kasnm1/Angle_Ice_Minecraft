@@ -1174,6 +1174,16 @@ function install (bot, state, deps) {
       const pts = bot.findBlocks({ point: c, matching: builtIds, maxDistance: Math.min(H.cap, h.radius + H.near), count: 4000 })
         .filter(p => Math.abs(p.y - h.center.y) <= 16);
       const r = homeFootprint(pts.map(p => Math.hypot(p.x - h.center.x, p.z - h.center.z)), h.radius, H);
+      // 顺便看看家里的耕地湿不湿（moisture=0 = 4 格内没水，会退化回泥土、庄稼长得慢）—— 只告诉 mind，不自己引水（会动主人的布局）
+      const dryIds = ['farmland'].map(n => bot.registry.blocksByName[n]?.id).filter(v => v != null);
+      const dry = bot.findBlocks({ point: c, matching: dryIds, maxDistance: h.radius, count: 400 })
+        .map(p => bot.blockAt(p)).filter(b => b && +(b.getProperties?.().moisture ?? 7) === 0);
+      const day = Math.floor(Date.now() / 86400000);
+      if (dry.length && I.dryToldDay !== day) {
+        I.dryToldDay = day;
+        const p0 = dry[0].position;
+        event('farmland_dry', `家里有 ${dry.length} 块耕地是干的（比如 ${p0.x},${p0.y},${p0.z}）：4 格内没有水，会退化回泥土、庄稼长得慢`, { count: dry.length });
+      }
       if (r > h.radius + 2) {
         const old = h.radius;
         h.radius = r;

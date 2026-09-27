@@ -6134,6 +6134,10 @@ for (const k of Object.keys(handRoutes)) {
   if (k in handlers) console.warn(`[bridge] ⚠️ 路由重名：${k} —— hands.js 的会覆盖 bridge-server.js 的，删掉其中一份`);
 }
 Object.assign(handlers, handRoutes);
+// 常识动作（装水 / 倒水 / 锄地）：见 commonsense.js。同名同样喊出来
+const csRoutes = require('./commonsense.js').routes({ state });
+for (const k of Object.keys(csRoutes)) if (k in handlers) console.warn(`[bridge] ⚠️ 路由重名：${k}（commonsense.js）`);
+Object.assign(handlers, csRoutes);
 
 // 有些客户端（curl、部分 agent 的 HTTP 封装）会把中文以原始 UTF-8 字节直接塞进 URL，
 // 而 Node 的 HTTP 解析器按 latin1 解码，于是「出货箱」变成「å‡ºè´§ç®±」，查询永远匹配不到。
