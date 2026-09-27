@@ -399,7 +399,7 @@ function hazardUnder ({ feet = null, below = null, fallingAbove = false } = {}) 
  * 要求：脚和头那格是空的（空气类）、脚下是实心且不伤人、不是岩浆/水。读不到的格子不去（不猜）。
  */
 function pickStepOff (cells = []) {
-  const open = (n) => n != null && /(^|:)(air|cave_air|void_air|short_grass|grass|tall_grass|fern|snow)$/.test(n);
+  const open = (n) => n != null && require('./place').isStandable({ name: n });   // 判据只在 place.js 一处（P50：含草、藤、雪层）
   const ok = cells.filter(c => open(c.feet) && open(c.head) && c.below != null && !/air|lava|water|fire|magma|cactus|powder_snow|campfire/.test(c.below));
   ok.sort((a, b) => (Math.abs(a.dx) + Math.abs(a.dz)) - (Math.abs(b.dx) + Math.abs(b.dz)));   // 先直的，再斜的
   return ok[0] || null;
@@ -601,6 +601,23 @@ function pickCommand (c, cfg = CFG.cmd) {
     if (cmds.has('tp')) return { cmd: `tp ${returnTo.x} ${returnTo.y} ${returnTo.z}`, why: '天亮了，回昨晚离开的地方', returned: true, selfTp: true };
   }
   return null;
+}
+
+/**
+ * 家里的暗处（mindcraft modes.js 调研后建议的"只提醒、不动手"：插不插、插哪由 mind / 主人定，基地的布局归主人）。
+ * 1.20.1 敌对怪要**方块光照 0** 才刷。亮度先要证明读得到：家里的光源（火把、灯…）自己那格读出来 ≥ 10 才信；
+ * 有光源却都读成暗的 = 亮度数据读不到（mindcraft 就栽在这：block.light 是坏的），**不报暗**。
+ * @param sourceLights  家里光源所在格读到的方块光照（数组；undefined/null = 读不到）
+ * @param cells         家里可站的地面格 [{ pos, light }]（light = 脚那格的方块光照）
+ * @returns null | { kind: 'unreadable' } | { kind: 'no_source' } | { kind: 'dark', count, sample:[pos] }
+ */
+function darkReport ({ sourceLights = [], cells = [] } = {}, minCount = 3) {
+  const readable = sourceLights.some(l => typeof l === 'number' && l >= 10);
+  if (sourceLights.length && !readable) return { kind: 'unreadable' };
+  if (!sourceLights.length) return cells.length >= minCount ? { kind: 'no_source' } : null;
+  const dark = cells.filter(c => c.light === 0);
+  if (dark.length < minCount) return null;
+  return { kind: 'dark', count: dark.length, sample: dark.slice(0, 3).map(c => c.pos) };
 }
 
 /**
@@ -1189,6 +1206,29 @@ function install (bot, state, deps) {
         const p0 = dry[0].position;
         event('farmland_dry', `家里有 ${dry.length} 块耕地是干的（比如 ${p0.x},${p0.y},${p0.z}）：4 格内没有水，会退化回泥土、庄稼长得慢`, { count: dry.length });
       }
+      // 顺便看看家里有没有暗处（光照 0 夜里会刷怪）—— 只告诉 mind，不自己插火把
+      if (I.darkToldDay !== day) {
+        const LIGHT_RE = /(^|:|_)(torch|lantern|glowstone|shroomlight|froglight|campfire|redstone_lamp|end_rod|candle|light)$/;
+        const srcIds = Object.values(bot.registry.blocksByName).filter(b => LIGHT_RE.test(b.name) && !/redstone_torch|soul_torch_off/.test(b.name)).map(b => b.id);
+        const sourceLights = bot.findBlocks({ point: c, matching: srcIds, maxDistance: h.radius, count: 64 })
+          .filter(p => Math.abs(p.y - h.center.y) <= 8).map(p => bot.blockAt(p)?.light);
+        const airIds = ['air', 'cave_air'].map(n => bot.registry.blocksByName[n]?.id).filter(v => v != null);
+        const cells = [];
+        for (const p of bot.findBlocks({ point: c, matching: airIds, maxDistance: Math.min(h.radius, 32), count: 3000 })) {
+          if (Math.abs(p.y - h.center.y) > 4) continue;
+          const below = bot.blockAt(p.offset(0, -1, 0)); const head = bot.blockAt(p.offset(0, 1, 0));
+          if (!below || below.boundingBox !== 'block' || /farmland|glass|leaves|slab|stairs|carpet|water|lava/.test(below.name)) continue;
+          if (!head || head.boundingBox !== 'empty') continue;
+          cells.push({ pos: { x: p.x, y: p.y, z: p.z }, light: bot.blockAt(p)?.light });
+        }
+        const d = darkReport({ sourceLights, cells });
+        if (d) {
+          I.darkToldDay = day;
+          if (d.kind === 'unreadable') I.lastDarkNote = '家里有光源，但亮度读出来都是暗的 —— 读不到亮度，不报暗处';
+          else if (d.kind === 'no_source') event('dark_spot', '家里一个光源（火把、灯）都没看到，夜里整片都会刷怪', { count: cells.length });
+          else event('dark_spot', `家里有 ${d.count} 格地面是全黑的（比如 ${d.sample.map(q => `${q.x},${q.y},${q.z}`).join(' / ')}），夜里会刷怪`, { count: d.count, sample: d.sample });
+        }
+      }
       if (r > h.radius + 2) {
         const old = h.radius;
         h.radius = r;
@@ -1207,7 +1247,7 @@ function install (bot, state, deps) {
       const drop = deps.pathing.setDropAllowance(mv, { water: I.cfg.mlg.enabled && names.has('water_bucket'), nether });
       let sc = { scaffolding: 0 };
       if (I.cfg.bridge.enabled) {
-        const ids = deps.hands.SCAFFOLD_IDS.map(n => bot.registry.itemsByName[n.replace(/^minecraft:/, '')]?.id).filter(x => x != null);
+        const ids = (deps.hands.scaffoldIds ? deps.hands.scaffoldIds() : deps.hands.SCAFFOLD_IDS).map(n => bot.registry.itemsByName[n.replace(/^minecraft:/, '')]?.id).filter(x => x != null);
         sc = deps.pathing.setScaffold(mv, { itemIds: ids, forbid: (p) => inHome(p) === true });
       } else deps.pathing.setScaffold(mv, {});
       // 寻路挖掘：只挖天然地形（白名单），家里不挖，紧挨人造方块不挖
@@ -1794,6 +1834,10 @@ function selftest () {
   check('★ 远处孤零零一个（隔了一大段）→ 不算（不把邻居家当自己家）', homeFootprint([5, 12, 20, 60], 24), 24);
   check('只扩不缩', homeFootprint([2, 3], 40), 40);
   check('封顶 128', homeFootprint(Array.from({ length: 40 }, (_, i) => i * 5), 24), 128);
+  check('★ 暗处：光源读得到、3 格全黑 → 报', darkReport({ sourceLights: [14], cells: [{ pos: 1, light: 0 }, { pos: 2, light: 0 }, { pos: 3, light: 0 }, { pos: 4, light: 9 }] }).count, 3);
+  check('★ 暗处：有光源却都读成 0 → 读不到，不报暗', darkReport({ sourceLights: [0, undefined], cells: [{ pos: 1, light: 0 }, { pos: 2, light: 0 }, { pos: 3, light: 0 }] }).kind, 'unreadable');
+  check('暗处：只有 2 格黑 → 不吵', darkReport({ sourceLights: [14], cells: [{ pos: 1, light: 0 }, { pos: 2, light: 0 }] }), null);
+  check('暗处：家里一个光源都没有 → 报没有光源', darkReport({ sourceLights: [], cells: [{ pos: 1 }, { pos: 2 }, { pos: 3 }] }).kind, 'no_source');
 
   // ---- 落地水 ----
   const F = (o) => mlgStep({ startY: 90, y: 75, vy: -1.2, landY: 70, hasBucket: true, holding: true, ...o });
@@ -1947,7 +1991,7 @@ function selftest () {
   });
 }
 
-module.exports = { CFG, pickRecovery, pickCommand, homeFootprint, mlgStep, pickCaveStep, STRUCTURE_SIGNS, recognizeStructures, pickLoot, pickTidy, mobKind, attackCooldownMs, combatPlan, COMBAT_YIELD, TIER, pickaxeTier, needTier, pickOre, pickHarvest, hazardUnder, pickStepOff, armorRank, pickArmor, toolWorn, pickGaze, whoThrew, pickPickup, bodyBusy, install, yieldBody, PASSIVE_POSTS, selftest };
+module.exports = { CFG, pickRecovery, pickCommand, homeFootprint, darkReport, mlgStep, pickCaveStep, STRUCTURE_SIGNS, recognizeStructures, pickLoot, pickTidy, mobKind, attackCooldownMs, combatPlan, COMBAT_YIELD, TIER, pickaxeTier, needTier, pickOre, pickHarvest, hazardUnder, pickStepOff, armorRank, pickArmor, toolWorn, pickGaze, whoThrew, pickPickup, bodyBusy, install, yieldBody, PASSIVE_POSTS, selftest };
 
 if (require.main === module && process.argv.includes('--selftest')) {
   selftest().then(code => process.exit(code));

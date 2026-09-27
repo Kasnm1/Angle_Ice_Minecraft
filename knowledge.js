@@ -584,6 +584,14 @@ function fmtRecipe (r) {
  */
 const ORE_BLOCK = /_ore$|(^|:)ore_/;
 const GROUND_BLOCK = /:(stone|deepslate|dirt|grass_block|sand|red_sand|gravel|clay|netherrack|basalt|blackstone|end_stone|tuff|granite|diorite|andesite|snow_block|ice)$/;
+// 模组的土石沙砾（草方块同类的问题：写死名单认不出模组的）按整合包方块标签认；塞进标签的装饰、耕地小路不算
+const GROUND_TAGS = ['minecraft:dirt', 'minecraft:sand', 'minecraft:base_stone_overworld', 'minecraft:base_stone_nether', 'forge:gravel'];
+function isGroundBlock (id) {
+  if (GROUND_BLOCK.test(id)) return true;
+  if (/vase|farmland|_path$|suspicious/.test(id)) return false;
+  const t = K.blockTags.get(id);
+  return !!t && GROUND_TAGS.some(g => t.has(g));
+}
 const CROP_BLOCK = /(wheat|carrots|potatoes|beetroots|crop|crops|nether_wart)$/;
 const SELF_OK = /(_log|_stem|melon|pumpkin|sugar_cane|bamboo|cactus|kelp|vine|flower|mushroom|sapling|_leaves)$/;
 /**
@@ -601,8 +609,8 @@ function naturalRaw (id) {
     if (d.from !== 'block') return false;
     const w = (d.when || []).join(' ');
     if (/概率/.test(w) || /(^|[^不])需要silk_touch/.test(w)) return false;
-    if (d.id === id) return SELF_OK.test(id) || GROUND_BLOCK.test(id) || !K.byOutput.has(id);
-    return ORE_BLOCK.test(d.id) || GROUND_BLOCK.test(d.id) || CROP_BLOCK.test(d.id);
+    if (d.id === id) return SELF_OK.test(id) || isGroundBlock(id) || !K.byOutput.has(id);
+    return ORE_BLOCK.test(d.id) || isGroundBlock(d.id) || CROP_BLOCK.test(d.id);
   });
 }
 
@@ -947,6 +955,14 @@ function selftest () {
   check('有 3 原木 → 不再缺原材料', !/还缺/.test(t2), t2);
   const t3 = materialTree('minecraft:stone_pickaxe', 1, [{ name: 'cobblestone', count: 3 }, { name: 'stick', count: 2 }]);
   check('有圆石和木棍 → 一步做石镐', /背包里能直接用上/.test(t3) && !/还缺/.test(t3), t3);
+
+  console.log('\n天然地面（按标签认模组的土石）');
+  check('原版泥土、草方块', isGroundBlock('minecraft:dirt') && isGroundBlock('minecraft:grass_block'));
+  check('★ 模组泥土（RU 泥炭土）', isGroundBlock('regions_unexplored:peat_dirt'));
+  check('★ 模组石头（Quark 石灰岩）', isGroundBlock('quark:limestone'));
+  check('陶罐（etcetera 塞进 dirt 标签）不算', !isGroundBlock('etcetera:terracotta_vase'));
+  check('耕地不算', !isGroundBlock('regions_unexplored:peat_farmland'));
+  check('原木不是地面', !isGroundBlock('minecraft:oak_log'));
 
   console.log(`\n  ${pass}/${total} 通过`);
   process.exit(pass === total ? 0 : 1);

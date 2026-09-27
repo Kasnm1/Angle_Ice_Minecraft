@@ -17,8 +17,36 @@
  *     node place.js --selftest
  */
 
-// 视为"不是实心参照物"的方块
+// 视为"不是实心参照物"的方块（空气、流体）
 const AIRY = /^(air|cave_air|void_air|water|flowing_water|lava|flowing_lava)$/;
+
+/**
+ * ★ P50（2026-09-27 修）：**草、蕨、藤、雪层这类"可被替换"的方块**，放方块时会被直接顶掉，
+ * 不能当参照物，她也站得进去。以前只认 `AIRY`，站在草里被判"位置被占"。
+ *
+ * 证据是原版方块标签 `minecraft:replaceable`（1.20.1 里 `grass` 就是原版矮草，在这个标签里）。
+ * 下面是原版成员（离线/没知识库时也认得）；模组的成员由 bridge 启动时从知识库注入（`setReplaceable`）。
+ */
+const VANILLA_REPLACEABLE = ['grass', 'fern', 'dead_bush', 'seagrass', 'tall_seagrass', 'fire', 'soul_fire', 'snow', 'vine',
+  'glow_lichen', 'light', 'tall_grass', 'large_fern', 'structure_void', 'bubble_column', 'warped_roots', 'nether_sprouts',
+  'crimson_roots', 'hanging_roots'];
+const REPLACEABLE = new Set(VANILLA_REPLACEABLE);
+// 能**站进去**的只认植物类的名字（白名单）：标签里还有蛛网、蜂蜜残留、模组的毒液火焰、装鱼的桶，那些不站
+const PLANTY = /(^|:|_)(grass|fern|bush|shrub|sprouts?|roots|vine|lichen|clover|leaf_pile|weed|agave|growths|azolla|snow|light|bubble_column|structure_void)$/;
+/** 注入知识库里 `minecraft:replaceable` 的全部成员（`minecraft:x` 或模组 `mod:x`；原版去掉前缀，与 bot 的方块名一致） */
+function setReplaceable (names) {
+  let n = 0;
+  for (const id of names || []) {
+    const nm = String(id).replace(/^minecraft:/, '');
+    if (!REPLACEABLE.has(nm)) { REPLACEABLE.add(nm); n++; }
+  }
+  return n;
+}
+/** 放方块时这格会被顶掉（= 不是实心参照物、可以往里放） */
+function isReplaceable (name) {
+  const nm = String(name || '');
+  return AIRY.test(nm) || REPLACEABLE.has(nm);
+}
 
 // 眼睛到接触点的最大距离。超过就是够不着 —— 服务端会直接无视这次放置，
 // 表现成"超时"，而不是一个明确的错误。
@@ -85,7 +113,7 @@ function evaluateFace ({ target, offset, face, getBlock, eye }) {
   // 条件①：参照块必须存在、且是实心的
   const ref = getBlock(refPos);
   if (!ref) return { ok: false, reason: 'out-of-range', refPos };
-  if (AIRY.test(ref.name || '')) {
+  if (isReplaceable(ref.name)) {
     return { ok: false, reason: `not-solid(${ref.name || '?'})`, refPos };
   }
 
@@ -166,11 +194,13 @@ function planPlacement ({ target, getBlock, feet, height }) {
 // 从 bridge-server.js 搬来：放置和站位是同一套几何，判据只许有一份（P39）。
 
 // "她能不能站进这一格" —— 脚下的方块不能要命，头/脚两格不能是实心。
-// ⚠️ 刻意**不含** lava：上面的 `AIRY` 把岩浆当空气是为了"岩浆能当参照物"，
-//    但"她站在岩浆上"是另一回事，必须让 shelter 停下来如实报错。
+// "能不能站"和"能不能往里放"是两个问题：岩浆、火能往里放（会被顶掉），但不能站 —— `DEADLY` 单独拦。
+// 可替换方块里只有植物类（`PLANTY`）算能站。
 const DEADLY = /^(lava|flowing_lava|fire|soul_fire|magma_block|cactus|powder_snow)$/;
 function isStandable (block) {
-  return !!block && AIRY.test(block.name || '') && !DEADLY.test(block.name || '');
+  const nm = String(block?.name || '');
+  if (!block || DEADLY.test(nm)) return false;
+  return AIRY.test(nm) || (REPLACEABLE.has(nm) && PLANTY.test(nm));
 }
 
 /**
@@ -290,7 +320,7 @@ function findStandY (dropY, selfY, blockAt, x, z) {
   return Math.min(fallback, s);
 }
 
-module.exports = { planPlacement, evaluateFace, bodyOccupies, eyeFrom, offsetLabel, AIRY, REACH, FACES, HALF_WIDTH, DEADLY, isStandable, reachableStandY, findStandY };
+module.exports = { planPlacement, evaluateFace, bodyOccupies, eyeFrom, offsetLabel, AIRY, isReplaceable, setReplaceable, REACH, FACES, HALF_WIDTH, DEADLY, isStandable, reachableStandY, findStandY };
 
 // ------------------------------------------------------------------ 自测
 
@@ -484,6 +514,20 @@ if (require.main === module && process.argv.includes('--selftest')) {
   ];
   check('★ P43：★ 不变量 —— 下潜幅度永不超过 1 格（`canDig=false`，下去就上不来）',
     deepCases.every(([v, s]) => s - v <= 1), true);
+
+  console.log('\nP50：可替换方块（草、藤、雪层…）');
+  check('★ P50：站在草里 → 能站', isStandable({ name: 'grass' }), true);
+  check('★ P50：高草 → 能站', isStandable({ name: 'tall_grass' }), true);
+  check('★ P50：草不能当参照物（放方块会把它顶掉）', evaluateFace({ target: T, offset: { x: 0, y: -1, z: 0 }, face: { x: 0, y: 1, z: 0 }, getBlock: () => ({ name: 'grass' }), eye: null }).ok, false);
+  check('★ P50：草方块（实心）照样是参照物', evaluateFace({ target: T, offset: { x: 0, y: -1, z: 0 }, face: { x: 0, y: 1, z: 0 }, getBlock: () => ({ name: 'grass_block' }), eye: null }).ok, true);
+  check('★ P50：草方块不能站', isStandable({ name: 'grass_block' }), false);
+  check('岩浆：能往里放、不能站', [isReplaceable('lava'), isStandable({ name: 'lava' })], [true, false]);
+  check('火：能往里放、不能站', [isReplaceable('fire'), isStandable({ name: 'fire' })], [true, false]);
+  check('没注入前不认模组草', isReplaceable('regions_unexplored:steppe_grass'), false);
+  check('注入知识库标签（原版去前缀）', setReplaceable(['minecraft:grass', 'regions_unexplored:steppe_grass', 'the_bumblezone:honey_web']), 2);
+  check('模组草：能放能站', [isReplaceable('regions_unexplored:steppe_grass'), isStandable({ name: 'regions_unexplored:steppe_grass' })], [true, true]);
+  check('标签里的蜂蜜网：能往里放，但不站（不是植物）', [isReplaceable('the_bumblezone:honey_web'), isStandable({ name: 'the_bumblezone:honey_web' })], [true, false]);
+  check('纽扣（不在标签里）不算可替换', isReplaceable('spruce_button'), false);
 
   console.log(`\n  ${pass}/${total} 通过`);
   process.exit(pass === total ? 0 : 1);

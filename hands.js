@@ -2270,6 +2270,26 @@ const tierOf = (name) => { const i = TIERS.findIndex(t => name.includes(t)); ret
  * essential = 缺了值得专程回家拿（随身物品本能用，见 instinct.js）；其余缺了只记着，顺路整理时补。
  */
 const SCAFFOLD_IDS = ['cobblestone', 'dirt', 'cobbled_deepslate', 'stone', 'andesite', 'diorite', 'granite', 'deepslate', 'tuff', 'netherrack', 'blackstone'].map(n => `minecraft:${n}`);
+/**
+ * 搭脚方块的完整名单：上面的原版底子 + 整合包标签里算泥土 / 石头 / 圆石的（草方块、模组的泥土石头都算）。
+ * 以前只认写死的 11 种，背包里一组草方块或模组泥土她会说"没有搭脚方块"跑回家拿（2026-09-27 主人指出草方块不算泥土的同类问题）。
+ * 会塌的（沙、砂砾、灰烬）、耕地小路、磨制/砖（值钱）、塞进标签的装饰（陶罐）不算。
+ */
+const SCAFFOLD_TAGS = ['minecraft:dirt', 'forge:cobblestone', 'forge:stone', 'minecraft:stone_crafting_materials'];
+const NOT_SCAFFOLD_RE = /sand|gravel|(^|:|_)ash$|suspicious|farmland|_path$|vase|_pot$|_jar$|infested|polished|bricks?$|concrete_powder|quicksand/;
+let scaffoldCache = null;
+function scaffoldIds () {
+  if (scaffoldCache) return scaffoldCache;
+  const set = new Set(SCAFFOLD_IDS);
+  let fromTags = false;
+  try {
+    const kb = K().load();
+    for (const t of SCAFFOLD_TAGS) for (const id of kb.tags.get(`item:${t}`) || []) if (!NOT_SCAFFOLD_RE.test(id)) { set.add(id); fromTags = true; }
+  } catch (_) { /* 读不到知识库：只用原版底子，下次再试 */ }
+  const list = [...set];
+  if (fromTags) scaffoldCache = list;
+  return list;
+}
 function defaultLoadout () {
   return [
     { kind: 'best', re: /pickaxe$/, count: 1, label: '最好的镐', essential: true },
@@ -2277,7 +2297,7 @@ function defaultLoadout () {
     { kind: 'best', re: /sword$/, count: 1, label: '最好的剑' },
     { kind: 'food', count: 16, min: 4, label: '吃的', essential: true },
     { kind: 'id', id: 'minecraft:torch', count: 16, label: '火把' },
-    { kind: 'any', ids: SCAFFOLD_IDS, count: 32, min: 8, label: '搭脚方块', essential: true },
+    { kind: 'any', ids: scaffoldIds(), count: 32, min: 8, label: '搭脚方块', essential: true },
     // 落地水（主人 2026-09-27）：搭不了路要往下跳时，落地前倒水保命、落地后收回（instinct.js 的反射）
     { kind: 'id', id: 'minecraft:water_bucket', count: 1, label: '一桶水', essential: true },
   ];
@@ -3079,7 +3099,8 @@ async function lightUp (bot, { max = 1, force = false, spacing = 7 } = {}) {
 
 // 垫脚/堵洞用的方块：不值钱、不会掉（沙子砂砾会塌，不用）
 const FILLER_RE = /(^|:)(cobblestone|cobbled_deepslate|dirt|coarse_dirt|granite|diorite|andesite|netherrack|tuff|calcite|stone|deepslate|blackstone|basalt|end_stone|mossy_cobblestone|cobbled_\w+)$/;
-const fillerItem = (bot) => bot.inventory.items().filter(i => FILLER_RE.test(i.name)).sort((a, b) => b.count - a.count)[0]
+const isFiller = (name) => FILLER_RE.test(name) || scaffoldIds().includes(fullId(name));   // 和搭脚方块同一份名单（含草方块、模组泥土石头）
+const fillerItem = (bot) => bot.inventory.items().filter(i => isFiller(i.name)).sort((a, b) => b.count - a.count)[0]
   || bot.inventory.items().find(i => /_planks$/.test(i.name));
 
 /** 在 pos 放一个垫的方块（找旁边任意一个实心面贴上去） */
@@ -4175,9 +4196,21 @@ if (require.main === module && process.argv.includes('--selftest')) {
       check('已经对 1 格，完成 20%', `${d.ok}/${d.pct}`, '1/20');
     }
 
+    console.log('\n搭脚方块名单（整合包标签）');
+    {
+      const sc = scaffoldIds();
+      check('★ 草方块算搭脚方块（以前不认）', sc.includes('minecraft:grass_block'), true);
+      check('★ 模组泥土算（RU 泥炭土）', sc.includes('regions_unexplored:peat_dirt'), true);
+      check('原版底子还在', sc.includes('minecraft:cobblestone'), true);
+      check('沙子不算（会塌）', sc.includes('minecraft:sand'), false);
+      check('耕地、小路不算', [sc.includes('regions_unexplored:peat_farmland'), sc.includes('regions_unexplored:peat_dirt_path')], [false, false]);
+      check('磨制石头不算（值钱）', sc.includes('minecraft:polished_andesite'), false);
+      check('垫脚也认草方块', isFiller('grass_block'), true);
+    }
+
     console.log(`\n  ${pass}/${total} 通过`);
     process.exit(pass === total ? 0 : 1);
   })();
 }
 
-module.exports = { zoneArea, zoneWants, install, routes, slotByName, foodScore, fullId, botName, startFollow, farm, kitShortfall, kitAvailable, defaultLoadout, wearingBackpack, backpackTidy, unseenChests, unseenCarts, inHomeArea, inCave, SCAFFOLD_IDS };   // farm：收获本能直接调（instinct.js）
+module.exports = { zoneArea, zoneWants, install, routes, slotByName, foodScore, fullId, botName, startFollow, farm, kitShortfall, kitAvailable, defaultLoadout, wearingBackpack, backpackTidy, unseenChests, unseenCarts, inHomeArea, inCave, SCAFFOLD_IDS, scaffoldIds };   // farm：收获本能直接调（instinct.js）

@@ -3957,7 +3957,7 @@ handler 集体翻车 —— 那比原 bug 更糟。
 
 **发现时间**：2026-09-25（autopilot 重启后实机观察）
 **严重度**：🟡 **中**（不崩溃、不报错、日志干净 —— 她只是"什么都不做"）
-**状态**：📋 **已定位，方案待批**（属新增动作，未擅自动手）
+**状态**：✅ **已修复**（2026-09-27，由 `plan.js` 长期计划取代，见文末回填）
 
 ### 症状
 
@@ -4070,13 +4070,30 @@ needMaterials: ((cap.matStacks||0) <= T.selfMatStacks
 ⚠️ **C 的工作量明显大于 A/B**（要设计链条、接进决策菜单、为每一步写自测）。
 需要用户点头再动。
 
+### 回填（2026-09-27）：由长期计划解决，不改脑干
+
+**纠错**：原方案 C 要在 `decision.js`（脑干）里加工具链目标。但现在实际部署只起 `bridge-server.js` + `mind.js`
+（`scripts/win/angel.ps1:25` 只认 `bridge` / `mind` 两种），脑干没在跑；而且"接下来做什么"只许 `plan.js` 一个声音说
+（交接文档 HANDOFF-20260927 第三节第 4 条）。再在脑干里写一条工具链就是第二个声音。
+
+`plan.js` 的 `ideas()` 已经是方案 C + B 的判据（按"有没有工具"而不是"材料堆数"），主线准备步骤 `knowledge/mainline.json` 的 `prereq` p1–p10 也是同一条链。
+
+### 验证
+
+```
+$ node -e 'const p=require("./plan"); console.log(p.ideas(p.facts({items:[{name:"dirt",count:30}]})).map(x=>x.text))'
+[ '砍几棵树（原木）', '做个工作台', '做木镐', '做把武器（剑或斧）', '安个家（新手小屋 / 自己盖）' ]
+```
+30 个泥土（当年"21 个土算达标"的场景）不再被当成有材料，下一步是砍树。有木镐、工作台后下一步是"做石镐、石剑"。
+实机未验证（她跟着计划走不走，要看 mind 的日志）。
+
 ---
 
 ## P50 —— `AIRY` 判据不含植物（她站在草丛里被判"位置被占"）
 
 **发现时间**：2026-09-25（P49 排查的副产物）
 **严重度**：🟡 **中**（挡住 `/shelter`，但不是唯一原因）
-**状态**：📋 **已定位，未修**（改动有风险，见下）
+**状态**：✅ **已修复**（2026-09-27，见文末）
 
 ### 症状
 
@@ -4138,6 +4155,20 @@ const AIRY = /^(air|cave_air|void_air|water|flowing_water|lava|flowing_lava)$/;
 `AIRY` 同时回答"能放吗"和"能站吗"两个问题，而这两个问题的答案**不完全一样**
 （岩浆：不能放吗？不能站吗？—— 都对，但"为什么不能"不同）。
 一旦将来有人只考虑其中一个语义去改这个正则，另一处就会静默出错。
+
+### 修法（2026-09-27）
+
+- 证据：知识库里原版方块标签 `minecraft:replaceable` 含 `minecraft:grass`（1.20.1 的矮草就叫 `grass`，1.20.3 才改名 `short_grass`）。疑点 1 解决。
+- `place.js` 新增 `isReplaceable`（= `AIRY` + `minecraft:replaceable` 标签）。原版植物类成员写在代码里，其余（78 个模组的 + 空气流体）由 bridge 启动时从知识库注入（`setReplaceable`）。
+  放置参照物、放置目标、放完确认三处改用它。
+- `isStandable` = `AIRY` 或（可替换**且**是植物类名字），再排除 `DEADLY`。标签里的蛛网、蜂蜜残留、模组毒液、装鱼的桶能往里放、不站。
+- 疑点 2（岩浆在 `AIRY` 里）：是对的。岩浆确实不能当参照物、放方块会把它顶掉；不能站由 `DEADLY` 拦。原注释"岩浆能当参照物"写反了，已改。
+- `instinct.js` 的 `pickStepOff` 原来手抄了一份"空格"正则，改成调 `place.isStandable`（判据只在一处）。
+
+### 验证
+
+`node place.js --selftest` → 46/46（新增 12 条：草能站、草不当参照物、草方块照样是参照物、岩浆/火能放不能站、模组草注入后能站、蜂蜜网不站、纽扣不算可替换）。
+`node instinct.js --selftest` 186/186。**实机未验证**：上线后站草丛里 `/shelter` 不再报 `selfAir=false`。
 
 ---
 
@@ -4244,3 +4275,39 @@ node --check bridge-server.js      # 语法检查
 
 **判据**：任何对外交付物，在生成后必须有一道**独立于生成逻辑**的校验，
 且校验的依据是**产物本身**（解压列目录），不是生成时的意图。
+
+---
+
+## P53 —— 写死的方块名单认不出草方块和模组的土石 ✅ 已修复
+
+**发现时间**：2026-09-27
+**当时的任务**：主人指出"她不认为草方块是泥土"，要求把同类问题一并找出来修。
+
+### 证据
+
+`knowledge.js` 标签 bug（`01e629f` 已修）之外，还有 4 处用**写死的原版名字**判断"算不算泥土/石头"：
+
+| 位置 | 管什么 | 以前 | 后果 |
+|---|---|---|---|
+| `hands.js` `SCAFFOLD_IDS` | 随身"搭脚方块"、搭路本能用什么垫 | 11 种原版（无草方块） | 背包一组草方块或模组泥土石头，她仍说"缺搭脚方块"回家拿，搭路也不用 |
+| `hands.js` `FILLER_RE` | 垫坑、堵洞 | 原版正则 | 同上 |
+| `knowledge.js` `GROUND_BLOCK` | "能不能从天然方块直接挖到" | 原版正则 | 模组的土石被当成"要合成的"，材料树绕远路 |
+| `commonsense.js` `till` | 锄得动的方块 | `dirt` `grass_block` `dirt_path` | RU 的泥炭土、淤泥土（有自己的 `*_farmland`）锄不了；成功判据只认 `farmland` |
+
+标签里查到的（`node -e` 读 `knowledge.load().tags`）：`item:minecraft:dirt` 40 个、`item:forge:stone` 34 个、`item:forge:cobblestone` 8 个、`item:minecraft:stone_crafting_materials` 26 个。
+
+### 修法
+
+- 搭脚 / 垫脚：`hands.scaffoldIds()` = 原版底子 + 上面四个物品标签，排除会塌的（沙、砂砾、灰烬）、耕地小路、磨制/砖（值钱）、陶罐。`instinct.js` 搭路改用它。
+- 天然地面：`knowledge.isGroundBlock` = 原正则或在 `dirt` / `sand` / `base_stone_overworld` / `base_stone_nether` / `forge:gravel` 方块标签里（排除陶罐、耕地、小路）。
+- 锄地：`commonsense.tillableNames`：原版三种，加上 `#minecraft:dirt` 里**同模组有对应 `<前缀>_farmland`** 的；没有耕地的不猜。锄成功认 `*_farmland`。
+
+### 验证
+
+`hands.js` 29/29（新增 7 条：草方块、RU 泥炭土算，沙子、耕地、小路、磨制石头不算，垫脚认草方块）；
+`knowledge.js` 32/32（新增 6 条）；`commonsense.js` 9/9（新增 3 条）。全套自测全绿（`palette-guard-test` 7 条、`angelpal-encoder-parity-test` 2 条红，干净的 HEAD 上一样红，与本次无关）。**实机未验证。**
+
+### 教训
+
+"是不是泥土"这种**分类**问题，整合包已经用标签回答了；写死原版名字的地方迟早漏掉模组的。以后遇到按名字归类的，先查有没有对应标签。
+

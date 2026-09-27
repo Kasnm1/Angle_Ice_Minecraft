@@ -93,11 +93,29 @@ function hydrated (bot, p) {
   return false;
 }
 
+/**
+ * 锄得动的方块名。原版锄头：泥土、草方块、土径 → 耕地。
+ * 模组的（草方块同类的问题：以前只认原版，RU 的泥炭土、淤泥土锄不了）：在 `#minecraft:dirt` 标签里、
+ * **同一模组有对应的 `<前缀>_farmland`** 才算（有自己的耕地就是给锄的；没有耕地的不猜）。
+ * names：本连接的全部方块名（bot.registry.blocksByName 的键）；dirtTag：标签成员（可空）
+ */
+function tillableNames (names, dirtTag) {
+  const have = new Set(names);
+  const out = ['dirt', 'grass_block', 'dirt_path'].filter(n => have.has(n));
+  for (const id of dirtTag || []) {
+    const m = /^([a-z0-9_]+):(\w+?)_(dirt|grass_block|dirt_path)$/.exec(id);
+    if (m && have.has(id) && have.has(`${m[1]}:${m[2]}_farmland`)) out.push(id);
+  }
+  return out;
+}
+
 async function till (bot, { x, z, radius = 4, count: want = 9, allowDry = false, abort } = {}) {
   const hoe = bot.inventory.items().find(i => /_hoe$/.test(bare(i.name)));
   if (!hoe) return { ok: false, error: '身上没有锄头' };
   const center = x != null && z != null ? new Vec3(+x, bot.entity.position.y, +z) : bot.entity.position;
-  const ids = ['dirt', 'grass_block', 'dirt_path'].map(n => bot.registry.blocksByName[n]?.id).filter(v => v != null);
+  let dirtTag = null;
+  try { dirtTag = require('./knowledge').load().tags.get('block:minecraft:dirt'); } catch (_) {}
+  const ids = tillableNames(Object.keys(bot.registry.blocksByName), dirtTag).map(n => bot.registry.blocksByName[n]?.id).filter(v => v != null);
   const cands = bot.findBlocks({ matching: ids, point: center, maxDistance: radius + 1, count: 200 })
     .map(p => bot.blockAt(p))
     .filter(b => b && Math.abs(b.position.y - Math.floor(center.y - 1)) <= 1)
@@ -114,7 +132,7 @@ async function till (bot, { x, z, radius = 4, count: want = 9, allowDry = false,
       await bot.lookAt(b.position.offset(0.5, 1, 0.5), true);
       await bot.activateBlock(b, new Vec3(0, 1, 0));
       await sleep(250);
-      if (bare(bot.blockAt(b.position)?.name) === 'farmland') tilled++;
+      if (/(^|_)farmland$/.test(bare(bot.blockAt(b.position)?.name))) tilled++;
       else notes.push(`${b.position} 锄了没变成耕地`);
     } catch (e) { notes.push(e.message); }
   }
@@ -146,11 +164,16 @@ function selftest () {
   const fakeBot = { blockAt: (p) => (p.x === 3 && p.y === 63 && p.z === 0 ? { name: 'water' } : { name: 'dirt' }) };
   check('★ 4 格内同层有水 → 湿', hydrated(fakeBot, new Vec3(0, 63, 0)), true);
   check('5 格外 → 干', hydrated(fakeBot, new Vec3(-2, 63, 0)), false);
+  const tn = tillableNames(['dirt', 'grass_block', 'dirt_path', 'regions_unexplored:peat_dirt', 'regions_unexplored:peat_grass_block', 'regions_unexplored:peat_farmland', 'biomeswevegone:lush_dirt'],
+    ['minecraft:dirt', 'regions_unexplored:peat_dirt', 'regions_unexplored:peat_grass_block', 'biomeswevegone:lush_dirt']);
+  check('★ 模组泥土有自己的耕地 → 锄得动', tn.includes('regions_unexplored:peat_dirt') && tn.includes('regions_unexplored:peat_grass_block'), true);
+  check('模组泥土没有对应耕地 → 不猜', tn.includes('biomeswevegone:lush_dirt'), false);
+  check('原版三种照旧', ['dirt', 'grass_block', 'dirt_path'].every(n => tn.includes(n)), true);
   check('高一层的水也算', hydrated({ blockAt: (p) => (p.y === 64 && p.x === 1 ? { name: 'water' } : { name: 'dirt' }) }, new Vec3(0, 63, 0)), true);
   console.log(`\n${pass} passed, ${fail} failed`);
   return fail ? 1 : 0;
 }
 
-module.exports = { routes, fillBucket, pourWater, till, hydrated, isWaterSource, selftest };
+module.exports = { routes, fillBucket, pourWater, till, tillableNames, hydrated, isWaterSource, selftest };
 
 if (require.main === module && process.argv.includes('--selftest')) process.exit(selftest());

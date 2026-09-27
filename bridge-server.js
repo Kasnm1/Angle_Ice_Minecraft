@@ -26,6 +26,13 @@ const http = require('http');
 // 见 `node place.js --selftest`。这里只负责"选好面 → 看过去 → 放 → 等确认"。
 const placeLogic = require('./place');
 const { DEADLY, isStandable, reachableStandY, findStandY } = placeLogic;
+// P50：模组的草、藤之类"可被替换"的方块（整合包标签 `minecraft:replaceable`）注入 place.js；读不到知识库就只认原版的
+setImmediate(() => {
+  try {
+    const n = placeLogic.setReplaceable(require('./knowledge').load().tags.get('block:minecraft:replaceable'));
+    console.log(`[place] 可替换方块：从整合包标签补了 ${n} 个模组的`);
+  } catch (e) { console.log(`[place] 读不到整合包标签，可替换方块只认原版的（${e.message}）`); }
+});
 // 寻路策略（"绕路优先、拆方块是最后手段"）住在 pathing.js 里 —— 同样是纯函数、
 // 可离线穷举，见 `node pathing.js --selftest`。这里只负责把它装到 Movements 上。
 const pathing = require('./pathing');
@@ -1953,7 +1960,7 @@ const sleepMs = ms => new Promise(r => setTimeout(r, ms));
  *   · `isStandable`   = 她能不能站进去 / 能不能从这格走出去（**不含岩浆**）
  */
 function isAiryForPlace (block) {
-  return !!block && placeLogic.AIRY.test(block.name || '');
+  return !!block && placeLogic.isReplaceable(block.name);
 }
 
 /**
@@ -2523,7 +2530,7 @@ function waitForBlock(bot, pos, ms = 1500) {
       try {
         const p = newBlock?.position;
         if (p && p.x === pos.x && p.y === pos.y && p.z === pos.z) {
-          if (typeof newBlock.name !== 'string' || !placeLogic.AIRY.test(newBlock.name)) finish(true);
+          if (typeof newBlock.name !== 'string' || !placeLogic.isReplaceable(newBlock.name)) finish(true);
         }
       } catch (_) { /* 事件里出错不该影响判定 */ }
     };
@@ -2533,7 +2540,7 @@ function waitForBlock(bot, pos, ms = 1500) {
     // 更新可能在我们挂监听之前就到了 —— 主动查一次
     try {
       const cur = bot.blockAt(pos);
-      if (cur && typeof cur.name === 'string' && !placeLogic.AIRY.test(cur.name)) finish(true);
+      if (cur && typeof cur.name === 'string' && !placeLogic.isReplaceable(cur.name)) finish(true);
     } catch (_) {}
   });
 }
