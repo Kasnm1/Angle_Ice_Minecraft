@@ -1272,6 +1272,16 @@ function createBot() {
   });
 
   state.bot.loadPlugin(pathfinderPlugin);
+  // 兜住寻路库在 physicsTick 里的崩溃（一条没 catch 的异常会杀掉整个进程，
+  // 见 guardPathfinderCrash 的说明）。必须在 loadPlugin **之后** —— 那时
+  // monitorMovement 才注册在 physicsTick 上，才拦得到它。
+  {
+    const g = guardPathfinderCrash(state.bot, state);
+    state.pfCrashGuard = g;
+    console.log(g.installed
+      ? `[pathfinder] 崩溃兜底已装（包住 ${g.wrapped} 条 physicsTick 监听）`
+      : `[pathfinder] ⚠️ 崩溃兜底没装上：${g.reason}`);
+  }
   // 模组界面补丁：必须在 mineflayer 的 open_window 处理之前装上（prependListener）
   hands.install(state.bot, state);
   installEntitySense(state.bot);
@@ -1796,12 +1806,30 @@ function withTimeout(promise, ms = CFG.bridge.actionTimeout) {
  *
  * @param {object} state  桥的内部状态（要 `bot`）
  * @param {object} goal   pathfinder 的 Goal 实例
- * @param {object} [opts] { label, onStop }
- * @returns {Promise<{etaMs:number|null, timeoutMs:number, replans:number, checks:number}>}
+ * @param {object} [opts] { label, onStop, abort }
+ * @returns {Promise<{etaMs:number|null, timeoutMs:number, replans:number, checks:number, aborted?:boolean}>}
  */
 async function gotoWithBudget (state, goal, opts = {}) {
   const budget = { timeoutMs: pathing.PATH_MIN_TIMEOUT_MS, etaMs: null };
   let replans = 0;
+
+  // ---- 目标所有权（N-1：`mine stone` 81 次里 80 次以 GoalChanged 结束）--------
+  //
+  // `pathfinder.goto(goal)` 会在**任何** `setGoal(newGoal)` 且 `newGoal !== goal` 时
+  // 立刻以 `GoalChanged` 结束（库 `index.js:142-147` emit → `lib/goto.js:32-36` 抛）。
+  // 实机里换目标的**不是续期**（成功那几次都是 `续期 0 次`），而是**别人**在 goto
+  // 期间调了 `setGoal(null)` —— 见报告的证据链：`cancelCommands()`（本文件 `:1233`）
+  // 被本能层 250ms 的 `checkCombat`/`checkHazard`（`instinct.js:1777/2028`）调用。
+  //
+  // 那些解除里有一类**不是失败**：我们自己要收手（取消 / 让出身体给紧急本能）。
+  // `opts.abort` 就是这件事的唯一判据 —— 它由路由层按"取消线"注入（本文件 `:6438`）。
+  // 所以：出错时只要 `opts.abort()` 为真，这次 GoalChanged 就是**有序中止**，
+  // 不是失败。上层据此**不重试整条链**（重试 = 拿作废的任务再跑一遍，就是 80/81）。
+  const owner = state.__goalOwner || (state.__goalOwner = pathing.createGoalOwner());
+  const token = owner.begin();
+  const isAborted = () => {
+    try { return typeof opts.abort === 'function' && !!opts.abort(); } catch (_) { return false; }
+  };
 
   const onPathUpdate = (e) => {
     try {
@@ -1815,6 +1843,13 @@ async function gotoWithBudget (state, goal, opts = {}) {
     } catch (_) { /* 估时失败不该影响移动本身 */ }
   };
 
+  // 记下"目标被谁换掉"：我们自己发起的（清路径 / 取消）与外部发起的要分开。
+  // ⚠️ 只记不抛 —— 判定交给 classifyGotoOutcome，读不到证据时保守按失败。
+  const onGoalUpdated = () => {
+    if (isAborted()) owner.noteSelfChange();
+    else owner.noteExternalChange();
+  };
+
   const origin = state.bot.entity?.position;
   const monitor = origin
     ? pathing.createStagnationMonitor({ x: origin.x, y: origin.y, z: origin.z })
@@ -1826,6 +1861,8 @@ async function gotoWithBudget (state, goal, opts = {}) {
   let limit = Date.now() + budget.timeoutMs;
   let settled = false;
   let rejectOuter = null;
+  let failure = null;
+  let released = false;
 
   // ⚠️⚠️⚠️ 绝对上限 —— 这是 P9 的修复（2026-09-25 实战抓出来的）。
   //
@@ -1861,6 +1898,7 @@ async function gotoWithBudget (state, goal, opts = {}) {
   };
 
   state.bot.on('path_update', onPathUpdate);
+  state.bot.on('goal_updated', onGoalUpdated);
   try {
     if (monitor) {
       stagnationTimer = setInterval(() => {
@@ -1922,14 +1960,41 @@ async function gotoWithBudget (state, goal, opts = {}) {
     });
     DBG(`[goto] ${opts.label || ''} 成功到达（续期 ${renewals} 次）`);
   } catch (e) {
+    // ---- 判据：这次"目标被换掉"算不算失败（N-1）------------------------------
+    //
+    // ⚠️ `abort()` 要**在这里**读（而不是在 finally 里）：收手那一刻的取消线
+    //    才是本次 goto 的事实，晚读会被下一条命令推进。
+    const selfInitiated = owner.classify(token, e?.name).selfInitiated || isAborted();
+    const outcome = pathing.classifyGotoOutcome(e?.name, selfInitiated);
+    if (outcome === 'aborted') {
+      // 我们自己收手（取消 / 让出身体）—— **不是失败**：
+      //   · 打一行日志说明原因，不 `throw`（上层不该把它当"没走成"再重试整条链）；
+      //   · 返回 `aborted: true`，调用方据此**有序退出**（`/mine` 的 aborted 分支）。
+      released = true;
+      DBG(`[goto] ${opts.label || ''} 中止：${e.message}（本命令已取消，不算失败）`);
+      return {
+        etaMs: budget.etaMs,
+        timeoutMs: budget.timeoutMs,
+        replans,
+        renewals,
+        hardCapMs: ABSOLUTE_MAX_MS,
+        checks: monitor ? monitor.snapshot().checks : 0,
+        aborted: true,
+        abortedReason: e.message,
+      };
+    }
+    failure = e;
     DBG(`[goto] ${opts.label || ''} 结束：${e.message}`);
-    throw e;
   } finally {
     settled = true;
     if (stagnationTimer) clearInterval(stagnationTimer);
     if (watchdog) clearInterval(watchdog);
     state.bot.removeListener('path_update', onPathUpdate);
+    state.bot.removeListener('goal_updated', onGoalUpdated);
+    // 释放所有权。成功 / 失败路径走这里；中止路径已在 catch 里释放（released 标记）。
+    if (!released) owner.classify(token, failure ? failure.name : null);
   }
+  if (failure) throw failure;
 
   return {
     etaMs: budget.etaMs,
@@ -1942,6 +2007,34 @@ async function gotoWithBudget (state, goal, opts = {}) {
 }
 
 const sleepMs = ms => new Promise(r => setTimeout(r, ms));
+
+/**
+ * 兜住 mineflayer-pathfinder 在 physicsTick 里的崩溃 —— 不让它带走**整个** bridge。
+ *
+ * 真正的实现在 `pathing.installPhysicsTickGuard`（纯逻辑，有离线自测），
+ * 这里只做两件本文件才做得到的事：
+ *   · 把崩溃记进 `state`（`pfCrashCount` / `lastPfCrash`），供 `/config` 看；
+ *   · 打一行日志。
+ *
+ * 症状与根因（实机 `bridge.log` 33155 行附近）：
+ * ```
+ * TypeError: Cannot read properties of undefined (reading 'y')
+ *     at EventEmitter.monitorMovement (…/mineflayer-pathfinder/index.js:538:63)
+ *     at tickPhysics (…/mineflayer/lib/plugins/physics.js:85:11)
+ * ```
+ * 这条监听挂在 `setInterval` 驱动的 `physicsTick` 上，抛出的异常没人 catch →
+ * **Node 进程退出**（一次开门就能杀掉 bridge）。`placingBlock` 是库的闭包变量，
+ * 我们在外面够不到，所以只能兜异常（**不改 node_modules**）。
+ */
+function guardPathfinderCrash (bot, state) {
+  return pathing.installPhysicsTickGuard(bot, {
+    onError: (err) => {
+      state.pfCrashCount = (state.pfCrashCount || 0) + 1;
+      state.lastPfCrash = { t: Date.now(), message: err?.message || String(err), at: 'monitorMovement' };
+      console.error(`[pathfinder] monitorMovement 抛错，已兜住（不会退出进程）：${err?.message || err}`);
+    },
+  });
+}
 
 /**
  * 判断一个实体是不是**掉落物**。
@@ -2746,6 +2839,15 @@ const handlers = {
           // 运行时"可穿过"白名单：她自己打开、并且**实测穿得过去**的 state。
           // 只有验证通过的才会留在这里 —— 猜错的会被 /climb 撤回。
           passableStateIdsRuntime: [...state.passableStateIdsRuntime],
+          // physicsTick 崩溃兜底：`installed=true` 表示已经包住 pathfinder 那条监听。
+          // `crashes` 是**活计数** —— 大于 0 说明库确实崩过、但被兜住了（进程没死）。
+          // 见 `guardPathfinderCrash`。
+          crashGuard: state.pfCrashGuard
+            ? { ...state.pfCrashGuard, crashes: state.pfCrashCount || 0, last: state.lastPfCrash || null }
+            : null,
+          // 目标所有权登记簿的活计数（N-1）：selfChanges 是我们自己收手，
+          // externalChanges 是别人抢目标。见 `pathing.createGoalOwner`。
+          goalOwner: state.__goalOwner ? state.__goalOwner.stats() : null,
           // 方块调色板的状态见**顶层** `palette`（离线也要能看，所以不放这里）。
           // 这里只留"连接后重注入"的结果，用来和顶层的离线注入对照。
           paletteInjectAfterConnect: state.paletteInject
@@ -5280,11 +5382,23 @@ const handlers = {
             //    下面的实现就是把 y 换成她的 y，并把球心向上抬 1 格，
             //    因为那样"水平距离 ≤3 且脚下有路"的站位通常就在树根边上。
             const eyeY = Math.floor(state.bot.entity.position.y);
-            await gotoWithBudget(
+            const goRes = await gotoWithBudget(
               state,
               new goals.GoalNear(block.position.x, eyeY, block.position.z, 3),
-              { label: `mine ${label}` },
+              { label: `mine ${label}`, abort },
             );
+            // ---- 有序中止：这次 goto 是"我们自己收手"，不是"没走成" ----------------
+            //
+            // N-1 的修法落点。以前这里不传 `abort`、也不看返回值 —— 于是
+            // 本能层取消（战斗/危险方块）造成的 `GoalChanged` 会被当成普通寻路失败，
+            // 进入下一轮重选目标 + 重规划（81 次里 80 次的观感就是"一直在重规划"）。
+            // 现在：取消线一到，goto 归为 `aborted`，这里**立刻退出整条 /mine**，
+            // 不再把已作废的挖矿继续跑下去。
+            if (goRes?.aborted) {
+              aborted = true;
+              sweeps.push({ sweep, radius, action: 'aborted', reason: `寻路被取消（${goRes.abortedReason}）` });
+              break;
+            }
 
             // ---- 挖，并且**验证真的挖掉了** --------------------------------------
             //
@@ -6462,20 +6576,35 @@ const server = http.createServer((req, res) => {
       // 每次都只在**单点**修（改判据 / 加字段），根因一直没动 —— 所以还会长第五次。
       //
       // 现在的规则：
-      //   · `result.ok === false`（handler 显式否决）→ **不贴** `success: true`，
-      //     而是 `success: false` + `ok: false`，并带上 `_successNote` 说明为什么被否决。
+      //   · `result.ok === false` **或** `result.success === false`（handler 显式否决）
+      //     → **不贴** `success: true`，而是 `success: false` + 带 `_successNote`。
       //   · 其余情况保持原样（`success: true` + 展开 result，向后兼容全部旧调用方）。
+      //
       // ⚠️ 判据只看 `=== false` 严格相等：`ok: undefined` / `ok: 0` / `ok: null`
       //    **都不否决** —— 绝大多数 handler 根本不返回 `ok`，不能让它们集体翻车。
-      const vetoed = result && typeof result === 'object' && result.ok === false;
+      //
+      // ⚠️ 为什么要认 `success === false`（2026-09-28，codex 审计 P-5）：
+      //    有些 handler（`/reconnect`、`/registry/import-palette` …）只回
+      //    `{ success: false, reason }`，**没有 `ok` 字段**。旧判据只看 `ok`，
+      //    于是这些"她明确说了没做成"的返回值**走不进否决分支** ——
+      //    虽然 `...result` 展开时 `success:false` 侥幸盖住了 `success:true`，
+      //    但语义上路由层**没有把它们当失败**（没有 `_successNote`、没有统一口径），
+      //    换成任何别的字段名就会翻车。判据收敛成一条：**handler 说了 false 就是 false**。
+      const vetoed = result && typeof result === 'object'
+        && (result.ok === false || result.success === false);
       if (vetoed) {
+        const why = result.ok === false
+          ? 'handler 的 ok:false'
+          : 'handler 的 success:false';
         json(res, 200, {
           success: false,
-          ...result,                       // result 自己的字段优先（含它自己的 ok: false）
+          ok: false,
+          ...result,                       // result 自己的字段优先（含它自己的 ok/success）
           _successNote:
-            'success 由 handler 的 ok:false 否决 —— 它明确表示这个动作**没有在世界里生效**。'
-            + '（以前这里无条件贴 success:true，语义只是"handler 没抛异常"，'
-            + '被调用方误读成"做成了"，见 field-log P44）',
+            `success 由 ${why} 否决 —— 它明确表示这个动作**没有在世界里生效**。`
+            + '（以前这里只看 ok，只回 success:false 的 handler 走不进否决分支；'
+            + '更早则无条件贴 success:true，语义只是"handler 没抛异常"，'
+            + '被调用方误读成"做成了"，见 field-log P44 / codex P-5）',
         });
       } else {
         json(res, 200, { success: true, ...result });

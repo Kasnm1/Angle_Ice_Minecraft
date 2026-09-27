@@ -1682,6 +1682,181 @@ function clearPathfinderGoal (pf) {
   return did;
 }
 
+/**
+ * 寻路目标的**所有者登记簿** —— 修「挖矿 goto 自己跟自己打架」（N-1 / P-1）。
+ *
+ * ## 症状（实机，`bridge.log`）
+ *
+ * `[goto] mine stone 开始：…` 之后立刻 `[goto] mine stone 结束：The goal was changed
+ * before it could be completed!`，81 次里 80 次。而「续期」那套（`renewals`）**一次都没
+ * 触发**（成功那几次全是 `成功到达（续期 0 次）`）—— 说明**不是续期自己打断自己**，
+ * 是**别人**在 goto 进行中调了 `setGoal`。
+ *
+ * ## 是谁（证据链，见报告）
+ *
+ * `pathfinder.setGoal(goal)` 会 `emit('goal_updated', goal)`（库 `index.js:142-147`），
+ * 而 `goto()` 的 `goalChangedListener`（库 `lib/goto.js:32-36`）只要看到
+ * `newGoal !== goal` 就立刻以 `GoalChanged` 结束这次 goto。所以**任何**在 goto 期间
+ * 的 `setGoal` 都会把它打死，包括：
+ *   · `cancelCommands()`（`bridge-server.js:1233`）无条件 `setGoal(null)` ——
+ *     它被本能层的 250ms 定时器调：战斗 `checkCombat`（`instinct.js:1777`）、
+ *     危险方块 `checkHazard`（`instinct.js:2028`）；
+ *   · `fight()` 自己那几处 `setGoal`（`instinct.js:1793/1804/1811/1826/1830`）。
+ *
+ * 关键是：**这些"换目标"里有一部分是"我们自己要收手"**（取消/让出身体），
+ * 不是"任务失败了"。旧代码把两者混成同一句 `GoalChanged` 抛给上层，
+ * 上层（`/mine` 循环、`go()` 的 5 级重试）又据此整条链重试 —— 于是"重新规划"吞掉了挖矿。
+ *
+ * ## 这个登记簿解决什么
+ *
+ * 一次 goto 开始前 `begin(token)` **取得所有权**；期间记下"这次 goal 变更是不是我们自己
+ * 发起的"（`noteSelfChange`）。goto 结束时用 `classify` 判断：
+ *   · 被**外部**换掉（别人 setGoal）→ `external`，应如实报失败；
+ *   · 被**自己**取消（cancelCommands / abort）→ `selfAbort`，**不算失败**，
+ *     应转成有序中止，且**不让上层重试整条链**。
+ *
+ * 设计成纯状态机（不碰 bot/pathfinder），所以能离线自测。
+ *
+ * @returns {object} 登记簿
+ */
+function createGoalOwner () {
+  let current = null;      // 当前持有者 token
+  let selfChange = false;  // 最近一次目标变更是不是"自己人"发起的
+  let selfChanges = 0;
+  let externalChanges = 0;
+  let begins = 0;
+
+  return {
+    /** 取所有权。返回 token（后续 release/classify 要用）。 */
+    begin () {
+      begins++;
+      current = { id: begins, startedAt: Date.now() };
+      selfChange = false;
+      return current;
+    },
+    /** 这次目标变更是我们自己发起的（取消 / 换自己的目标）。 */
+    noteSelfChange () { selfChange = true; selfChanges++; },
+    /** 这次目标变更是**外部**发起的（别人 setGoal / movements 变更等）。 */
+    noteExternalChange () { externalChanges++; },
+    /** 当前有没有人在持有。 */
+    hasOwner () { return current !== null; },
+    /** 当前持有者 token（自测/诊断用）。 */
+    owner () { return current; },
+    /**
+     * 结束一次持有，并判定它是怎么结束的。
+     * @param {object} token  begin() 返回的 token
+     * @param {string} errName  放弃时的错误名（'GoalChanged' / 'PathStopped' / 'Timeout' …）
+     * @returns {{reason:'ok'|'selfAbort'|'external'|'stale', selfInitiated:boolean}}
+     */
+    classify (token, errName) {
+      const mine = current && token && current.id === token.id;
+      const selfInitiated = mine && selfChange;
+      if (mine) current = null;
+      if (!errName) return { reason: 'ok', selfInitiated: false };
+      if (!mine) return { reason: 'stale', selfInitiated };   // 已经不是当前持有者了
+      if (selfInitiated) return { reason: 'selfAbort', selfInitiated: true };
+      return { reason: 'external', selfInitiated: false };
+    },
+    stats () {
+      return { begins, selfChanges, externalChanges, hasOwner: current !== null };
+    },
+  };
+}
+
+/**
+ * 一个"目标被换掉"的错误，到底算不算**任务失败**。
+ *
+ * 这是 N-1 的核心判据，单独抽出来是因为**上层要据此决定"重不重试整条链"** ——
+ * 见 `gotoWithBudget` 的返回与 `/mine` 循环。
+ *
+ *   · `'aborted'` —— 我们自己收手（取消/让出身体）。**不是失败**：
+ *     不报错、不计失败、上层不该重试（重试 = 拿已经作废的任务再跑一遍）。
+ *   · `'failed'`  —— 真的没走成（别人抢了目标、超时、卡住）。照旧失败。
+ *
+ * ⚠️ 判据只看**错误名 + 是否自己发起**两样，不做任何猜测：
+ *    读不到（`err` 为空）时保守按 `'failed'`（AGENTS §5：证据不足保守为假）。
+ *
+ * @param {string} errName    错误名
+ * @param {boolean} selfInitiated  这次目标变更是否我们自己发起
+ * @returns {'ok'|'aborted'|'failed'}
+ */
+function classifyGotoOutcome (errName, selfInitiated) {
+  if (!errName) return 'ok';
+  const goalChanged = errName === 'GoalChanged' || errName === 'PathStopped';
+  if (goalChanged && selfInitiated) return 'aborted';
+  return 'failed';
+}
+
+/**
+ * 兜住 mineflayer-pathfinder 在 `physicsTick` 里的崩溃（实机 `bridge.log` 33155 行）。
+ *
+ * ## 为什么会杀掉整个进程
+ *
+ * `physicsTick` 由 `setInterval` 驱动（`mineflayer/lib/plugins/physics.js:489`），
+ * 而 pathfinder 的 `monitorMovement` 是直接挂在上面的监听（`index.js:166`）。
+ * 监听里抛出的异常会沿着 `bot.emit` 的同步栈一路冒到定时器回调 —— **没人 catch** →
+ * Node 进程退出。一次开门就能终结整场游戏。
+ *
+ * ## 抛的是什么（库 `index.js:510-545`）
+ *
+ * `if (placing || nextPoint.toPlace.length > 0)` 分支里，
+ * `placingBlock = nextPoint.toPlace.shift()` 可能取到 `undefined`（队列空），
+ * 而后面仍读 `placingBlock.y`（第 538 行）→ `Cannot read properties of undefined (reading 'y')`。
+ * 库内部 `placing` 是闭包变量，我们在外面**够不到** —— 所以只能兜异常，不能修状态。
+ * *不改 node_modules*（Windows 是 npm 装的，改了不会同步）。
+ *
+ * ## 做法
+ *
+ * 把 `physicsTick` 上的 pathfinder 监听换成**带 try-catch 的包装**：
+ * 崩了记一行、清干净寻路状态、**继续跑**（下一 tick 重新规划）。
+ *
+ * 判据是"这条监听来自 pathfinder"，按函数来源判断（`toString()` 里带模块路径），
+ * 不按名字 —— 名字在压缩/改名后会漂。**读不到就不假装装上**：返回
+ * `installed:false` 并带上原因（AGENTS §5：不做无证据的成功声明）。
+ *
+ * @param {object} bot          真 bot（EventEmitter）
+ * @param {object} [opts]       { onError(err), label }
+ * @returns {{installed:boolean, wrapped:number, reason?:string}}
+ */
+function installPhysicsTickGuard (bot, opts = {}) {
+  try {
+    if (!bot || typeof bot.rawListeners !== 'function') {
+      return { installed: false, wrapped: 0, reason: '不是 EventEmitter' };
+    }
+    if (bot.__pfCrashGuard) return { installed: true, wrapped: bot.__pfCrashGuard.wrapped, reason: '已装过' };
+    const raw = bot.rawListeners('physicsTick') || [];
+    const isPfMovement = (fn) => {
+      try {
+        const src = Function.prototype.toString.call(fn);
+        return src.includes('mineflayer-pathfinder') || /monitorMovement/.test(src);
+      } catch (_) { return false; }
+    };
+    const victims = raw.filter(isPfMovement);
+    if (!victims.length) return { installed: false, wrapped: 0, reason: '没找到 pathfinder 的 physicsTick 监听' };
+
+    bot.removeAllListeners('physicsTick');
+    let wrapped = 0;
+    for (const fn of raw) {
+      if (!isPfMovement(fn)) { bot.on('physicsTick', fn); continue; }
+      bot.on('physicsTick', function guardedPhysicsTick (...args) {
+        try {
+          return fn.apply(this, args);
+        } catch (err) {
+          try { opts.onError?.(err); } catch (_) {}
+          try { bot.pathfinder.stop(); } catch (_) {}
+          try { bot.pathfinder.setGoal(null); } catch (_) {}
+          try { bot.clearControlStates(); } catch (_) {}
+        }
+      });
+      wrapped++;
+    }
+    bot.__pfCrashGuard = { wrapped };
+    return { installed: true, wrapped };
+  } catch (e) {
+    return { installed: false, wrapped: 0, reason: e.message };
+  }
+}
+
 /** 按 cost 量级归类这一步属于哪种移动。判据见 `stepCostMs` 的说明。 */
 function stepKind (cost) {
   if (!Number.isFinite(cost) || cost <= 0) return 'walk';
@@ -2947,6 +3122,142 @@ if (require.main === module && process.argv.includes('--selftest')) {
   check('clearPathfinderGoal 确实同时做了 stop 与 setGoal(null)',
     /pf\.stop\(\);[\s\S]{0,120}pf\.setGoal\(null\)/.test(src), true);
 
+  // ---- 目标所有权登记簿 + 失败分类（N-1：mine goto 80/81 次 GoalChanged）------
+  //
+  // 这一节测的是**判据本身**：一次"目标被换掉"到底是"我们自己收手"还是"真的失败"。
+  // 上层（/mine 循环、go() 重试链）据此决定要不要重试整条链 —— 判错就会
+  // 把"让出身体"当成"没走成"，于是拿已经作废的任务一遍遍重跑（正是 80/81 的成因）。
+  console.log('\n[9/9] 目标所有权与失败分类 —— "自己换的目标"不能算失败（N-1）');
+  {
+    const owner = createGoalOwner();
+    const t1 = owner.begin();
+    check('begin() 之后确实有人持有', owner.hasOwner(), true);
+    check('没出错 → ok', classifyGotoOutcome(null, false), 'ok');
+    // 我们自己发起的变更（cancelCommands / abort / 让出身体）
+    owner.noteSelfChange();
+    const c1 = owner.classify(t1, 'GoalChanged');
+    check('自己发起的目标变更 → selfAbort', c1.reason, 'selfAbort');
+    check('selfAbort 标记 selfInitiated', c1.selfInitiated, true);
+    check('★ 自己取消不算失败（这是 80/81 的判据）',
+      classifyGotoOutcome('GoalChanged', true), 'aborted');
+    check('PathStopped + 自己发起，同样算中止',
+      classifyGotoOutcome('PathStopped', true), 'aborted');
+    check('★ 外部抢走目标 → failed（该如实报错）',
+      classifyGotoOutcome('GoalChanged', false), 'failed');
+    check('超时永远是失败，与谁发起无关',
+      classifyGotoOutcome('Timeout', true), 'failed');
+    check('卡住永远是失败', classifyGotoOutcome('Stuck', true), 'failed');
+    check('读不到错误名时保守按成功（不会凭空报失败）',
+      classifyGotoOutcome(undefined, true), 'ok');
+    check('没出错时即使 selfInitiated 也不报失败',
+      classifyGotoOutcome(null, true), 'ok');
+
+    // 外部变更：先 begin 再 noteExternalChange
+    const owner2 = createGoalOwner();
+    const t2 = owner2.begin();
+    owner2.noteExternalChange();
+    check('外部变更 → external', owner2.classify(t2, 'GoalChanged').reason, 'external');
+
+    // 过期的 token（已经不是当前持有者）不能误判成"自己人"
+    const owner3 = createGoalOwner();
+    const stale = owner3.begin();
+    const fresh = owner3.begin();
+    owner3.noteSelfChange();
+    check('过期 token → stale（不冒领）', owner3.classify(stale, 'GoalChanged').reason, 'stale');
+    check('过期 token 不把当前持有者一起释放', owner3.hasOwner(), true);
+    owner3.classify(fresh, null);
+    check('当前持有者正常释放', owner3.hasOwner(), false);
+    check('登记簿统计有记录', owner3.stats().begins, 2);
+
+    // 源码形状锁：gotoWithBudget 必须真的用上这套判据，而不是只 import。
+    check('gotoWithBudget 用了 createGoalOwner',
+      /createGoalOwner\(\)/.test(src), true);
+    check('gotoWithBudget 区分 abort 与 failed（有 aborted 语义）',
+      /aborted/.test(src) && /classifyGotoOutcome/.test(src), true);
+  }
+
+  console.log('\n[10/10] physicsTick 崩溃兜底 —— 一次开门不能杀掉整个进程');
+  {
+    // 假 bot：一条会像 mineflayer-pathfinder 的 monitorMovement 那样抛的 physicsTick 监听。
+    // ⚠️ 用 `rawListeners` 拿到真实函数，和实装路径一致（见 installPhysicsTickGuard）。
+    const EventEmitter = require('events');
+    const mkFakeBot = () => {
+      const bot = new EventEmitter();
+      bot.pathfinder = { stop () { bot.stopped = (bot.stopped || 0) + 1; }, setGoal (g) { bot.goal = g; } };
+      bot.clearControlStates = () => { bot.cleared = (bot.cleared || 0) + 1; };
+      return bot;
+    };
+    // 模拟库 index.js:538 —— `placingBlock.y`，而 placingBlock 是 undefined。
+    // 函数体里带上 'mineflayer-pathfinder' 字样，让兜底的判据能认出它（和真实来源一致）。
+    const makePfMovement = () => function monitorMovement () {
+      // eslint-disable-next-line no-unused-vars
+      const mineflayerPathfinderPlacingBlock = undefined;
+      return mineflayerPathfinderPlacingBlock.y;   // 抛：Cannot read properties of undefined (reading 'y')
+    };
+    // 用 Function 构造，确保 toString() 里带模块路径字符串（判据依赖它）。
+    const makePfMovementTagged = () => {
+      const fn = new Function('return function monitorMovement(){ const b = undefined; return b.y }')();
+      // 贴上模块路径痕迹：真实监听来自该模块，toString 会含这段字符串。
+      Object.defineProperty(fn, 'toString', { value: () => 'function monitorMovement(){} /* mineflayer-pathfinder */' });
+      return fn;
+    };
+
+    // ① 正常情况下：没兜底时，抛出的异常会从 emit 冒出来
+    {
+      const bot = mkFakeBot();
+      bot.on('physicsTick', makePfMovement());
+      let threw = false;
+      try { bot.emit('physicsTick'); } catch (_) { threw = true; }
+      check('★ 复现：没兜底时 physicsTick 抛出（会杀掉 setInterval 驱动的进程）', threw, true);
+    }
+    // ② 装上兜底之后：不再抛，且寻路状态被清干净
+    {
+      const bot = mkFakeBot();
+      const errs = [];
+      bot.on('physicsTick', makePfMovement());
+      const r = installPhysicsTickGuard(bot, { onError: e => errs.push(e) });
+      check('兜底装上了（wrapped=1）', `${r.installed}/${r.wrapped}`, 'true/1');
+      let threw = false;
+      try { bot.emit('physicsTick'); } catch (_) { threw = true; }
+      check('★ 兜底后不再抛（进程不会被带走）', threw, false);
+      check('崩溃被上报（记了一行）', errs.length, 1);
+      check('崩溃后清了 pathfinder 目标', bot.goal, null);
+      check('崩溃后停过 pathfinder', bot.stopped, 1);
+      check('崩溃后松了按键', bot.cleared, 1);
+    }
+    // ③ 非 pathfinder 的监听不能被误吞（别人的异常照旧抛）
+    {
+      const bot = mkFakeBot();
+      bot.on('physicsTick', makePfMovement());
+      bot.on('physicsTick', function someOtherPluginTick () { throw new Error('别人的 bug'); });
+      installPhysicsTickGuard(bot, {});
+      let msg = null;
+      try { bot.emit('physicsTick'); } catch (e) { msg = e.message; }
+      check('★ 只兜 pathfinder 那条：别人的异常照旧抛', msg, '别人的 bug');
+    }
+    // ④ 读不到 pathfinder 监听时不假装装上（保守，AGENTS §5）
+    {
+      const bot = mkFakeBot();
+      bot.on('physicsTick', () => {});
+      const r = installPhysicsTickGuard(bot, {});
+      check('没找到 pathfinder 监听 → installed:false', r.installed, false);
+      check('并且给出原因（不静默）', typeof r.reason, 'string');
+    }
+    // ⑤ 重复装不套娃
+    {
+      const bot = mkFakeBot();
+      bot.on('physicsTick', makePfMovementTagged());
+      installPhysicsTickGuard(bot, {});
+      const r2 = installPhysicsTickGuard(bot, {});
+      check('重复装不套娃', `${r2.installed}/${r2.wrapped}`, 'true/1');
+    }
+    // ⑥ 不是 EventEmitter 也不抛
+    {
+      check('传 null 不抛', installPhysicsTickGuard(null, {}).installed, false);
+      check('传普通对象不抛', installPhysicsTickGuard({}, {}).installed, false);
+    }
+  }
+
   // ---- P25 的**行为**回归：用假的 bot 复现"清理时机"的两种写法 --------------
   //
   // 上面那些是源码形状锁（`grep` 级），只能防"改回去"，
@@ -3042,6 +3353,69 @@ if (require.main === module && process.argv.includes('--selftest')) {
       check('★ 正确写法：连续 3 个目标全部正常完成',
         out.every(r => r === 'resolved'), true);
     });
+  };
+
+  // 场景 C（N-1 的行为回归）：把 `gotoWithBudget` 的**判据**照搬，
+  // 让"自己取消"与"被人抢"两种时序真跑一遍，看结果分不分得开。
+  //
+  // 为什么是行为测试而不是只测纯函数：纯函数能证明 `classifyGotoOutcome` 对，
+  // **不能**证明它在真实事件流里被喂对了输入。这里把
+  // `begin → 事件 → classify` 的接线也跑一遍：
+  //   · 自己取消（cancelCommands）→ GoalChanged 但 classified=aborted → **不抛**；
+  //   · 被人抢（另一个命令 setGoal）→ GoalChanged 且 classified=failed → **抛**。
+  const scenarioOwnership = () => {
+    const run = async () => {
+      // —— C1：自己取消（这就是 mine stone 80/81 次里的那一类）
+      {
+        const bot = mkBot();
+        const owner = createGoalOwner();
+        const token = owner.begin();
+        let cancelIssued = false;
+        bot.on('goal_updated', () => { if (cancelIssued) owner.noteSelfChange(); });
+        const p = fakeGoto(bot, mkGoal());
+        setImmediate(() => { cancelIssued = true; bot.pathfinder.setGoal(null); });  // cancelCommands()
+        const outcome = await settle(p, 40);
+        const errName = outcome === 'resolved' ? null : outcome.replace('rejected:', '');
+        const self = owner.classify(token, errName).selfInitiated || cancelIssued;
+        const verdict = classifyGotoOutcome(errName, self);
+        check('★ C1 自己取消：goto 结束时看到 GoalChanged', errName, 'GoalChanged');
+        check('★ C1 自己取消：判据是 aborted（不算失败）', verdict, 'aborted');
+      }
+      // —— C2：被别人抢走目标（真的失败，必须如实抛）
+      {
+        const bot = mkBot();
+        const owner = createGoalOwner();
+        const token = owner.begin();
+        let cancelIssued = false;   // 没人取消
+        bot.on('goal_updated', () => { if (cancelIssued) owner.noteSelfChange(); });
+        const p = fakeGoto(bot, mkGoal());
+        setImmediate(() => { bot.pathfinder.setGoal(mkGoal()); });   // 另一个命令抢
+        const outcome = await settle(p, 40);
+        const errName = outcome === 'resolved' ? null : outcome.replace('rejected:', '');
+        const self = owner.classify(token, errName).selfInitiated || cancelIssued;
+        check('★ C2 被抢目标：判据是 failed（如实报错）',
+          classifyGotoOutcome(errName, self), 'failed');
+      }
+      // —— C3：续期**不**打断自己（续期只改 budget，不 setGoal）
+      {
+        const bot = mkBot();
+        const p = fakeGoto(bot, mkGoal());
+        // 模拟 onPathUpdate 续期：只动 budget，不碰 goal
+        const budget = { timeoutMs: 30000 };
+        const renewals = [1, 2, 3].map(n => { budget.timeoutMs = 30000 * n; return n; });
+        setTimeout(() => bot.emit('goal_reached'), 20);
+        const outcome = await settle(p, 60);
+        check('★ C3 续期（不 setGoal）→ goto 正常完成，不被自己打断', outcome, 'resolved');
+        check('★ C3 续期计数确实发生过', renewals.length, 3);
+      }
+      check('★ C4 外部 setGoal(不同对象) → 即使没人取消也是 failed', (() => {
+        const owner = createGoalOwner();
+        const token = owner.begin();
+        const external = true;   // 不是自己发起
+        return classifyGotoOutcome('GoalChanged', !external);
+      })(), 'failed');
+    };
+    return run();
   };
 
   check('模组床是矮方块（9/16 高）', lowBlockHeight('handcrafted:oak_fancy_bed'), 0.5625);
@@ -3210,6 +3584,7 @@ if (require.main === module && process.argv.includes('--selftest')) {
 
   scenarioWrong()
     .then(scenarioRight)
+    .then(scenarioOwnership)
     .then(() => {
       console.log(`\n  ${pass}/${total} 通过`);
       process.exit(pass === total ? 0 : 1);
@@ -3265,6 +3640,9 @@ module.exports = { naturalDigNames, setDigPolicy, setDropAllowance, setScaffold,
   PATH_STAGNATION_THRESHOLD,
   MAX_STAGNANT_CHECKS,
   clearPathfinderGoal,
+  createGoalOwner,
+  classifyGotoOutcome,
+  installPhysicsTickGuard,
   stepKind,
   stepCostMs,
   estimatePathTimeMs,
