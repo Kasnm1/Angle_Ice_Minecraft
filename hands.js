@@ -3410,10 +3410,10 @@ async function placeTorchHere (bot) {
   try {
     await bot.equip(t, 'hand');
     const under = bot.blockAt(f.offset(0, -1, 0));
-    if (under && under.boundingBox === 'block') { await bot.placeBlock(under, new Vec3(0, 1, 0)); return true; }
+    if (under && under.boundingBox === 'block') { await plainTimeout(bot.placeBlock(under, new Vec3(0, 1, 0)), 5000); return true; }
     for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
       const wall = bot.blockAt(f.offset(dx, 1, dz));
-      if (wall && wall.boundingBox === 'block') { await bot.placeBlock(wall, new Vec3(-dx, 0, -dz)); return true; }
+      if (wall && wall.boundingBox === 'block') { await plainTimeout(bot.placeBlock(wall, new Vec3(-dx, 0, -dz)), 5000); return true; }
     }
   } catch (_) {}
   return false;
@@ -3421,8 +3421,13 @@ async function placeTorchHere (bot) {
 
 /** 身边 r 格内最近的光源（火把、灯…），没有给 null */
 const LIGHT_RE = /torch|lantern|campfire|glowstone|sea_lantern|shroomlight|froglight|jack_o_lantern|redstone_lamp|end_rod|candle/;
+let lightIdsCache = null; let lightIdsRegistry = null;
 function nearestLight (bot, r = 7) {
-  const ids = Object.values(bot.registry.blocksByName).filter(b => LIGHT_RE.test(b.name) && !/redstone_torch/.test(b.name)).map(b => b.id);
+  if (lightIdsRegistry !== bot.registry) {
+    lightIdsRegistry = bot.registry;
+    lightIdsCache = Object.values(bot.registry.blocksByName).filter(b => LIGHT_RE.test(b.name) && !/redstone_torch/.test(b.name)).map(b => b.id);
+  }
+  const ids = lightIdsCache;
   const p = bot.findBlock({ matching: ids, maxDistance: r });
   return p ? { name: p.name, at: doorKey(p.position), distance: +p.position.distanceTo(bot.entity.position).toFixed(1) } : null;
 }
@@ -3439,7 +3444,7 @@ async function lightUp (bot, { max = 1, force = false, spacing = 7 } = {}) {
   for (let i = 0; i < Math.min(max, 3); i++) {
     if (!torchItem(bot)) break;
     if (!await placeTorchHere(bot)) break;
-    placed++; await sleep(250);
+    placed++;
     if (i + 1 < max) { const moved = nearestLight(bot, spacing); if (moved) break; }   // 插一个就够照这片
   }
   return { placed, torchesLeft: torchCount(bot) };
@@ -4310,7 +4315,8 @@ function routes ({ state, withTimeout }) {
     'POST /project/work': async (b = {}) => projectWork(bot(), state, b),
     'POST /project/cancel': async (b = {}) => { const P = projects(state); if (!P[b.id]) throw new Error(`没有工程 ${b.id}`); P[b.id].status = 'cancelled'; saveProjects(state); return { cancelled: b.id }; },
     'GET /light': async () => ({ light: lightAt(bot()), dark: isDark(lightAt(bot())) && !nearestLight(bot(), 7), nearestLight: nearestLight(bot(), 7), torches: torchCount(bot()), lastBright: state.lastBright ? { x: state.lastBright.x, y: state.lastBright.y, z: state.lastBright.z } : null }),
-    'POST /light_up': async (b = {}) => { const m = await makeTorches(bot(), 4); const r = await lightUp(bot(), { max: Math.min(+b.max || 3, 8), force: !!b.force }); return { ...r, made: m.made || 0, ...(m.note ? { makeNote: m.note } : {}) }; },
+    // 点亮只需“手上有一根就能插”；不要每次都为了凑到 4 根而触发完整合成流程。
+    'POST /light_up': async (b = {}) => { const m = await makeTorches(bot(), 1); const r = await lightUp(bot(), { max: Math.min(+b.max || 3, 8), force: !!b.force }); return { ...r, made: m.made || 0, ...(m.note ? { makeNote: m.note } : {}) }; },
     'POST /make_torches': async (b = {}) => makeTorches(bot(), Math.min(+b.count || 16, 64)),
     'POST /self_rescue': async (b = {}) => selfRescue(bot(), state, b),
     'GET /chests/unseen': async (_, q) => ({ chests: unseenChests(bot(), state, +q?.radius || 24).slice(0, 6).map(b => ({ at: storageKey(bot(), b), name: b.name, x: b.position.x, y: b.position.y, z: b.position.z, distance: +bot().entity.position.distanceTo(b.position).toFixed(1) })) }),
