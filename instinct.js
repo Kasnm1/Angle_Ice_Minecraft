@@ -57,6 +57,18 @@
  *
  * 收获、采矿都只在"真闲着"时做：跟着人走的时候不做（只捡东西），夜里在露天不做。
  *
+ * ## 战斗本能（主人 2026-09-27）
+ *
+ * **只打对她或对玩家有仇恨的怪**（仇恨证据见 entity-registry.js：打过人 / 攻击位亮着且盯着人）。
+ *   · 发现：10 格内（detect）；追击不超过锚点 leash 格 —— 锚点 = 跟着的玩家；自己干活时 = 开打那一刻她站的位置
+ *   · 近战怪：换最好的武器，贴上去，**攻击冷却满了才打**（剑 0.625s、斧 ~1.1s；以前 /attack 每 350ms 点一下，伤害大打折扣）
+ *   · 苦力怕：不近战，保持 creeperSafe 格以外
+ *   · 远程怪（名字，或者手上拿着弓/弩/三叉戟 —— 模组怪也认得）：有盾就举盾贴上去打；没盾就拉开距离躲
+ *   · 血 ≤ lowHp：跑（拉开距离），告诉 mind
+ *   · 这是唯一会**反过来打断命令**的本能：正在挖矿时怪扑上来 → cancelCommands() 叫停命令，先打。
+ *     打的时候除了 停/逃/跟随/走 这几类，其他命令直接回"在打架"（不然两边抢身体）。
+ *   · 打完：跟着人的接着跟；自己干活的走回锚点；告诉 mind 打了什么、剩多少血
+ *
  * ## 其他本能（主人 2026-09-27 让 WorkBuddy 补充核实后挑的，见 modpack-study/instincts/suggestions.md）
  *
  *   · 危险方块退开：站在岩浆块 / 营火 / 火上，或者陷在细雪、浆果丛、仙人掌边 → 挪到旁边安全的一格（最先，保命）
@@ -111,6 +123,19 @@ const CFG = {
   armor: { enabled: process.env.MC_INSTINCT_ARMOR !== 'false', everyMs: 15000 },
   gaze: { enabled: process.env.MC_INSTINCT_GAZE !== 'false', radius: 6, minGapMs: 3000, maxGapMs: 6000, chatRadius: 16 },
   toolWarn: { ratio: 0.1, enchantedRatio: 0.2, everyMs: 10000 },
+  combat: {
+    enabled: process.env.MC_INSTINCT_COMBAT !== 'false',
+    detect: 10,             // 多远发现（主人定的 10 格）
+    leash: 12,              // 离锚点多远就不追了
+    lowHp: 6,               // 血到这个就跑
+    creeperSafe: 7,         // 离苦力怕至少这么远
+    rangedKeep: 14,         // 没盾时离远程怪这么远
+    reach: 3.0,             // 近战够得着
+    loopMs: 150,
+    scanMs: 250,
+    loseMs: 2500,           // 这么久没有目标 = 打完了
+    maxMs: 90000,
+  },
   minFreeSlots: 2,          // 收获、采矿至少留几个空格
   yieldWaitMs: 1500,        // 让出身体时最多等本能收拾多久
 };
@@ -317,6 +342,51 @@ function pickGaze ({ players = [], self, now = Date.now(), next = 0 }, cfg = CFG
   return near[0] || null;
 }
 
+// ---- 战斗
+/** 怪是哪一类。held = 它手上拿的物品名（mineflayer entity.equipment[0]），模组远程怪靠这个认 */
+function mobKind (name, held = null) {
+  const n = String(name || '').replace(/^.*:/, '');
+  if (/creeper/.test(n)) return 'creeper';
+  if (held && /(^|:|_)(bow|crossbow|trident)$/.test(String(held))) return 'ranged';
+  if (/^(skeleton|stray|bogged|pillager|witch|blaze|ghast|evoker|illusioner)$/.test(n)) return 'ranged';
+  return 'melee';
+}
+/** 这把武器多久打一下才是满伤害（1.9+ 攻击冷却 = 20 / 攻速 tick） */
+function attackCooldownMs (item) {
+  const n = String(item || '').replace(/^.*:/, '');
+  if (/sword/.test(n)) return 625;
+  if (/_axe$/.test(n)) return /wooden|stone/.test(n) ? 1250 : 1100;
+  if (/trident/.test(n)) return 1100;
+  if (/pickaxe/.test(n)) return 834;
+  if (/shovel/.test(n)) return 1000;
+  if (!n) return 250;   // 空手
+  return 625;
+}
+/**
+ * 这一拍怎么打。
+ * @param ctx.targets [{ id, name, pos, dist, on, evidence, kind }]  已经过滤成"有仇恨的"
+ * @param ctx.hp / hasShield / anchor({x,y,z}|null)
+ * @returns { mode: 'melee'|'shield'|'avoid'|'retreat', target } | null
+ */
+function combatPlan (ctx, cfg = CFG.combat) {
+  const { targets = [], hp = 20, hasShield = false, anchor = null } = ctx;
+  const inRange = targets.filter(t => t.dist <= cfg.detect && (!anchor || Math.hypot(t.pos.x - anchor.x, t.pos.z - anchor.z) <= cfg.leash));
+  if (!inRange.length) return null;
+  inRange.sort((a, b) => a.dist - b.dist);
+  const nearest = inRange[0];
+  if (hp <= cfg.lowHp) return { mode: 'retreat', target: nearest };
+  const creeper = inRange.find(t => t.kind === 'creeper' && t.dist < cfg.creeperSafe);
+  if (creeper) return { mode: 'avoid', target: creeper, keep: cfg.creeperSafe };
+  // 打谁：打过人的优先（证据最硬），再挑最近的；苦力怕不在近战名单里
+  const fightable = inRange.filter(t => t.kind !== 'creeper')
+    .sort((a, b) => ((a.evidence === 'hurt') ? 0 : 1) - ((b.evidence === 'hurt') ? 0 : 1) || a.dist - b.dist);
+  if (!fightable.length) return null;
+  const t = fightable[0];
+  if (t.kind === 'ranged' && !hasShield && t.dist > cfg.reach) return { mode: 'avoid', target: t, keep: cfg.rangedKeep };
+  if (t.kind === 'ranged' && hasShield) return { mode: 'shield', target: t };
+  return { mode: 'melee', target: t };
+}
+
 /**
  * 身体空不空。返回 null = 空着；否则是一句"为什么不空"。
  * following 的时候算空（本能会打断跟随，干完再接上）。
@@ -349,7 +419,7 @@ function install (bot, state, deps) {
     home: null,             // { center:{x,y,z}, radius }，mind 通过 POST /instinct {home} 告诉
   };
   // 跨重连保留状态；新加的本能补上默认配置（老的 state.instinct 里没有）
-  for (const k of ['pickup', 'harvest', 'mine', 'sleep', 'armor', 'gaze']) I.cfg[k] = { ...CFG[k], ...(I.cfg[k] || {}) };
+  for (const k of ['pickup', 'harvest', 'mine', 'sleep', 'armor', 'gaze', 'combat']) I.cfg[k] = { ...CFG[k], ...(I.cfg[k] || {}) };
   const spawned = new Map();   // 掉落物 id → { t, thrower }
   const fails = new Map();
   const mineFails = new Map();   // "x,y,z" → 到什么时候之前不再试
@@ -649,8 +719,130 @@ function install (bot, state, deps) {
     } catch (_) {}
   }, CFG.toolWarn.everyMs);
 
+  // ================================================================ 战斗
+  const sleepMs = (ms) => new Promise(r => setTimeout(r, ms));
+  bot.on('entityDead', (e) => { try { if (I.combat?.engaged.has(e.id)) I.combat.killed.push(e.name); } catch (_) {} });
+
+  /** 现在有哪些对她 / 对玩家有仇恨的目标（带类别、距离） */
+  function hostileTargets () {
+    const self = bot.entity;
+    const out = [];
+    for (const e of Object.values(bot.entities)) {
+      if (!e?.position || e === self || e.type === 'player' || deps.isDropEntity(e)) continue;
+      const dist = e.position.distanceTo(self.position);
+      if (dist > I.cfg.combat.detect + 4) continue;
+      const a = deps.aggroOf(e);
+      if (!a) continue;
+      out.push({ id: e.id, ent: e, name: e.name, pos: e.position, dist, on: a.on, evidence: a.evidence, kind: mobKind(e.name, e.equipment?.[0]?.name) });
+    }
+    return out;
+  }
+
+  async function equipForFight () {
+    try {
+      const inv = bot.inventory.items().map(i => i.name);
+      const pick = deps.pickAutoEquip?.({ held: bot.heldItem?.name ?? null, inventory: inv, want: 'weapon' });
+      if (pick?.itemName && pick.itemName !== bot.heldItem?.name) {
+        const it = bot.inventory.items().find(i => i.name === pick.itemName);
+        if (it) await bot.equip(it, 'hand');
+      }
+      // 盾：放到副手（有的话）
+      if (!/shield/.test(bot.inventory.slots[45]?.name || '')) {
+        const sh = bot.inventory.items().find(i => /shield/.test(i.name));
+        if (sh) await bot.equip(sh, 'off-hand');
+      }
+    } catch (_) {}
+    return /shield/.test(bot.inventory.slots[45]?.name || '');
+  }
+
+  async function fight (first) {
+    const C = I.cfg.combat;
+    const { goals } = require('mineflayer-pathfinder');
+    const followName = /^following (.+)$/.exec(state.currentAction || '')?.[1] || null;
+    // 手上有命令 / 在做别的本能：叫停，先打（这是唯一反过来打断命令的本能）
+    if (I.running && I.running.kind !== 'combat') { I.running.abort(); await Promise.race([I.running?.done, sleepMs(800)]).catch(() => {}); }
+    const interrupted = I.inflight > 0 || (state.currentAction && !followName) ? (state.currentAction || '一个命令') : null;
+    if (I.inflight > 0 || state.currentAction) deps.cancelCommands?.(`战斗本能：${first.name} ${first.on === 'me' ? '冲她来了' : `在打 ${first.on}`}`);
+    const anchorAt = () => (followName ? bot.players[followName]?.entity?.position : null) || I.combat.anchor;
+    I.combat = { anchor: bot.entity.position.clone(), engaged: new Set(), killed: [], started: Date.now(), followName, hp0: bot.health };
+    const hasShield = await equipForFight();
+    let lastSeen = Date.now(); let lastHit = 0; let shieldUp = false; let lastMode = null; let lastTargetId = null;
+    const shield = (up) => { if (up === shieldUp) return; shieldUp = up; try { up ? bot.activateItem(true) : bot.deactivateItem(); } catch (_) {} };
+    let aborted = false;
+    const job = (async () => {
+      while (!aborted && Date.now() - I.combat.started < C.maxMs) {
+        const targets = hostileTargets();
+        const a = anchorAt();
+        const plan = combatPlan({ targets, hp: bot.health ?? 20, hasShield, anchor: a ? { x: a.x, y: a.y, z: a.z } : null }, C);
+        if (!plan) {
+          shield(false);
+          if (Date.now() - lastSeen > C.loseMs) break;
+          if (lastMode) { try { bot.pathfinder.setGoal(null); } catch (_) {} lastMode = null; }
+          await sleepMs(C.loopMs); continue;
+        }
+        lastSeen = Date.now();
+        const t = plan.target; const ent = targets.find(x => x.id === t.id)?.ent;
+        if (!ent) { await sleepMs(C.loopMs); continue; }
+        I.combat.engaged.add(ent.id);
+        const modeKey = `${plan.mode}:${ent.id}`;
+        if (plan.mode === 'retreat' || plan.mode === 'avoid') {
+          shield(false);
+          if (modeKey !== `${lastMode}:${lastTargetId}`) {
+            bot.pathfinder.setGoal(new goals.GoalInvert(new goals.GoalFollow(ent, plan.keep || 16)), true);
+            if (plan.mode === 'retreat' && lastMode !== 'retreat') event('combat_retreat', `血只剩 ${bot.health}，先从 ${ent.name} 身边跑开`);
+          }
+        } else {
+          if (modeKey !== `${lastMode}:${lastTargetId}`) bot.pathfinder.setGoal(new goals.GoalFollow(ent, 2), true);
+          const dist = ent.position.distanceTo(bot.entity.position);
+          const cd = attackCooldownMs(bot.heldItem?.name);
+          if (dist <= C.reach && Date.now() - lastHit >= cd) {
+            shield(false);
+            try { await bot.lookAt(ent.position.offset(0, (ent.height || 1.8) * 0.8, 0), true); } catch (_) {}
+            try { bot.attack(ent); lastHit = Date.now(); } catch (_) {}
+          } else if (plan.mode === 'shield' && dist <= 10) {
+            shield(true);   // 举着盾贴过去；挥之前放下（上面那支）
+          }
+        }
+        lastMode = plan.mode; lastTargetId = ent.id;
+        await sleepMs(C.loopMs);
+      }
+    })();
+    I.running = { kind: 'combat', abort: () => { aborted = true; try { bot.pathfinder.setGoal(null); } catch (_) {} }, done: job };
+    try { await job; } catch (_) {} finally {
+      shield(false);
+      try { bot.pathfinder.setGoal(null); } catch (_) {}
+      I.running = null;
+    }
+    const cb = I.combat;
+    const names = [...new Set(cb.killed)];
+    event('combat', `${interrupted ? `（打断了：${interrupted}）` : ''}打完了${names.length ? `：打死 ${cb.killed.length} 只（${names.join('、')}）` : '（没打死，怪跑了或者够不着）'}，血 ${cb.hp0} → ${bot.health}${aborted ? '，被叫停' : ''}`, { killed: cb.killed });
+    note({ kind: 'combat', killed: cb.killed.length, hp: bot.health, aborted: aborted || undefined });
+    // 收尾：跟着人的接着跟；自己干活的走回锚点（叫停的不动）
+    if (aborted) return;
+    if (followName && bot.players[followName]?.entity) { try { deps.hands.startFollow(bot, state, followName, 2); } catch (_) {} return; }
+    if (cb.anchor && bot.entity.position.distanceTo(cb.anchor) > 3) {
+      try { await Promise.race([bot.pathfinder.goto(new goals.GoalNear(cb.anchor.x, cb.anchor.y, cb.anchor.z, 1)), sleepMs(15000)]); } catch (_) {}
+      try { bot.pathfinder.setGoal(null); } catch (_) {}
+    }
+  }
+
+  // 战斗的"眼睛"：比别的本能快（250ms），不等身体空闲 —— 这是唯一抢身体的本能
+  let fighting = false;
+  const combatTimer = setInterval(async () => {
+    if (fighting || !bot.entity || bot.isSleeping || !I.cfg.combat.enabled) return;
+    if (I.running?.kind === 'combat' || bot.currentWindow) return;
+    try {
+      const targets = hostileTargets();
+      if (!targets.length) return;
+      const plan = combatPlan({ targets, hp: bot.health ?? 20, hasShield: /shield/.test(bot.inventory.slots[45]?.name || '') || bot.inventory.items().some(i => /shield/.test(i.name)), anchor: null }, I.cfg.combat);
+      if (!plan) return;
+      fighting = true;
+      await fight(plan.target);
+    } catch (e) { I.last = { t: Date.now(), error: `combat: ${e.message}` }; } finally { fighting = false; }
+  }, CFG.combat.scanMs);
+
   async function tick () {
-    if (I.running || !bot.entity || bot.isSleeping) return;
+    if (I.running || !bot.entity || bot.isSleeping || fighting) return;
     // ⓪ 危险方块：身体没被命令占着就挪开（不看"刚被叫停"—— 站在岩浆块上不能听"别动"）
     if (!I.inflight && !bot.currentWindow && (!state.currentAction || /^following /.test(state.currentAction))) {
       const h = await tryStepOff();
@@ -715,7 +907,7 @@ function install (bot, state, deps) {
     ticking = true;
     try { await tick(); } catch (e) { I.last = { t: Date.now(), error: e.message }; } finally { ticking = false; }
   }, CFG.pickup.tickMs);
-  bot.once('end', () => { clearInterval(timer); clearInterval(gazeTimer); clearInterval(toolTimer); });
+  bot.once('end', () => { clearInterval(timer); clearInterval(gazeTimer); clearInterval(toolTimer); clearInterval(combatTimer); });
 }
 
 /**
@@ -729,9 +921,15 @@ async function yieldBody (state, key, args = {}) {
   if (key === 'POST /stop' && args?.hold) I.quietUntil = Date.now() + I.cfg.pickup.quietAfterStopMs;
   const r = I.running;
   if (!r) return;
+  // 打架的时候：只让 停 / 逃 / 跟随 / 走 / 关本能 这几类打断；别的命令等打完（不然两边抢身体）
+  // /stop 只有明说"站住"（hold）才算：脑干看门狗一见怪就发不带 hold 的 /stop，不能让它把正在打的架叫停
+  if (r.kind === 'combat' && (!COMBAT_YIELD.has(key) || (key === 'POST /stop' && !args?.hold))) return { reject: '在打架（战斗本能），打完再做' };
   r.abort();
   await Promise.race([r.done.catch(() => {}), new Promise(res => setTimeout(res, CFG.yieldWaitMs))]);
 }
+
+/** 打架时能叫停战斗的命令（其余的回"在打架"） */
+const COMBAT_YIELD = new Set(['POST /stop', 'POST /flee', 'POST /follow', 'POST /go', 'POST /move', 'POST /self_rescue']);
 
 /** 不碰身体的 POST —— 不需要让本能停下 */
 const PASSIVE_POSTS = new Set([
@@ -822,6 +1020,29 @@ function selftest () {
   check('野生的（不在耕地上）→ 收', pickHarvest({ self: me, crops: [crop(1, 0, { farmland: false }), crop(2, 0, { farmland: false }), crop(3, 0, { farmland: false })] }).only?.length, 3);
   check('★ 右键摘的（浆果丛）→ 不打掉', pickHarvest({ self: me, crops: [1, 2, 3].map(x => crop(x, 0, { harvest: 'use' })), inHome: home }).only, undefined);
 
+  // ---- 战斗 ----
+  check('苦力怕', mobKind('creeper'), 'creeper');
+  check('模组苦力怕也认', mobKind('somemod:ice_creeper'), 'creeper');
+  check('骷髅是远程', mobKind('skeleton'), 'ranged');
+  check('★ 模组怪手上拿着弓 → 远程', mobKind('somemod:ghoul', 'bow'), 'ranged');
+  check('拿三叉戟的溺尸 → 远程', mobKind('drowned', 'trident'), 'ranged');
+  check('空手溺尸 → 近战', mobKind('drowned', null), 'melee');
+  check('僵尸近战', mobKind('zombie'), 'melee');
+  check('★ 剑要等 0.625 秒（不是 350ms 连点）', attackCooldownMs('iron_sword'), 625);
+  check('石斧更慢', attackCooldownMs('stone_axe') > attackCooldownMs('diamond_axe'), true);
+  const T = (name, dist, extra = {}) => ({ id: dist * 10, name, pos: { x: dist, y: 64, z: 0 }, dist, on: 'me', evidence: 'aggressive', kind: mobKind(name), ...extra });
+  check('僵尸冲她来 → 近战', combatPlan({ targets: [T('zombie', 4)] })?.mode, 'melee');
+  check('★ 血只剩 5 → 跑', combatPlan({ targets: [T('zombie', 4)], hp: 5 })?.mode, 'retreat');
+  check('★ 苦力怕 4 格 → 躲开，不近战', combatPlan({ targets: [T('creeper', 4)] })?.mode, 'avoid');
+  check('苦力怕在 7 格外、只有它 → 不动（不追着打苦力怕）', combatPlan({ targets: [T('creeper', 9)] }), null);
+  check('★ 骷髅、没盾 → 躲', combatPlan({ targets: [T('skeleton', 8)] })?.mode, 'avoid');
+  check('★ 骷髅、有盾 → 举盾贴上去', combatPlan({ targets: [T('skeleton', 8)], hasShield: true })?.mode, 'shield');
+  check('骷髅已经贴脸（没盾）→ 直接打', combatPlan({ targets: [T('skeleton', 2)] })?.mode, 'melee');
+  check('超出发现距离 → 不管', combatPlan({ targets: [T('zombie', 15)] }), null);
+  check('★ 离锚点太远（追出 leash）→ 不追', combatPlan({ targets: [T('zombie', 5)], anchor: { x: -20, y: 64, z: 0 } }), null);
+  check('打过人的优先（哪怕远一点）', combatPlan({ targets: [T('zombie', 3), T('husk', 6, { evidence: 'hurt' })] })?.target.name, 'husk');
+  check('苦力怕贴近时先躲，哪怕旁边有僵尸', combatPlan({ targets: [T('zombie', 3), T('creeper', 3)] })?.mode, 'avoid');
+
   // ---- 危险方块 ----
   check('★ 站在岩浆块上 → 要挪', typeof hazardUnder({ feet: 'air', below: 'magma_block' }), 'string');
   check('陷在浆果丛里 → 要挪', typeof hazardUnder({ feet: 'sweet_berry_bush', below: 'grass_block' }), 'string');
@@ -871,7 +1092,20 @@ function selftest () {
   let aborted = false;
   let finish;
   st.instinct.running = { abort: () => { aborted = true; finish(); }, done: new Promise(res => { finish = res; }) };
-  return yieldBody(st, 'POST /move').then(() => {
+  const stC = { instinct: { cfg: { pickup: { ...P } }, running: { kind: 'combat', abort: () => {}, done: Promise.resolve() }, quietUntil: 0 } };
+  return yieldBody(stC, 'POST /mine').then((y) => {
+    check('★ 打架时来了挖矿命令 → 回"在打架"', typeof y?.reject, 'string');
+    return yieldBody(stC, 'POST /flee');
+  }).then((y) => {
+    check('打架时说"逃" → 让', y?.reject, undefined);
+    return yieldBody(stC, 'POST /stop');
+  }).then((y) => {
+    check('★ 看门狗的 /stop（不带 hold）→ 不叫停正在打的架', typeof y?.reject, 'string');
+    return yieldBody(stC, 'POST /stop', { hold: true });
+  }).then((y) => {
+    check('主人喊"站住"（hold）→ 停', y?.reject, undefined);
+    return yieldBody(st, 'POST /move');
+  }).then(() => {
     check('★ 命令来了 → 本能被打断', aborted, true);
     return yieldBody(st, 'POST /stop');
   }).then(() => {
@@ -886,7 +1120,7 @@ function selftest () {
   });
 }
 
-module.exports = { CFG, TIER, pickaxeTier, needTier, pickOre, pickHarvest, hazardUnder, pickStepOff, armorRank, pickArmor, toolWorn, pickGaze, whoThrew, pickPickup, bodyBusy, install, yieldBody, PASSIVE_POSTS, selftest };
+module.exports = { CFG, mobKind, attackCooldownMs, combatPlan, COMBAT_YIELD, TIER, pickaxeTier, needTier, pickOre, pickHarvest, hazardUnder, pickStepOff, armorRank, pickArmor, toolWorn, pickGaze, whoThrew, pickPickup, bodyBusy, install, yieldBody, PASSIVE_POSTS, selftest };
 
 if (require.main === module && process.argv.includes('--selftest')) {
   selftest().then(code => process.exit(code));

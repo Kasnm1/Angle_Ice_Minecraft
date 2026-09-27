@@ -1192,6 +1192,19 @@ function exposureOf (bot) {
   return { ...e, kind: night.exposureKind(e) };
 }
 
+/**
+ * 叫停正在跑的命令（战斗本能用）。和 POST /stop 一样停寻路、松按键、清 currentAction（跟随循环和 go() 的退出条件），
+ * 另外把"取消线"推到当前序号 —— 注入了 abort() 的命令下一步就收手。
+ */
+function cancelCommands (why) {
+  state.cmdCancelledUpTo = state.cmdSeq || 0;
+  state.lastCancel = { t: Date.now(), why };
+  try { state.bot.pathfinder.setGoal(null); } catch (_) {}
+  try { state.bot.stopDigging(); } catch (_) {}
+  try { state.bot.clearControlStates(); } catch (_) {}
+  state.currentAction = null;
+}
+
 /** 这个实体对她 / 对玩家有没有仇恨（见 entity-registry.js ②）。/nearby 与战斗本能共用这一处。 */
 function aggroOf (e) {
   const bot = state.bot;
@@ -1232,7 +1245,7 @@ function createBot() {
   hands.install(state.bot, state);
   installEntitySense(state.bot);
   installLedger(state.bot);
-  instinct.install(state.bot, state, { handlers, hands, isDropEntity, droppedItemOf, aggroOf, exposureOf, night });
+  instinct.install(state.bot, state, { handlers, hands, isDropEntity, droppedItemOf, aggroOf, exposureOf, night, cancelCommands, pickAutoEquip });
 
   // ---- 身体反射插件 ----------------------------------------------------------
   // 加载顺序有讲究（两边项目都是 pathfinder 打头）：
@@ -6060,7 +6073,9 @@ const handlers = {
     if (!I) return { installed: false };
     return {
       installed: true,
-      pickup: I.cfg.pickup, harvest: I.cfg.harvest, mine: I.cfg.mine, sleep: I.cfg.sleep, armor: I.cfg.armor, gaze: I.cfg.gaze,
+      pickup: I.cfg.pickup, harvest: I.cfg.harvest, mine: I.cfg.mine, sleep: I.cfg.sleep, armor: I.cfg.armor, gaze: I.cfg.gaze, combat: I.cfg.combat,
+      combatNow: I.combat && I.running?.kind === 'combat' ? { since: I.combat.started, engaged: I.combat.engaged.size, killed: I.combat.killed } : null,
+      lastCancel: state.lastCancel || null,
       home: I.home,
       running: I.running ? I.running.kind : null,
       inflight: I.inflight,
@@ -6080,7 +6095,7 @@ const handlers = {
     const { radius, followRadius, home } = b;
     const I = state.instinct;
     if (!I) throw new Error('本能还没装上（bot 还没建好）');
-    const KINDS = ['pickup', 'harvest', 'mine', 'sleep', 'armor', 'gaze'];
+    const KINDS = ['pickup', 'harvest', 'mine', 'sleep', 'armor', 'gaze', 'combat'];
     for (const k of KINDS) if (typeof b[k] === 'boolean') I.cfg[k].enabled = b[k];
     // 家在哪（收获本能：耕地上的庄稼只收家里的）。mind 知道家，定期告诉这里
     if (home === null) I.home = null;
@@ -6210,7 +6225,15 @@ const server = http.createServer((req, res) => {
       const bodyCmd = req.method === 'POST' && !instinct.PASSIVE_POSTS.has(key) && state.instinct;
       let result;
       if (bodyCmd) {
-        await instinct.yieldBody(state, key, args);
+        const y = await instinct.yieldBody(state, key, args);
+        if (y?.reject) { json(res, 200, { success: false, ok: false, error: y.reject }); return; }
+        // 反过来的打断：战斗本能要能叫停正在跑的命令（挖矿时僵尸扑上来，不能等挖完）。
+        // 给每个命令一个序号，注入 abort()：cancelCommands() 之后，序号 ≤ 被取消线的命令都该收手。
+        // 支持 abort 的 handler（/go /mine /pickup /farm…）在每一步之间问一次；其余的靠停寻路/停挖兜底。
+        const mySeq = state.cmdSeq = (state.cmdSeq || 0) + 1;
+        if (args && typeof args === 'object' && !Array.isArray(args) && args.abort === undefined) {
+          args.abort = () => (state.cmdCancelledUpTo || 0) >= mySeq;
+        }
         state.instinct.inflight++;
         // 物品账：这个命令执行期间（+ 结束后一小会儿）背包的进出都算它的
         const endLedger = state.ledger ? state.ledger.begin({ route: key }) : null;

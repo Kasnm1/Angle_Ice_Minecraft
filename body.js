@@ -624,10 +624,11 @@ const TOOLS = {
   instinct: {
     kind: 'action',
     desc: '开关身体的本能（闲着时身体自己做的事，默认都开）。pickup = 捡附近地上的东西；harvest = 收家里成熟的庄稼并补种；'
-      + 'mine = 看见值钱的矿就去挖；sleep = 夜里在家有床就睡；armor = 捡到更好的护甲就换上；gaze = 有人在旁边就看看他。'
+      + 'mine = 看见值钱的矿就去挖；sleep = 夜里在家有床就睡；armor = 捡到更好的护甲就换上；gaze = 有人在旁边就看看他；'
+      + 'combat = 怪冲你或冲玩家来就打（苦力怕躲开、远程怪没盾就躲、血少就跑）。'
       + '别人说"别捡了""别动我的地""别乱挖""别盯着我"就关掉对应那个；只给要改的那几个。',
-    params: Object.fromEntries(['pickup', 'harvest', 'mine', 'sleep', 'armor', 'gaze'].map(k => [k, { type: 'boolean' }])), required: [],
-    run: async (a) => bridge.post('/instinct', Object.fromEntries(['pickup', 'harvest', 'mine', 'sleep', 'armor', 'gaze'].filter(k => typeof a[k] === 'boolean').map(k => [k, a[k]]))),
+    params: Object.fromEntries(['pickup', 'harvest', 'mine', 'sleep', 'armor', 'gaze', 'combat'].map(k => [k, { type: 'boolean' }])), required: [],
+    run: async (a) => bridge.post('/instinct', Object.fromEntries(['pickup', 'harvest', 'mine', 'sleep', 'armor', 'gaze', 'combat'].filter(k => typeof a[k] === 'boolean').map(k => [k, a[k]]))),
   },
   follow: {
     kind: 'action', continuous: true,
