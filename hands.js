@@ -2623,6 +2623,36 @@ function visibleOres (bot, want, radius, skip) {
     .sort((a, b) => ((want && b.name.includes(want)) - (want && a.name.includes(want))) || me.distanceTo(a.position) - me.distanceTo(b.position));
 }
 
+/** y<0 感知：附近的矿（不要求看得见），想要的在前、近的在前 */
+function sensedOres (bot, want, radius, skip) {
+  const ids = Object.values(bot.registry.blocksByName).filter(b => ORE_RE.test(b.name)).map(b => b.id);
+  const me = bot.entity.position;
+  return bot.findBlocks({ matching: ids, maxDistance: radius, count: 48 })
+    .filter(p => !skip.has(doorKey(p))).map(p => bot.blockAt(p)).filter(Boolean)
+    .sort((a, b) => ((want && b.name.includes(want)) - (want && a.name.includes(want))) || me.distanceTo(a.position) - me.distanceTo(b.position));
+}
+
+/** 朝一个方块挖 1×2 通道过去（高度差一步一格地上下），直到够得着；不直着往脚下挖，遇水/岩浆就停 */
+async function tunnelTo (bot, target, maxSteps = 24) {
+  for (let i = 0; i < maxSteps; i++) {
+    const t0 = bot.blockAt(target);
+    if (eyeDist(bot, t0 || { position: target }) <= REACH) return { ok: true, steps: i };
+    const f = bot.entity.position.floored();
+    const dx = target.x - f.x; const dz = target.z - f.z; const dy = target.y - f.y;
+    const [sx, sz] = Math.abs(dx) >= Math.abs(dz) ? [Math.sign(dx), 0] : [0, Math.sign(dz)];
+    if (!sx && !sz) return { ok: false, why: '就在正上/正下方，不直着挖', steps: i };
+    const up = dy > 1 ? 1 : dy < -1 ? -1 : 0;
+    const dest = f.offset(sx, up, sz);
+    const cells = up > 0 ? [f.offset(0, 2, 0), dest.offset(0, 1, 0), dest] : up < 0 ? [f.offset(sx, 1, sz), dest.offset(0, 1, 0), dest] : [dest.offset(0, 1, 0), dest];
+    const floor = bot.blockAt(dest.offset(0, -1, 0));
+    if (isLiquid(floor)) return { ok: false, why: '前面脚下是液体', steps: i, stop: /lava/.test(floor.name) };
+    for (const c of cells) { const why = await clearCell(bot, c); if (why) return { ok: false, why, steps: i, stop: /岩浆/.test(why) }; }
+    if (airish(floor)) { const it = fillerItem(bot); if (it) { try { await placeFiller(bot, dest.offset(0, -1, 0)); } catch (_) {} } }
+    if (!await stepTo(bot, dest)) return { ok: false, why: `挖开了走不进 (${dest.x},${dest.y},${dest.z})`, steps: i };
+  }
+  return { ok: false, why: `挖了 ${maxSteps} 步还没到`, steps: maxSteps };
+}
+
 /** 在矿洞里：视线里挑一个没去过的落脚点走过去（还没到目标深度就往下走） */
 async function caveStep (bot, D, targetY) {
   const me = bot.entity.position.floored();
@@ -2691,11 +2721,13 @@ async function delve (bot, state, { target = null, targetY = null, maxMs = 12000
     // 1. 视野里没开过的箱子（主人说优先级高）
     if (unseenChests(bot, state, 24).length) { chests.push(...await checkChests(bot, state, { home, max: 2 })); continue; }
 
-    // 2. 视野里的矿
-    const ore = visibleOres(bot, want, 10, oreSkip)[0];
+    // 2. 视野里的矿；y<0 的深层还能感知附近 12 格内看不见的矿（主人 2026-09-27 允许），挖通道过去
+    const deep = bot.entity.position.y < 0;
+    const ore = visibleOres(bot, want, 10, oreSkip)[0] || (deep ? sensedOres(bot, want, 12, oreSkip)[0] : null);
     if (ore) {
       oreSkip.add(doorKey(ore.position));
       if (eyeDist(bot, ore) > REACH) await pathTo(bot, ore.position, 3, 15000, { retry: false });
+      if (eyeDist(bot, ore) > REACH && deep) { const t = await tunnelTo(bot, ore.position); log.push(t.ok ? `挖了 ${t.steps} 步通道到 ${ore.name}` : `挖不到 ${ore.name}：${t.why}`); if (t.stop) { reason = t.why; break; } }
       if (eyeDist(bot, ore) <= REACH + 0.3) {
         const wet = N6.map(([dx, dy, dz]) => bot.blockAt(ore.position.offset(dx, dy, dz))).find(isLiquid);
         if (wet) { log.push(`${ore.name} 旁边有${/lava/.test(wet.name) ? '岩浆' : '水'}，没挖`); continue; }
@@ -2708,7 +2740,7 @@ async function delve (bot, state, { target = null, targetY = null, maxMs = 12000
     // 3. 在矿洞里：逛
     if (inCave(bot) && caveMoves < 12) {
       const m = await caveStep(bot, D, ty);
-      if (m) { caveMoves++; log.push(`矿洞里走到 (${m.to.x},${m.to.y},${m.to.z})`); const lu = await lightUp(bot, { max: 2 }); if (lu.placed) log.push(`矿洞里插了 ${lu.placed} 个火把`); continue; }
+      if (m) { caveMoves++; log.push(`矿洞里走到 (${m.to.x},${m.to.y},${m.to.z})`); const lu = await lightUp(bot); if (lu.placed) log.push('矿洞里插了个火把'); continue; }
     }
 
     // 4. 挖楼梯往下 / 挖矿道往前
@@ -2742,8 +2774,7 @@ async function delve (bot, state, { target = null, targetY = null, maxMs = 12000
     turns = 0; D.steps++;
     D.visited.add(`${dest.x >> 2},${dest.y >> 2},${dest.z >> 2}`);
     // 脚下暗了就插（读不到亮度时每 torchEvery 步插一个）
-    const l = lightAt(bot);
-    if (l ? isDark(l) : D.steps % torchEvery === 0) { if (await placeTorchHere(bot)) log.push('插了个火把'); }
+    if (!nearestLight(bot, torchEvery)) { if (await placeTorchHere(bot)) log.push('插了个火把'); }   // 身边 8 格没光源才插
     if (!torchItem(bot)) { reason = '火把用完了，别再往暗处挖 —— 回去补火把'; break; }
   }
   if (!reason) reason = `时间到（${Math.round((Date.now() - t0) / 1000)} 秒），可以接着挖`;
@@ -2808,18 +2839,30 @@ async function placeTorchHere (bot) {
   return false;
 }
 
-/** 点亮身边：暗的地方插火把，直到脚下够亮或插够 max 个 */
-async function lightUp (bot, { max = 3, force = false } = {}) {
+/** 身边 r 格内最近的光源（火把、灯…），没有给 null */
+const LIGHT_RE = /torch|lantern|campfire|glowstone|sea_lantern|shroomlight|froglight|jack_o_lantern|redstone_lamp|end_rod|candle/;
+function nearestLight (bot, r = 7) {
+  const ids = Object.values(bot.registry.blocksByName).filter(b => LIGHT_RE.test(b.name) && !/redstone_torch/.test(b.name)).map(b => b.id);
+  const p = bot.findBlock({ matching: ids, maxDistance: r });
+  return p ? { name: p.name, at: doorKey(p.position), distance: +p.position.distanceTo(bot.entity.position).toFixed(1) } : null;
+}
+
+/**
+ * 点亮身边：像玩家一样按间距插 —— 身边 7 格内已经有光源就不插；没有就插一个，插完就停。
+ * 以前按亮度判断：矿道口照得到天光（天空光 11）就判"够亮"一根不插；她觉得不对就换着工具反复插，
+ * 主人说"也不用一直插吧"（2026-09-27）。亮度读数还有延迟，插完马上读仍是暗，一次会连插好几个。
+ */
+async function lightUp (bot, { max = 1, force = false, spacing = 7 } = {}) {
   let placed = 0;
-  for (let i = 0; i < max; i++) {
-    const l = lightAt(bot);
-    if (l && !isDark(l) && !(force && i === 0)) break;
+  const near = nearestLight(bot, spacing);
+  if (near && !force) return { placed: 0, alreadyLit: near, torchesLeft: torchCount(bot), note: `${spacing} 格内已经有光源，不用再插` };
+  for (let i = 0; i < Math.min(max, 3); i++) {
     if (!torchItem(bot)) break;
     if (!await placeTorchHere(bot)) break;
     placed++; await sleep(250);
-    if (!l) break;                       // 读不到亮度：插一个就算
+    if (i + 1 < max) { const moved = nearestLight(bot, spacing); if (moved) break; }   // 插一个就够照这片
   }
-  return { placed, light: lightAt(bot), torchesLeft: torchCount(bot) };
+  return { placed, torchesLeft: torchCount(bot) };
 }
 
 // 垫脚/堵洞用的方块：不值钱、不会掉（沙子砂砾会塌，不用）
@@ -3412,8 +3455,8 @@ function routes ({ state, withTimeout }) {
     'GET /project/status': async (b = {}) => projectStatus(bot(), state, b),
     'POST /project/work': async (b = {}) => projectWork(bot(), state, b),
     'POST /project/cancel': async (b = {}) => { const P = projects(state); if (!P[b.id]) throw new Error(`没有工程 ${b.id}`); P[b.id].status = 'cancelled'; saveProjects(state); return { cancelled: b.id }; },
-    'GET /light': async () => ({ light: lightAt(bot()), dark: isDark(lightAt(bot())), torches: torchCount(bot()), lastBright: state.lastBright ? { x: state.lastBright.x, y: state.lastBright.y, z: state.lastBright.z } : null }),
-    'POST /light_up': async (b = {}) => { const m = await makeTorches(bot(), 4); const r = await lightUp(bot(), { max: Math.min(+b.max || 3, 8), force: !!b.force }); return { ...r, made: m.made || 0, note: m.note }; },
+    'GET /light': async () => ({ light: lightAt(bot()), dark: isDark(lightAt(bot())) && !nearestLight(bot(), 7), nearestLight: nearestLight(bot(), 7), torches: torchCount(bot()), lastBright: state.lastBright ? { x: state.lastBright.x, y: state.lastBright.y, z: state.lastBright.z } : null }),
+    'POST /light_up': async (b = {}) => { const m = await makeTorches(bot(), 4); const r = await lightUp(bot(), { max: Math.min(+b.max || 3, 8), force: !!b.force }); return { ...r, made: m.made || 0, ...(m.note ? { makeNote: m.note } : {}) }; },
     'POST /make_torches': async (b = {}) => makeTorches(bot(), Math.min(+b.count || 16, 64)),
     'POST /self_rescue': async (b = {}) => selfRescue(bot(), state, b),
     'GET /chests/unseen': async (_, q) => ({ chests: unseenChests(bot(), state, +q?.radius || 24).slice(0, 6).map(b => ({ at: storageKey(bot(), b), name: b.name, x: b.position.x, y: b.position.y, z: b.position.z, distance: +bot().entity.position.distanceTo(b.position).toFixed(1) })) }),

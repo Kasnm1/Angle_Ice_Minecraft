@@ -404,7 +404,7 @@ const AESTHETIC_SYS = `你是 Angle_ICE 在 Minecraft 里摆东西时自己的�
 - 不挡路：门前后两格、梯子上下口、走道中间、窗户正前方都不放东西
 - 家具靠墙、成组、对齐：工作台/熔炉/箱子排成一排、同高度；和已有同类挨着或对称
 - 床靠墙，床头顶墙；箱子靠墙成排，别放门口
-- 火把/灯：优先挂墙（位置选墙边的空气格，旁边就是墙），门两侧、柱子两侧对称；间距 6–8 格均匀；地上的火把放墙角，不放路中间；照亮会刷怪的暗处（darkFloor）
+- 火把/灯：离已有光源（光源列表）6 格以内不要再放 —— 已经够亮就回 candidates 为空、view 里说明；优先挂墙（位置选墙边的空气格，旁边就是墙），门两侧、柱子两侧对称；间距 6–8 格均匀；地上的火把放墙角，不放路中间；照亮会刷怪的暗处（darkFloor）
 - 室外：沿路边、围栏边、屋角，间隔均匀；别在别人的建筑上乱放
 - 和周围材质、风格搭（木屋配木质家具、暖色灯）
 坐标必须是图上 '.'（空气）的格子（'@' 是你自己站的格子，不能选），旁边或下面有能附着的实心块；放地上的东西下面必须是实心块。
@@ -438,6 +438,7 @@ async function placeNicely ({ itemName, purpose = '', x, y, z, r = 7 }) {
   ].join('\n');
   const msg = await llm({ messages: [{ role: 'system', content: AESTHETIC_SYS }, { role: 'user', content: user }], timeoutMs: 30000, maxTokens: 700 });
   const plan = parseJsonLoose(msg?.content);
+  if (plan && Array.isArray(plan.candidates) && !plan.candidates.length) return { placed: null, view: plan.view, note: '看了一圈觉得不用放（已经够亮 / 没合适的地方）' };
   if (!plan || !Array.isArray(plan.candidates) || !plan.candidates.length) throw new Error(`没想出位置（模型回的不是 JSON：${String(msg?.content || '').slice(0, 120)}）`);
   const meP = (await bridge.get('/position').catch(() => null)) || {};
   const onMe = (c) => Math.floor(c.x) === meP.x && Math.floor(c.z) === meP.z && (Math.floor(c.y) === meP.y || Math.floor(c.y) === meP.y + 1);
@@ -857,7 +858,7 @@ const TOOLS = {
   },
   light_up: {
     kind: 'action',
-    desc: '在脚边暗的地方插火把，直到够亮（火把不够会先用煤/木炭做）。进洞、下矿、家附近暗处用。',
+    desc: '在脚边插一个火把（身边 7 格内已经有光源就不插；火把不够会先用煤/木炭做）。进洞、下矿、家附近暗处用。按间距插，一次一个，不要连着插。',
     params: { max: { type: 'number' } }, required: [],
     run: async ({ max }) => bridge.post('/light_up', { max }, 60000),
   },
