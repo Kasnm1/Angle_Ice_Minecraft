@@ -1096,11 +1096,56 @@ const NATURAL_EXTRA = ['gravel', 'clay', 'mud', 'calcite', 'dripstone_block', 'm
 // 加工过的 / 挖了有麻烦的：一律不进白名单（哪怕某个模组把它打进了 forge:stone）
 // suspicious_*：考古方块，一挖里面的东西就没了；soil/farmland/compost：多半是主人的地；boundary/raw_*_block/decorative_blocks：不像天然地形（2026-09-27 看过真名单后补）
 const NOT_NATURAL_RE = /polished|brick|smooth|chiseled|(^|:|_)cut_|tiles?($|_)|pillar|_slab$|_stairs$|_wall$|carved|mosaic|planks|infested|cobblestone|cobbled|glass|_block_of_|bookshelf|lamp|suspicious|farmland|compost|soil|boundary|raw_\w+_block|^decorative_blocks:|dirt_path|packed_mud|vase|_pot$|_jar$/;   // vase：etcetera 把陶罐塞进了 dirt 标签
+// 标签里有、但查不到"天然生成"证据的（WorkBuddy 2026-09-27 逐个查各模组 jar 的 worldgen / 建筑模板 / Java 生成代码，
+// modpack-study/instincts/dig-whitelist-review.md）：只在建筑里出现的、能合成的、没有生成证据的 —— 宁可绕路也不挖
+const NOT_NATURAL_IDS = new Set([
+  'biomeswevegone:black_sand',
+  'biomeswevegone:black_sandstone',
+  'biomeswevegone:blue_sand',
+  'biomeswevegone:blue_sandstone',
+  'biomeswevegone:cracked_red_sand',
+  'biomeswevegone:cracked_sand',
+  'biomeswevegone:lush_dirt',
+  'biomeswevegone:lush_grass_block',
+  'biomeswevegone:overgrown_dacite',
+  'biomeswevegone:peat',
+  'biomeswevegone:pink_sand',
+  'biomeswevegone:pink_sandstone',
+  'biomeswevegone:podzol_dacite',
+  'biomeswevegone:purple_sand',
+  'biomeswevegone:purple_sandstone',
+  'biomeswevegone:quicksand',
+  'biomeswevegone:red_quicksand',
+  'biomeswevegone:sandy_dirt',
+  'biomeswevegone:white_sand',
+  'biomeswevegone:white_sandstone',
+  'bountifulfares:grassy_dirt',
+  'eeeabsmobs:blighted_stone',
+  'eeeabsmobs:dark_erosion_rock',
+  'eeeabsmobs:voidshard',
+  'etcetera:terracotta_vase',
+  'netherexp:silica_sand',
+  'netherexp:silica_sandstone',
+  'regions_unexplored:alpha_grass_block',
+  'regions_unexplored:argillite',
+  'regions_unexplored:argillite_grass_block',
+  'regions_unexplored:ashen_dirt',
+  'regions_unexplored:brimsprout_nylium',
+  'regions_unexplored:chalk_grass_block',
+  'regions_unexplored:cobalt_nylium',
+  'regions_unexplored:deepslate_prismoss',
+  'regions_unexplored:mycotoxic_moss',
+  'regions_unexplored:overgrown_bone_block',
+  'species:alphacene_grass_block',
+  'species:alphacene_moss_block',
+  'unusualend:prismalitic_gloopslate',
+  'unusualend:shiny_gloopstone',
+]);
 function naturalDigNames (tagOf = () => undefined) {
   const out = new Set();
   for (const t of NATURAL_TAGS) for (const n of tagOf(t) || []) out.add(n);
   for (const n of NATURAL_EXTRA) out.add(n);
-  for (const n of [...out]) if (NOT_NATURAL_RE.test(n)) out.delete(n);
+  for (const n of [...out]) if (NOT_NATURAL_RE.test(n) || NOT_NATURAL_IDS.has(n)) out.delete(n);
   return out;
 }
 
@@ -1912,6 +1957,7 @@ if (require.main === module && process.argv.includes('--selftest')) {
   check('★ 圆石不挖（常被拿来盖房子）', nat.has('minecraft:cobblestone'), false);
   check('原版砂砾在里面', nat.has('minecraft:gravel'), true);
   check('★ 原版泥土在里面（标签里缺，靠补充名单）', nat.has('minecraft:dirt'), true);
+  check('★ 查不到天然生成证据的（WorkBuddy 复查）不挖', naturalDigNames(t => (t === 'minecraft:dirt' ? new Set(['biomeswevegone:lush_dirt', 'quark:limestone']) : undefined)).has('biomeswevegone:lush_dirt'), false);
   check('★ 陶罐（etcetera 塞进 dirt 标签）不挖', naturalDigNames(t => (t === 'minecraft:dirt' ? new Set(['etcetera:terracotta_vase']) : undefined)).has('etcetera:terracotta_vase'), false);
   check('★ 可疑的沙（考古）不挖', naturalDigNames(t => (t === 'minecraft:sand' ? new Set(['minecraft:suspicious_sand']) : undefined)).has('minecraft:suspicious_sand'), false);
   check('★ 耕地 / 土壤不挖（多半是主人的地）', naturalDigNames(t => (t === 'minecraft:dirt' ? new Set(['somemod:rich_soil_farmland']) : undefined)).size === NATURAL_EXTRA.length - [...NATURAL_EXTRA].filter(n => NOT_NATURAL_RE.test(n)).length, true);
