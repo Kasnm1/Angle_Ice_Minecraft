@@ -35,6 +35,7 @@ const ambition = require('./ambition');
 const review = require('./self-review');
 const ledgerLib = require('./inventory-ledger');   // 只用它的 render（账在 bridge 记，见 inventory-ledger.js）
 const night = require('./night');   // 天黑本能：天色变化的事件 + 今晚怎么安排（见 night.js）
+const plan = require('./plan');     // 长期计划：没人找她时自己推进游戏（见 plan.js）
 const { TOOLS, bridge, parseArgs, normalizeArgs, toolSpec, summarize } = body;
 
 const CFG = {
@@ -317,6 +318,13 @@ async function look () {
     emit(`${pev.icon} ${pev.text}（时刻 ${W.state.time}）${plan ? `：${plan}` : ''}`, { cue: 'night 天黑 夜里 回家 睡觉', urgent: pev.urgent });
   }
   if (W.state.phase) W.phase = W.state.phase;
+  // 长期计划：背包里有了"做成的标志"就自动打勾 → 告诉她，让她想下一步（主人："思考自动更新计划"）
+  try {
+    const worn = Object.values(W.state.equipment || {}).filter(Boolean).map(name => ({ name, count: 1 }));
+    const pc = plan.autoCheck([...(W.state.items || []), ...worn]);
+    for (const t of pc.newly) emit(`📋 计划里的「${t}」做到了${plan.current() ? `，下一步：${plan.current().text}` : ''}`, { cue: 'plan 计划', urgent: true });
+    if (pc.finished) emit('📋 长期计划全部做完了 —— 想想下一个目标（plan_view 看现在能做什么，plan_set 定新的）', { cue: 'plan 计划', urgent: true });
+  } catch (_) {}
   // 视线里冒出没开过的箱子/木桶：马上告诉她（主人：优先级高，看见就过去）
   for (const c of W.state.unseenChests) {
     const k = `chest@${c.at}`;
@@ -652,6 +660,33 @@ const MIND_TOOLS = {
       return { text: `${ambition.summary({ inventory: W.state?.items || [], knownStations: knownStations() }).split('\n')[0]}\n各章：${p.byChapter.map(x => `${x.title} ${x.made}/${x.total}`).join('，')}\n${chapter ? `《${chapter}》里` : ''}最有希望的：\n${ambition.renderCandidates(c)}` };
     },
   },
+  plan_view: {
+    kind: 'info',
+    desc: '看你的长期计划（目标、每一步、做到哪了），以及现在的进展（工具/护甲/家…）和接下来可以做的事。',
+    params: {}, required: [],
+    run: () => ({ text: `${plan.render({ full: true })}
+现状：${plan.renderFacts(planFacts())}
+可以做的：${plan.ideas(planFacts()).map(x => `${x.text}（${x.why}）`).join('；') || '（想不出来了）'}
+最近：${plan.history().map(h => h.text).join('；')}` }),
+  },
+  plan_set: {
+    kind: 'memory',
+    desc: '定一个长期计划：目标 + 几步（按你想的顺序）。每一步可以写"做成的标志"（done: {have: {物品名: 数量}}，背包里有了就自动打勾）。'
+      + '没人找你的时候你会照着它推进；情况变了（做完了、发现更要紧的、缺的东西变了）就重新定。',
+    params: {
+      goal: { type: 'string' }, why: { type: 'string' },
+      steps: { type: 'array', items: { type: 'object', properties: { text: { type: 'string' }, done: { type: 'object' } }, required: ['text'] } },
+    },
+    required: ['goal', 'steps'],
+    run: (a) => { const p = plan.setPlan(a); return { text: `定好了：${p.goal}，${p.steps.length} 步` }; },
+  },
+  plan_step: {
+    kind: 'memory',
+    desc: '改计划里的一步：index（从 0 数）+ ok:true 标做完 / text 改写 / drop:true 去掉；add 在最后加一步。',
+    params: { index: { type: 'number' }, ok: { type: 'boolean' }, text: { type: 'string' }, drop: { type: 'boolean' }, add: { type: 'string' } },
+    required: [],
+    run: (a) => { plan.updateStep(a); return { text: plan.render() }; },
+  },
   focus_on: {
     kind: 'memory',
     desc: '决定接下来专心研究哪道菜（做成之前会一直惦记着它）。',
@@ -824,6 +859,31 @@ function knownStations () {
 
 const shortName = (id) => knowledge.label(id).replace(/\([^)]*\)$/, '');
 
+/** 给 plan.js 的现状（背包 + 穿着的 + 家里记得的） */
+function planFacts () {
+  const s = W.state || {};
+  const h = mem.getHome();
+  const homeItems = Object.values(h?.stock || {}).flatMap(b => Object.entries(b.items || {}).map(([name, count]) => ({ name, count })));
+  const food = (s.items || []).filter(i => { try { return /食物/.test(knowledge.label(i.name.includes(':') ? i.name : `minecraft:${i.name}`)) || /bread|cooked|apple|carrot|potato|beef|pork|chicken|mutton|salmon|cod|stew|soup|pie|cookie|berries|melon_slice/.test(i.name); } catch (_) { return false; } })
+    .reduce((a, i) => a + i.count, 0);
+  return plan.facts({ items: s.items || [], worn: Object.values(s.equipment || {}), homeItems, hasHome: !!h, foodCount: food });
+}
+/**
+ * 【长期计划】：平时一行（目标 + 正在做的一步）；闲着的时候完整给（现状 + 可以做的），让她接着做 / 改计划。
+ * 主人 2026-09-27：没人找她时自己根据状况推进游戏；顺序她自己定；思考时自动更新计划；闲着接着做当前任务。
+ */
+function planLine (why) {
+  const cur = plan.current();
+  const has = !!plan.get();
+  if (why !== 'idle') return has ? `\n【长期计划】${plan.get().goal}${cur ? ` —— 正在做：${cur.text}` : '（都做完了）'}` : '';
+  const f = planFacts();
+  const ideas = plan.ideas(f).slice(0, 6).map(x => `· ${x.text}（${x.why}）`).join('\n');
+  return `\n【长期计划】${has ? `\n${plan.render()}` : '还没有 —— 按这个整合包的通关主线，想好目标，用 plan_set 定下来（每步写上做成的标志）'}`
+    + `\n现状：${plan.renderFacts(f)}`
+    + (ideas ? `\n接下来可以做的（你自己挑、自己排）：\n${ideas}` : '')
+    + `\n没人找你的时候：${cur ? `接着做「${cur.text}」` : '定下一步'}；做完了 / 情况变了就改计划（plan_step / plan_set）。有人找你就先陪人。`;
+}
+
 function buildNow (why) {
   const ev = W.pending.splice(0);
   const names = [...new Set([...ev.flatMap(e => e.names), ...W.players])];
@@ -904,6 +964,7 @@ function buildNow (why) {
     stockLine,
     placesLine,
     skills.length ? `\n你会的做法：\n${mem.renderSkills(skills)}` : '',
+    planLine(why),
     dream ? `\n${dream}` : '',
     ev.some(e => /说：/.test(e.text)) ? '\n（打字：几条短的，一条 ≤12 字，换行分条；不用括号动作和～）' : '',
     ev.some(e => /说：/.test(e.text)) ? repetitionHint(W.replyShapes) : '',
@@ -1271,7 +1332,9 @@ async function main () {
 
   setInterval(() => look().catch(() => {}), CFG.pollMs);
   setInterval(() => {
-    if (!W.thinking && !W.pending.length && Date.now() - Math.max(W.lastEventAt, W.lastThinkAt) > CFG.idleThinkMs && !(W.job && !W.job.holding)) think('idle');
+    // 有正在做的计划步骤、3 分钟没人跟她说话 → 30 秒就接着做（主人："闲着的时候也可以继续当前任务"）
+    const idleMs = plan.current() && Date.now() - (W.lastHeardAt || 0) > 180000 ? Math.min(CFG.idleThinkMs, 30000) : CFG.idleThinkMs;
+    if (!W.thinking && !W.pending.length && Date.now() - Math.max(W.lastEventAt, W.lastThinkAt) > idleMs && !(W.job && !W.job.holding)) think('idle');
   }, 5000);
   setInterval(() => mem.save(), 10000);
   await holdBody(true);
@@ -1590,6 +1653,23 @@ async function selftest () {
     check('bridge 重启（seq 倒回）→ 下一眼从 0 读', W.ledgerSeq === 0, W.ledgerSeq);
     W.job = job0;
     body._setBridge(base);
+  }
+
+  console.log('\n长期计划：做到了就自动打勾、告诉她下一步');
+  {
+    process.env.MC_PLAN_FILE = require('path').join(require('os').tmpdir(), `plan-mindtest-${process.pid}.json`);
+    plan._reset();
+    plan.setPlan({ goal: '做铁镐', steps: [{ text: '做石镐', done: { have: { stone_pickaxe: 1 } } }, '挖铁'] });
+    const base = mockBridge();
+    body._setBridge({ ...base, get: async (p) => (p.startsWith('/inventory') ? { items: [{ name: 'stone_pickaxe', count: 1 }] } : base.get(p)) });
+    const n0 = W.pending.length;
+    await look();
+    const said = W.pending.slice(n0).map(x => x.text);
+    check('★ 背包里有了石镐 → "做到了，下一步：挖铁"', said.some(t => /「做石镐」做到了，下一步：挖铁/.test(t)), said);
+    check('闲着的时候【长期计划】里有现状和下一步', /接着做「挖铁」/.test(planLine('idle')) && /现状：镐：石镐/.test(planLine('idle')), planLine('idle'));
+    check('平时只一行', planLine('event'), '\n【长期计划】做铁镐 —— 正在做：挖铁');
+    body._setBridge(base);
+    try { require('fs').unlinkSync(process.env.MC_PLAN_FILE); } catch (_) {}
   }
 
   console.log('\n天黑本能：天色一变就知道');
