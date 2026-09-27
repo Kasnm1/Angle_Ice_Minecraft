@@ -1052,6 +1052,26 @@ const TOOLS = {
     params: { x: { type: 'number' }, z: { type: 'number' }, radius: { type: 'number' }, count: { type: 'number' }, allowDry: { type: 'boolean' } }, required: [],
     run: async (a) => bridge.post('/till', a, 120000),
   },
+  fish: {
+    kind: 'action',
+    desc: '钓鱼：走到附近露天的水边，甩竿等咬钩，钓 count 次（默认 5）。要有钓鱼竿（木棍×3 + 线×2）。水太小、头顶被挡会一直不咬钩，会如实说。下雨时咬得快。',
+    params: { count: { type: 'number' }, seconds: { type: 'number' } }, required: [],
+    run: async ({ count, seconds }) => { const ms = Math.min(Math.max(30, seconds || 120), 300) * 1000; return bridge.post('/fish', { count, maxMs: ms }, ms + 30000); },
+  },
+  animal: {
+    kind: 'action',
+    desc: '照顾动物：action=breed 拿它爱吃的喂两只让它们生小崽（牛羊山羊=小麦，猪=胡萝卜/土豆/甜菜根，鸡=种子，兔子=胡萝卜/蒲公英，马=金胡萝卜）；'
+      + 'feed 只喂（让小崽快点长大）；shear 拿剪刀剪羊毛（羊毛掉地上要捡）；milk 拿空桶挤牛奶（牛奶能解中毒、凋零）。kind 写动物（cow / sheep / pig / chicken…）。'
+      + '刚生过的要等 5 分钟才能再生。别人的动物别动 —— 家里的或者主人叫你弄的才弄。',
+    params: { action: { type: 'string', enum: ['breed', 'feed', 'shear', 'milk'] }, kind: { type: 'string' }, count: { type: 'number' } }, required: ['action'],
+    run: async (a) => bridge.post('/animal', a, 90000),
+  },
+  ride: {
+    kind: 'action',
+    desc: '载具：action=mount 坐上附近的船/矿车/马（kind 可指定）；dismount 下来；minecart 在矿车上往前推（铁轨上）；boat 坐船往 x,z 直线开过水面（实验性：靠岸、前面有东西、服务器不认都会停下告诉你）。马要先驯服、猪要鞍。',
+    params: { action: { type: 'string', enum: ['mount', 'dismount', 'minecart', 'boat'] }, kind: { type: 'string' }, x: { type: 'number' }, z: { type: 'number' }, seconds: { type: 'number' } }, required: ['action'],
+    run: async (a) => bridge.post('/ride', a, Math.min(Math.max(20, a.seconds || 30), 180) * 1000 + 20000),
+  },
   light_up: {
     kind: 'action',
     desc: '在脚边插一个火把（身边 7 格内已经有光源就不插；火把不够会先用煤/木炭做）。进洞、下矿、家附近暗处用。按间距插，一次一个，不要连着插。',

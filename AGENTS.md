@@ -88,7 +88,7 @@ NODE=/Users/starwish/.workbuddy-ai/binaries/node/versions/22.22.2-2/bin/node
 $NODE item-registry.js --selftest;  $NODE block-palette.js --selftest
 $NODE entity-registry.js --selftest                         # 模组生物补名 + 仇恨判据
 $NODE instinct.js --selftest; $NODE inventory-ledger.js --selftest   # 本能（拾取 / 让出身体）；物品账
-$NODE commonsense.js --selftest; $NODE ftbq-sync.js --selftest      # 装水倒水锄地；任务书进度包（按反编译格式造包读回）
+$NODE commonsense.js --selftest; $NODE ftbq-sync.js --selftest      # 装水倒水锄地、钓鱼、动物、载具；任务书进度包（按反编译格式造包读回）
 $NODE palette-registry.js --selftest; $NODE reconnect.js --selftest
 $NODE scripts/fml-snapshot-test.js; $NODE scripts/palette-guard-test.js
 $NODE scripts/angelpal-to-palette.js --selftest
@@ -143,7 +143,7 @@ $NODE knowledge.js --selftest
 | 项 | 状态 |
 |---|---|
 | **P48** 不会持续发育（缺工具链目标：采木→木镐→石→石镐/剑→打猎） | ✅ 由 `plan.js` 长期计划解决（部署只起 bridge + mind，脑干不跑；不另写第二个声音）。实机未验 |
-| **本能层**（`instinct.js`） | 战斗、拾取、收获、采矿、睡觉、换护甲、危险方块退开、转头看人、工具快坏提醒 **已写完、离线自测全绿，未上实机，未推送**（2026-09-27）。战斗锚点：跟人时=人，自己干活时=开打位置，leash 12（主人 2026-09-27 确认）。另有随身物品/背包、开宝箱、洞穴、搭路、落地水、寻路挖天然地形、家范围自动扩大、指令本能 |
+| **本能层**（`instinct.js`） | 战斗、拾取、收获、采矿、睡觉、换护甲、危险方块退开、转头看人、工具快坏提醒 **已写完、离线自测全绿，未上实机，未推送**（2026-09-27）。战斗锚点：跟人时=人，自己干活时=开打位置，leash 12（主人 2026-09-27 确认）。另有随身物品/背包、开宝箱、洞穴、搭路、落地水、寻路挖天然地形、家范围自动扩大、指令本能。2026-09-27 晚又加：饿了就吃（饥饿 ≤16）、憋气上浮、中毒凋零（喝牛奶）、天气、玩家挨打提醒、家里暗处提醒 |
 | **P50** / **P53** 站在草上被判"位置被占"；写死的名单认不出草方块和模组土石 | ✅ 已修（2026-09-27）：可替换方块按 `minecraft:replaceable` 标签；搭脚方块、天然地面、锄地按整合包标签。离线自测全绿，实机未验 |
 | `README.md` / `SKILL.md` / `HANDOVER.md` / `STATUS.md` | README 已按四层架构更新（2026-09-27）；SKILL 顶部加了现状说明（底层部分仍准）；HANDOVER / STATUS 标为 2026-09-25 历史快照 |
 
