@@ -626,7 +626,7 @@ async function runTool (name, args) {
   if (!t) return { ok: false, error: `没有 ${name} 这个动作` };
   try {
     const r = await t.run(normalizeArgs(name, args) || {});
-    if (r && r.success === false) return { ok: false, error: r.error || 'failed', ...r };
+    if (r && (r.success === false || r.ok === false)) return { ok: false, error: r.error || 'failed', ...r };
     return { ok: true, ...r };
   } catch (e) {
     return { ok: false, error: e.message };
@@ -902,6 +902,7 @@ const SYSTEM = `你是 Angle_ICE（安琪），住在这个 Minecraft 模组服�
   · 开门 / 关门 → door；下来 / 上去 → climb_down / climb；对准 / 挪一点 → nudge；绕过去 → look_around 再走
 - 存取、整理很多东西：用 store_items / take_items / sort_container / sort_inventory 一次做完，别一格一格搬（一格一次太慢了）；整理周围所有箱子、决定身上带什么，用 organize_storage。
 - 有人要你做一样东西（"把羊肉做好" = 熟羊肉，"来把铁镐"），想清楚是哪样东西，用 make_item 一次做完（它会自己看配方、去家里拿材料、做、递给他）。别一步步问他材料在哪。数量没说就做 1 个；不要把背包里查到的数量填进 count，更不要为了“继续做南瓜食物”把一种原料全变成种子或半成品，先留至少一份。
+- 直接 craft 只适合确认材料已经在普通背包里的小合成；如果 craft 报缺材料，不要猜材料在家，继续让工具检查精妙背包和家里库存。
 - 找东西之前先想想家里有没有（【家里（你记得的）】或 home_stock），知道在哪个箱子就直接去，别挨个翻箱子。
 - 家：你认定的庇护所（set_home）。家里的箱子是仓库，分类整理过一次就固定（organize_storage 会按记住的放）；要回家用 go_home。
 - 探险：家以外的箱子，用 loot_nearby 尽量装到身上带回家，回家再 organize_storage 归位。

@@ -948,9 +948,18 @@ const TOOLS = {
   },
   craft: {
     kind: 'action',
-    desc: '按本整合包的真实配方合成（背包 2×2 或附近 4 格内的工作台）。会自己挑背包里有的原料；count 是要做的次数，默认 1，除非玩家明确说数量，不要把库存总数填进去。为避免误把原料耗光，批量合成会至少留一份材料。用注册名或中文名。',
+    desc: '按本整合包的真实配方合成（背包 2×2 或附近 4 格内的工作台）。先用普通背包；如果材料不在手上，自动转完整制作链检查精妙背包和家里库存，不要因为一次直接合成失败就自行回家。count 是要做的次数，默认 1，除非玩家明确说数量，不要把库存总数填进去。为避免误把原料耗光，批量合成会至少留一份材料。用注册名或中文名。',
     params: { itemName: { type: 'string' }, count: { type: 'number' } }, required: ['itemName'],
-    run: async ({ itemName, count }) => bridge.post('/craft2', { itemName, count: count || 1 }, CFG.actionTimeoutMs),
+    run: async ({ itemName, count }) => {
+      const n = count || 1;
+      try { return await bridge.post('/craft2', { itemName, count: n }, CFG.actionTimeoutMs); }
+      catch (e) {
+        // 直接 craft 只看普通背包；材料可能在精妙背包或家里。交给 makeItem 重新规划，
+        // 不把“缺材料”误翻译成“回家”。其它错误原样返回，避免掩盖真正的合成故障。
+        if (/材料不够|缺\s|凑不齐|没有.*配方/.test(String(e.message || ''))) return makeItem(itemName, n);
+        throw e;
+      }
+    },
   },
   smelt: {
     kind: 'action',
