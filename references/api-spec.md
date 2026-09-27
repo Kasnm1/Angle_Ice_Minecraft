@@ -428,6 +428,15 @@ Example:
 }
 ```
 
+实际每条还带（2026-09-27 起）：
+
+- `kind`：`hostile` / `mob` / `player` / `drop` / `other`。`hostile` = 原版敌对类别，**或者有仇恨证据**（模组怪没有类别，只能靠这个）。
+- `aggro`：`null`，或 `{ "on": "me" | "<玩家名>", "evidence": "hurt" | "aggressive" }`。
+  `hurt` = 30 秒内打过她 / 玩家（`damage_event` 的攻击者）；`aggressive` = `mob_flags` 攻击位亮着且脸朝着她 / 玩家。
+  `null` 只说明"没看到它找麻烦"，不等于友好。
+- `named: true`：名字是按服务端 `minecraft:entity_type` 快照补的（模组生物）。补不上的仍是 `unknown`。
+- 列表按距离**先排序再截 20 条**。
+
 ---
 
 ## GET /block

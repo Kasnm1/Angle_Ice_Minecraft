@@ -47,6 +47,9 @@ const paletteRegistry = require('./palette-registry.js');
 const itemRegistry = require('./item-registry.js');
 // 她的手：吃 / 右键 / 穿戴 / 按整合包配方合成 / 熔炉 / 任意界面（见 hands.js 开头）
 const hands = require('./hands.js');
+// 实体：给 mineflayer 认不出的模组生物补上服务端的真名 + 记下"谁打了她 / 打了玩家"（仇恨）。
+// 见 entity-registry.js 顶部（为什么是事后补名、为什么敌意只认证据）。
+const entityRegistry = require('./entity-registry.js');
 let mineflayer, pathfinderPlugin, Movements, goals, Vec3;
 // 三个「身体反射」插件。它们把"吃 / 换工具 / 采整片矿脉"从"要过一遍大脑"
 // 降级成"库自己会做"—— 这是本轮对标 HiyoriAI 与 Mindcraft 后最重要的一条：
@@ -409,6 +412,18 @@ if (cfg('MC_FORGE', '0') === '1') {
               fs.writeFileSync(path.join(REGISTRY_DIR, 'minecraft-menu.json'),
                 JSON.stringify({ capturedAt: new Date().toISOString(), registry: name, entries }, null, 1));
             } catch (_) {}
+            return;
+          }
+          // 实体类型表：模组生物的名字全靠它（mineflayer 自己只认 124 个原版）。
+          // 以前这份被丢掉了 —— 于是模组怪一律 name='unknown'、type='other'。
+          if (name === 'minecraft:entity_type') {
+            const snap = { capturedAt: new Date().toISOString(), registry: name, entryCount: entries.length, entries };
+            state.entitySnapshot = snap;   // 就地换掉：下一只刷出来的怪就用新表（索引按快照对象懒重建）
+            try {
+              fs.mkdirSync(REGISTRY_DIR, { recursive: true });
+              fs.writeFileSync(entityRegistry.DEFAULT_SNAPSHOT, JSON.stringify(snap, null, 1));
+              console.log(`[registry] ${name}：${entries.length} 条 → ${entityRegistry.DEFAULT_SNAPSHOT}`);
+            } catch (e) { console.warn(`[registry] ${name} 落盘失败：${e.message}`); }
             return;
           }
           if (name !== 'minecraft:block' && name !== 'minecraft:item') return;
@@ -1056,6 +1071,54 @@ function installItemPlugin (bot) {
     + `断点 ${report.gaps} 处）`);
 }
 
+/**
+ * 实体感知：补名 + 仇恨。挂在 bot 事件上，不走 HTTP。
+ *
+ *   entitySpawn —— mineflayer 的 setEntityData 已经跑完（认不出的落成 'unknown'），这时补真名
+ *   entityHurt  —— 1.20 damage_event 带攻击者：她或玩家挨打，攻击者记成仇
+ *   entityGone  —— 忘掉
+ *
+ * 索引按 `state.entitySnapshot` 对象懒建：握手时换了新快照，下一次用到就重建（要 bot.registry 做原版核对）。
+ * 原版 id 对不上时 buildIndex 拒绝 —— 那种情况下补名只会帮倒忙，只报一次，不补。
+ */
+function entityIndex (bot) {
+  const snap = state.entitySnapshot;
+  if (!snap || !bot.registry) return null;
+  if (state.entityIndex?.snap !== snap) {
+    const idx = entityRegistry.buildIndex(snap, bot.registry);
+    state.entityIndex = { snap, idx, named: 0 };
+    if (idx.ok) console.log(`[entities] 实体表就绪：${idx.modded} 个模组实体（原版核对 ${idx.vanillaChecked}/${idx.vanillaCount}）`);
+    else console.error(`[entities] 实体表不可用：${idx.reason}`);
+  }
+  return state.entityIndex.idx;
+}
+
+function installEntitySense (bot) {
+  state.aggro = entityRegistry.createAggroTracker();
+  bot.on('entitySpawn', (e) => {
+    try {
+      if (e?.name !== 'unknown') return;
+      if (entityRegistry.patchEntity(e, entityIndex(bot))) state.entityIndex.named++;
+    } catch (_) {}
+  });
+  bot.on('entityHurt', (victim, source) => {
+    try {
+      const on = state.aggro.noteHurt(victim, source, bot.entity?.id);
+      if (on) state.lastAggro = { t: Date.now(), on, by: source.name || 'unknown', id: source.id };
+    } catch (_) {}
+  });
+  bot.on('entityGone', (e) => { try { state.aggro.forget(e); } catch (_) {} });
+}
+
+/** 这个实体对她 / 对玩家有没有仇恨（见 entity-registry.js ②）。/nearby 与战斗本能共用这一处。 */
+function aggroOf (e) {
+  const bot = state.bot;
+  if (!state.aggro || !bot?.entity) return null;
+  const players = Object.values(bot.players || {})
+    .map(p => p.entity).filter(p => p && p !== bot.entity);
+  return state.aggro.assess(e, { self: bot.entity, players });
+}
+
 function createBot() {
   if (state.bot) {
     try { state.bot.end(); } catch (_) {}
@@ -1085,6 +1148,7 @@ function createBot() {
   state.bot.loadPlugin(pathfinderPlugin);
   // 模组界面补丁：必须在 mineflayer 的 open_window 处理之前装上（prependListener）
   hands.install(state.bot, state);
+  installEntitySense(state.bot);
 
   // ---- 身体反射插件 ----------------------------------------------------------
   // 加载顺序有讲究（两边项目都是 pathfinder 打头）：
@@ -2912,9 +2976,14 @@ const handlers = {
     const entities = Object.values(state.bot.entities)
       .filter(e => e !== self && e.position)
       .filter(e => e.position.distanceTo(self.position) <= radius)
+      // ⚠️ 先按距离排再截 20 个：原来是先截后排 —— 挖完矿身边十几件掉落物时，
+      //    贴脸的僵尸可能根本进不了这 20 个（实体表的遍历顺序与距离无关）。
+      .sort((a, b) => a.position.distanceTo(self.position) - b.position.distanceTo(self.position))
       .slice(0, 20)
       .map(e => {
         const drop = isDropEntity(e);
+        // 仇恨：它打过她/玩家，或者正举着手盯着她/玩家（见 entity-registry.js ②）。
+        const aggro = drop ? null : aggroOf(e);
         return {
           name: e.name || e.username || 'unknown',
           type: e.type,
@@ -2942,11 +3011,15 @@ const handlers = {
           //   现在按 prismarine-entity 的完整 \`type\` 取值分类：
           //     'hostile' → 敌对生物   'animal'/'water_creature' → 被动生物
           //     'mob' → 兜底的生物类（部分版本用这个）
+          //
+          //   2026-09-27：**有仇恨证据的也算 hostile**。模组怪补上名字后 type 仍是 'other'
+          //   （快照不带类别），不这样的话一只模组怪追着她打，上层照样数出 0 个威胁。
+          //   `aggro` 字段单独透出证据：kind 说"是不是威胁"，aggro 说"凭什么、冲谁来的"。
           kind: drop
             ? 'drop'
             : (e.type === 'player'
               ? 'player'
-              : (e.type === 'hostile'
+              : (e.type === 'hostile' || aggro
                 ? 'hostile'
                 : (e.type === 'mob' || e.type === 'animal' || e.type === 'water_creature'
                   ? 'mob'
@@ -2954,6 +3027,10 @@ const handlers = {
           // `type` **原样透出** —— 让消费者能自己判（而不是只能依赖我们分的 kind），
           // 也方便下次再遇到"分类漏了哪一类"时一眼看出来。
           entityType: e.type ?? null,
+          // { on: 'me' | 玩家名, evidence: 'hurt' | 'aggressive' } 或 null（没有证据 ≠ 友好，只是没看到它找麻烦）
+          aggro,
+          // 名字是不是我们按服务端实体表补的（模组生物）
+          named: e.angelNamed || undefined,
           distance: Math.round(e.position.distanceTo(self.position) * 10) / 10,
           position: { x: Math.round(e.position.x), y: Math.round(e.position.y), z: Math.round(e.position.z) },
         };
@@ -3848,6 +3925,13 @@ const handlers = {
       registryEntityCount: (() => {
         try { return Object.keys(state.bot.registry.entities || {}).length; } catch (_) { return null; }
       })(),
+      // 实体表（模组生物补名）与仇恨：实机核对用。snapshot=null 是"没收到表"，named=0 是"收到了但还没刷出模组怪"
+      entitySense: {
+        snapshot: state.entitySnapshot ? { entries: state.entitySnapshot.entryCount, capturedAt: state.entitySnapshot.capturedAt } : null,
+        index: state.entityIndex ? { ok: state.entityIndex.idx.ok, reason: state.entityIndex.idx.reason, modded: state.entityIndex.idx.modded } : null,
+        named: state.entityIndex?.named ?? 0,
+        lastAggro: state.lastAggro || null,
+      },
       rows,
     };
   },
@@ -6027,6 +6111,10 @@ server.listen(CFG.bridge.port, '127.0.0.1', () => {
   // 物品注册表快照：同样是"有就载入、没有就如实说没有"。
   // 必须在 createBot 之前读，因为注入要发生在本次连接的 inject_allowed 阶段。
   loadItemSnapshot();
+  state.entitySnapshot = entityRegistry.loadSnapshot();
+  console.log(state.entitySnapshot
+    ? `[entities] 实体快照已载入：${state.entitySnapshot.entryCount} 条（抓取于 ${state.entitySnapshot.capturedAt}）`
+    : '[entities] 还没有实体快照 —— 这次登录握手时会收到并落盘，之后刷出的模组生物就有名字了');
   createBot();
 
   // 每 30 秒把"当前状态"落盘一次，这样即使进程被强杀，state.json 也是新的。

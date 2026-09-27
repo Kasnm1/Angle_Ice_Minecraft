@@ -3084,7 +3084,8 @@ function projectStatus (bot, state, { id } = {}) {
       const d = projectDiff(bot, p);
       const need = {}; for (const c of [...d.place, ...d.dig.filter(x => x.thenPlace)]) need[c.want] = (need[c.want] || 0) + 1;
       const missing = {}; for (const [k, n] of Object.entries(need)) { const h = invCount(bot, k); if (h < n) missing[k] = n - h; }
-      return { id: p.id, name: p.name, purpose: p.purpose, origin: p.origin, done: `${d.pct}%`, toDig: d.dig.length, toPlace: d.place.length + d.dig.filter(x => x.thenPlace).length, notLoaded: d.unknown, need, missing };
+      const digWhat = {}; for (const c of d.dig) { const n = bareId(bot.blockAt(c.pos)?.name); digWhat[n] = (digWhat[n] || 0) + 1; }
+      return { id: p.id, name: p.name, purpose: p.purpose, origin: p.origin, done: `${d.pct}%`, toDig: d.dig.length, digWhat, toPlace: d.place.length + d.dig.filter(x => x.thenPlace).length, notLoaded: d.unknown, need, missing };
     }),
   };
 }
