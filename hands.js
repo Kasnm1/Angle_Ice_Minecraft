@@ -3159,15 +3159,21 @@ function commandWords (bot) {
 const ADMIN_CMDS = new Set(['give', 'tp', 'teleport', 'gamemode', 'time', 'weather', 'effect', 'kill', 'summon', 'setblock', 'fill', 'clear', 'enchant', 'xp', 'experience', 'difficulty', 'gamerule', 'op', 'deop', 'ban', 'kick', 'whitelist', 'stop', 'item', 'attribute', 'spreadplayers', 'setworldspawn', 'spawnpoint', 'worldborder', 'data', 'execute', 'function', 'reload', 'forge', 'kubejs', 'ftbquests', 'tpx', 'invsee', 'heal', 'feed', 'fly', 'god']);
 const NEVER_CMDS = new Set(['stop', 'op', 'deop', 'ban', 'ban-ip', 'pardon', 'kick', 'whitelist', 'reload', 'save-off', 'debug', 'forceload']);
 
-/** 执行一条命令。管理员命令要带 because = 玩家的原话，而且最近聊天里真有玩家说过这句 */
-async function runCommand (bot, state, { command, because } = {}) {
+/**
+ * 执行一条命令。管理员命令要带 because = 玩家的原话，而且最近聊天里真有玩家说过这句。
+ * 例外只有一个（主人 2026-09-27："也可以 /tp 回到之前坐标"）：**本能**把她自己传回她去过的坐标 ——
+ * 只认 `tp <x> <y> <z>`（传自己、纯坐标），而且要带 selfTp（一个函数：只有进程内调用传得进来，HTTP 的 JSON 传不了）。
+ */
+const SELF_TP_RE = /^tp\s+-?\d+(\.\d+)?\s+-?\d+(\.\d+)?\s+-?\d+(\.\d+)?$/i;
+async function runCommand (bot, state, { command, because, selfTp } = {}) {
   const cmd = String(command || '').trim().replace(/^\/+/, '');
   if (!cmd) throw new Error('command 要写命令，比如 home、tpa Ka_sum1');
   const head = cmd.split(/\s+/)[0].toLowerCase().replace(/^minecraft:/, '');
   if (NEVER_CMDS.has(head)) throw new Error(`/${head} 不归你用`);
   const words = commandWords(bot);
   if (words && !words.has(head)) throw new Error(`服务器没给你 /${head} 这个命令（你能用的：${[...words].filter(w => w.length < 12).slice(0, 40).join(' ')}…）`);
-  if (ADMIN_CMDS.has(head)) {
+  const trustedSelfTp = typeof selfTp === 'function' && selfTp() === 'self-tp' && SELF_TP_RE.test(cmd);
+  if (ADMIN_CMDS.has(head) && !trustedSelfTp) {
     const said = String(because || '').trim();
     const me = bot.username;
     // 聊天缓冲（bridge 的 chatlog：{t, position, text}）里 10 分钟内、不是她自己说的那条要包含这句原话
