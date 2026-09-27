@@ -168,6 +168,24 @@ def conditions_ok(obj, mods):
     return True
 
 
+def replace_flag(d):
+    """按 Minecraft 的语义解析标签文件里的 replace —— 只有「真」才算清空重写。
+
+    Minecraft 读标签用 Gson，replace 走 getAsBoolean()，即 Boolean.parseBoolean()：
+    只有 JSON 布尔 true（以及字符串 "true"）为真，其余一律为假。
+    而这个包里的 decorative_blocks-forge-1.20.1-4.1.3.jar 的
+    data/minecraft/tags/blocks/dirt.json 把 replace 写成了**字符串** "false"，
+    Python 里非空字符串恒为真，曾因此把已叠加的原版 + 若干个模组的 dirt 标签全清掉
+    （游戏里不会清，两边不一致）。所以这里必须按 Gson 的规则解析，不能用真值判断。
+    """
+    v = d.get('replace')
+    if v is True:
+        return True
+    if isinstance(v, str) and v.strip().lower() == 'true':
+        return True
+    return False
+
+
 def unwrap_conditional(d, mods):
     """forge:conditional / meadow:conditional 是"外面包一层条件"的配方：拆出第一个条件成立的内层。"""
     t = d.get('type')
@@ -394,10 +412,10 @@ def main():
                 for v in d.get('values', []):
                     if isinstance(v, dict):
                         v = v.get('id')
-                    if isinstance(v, str):
+                    if isinstance(v, str) and v not in vals:   # 同一个文件里也可能重复（如 minecraft:sand 的 suspicious_sand），保持顺序去重
                         vals.append(v)
                 bucket = tags[m.group(2)]
-                if d.get('replace') or tid not in bucket:
+                if replace_flag(d) or tid not in bucket:
                     bucket[tid] = vals
                 else:
                     bucket[tid] = bucket[tid] + [v for v in vals if v not in bucket[tid]]

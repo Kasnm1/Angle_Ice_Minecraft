@@ -1089,7 +1089,8 @@ const NATURAL_TAGS = [
   'minecraft:nylium', 'forge:stone', 'forge:gravel', 'forge:sandstone', 'forge:end_stones', 'forge:ores', 'forge:netherrack',
 ];
 const NATURAL_EXTRA = ['gravel', 'clay', 'mud', 'calcite', 'dripstone_block', 'moss_block', 'soul_sand', 'soul_soil', 'magma_block',
-  // ⚠️ 知识库的 minecraft:dirt 标签里只有模组加的（原版那份没并进去，2026-09-27 实查），所以原版的这里逐个列
+  // 原版泥土类这里逐个列着：知识库的 minecraft:dirt 以前被 decorative_blocks 的 "replace": "false"（字符串）误清空，
+  // 2026-09-27 已在 extract_gamedata.py 修好；留着无害，知识库没生成时也兜底
   'dirt', 'end_stone', 'snow_block', 'mycelium', 'podzol', 'coarse_dirt', 'rooted_dirt', 'grass_block', 'muddy_mangrove_roots',
   'sandstone', 'red_sandstone', 'netherrack', 'basalt', 'blackstone', 'tuff', 'deepslate', 'stone', 'granite', 'diorite', 'andesite'].map(n => `minecraft:${n}`);
 // 加工过的 / 挖了有麻烦的：一律不进白名单（哪怕某个模组把它打进了 forge:stone）
