@@ -2657,7 +2657,8 @@ async function tunnelTo (bot, target, maxSteps = 24) {
 async function caveStep (bot, D, targetY) {
   const me = bot.entity.position.floored();
   const cands = [];
-  for (let dx = -12; dx <= 12; dx++) for (let dz = -12; dz <= 12; dz++) for (let dy = -8; dy <= 4; dy++) {
+  // 上下只看 3 格以内：以前能挑低 8 格的落脚点，寻路过去就是跳下去（2026-09-27 挖矿时"哎哟 磕到了"）
+  for (let dx = -12; dx <= 12; dx++) for (let dz = -12; dz <= 12; dz++) for (let dy = -3; dy <= 3; dy++) {
     if (Math.abs(dx) + Math.abs(dz) < 5) continue;
     const p = me.offset(dx, dy, dz);
     const vk = `${p.x >> 2},${p.y >> 2},${p.z >> 2}`;
@@ -2753,9 +2754,13 @@ async function delve (bot, state, { target = null, targetY = null, maxMs = 12000
     let why = null;
     if (isLiquid(floor)) why = `前面脚下是${/lava/.test(floor.name) ? '岩浆' : '水'}`;
     else if (airish(floor)) {
-      // 前面脚下是空的：挖穿到洞里了。先看多深，别跳下去摔死
+      // 前面脚下是空的：挖穿到洞里了。身上有圆石/泥土就垫一块接着走（像玩家搭路），不往下掉；
+      // 以前坑不到 4 格就直接走下去 = 掉 1–3 格
       let depth = 1; while (depth < 6 && airish(bot.blockAt(dest.offset(0, -1 - depth, 0)))) depth++;
-      if (depth >= 4) {
+      let bridged = false;
+      if (fillerItem(bot)) { try { bridged = await placeFiller(bot, dest.offset(0, -1, 0)); } catch (_) {} }
+      if (!bridged) depth = Math.max(depth, 4);   // 垫不上：当成坑，不走下去
+      if (depth >= 4 && !bridged) {
         for (const c of cells) { why = await clearCell(bot, c); if (why) break; }   // 开个口看看下面
         const m = !why && await caveStep(bot, D, ty);
         if (m) { caveMoves++; log.push(`挖穿到矿洞，走到 (${m.to.x},${m.to.y},${m.to.z})`); continue; }
