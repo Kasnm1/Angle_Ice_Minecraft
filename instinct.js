@@ -467,6 +467,13 @@ function pickGaze ({ players = [], self, now = Date.now(), next = 0 }, cfg = CFG
 
 // ---- 战斗
 /** 怪是哪一类。held = 它手上拿的物品名（mineflayer entity.equipment[0]），模组远程怪靠这个认 */
+const HOSTILE_NAME_RE = /^(blaze|bogged|breeze|creeper|drowned|elder_guardian|endermite|enderman|evoker|ghast|giant|guardian|husk|magma_cube|phantom|piglin|piglin_brute|pillager|ravager|shulker|silverfish|skeleton|slime|spider|stray|vex|vindicator|warden|witch|wither|wither_skeleton|zoglin|zombie|zombie_villager|zombified_piglin)$/;
+function isHostileEntity (entity) {
+  if (!entity || entity.type === 'player') return false;
+  if (entity.type === 'hostile') return true;
+  const n = String(entity.name || '').replace(/^.*:/, '').toLowerCase();
+  return HOSTILE_NAME_RE.test(n);
+}
 function mobKind (name, held = null) {
   const n = String(name || '').replace(/^.*:/, '');
   if (/creeper/.test(n)) return 'creeper';
@@ -1661,8 +1668,10 @@ function install (bot, state, deps) {
       const dist = e.position.distanceTo(self.position);
       if (dist > I.cfg.combat.detect + 4) continue;
       const a = deps.aggroOf(e);
-      if (!a) continue;
-      out.push({ id: e.id, ent: e, name: e.name, pos: e.position, dist, on: a.on, evidence: a.evidence, kind: mobKind(e.name, e.equipment?.[0]?.name) });
+      // 静态敌对实体（例如刚刷出的、还没挥拳的僵尸）没有 aggro 记录，
+      // 但仍然应该进入战斗本能的视野；aggro 只负责补充“正在打谁”的证据。
+      if (!a && !isHostileEntity(e)) continue;
+      out.push({ id: e.id, ent: e, name: e.name, pos: e.position, dist, on: a?.on || null, evidence: a?.evidence || 'visible_hostile', kind: mobKind(e.name, e.equipment?.[0]?.name) });
     }
     return out;
   }
@@ -1774,7 +1783,7 @@ function install (bot, state, deps) {
       I.urgent = 'combat';
       // 有确证的敌人时先关闭容器，不能因为开着箱子一直挨打。
       if (bot.currentWindow) bot.closeWindow(bot.currentWindow);
-      event('combat_start', `发现 ${plan.target.name} 正在攻击${plan.target.on === 'me' ? '她' : plan.target.on}，立即接管`, { source: d.source });
+      event('combat_start', `发现 ${plan.target.name}${plan.target.on ? `正在攻击${plan.target.on === 'me' ? '她' : plan.target.on}` : '在附近'}，立即接管`, { source: d.source });
       await fight(plan.target);
     } catch (e) { I.last = { t: Date.now(), error: `combat: ${e.message}` }; } finally { fighting = false; if (I.urgent === 'combat') I.urgent = null; }
   }, I.diagnostics);
@@ -2319,6 +2328,8 @@ function selftest () {
   check('拿三叉戟的溺尸 → 远程', mobKind('drowned', 'trident'), 'ranged');
   check('空手溺尸 → 近战', mobKind('drowned', null), 'melee');
   check('僵尸近战', mobKind('zombie'), 'melee');
+  check('★ 可见但尚未攻击的僵尸也算敌对', isHostileEntity({ name: 'zombie', type: 'hostile' }), true);
+  check('普通动物不算敌对', isHostileEntity({ name: 'cow', type: 'animal' }), false);
   check('★ 剑要等 0.625 秒（不是 350ms 连点）', attackCooldownMs('iron_sword'), 625);
   check('石斧更慢', attackCooldownMs('stone_axe') > attackCooldownMs('diamond_axe'), true);
   const T = (name, dist, extra = {}) => ({ id: dist * 10, name, pos: { x: dist, y: 64, z: 0 }, dist, on: 'me', evidence: 'aggressive', kind: mobKind(name), ...extra });
@@ -2412,7 +2423,7 @@ function selftest () {
   });
 }
 
-module.exports = { caveBoundary, settleJob, syncSleepState, createCheck, CFG, fillCfg, pickEat, pickShore, needBreath, effectPlan, weatherChange, pickRecovery, pickCommand, homeFootprint, darkReport, mlgStep, pickCaveStep, STRUCTURE_SIGNS, recognizeStructures, pickLoot, pickTidy, mobKind, attackCooldownMs, combatPlan, COMBAT_YIELD, TIER, pickaxeTier, needTier, pickOre, pickHarvest, hazardUnder, pickStepOff, armorRank, pickArmor, toolWorn, pickGaze, whoThrew, pickPickup, bodyBusy, install, yieldBody, PASSIVE_POSTS, selftest };
+module.exports = { caveBoundary, settleJob, syncSleepState, createCheck, CFG, fillCfg, pickEat, pickShore, needBreath, effectPlan, weatherChange, pickRecovery, pickCommand, homeFootprint, darkReport, mlgStep, pickCaveStep, STRUCTURE_SIGNS, recognizeStructures, pickLoot, pickTidy, isHostileEntity, mobKind, attackCooldownMs, combatPlan, COMBAT_YIELD, TIER, pickaxeTier, needTier, pickOre, pickHarvest, hazardUnder, pickStepOff, armorRank, pickArmor, toolWorn, pickGaze, whoThrew, pickPickup, bodyBusy, install, yieldBody, PASSIVE_POSTS, selftest };
 
 if (require.main === module && process.argv.includes('--selftest')) {
   selftest().then(code => process.exit(code));
