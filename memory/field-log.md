@@ -4311,3 +4311,39 @@ node --check bridge-server.js      # 语法检查
 
 "是不是泥土"这种**分类**问题，整合包已经用标签回答了；写死原版名字的地方迟早漏掉模组的。以后遇到按名字归类的，先查有没有对应标签。
 
+
+---
+
+## P54 —— 新本能一上线 bridge 就崩：配置补默认值用的是手写名单 ✅ 已修复
+
+**发现时间**：2026-09-27（部署到 Windows 启动时）
+**当时的任务**：部署吃 / 憋气 / 中毒凋零 / 天气 / 玩家挨打本能后第一次实机启动。
+
+### 证据
+
+```
+$ ./angel-win.sh logs bridge 40
+[place] 可替换方块：从整合包标签补了 83 个模组的
+C:\Users\Kasumi\aimc\angleice\instinct.js:1692
+    if (!I.cfg.breathe.enabled || breathing || !bot.entity || fighting) return;
+TypeError: Cannot read properties of undefined (reading 'enabled')
+```
+
+### 根因
+
+`instinct.js` 的 `install()` 给 `I.cfg` 补默认值用的是**手写的本能名单**（`['pickup', 'harvest', …, 'cmd']`），新加的 `eat` `breathe` `effects` `weather` `playerHurt` 没写进去。
+离线自测只测纯函数，不跑 `install()`，所以 209 条全绿也没拦住。
+
+### 修法
+
+`fillCfg(cfg)`：遍历 `CFG` 里每一段对象补默认值（不再手写名单），并保留已有的改动。
+
+### 验证
+
+- 自测：`★ 配置补全：每个本能段都有` + `已有的改动保留`（instinct.js 209/209）。
+- 冒烟：假 bot 跑 `install()` 6 秒，新 state 与"老 state 只有 pickup 段"两种都不崩；饥饿 10 时调用了 `POST /eat`。
+- 实机：重新部署后看 `logs\bridge.log`（见下一次部署记录）。
+
+### 教训
+
+**离线自测只测纯函数，接线层（install 里的计时器）没人跑过。** 以后加本能，交之前用假 bot 跑一次 `install()` 冒烟（脚本思路：EventEmitter 当 bot，塞 entity / registry / inventory / blockAt）。

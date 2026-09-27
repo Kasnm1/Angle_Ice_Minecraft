@@ -754,6 +754,15 @@ function bodyBusy ({ inflight = 0, currentAction = null, windowOpen = false, qui
  * @param deps.hands         hands.js（接回跟随）
  * @param deps.isDropEntity / droppedItemOf / aggroOf   bridge 里的那一份（同一判据只写一处）
  */
+/**
+ * 本能配置补默认值：CFG 里每一段（对象）都补上，老的 state.instinct 里没有的新本能也补。
+ * 以前是手写名单，2026-09-27 加吃/憋气/中毒三段时漏写，实机一上线就崩（I.cfg.breathe 是 undefined）。
+ */
+function fillCfg (cfg) {
+  for (const [k, v] of Object.entries(CFG)) if (v && typeof v === 'object' && !Array.isArray(v)) cfg[k] = { ...v, ...(cfg[k] || {}) };
+  return cfg;
+}
+
 function install (bot, state, deps) {
   const I = state.instinct = state.instinct || {
     cfg: {},
@@ -767,7 +776,7 @@ function install (bot, state, deps) {
     home: null,             // { center:{x,y,z}, radius }，mind 通过 POST /instinct {home} 告诉
   };
   // 跨重连保留状态；新加的本能补上默认配置（老的 state.instinct 里没有）
-  for (const k of ['pickup', 'harvest', 'mine', 'sleep', 'armor', 'gaze', 'combat', 'tidy', 'loot', 'cave', 'bridge', 'mlg', 'dig', 'home', 'cmd']) I.cfg[k] = { ...CFG[k], ...(I.cfg[k] || {}) };
+  fillCfg(I.cfg);
   const spawned = new Map();   // 掉落物 id → { t, thrower }
   const fails = new Map();
   const mineFails = new Map();   // "x,y,z" → 到什么时候之前不再试
@@ -1999,6 +2008,9 @@ function selftest () {
   check('★ 远处孤零零一个（隔了一大段）→ 不算（不把邻居家当自己家）', homeFootprint([5, 12, 20, 60], 24), 24);
   check('只扩不缩', homeFootprint([2, 3], 40), 40);
   check('封顶 128', homeFootprint(Array.from({ length: 40 }, (_, i) => i * 5), 24), 128);
+  { const c = fillCfg({ pickup: { radius: 3 } });
+    check('★ 配置补全：每个本能段都有（实机崩过：I.cfg.breathe 缺）', ['eat', 'breathe', 'effects', 'weather', 'playerHurt', 'combat', 'home'].every(n => c[n] && typeof c[n] === 'object'), true);
+    check('配置补全：已有的改动保留', c.pickup.radius, 3); }
   // ---- 吃 / 憋气 / 中毒 / 天气
   check('★ 饥饿 16（掉了 2 格）、身体空着 → 吃', pickEat({ food: 16 })?.eat, true);
   check('饥饿 17 → 不饿', pickEat({ food: 17 }), null);
@@ -2178,7 +2190,7 @@ function selftest () {
   });
 }
 
-module.exports = { CFG, pickEat, needBreath, effectPlan, weatherChange, pickRecovery, pickCommand, homeFootprint, darkReport, mlgStep, pickCaveStep, STRUCTURE_SIGNS, recognizeStructures, pickLoot, pickTidy, mobKind, attackCooldownMs, combatPlan, COMBAT_YIELD, TIER, pickaxeTier, needTier, pickOre, pickHarvest, hazardUnder, pickStepOff, armorRank, pickArmor, toolWorn, pickGaze, whoThrew, pickPickup, bodyBusy, install, yieldBody, PASSIVE_POSTS, selftest };
+module.exports = { CFG, fillCfg, pickEat, needBreath, effectPlan, weatherChange, pickRecovery, pickCommand, homeFootprint, darkReport, mlgStep, pickCaveStep, STRUCTURE_SIGNS, recognizeStructures, pickLoot, pickTidy, mobKind, attackCooldownMs, combatPlan, COMBAT_YIELD, TIER, pickaxeTier, needTier, pickOre, pickHarvest, hazardUnder, pickStepOff, armorRank, pickArmor, toolWorn, pickGaze, whoThrew, pickPickup, bodyBusy, install, yieldBody, PASSIVE_POSTS, selftest };
 
 if (require.main === module && process.argv.includes('--selftest')) {
   selftest().then(code => process.exit(code));
