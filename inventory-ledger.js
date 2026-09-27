@@ -20,6 +20,7 @@
  *   instinct 本能在做什么（拾取）
  *   broke    服务端的"物品碎了"动画（entity_status 47–52：主手/副手/头/胸/腿/脚）
  *   food     这段时间饥饿值涨了 —— 自动吃（auto-eat 插件，没有命令）也认得出，模组食物也一样
+ *   gift     她捡起的那个掉落物是某个玩家扔出来的（instinct.js 按 collect 包点名的实体判）→ "谁给的"
  *
  * 哪条都对不上的"少了"记成 `lost`（不知道怎么没的），**不猜**。
  * 哪条都对不上的"多了"记成 `got`：没在做任何事时背包多东西，几乎只可能是走过去蹭到的掉落物，
@@ -67,7 +68,7 @@ const WINDOW_RULES = {
 // 说出来的样子（mind 那边渲染；名字由调用方给 label 函数翻成中文）
 const VERB_TEXT = {
   picked: '捡到', got: '得到', mined: '挖到', harvested: '收获', crafted: '做出', smelted: '烧出',
-  took: '拿出', took_off: '脱下/换下', reward: '任务奖励', received: '指令给了',
+  took: '拿出', took_off: '脱下/换下', given: '给的', reward: '任务奖励', received: '指令给了',
   stored: '放进', used: '合成用掉', furnace: '放进炉子', ate: '吃掉', placed: '放下/用掉', planted: '种下',
   gave: '给了人', dropped: '丢掉', died: '死的时候掉了', wore: '穿上', submitted: '交任务交掉', broke: '用坏了', lost: '不知道怎么没的',
 };
@@ -123,7 +124,13 @@ function classify (change, ev = {}) {
   };
 
   const g = pick('gain') || { verb: GAIN_DEFAULT };
-  for (const [name, n] of Object.entries(change.gained || {})) add('+', g.verb, name, n, g.where);
+  const gifts = ev.gifts || [];
+  for (const [name, n] of Object.entries(change.gained || {})) {
+    // 别人扔给她、她捡起来的：记成谁给的（collect 包点名了那个实体，是确证；比"正在做什么"更具体）
+    const gift = !win && gifts.find(x => x.item === name);
+    if (gift) add('+', 'given', name, n, gift.from);
+    else add('+', g.verb, name, n, g.where);
+  }
 
   const l = pick('lose');
   for (const [name, n0] of Object.entries(change.lost || {})) {
@@ -145,6 +152,7 @@ function render (entry, label = (x) => x) {
     const v = VERB_TEXT[p.verb] || p.verb;
     if (p.where && (p.verb === 'stored')) return `${v} ${p.where}：${items}`;
     if (p.where && (p.verb === 'took')) return `从 ${p.where} ${v}：${items}`;
+    if (p.where && (p.verb === 'given')) return `${p.where} ${v}：${items}`;
     return `${v}：${items}`;
   }).join('；');
 }
@@ -162,7 +170,8 @@ function createLedger ({ max = 200, graceMs = 3000 } = {}) {
   let baseFood = null;
   let seq = 0;
   const entries = [];
-  let pending = { routes: [], windows: [], instinct: [], broke: [] };
+  const fresh = () => ({ routes: [], windows: [], instinct: [], broke: [], gifts: [] });
+  let pending = fresh();
   const active = new Map();   // token → ev
   let ended = [];             // [{ ev, at }] 上一笔之后结束的长证据
   let tok = 0;
@@ -172,6 +181,7 @@ function createLedger ({ max = 200, graceMs = 3000 } = {}) {
     if (ev.window) into.windows.push(ev.window);
     if (ev.instinct) into.instinct.push(ev.instinct);
     if (ev.broke) into.broke.push(ev.broke);
+    if (ev.gift) into.gifts.push(ev.gift);
   };
   const push = (e) => { entries.push(e); if (entries.length > max) entries.shift(); return e; };
 
@@ -194,14 +204,14 @@ function createLedger ({ max = 200, graceMs = 3000 } = {}) {
       const ev = pending;
       for (const a of active.values()) merge(ev, a);
       for (const x of ended) if (now - x.at <= graceMs) merge(ev, x.ev);
-      pending = { routes: [], windows: [], instinct: [], broke: [] };
+      pending = fresh();
       ended = [];
       if (!Object.keys(change.gained).length && !Object.keys(change.lost).length) return null;
       return push({ seq: ++seq, t: now, parts: classify(change, { ...ev, fedUp }) });
     },
     record (parts, now = Date.now()) { return push({ seq: ++seq, t: now, parts }); },
     /** 换了一条连接：下线期间的变化说不清，从新连接的背包重新起算 */
-    rebase () { base = null; baseFood = null; pending = { routes: [], windows: [], instinct: [], broke: [] }; ended = []; },
+    rebase () { base = null; baseFood = null; pending = fresh(); ended = []; },
     since (s = 0) { return { seq, entries: entries.filter(e => e.seq > s) }; },
     get seq () { return seq; },
   };
@@ -273,6 +283,13 @@ function selftest () {
   L.commit(inv({ diamond: 2 }));
   end = L.begin({ route: 'POST /give' });
   check('给了人', say(L.commit(inv({ diamond: 1 }))), '给了人：diamond×1');
+  end();
+
+  // 别人扔给她的
+  L.commit(inv({}));
+  end = L.begin({ instinct: 'pickup' });
+  L.note({ gift: { from: 'starwish', item: 'bread' } });
+  check('★ 捡到别人扔的 → 谁给的；同时捡的别的照常', say(L.commit(inv({ bread: 3, stick: 2 }))), 'starwish 给的：bread×3；捡到：stick×2');
   end();
 
   // 死了

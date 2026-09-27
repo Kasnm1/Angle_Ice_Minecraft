@@ -623,9 +623,10 @@ const TOOLS = {
   },
   instinct: {
     kind: 'action',
-    desc: '开关身体的本能。pickup = 空闲时自己去捡附近地上的东西（默认开；别人说"别捡了""那些不要"就关掉）。',
-    params: { pickup: { type: 'boolean' } }, required: ['pickup'],
-    run: async ({ pickup }) => bridge.post('/instinct', { pickup: !!pickup }),
+    desc: '开关身体的本能（闲着时身体自己做的事，默认都开）。pickup = 捡附近地上的东西；harvest = 收家里成熟的庄稼并补种；'
+      + 'mine = 看见值钱的矿就去挖。别人说"别捡了""别动我的地""别乱挖"就关掉对应那个；只给要改的那几个。',
+    params: { pickup: { type: 'boolean' }, harvest: { type: 'boolean' }, mine: { type: 'boolean' } }, required: [],
+    run: async (a) => bridge.post('/instinct', Object.fromEntries(['pickup', 'harvest', 'mine'].filter(k => typeof a[k] === 'boolean').map(k => [k, a[k]]))),
   },
   follow: {
     kind: 'action', continuous: true,

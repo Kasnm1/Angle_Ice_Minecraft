@@ -4978,7 +4978,8 @@ const handlers = {
   // 顺带把"搜不到"这件事说清楚：原来的实现是"64 格内找一次，找不到就报没有"，
   // 于是"矿在 70 格外"和"这里真没矿"对外是同一句话。
   // 现在按 pathing 的自适应搜索逐级扩半径，并在放弃时**如实报告搜了多大**。
-  'POST /mine': async ({ blockName, byItem, count = 1 }) => {
+  // maxRadius：只在这么近的范围里找（采矿本能用：不为一条矿脉越走越远）；abort：进程内调用才能传，本能被命令打断时用
+  'POST /mine': async ({ blockName, byItem, count = 1, maxRadius, abort }) => {
     if (!blockName && !byItem) throw new Error('blockName 或 byItem 至少给一个');
     count = Math.min(Math.max(1, +count), 64);
 
@@ -5020,14 +5021,17 @@ const handlers = {
     }
     const label = byItem || blockName;
 
-    state.currentAction = `mining ${count}x ${label}`;
+    const myTag = `mining ${count}x ${label}`;
+    state.currentAction = myTag;
     const mined = [];
     const sweeps = [];
     // 发生过几次"dig 声称成功但方块还在"（见 P1c）。
     // **必须暴露** —— 它和"真的挖不动"是两种完全不同的故障，
     // 混在一起会让运维去查错方向（去查工具/硬度，而不是查动作没生效）。
     const digStalls = [];
-    const ladder = pathing.buildRadiusLadder();
+    const maxR = maxRadius ? Math.max(1, +maxRadius) : null;
+    const ladder = pathing.buildRadiusLadder(maxR ? { initialRadius: Math.min(maxR, 8), maxRadius: maxR } : {});
+    let aborted = false;
     let sweep = 1;
     let radius = ladder[0];
     let dropsPicked = 0;   // 真正进背包的件数（由背包增量判定，不是"走过去过"）
@@ -5044,6 +5048,11 @@ const handlers = {
       for (;;) {
         if (mined.length >= +count) {
           sweeps.push({ sweep, radius, action: 'done', reason: `够了（${mined.length}/${+count}）` });
+          break;
+        }
+        if (typeof abort === 'function' && abort()) {
+          aborted = true;
+          sweeps.push({ sweep, radius, action: 'aborted', reason: '被新的命令打断' });
           break;
         }
         const before = inventoryCount(state.bot);
@@ -5212,7 +5221,10 @@ const handlers = {
         sweeps.push({ sweep, radius, hit, gained, action: step.action, why: prod.reason, reason: step.reason });
 
         if (step.action === 'done' || step.action === 'give-up') break;
-        if (step.action === 'widen') { sweep++; radius = step.radius; continue; }
+        if (step.action === 'widen') {
+          if (maxR && step.radius > maxR) { sweeps.push({ sweep, radius, action: 'give-up', reason: `只在 ${maxR} 格内找，不往外扩` }); break; }
+          sweep++; radius = step.radius; continue;
+        }
         // 同一半径反复无收获的上限。**加 dig 空转的容忍度** ——
         // 一次 dig 空转后我们 `continue`（不让路重试），这会消耗这个计数；
         // 但如果她真的连试几次都挖不动，就该停，而不是刷满整个 count。
@@ -5233,7 +5245,8 @@ const handlers = {
         if (!hit) { sweep++; radius = step.radius ?? ladder[Math.min(sweep - 1, ladder.length - 1)]; }
       }
     } finally {
-      state.currentAction = null;
+      // 只清自己的标记：被打断时新命令可能已经写上了它的（见 instinct.yieldBody）
+      if (state.currentAction === myTag) state.currentAction = null;
     }
 
     // ---- 批量清扫（P10 第二轮 + P13）--------------------------------------
@@ -5257,7 +5270,7 @@ const handlers = {
     //        守住 P9 的"不引入无限循环"纪律）。
     //   这两层都不依赖"我猜掉落物在哪"，而是"去看世界现在有什么"。
     let bulkSweep = null;
-    if (dropAnchors.length && mined.length) {
+    if (dropAnchors.length && mined.length && !aborted) {
       const centroidThat = dropAnchors.reduce(
         (a, p) => ({ x: a.x + p.x / dropAnchors.length, y: a.y + p.y / dropAnchors.length, z: a.z + p.z / dropAnchors.length }),
         { x: 0, y: 0, z: 0 },
@@ -6047,7 +6060,8 @@ const handlers = {
     if (!I) return { installed: false };
     return {
       installed: true,
-      pickup: I.cfg.pickup,
+      pickup: I.cfg.pickup, harvest: I.cfg.harvest, mine: I.cfg.mine,
+      home: I.home,
       running: I.running ? I.running.kind : null,
       inflight: I.inflight,
       quietForMs: Math.max(0, I.quietUntil - Date.now()),
@@ -6055,15 +6069,29 @@ const handlers = {
       log: I.log.slice(-10),
     };
   },
-  // { pickup: true|false, radius?, followRadius? }
-  'POST /instinct': async ({ pickup, radius, followRadius } = {}) => {
+  // 本能做了什么 / 看见什么没做成（mind 按 seq 往后读，变成她经历的事）
+  'GET /instinct/events': async ({ since = 0 } = {}) => {
+    const I = state.instinct;
+    if (!I) return { seq: 0, events: [] };
+    return { seq: I.evSeq, events: I.events.filter(e => e.seq > (+since || 0)) };
+  },
+  // { pickup?, harvest?, mine?: true|false, radius?, followRadius?, home?: { center:{x,y,z}, radius } | null }
+  'POST /instinct': async ({ pickup, harvest, mine, radius, followRadius, home } = {}) => {
     const I = state.instinct;
     if (!I) throw new Error('本能还没装上（bot 还没建好）');
     if (typeof pickup === 'boolean') I.cfg.pickup.enabled = pickup;
+    if (typeof harvest === 'boolean') I.cfg.harvest.enabled = harvest;
+    if (typeof mine === 'boolean') I.cfg.mine.enabled = mine;
+    // 家在哪（收获本能：耕地上的庄稼只收家里的）。mind 知道家，定期告诉这里
+    if (home === null) I.home = null;
+    else if (home && home.center && Number.isFinite(+home.center.x) && Number.isFinite(+home.center.z)) {
+      I.home = { center: { x: +home.center.x, y: +home.center.y || 64, z: +home.center.z }, radius: Math.max(4, +home.radius || 24) };
+    }
     if (radius !== undefined && Number.isFinite(+radius)) I.cfg.pickup.radius = Math.min(Math.max(1, +radius), 16);
     if (followRadius !== undefined && Number.isFinite(+followRadius)) I.cfg.pickup.followRadius = Math.min(Math.max(1, +followRadius), 12);
-    if (pickup === false && I.running) I.running.abort();
-    return { pickup: I.cfg.pickup };
+    const off = { pickup: pickup === false, harvest: harvest === false, mine: mine === false };
+    if (I.running && off[I.running.kind]) I.running.abort();
+    return { pickup: I.cfg.pickup.enabled, harvest: I.cfg.harvest.enabled, mine: I.cfg.mine.enabled, home: I.home };
   },
 
   'POST /stop': async () => {

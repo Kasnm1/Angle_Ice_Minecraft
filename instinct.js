@@ -28,14 +28,39 @@
  *
  * 不捡的：
  *   · 刚落地的（< settleMs）—— 还在飞/滚，而且挖矿掉落有拾取延迟
- *   · **玩家（包括她自己）扔出来的** —— 那是别人的东西，或者是她自己丢掉/给人的。
- *     判据：实体刷出时的位置就在某个玩家的眼前（扔出的物品从眼睛高度 -0.3 处生成）。
- *     给她的东西扔到她脚边，走过去本来就会捡到；真要她去捡，mind 会调 /pickup。
+ *   · **她自己扔出来的** —— 那是她自己丢掉 / 给出去的，捡回来就成了"丢了又捡"的死循环。
+ *     判据：实体刷出时的位置就在她眼前（扔出的物品从眼睛高度 -0.3 处生成）。
+ *     **别的玩家扔的要捡**（主人 2026-09-27：常常是扔给她的）—— 只是多等一会儿（thrownSettleMs：
+ *     原版扔出的物品本来就有 2 秒拾取延迟，也给扔的人一点反悔的时间）。捡到时物品账记成"谁给的"。
  *   · 背包装不下的（没空格，且没有同名未满的堆）
  *   · 同一堆试了 2 次都没捡到的 —— 60 秒内不再试（够不着的坑底、岩浆边）
  *   · 身边有冲她来的怪、或者血 ≤ 6 —— 这时候不该弯腰捡东西
  *   · 跟随中：只捡离玩家不远的（不能为了一块圆石把人跟丢）
  *   · 夜里在露天：只捡 nightOutRadius 格内的（不为一块圆石往黑处跑）
+ *
+ * ## 收获本能（主人 2026-09-27）
+ *
+ * 看得见的成熟作物 → 收割并补种。走路、收、补种、捡掉落全交给现有的 `POST /farm`（hands.farm，加了 only/abort）。
+ *   · 只收"打掉"类（小麦、胡萝卜…）；右键摘的（甜浆果丛这类）打掉就连丛没了 —— 作物表里标 use 的不碰
+ *   · 耕地上的庄稼是有人种的：只收**家里**的（家由 mind 通过 POST /instinct {home} 告诉本能）；野生的随便收
+ *   · 至少 minMature 棵成熟才去（别为一棵麦子来回跑）；plantEmpty=false —— 空地种什么是主人的事
+ *
+ * ## 采矿本能（主人 2026-09-27）
+ *
+ * 看得见的、有价值的矿 → 过去挖（整条矿脉）。挖交给现有的 `POST /mine`（加了 maxRadius/abort；
+ * 它本来就只挖看得见的、沿矿脉挖、不碰人造方块旁边的）。本能只决定"挖不挖、挖哪条"：
+ *   · 价值：high / mid 看见就挖；low（煤、铜…）只在缺的时候挖（煤不够做火把）
+ *   · 镐子等级够：矿表的 tier（来自整合包 jar 的 needs_*_tool 标签）对身上最好的镐；
+ *     等级不够不挖，但**告诉 mind**（"看见钻石矿，要铁镐"）—— 一个位置只说一次
+ *   · 矿旁边（六面或上方）有岩浆 / 水：不挖（挖开会放出来）
+ *   · 同一格挖失败过：10 分钟内不再试
+ *
+ * 收获、采矿都只在"真闲着"时做：跟着人走的时候不做（只捡东西），夜里在露天不做。
+ *
+ * ## 本能事件（给 mind）
+ *
+ * 本能做成了什么、看见什么却没做成，记进 `I.events`（带 seq），mind 按 `GET /instinct/events?since=` 读，
+ * 变成她经历的一件事 —— 她得知道自己"顺手"干了什么，不然会以为那是别人干的。
  */
 
 const CFG = {
@@ -48,17 +73,53 @@ const CFG = {
     followLeash: 8,         // 跟随中：离玩家几格内（捡完还追得上）
     nightOutRadius: 4,      // 夜里在露天：只捡脚边的，不往黑处跑（night.js）
     settleMs: 1000,         // 落地多久后才捡
+    thrownSettleMs: 2500,   // 别的玩家扔的：多等一会儿（原版拾取延迟 40 tick + 反悔时间）
     batch: 4,               // 一次最多走几堆
     maxFails: 2,            // 同一堆失败几次就先放下
     failCooldownMs: 60000,
     quietAfterStopMs: 20000,   // /stop 之后多久不动
     minHealth: 7,
     threatRadius: 12,       // 这么近有冲她来的怪就不捡
-    thrownRadius: 0.6,      // 刷出点离某个玩家的"出手点"这么近 = 被扔出来的
+    thrownRadius: 0.6,      // 刷出点离某个玩家的"出手点"这么近 = 被他扔出来的
     timeoutMs: 6000,        // 每堆的寻路超时（/pickup 的 timeoutMs）
   },
+  harvest: {
+    enabled: process.env.MC_INSTINCT_HARVEST !== 'false',
+    radius: 10,
+    maxDy: 3,
+    minMature: 3,           // 至少几棵成熟才去
+    cooldownMs: 30000,      // 收完一轮歇多久再看
+  },
+  mine: {
+    enabled: process.env.MC_INSTINCT_MINE !== 'false',
+    radius: 12,             // 只挖这么近的（/mine 的 maxRadius）
+    maxDy: 4,
+    maxVein: 8,             // 一次最多挖几块（一条矿脉）
+    lowWhenBelow: 16,       // low 价值的矿（煤…）：身上掉落物少于这个才挖
+    failCooldownMs: 600000,
+    cooldownMs: 5000,
+  },
+  minFreeSlots: 2,          // 收获、采矿至少留几个空格
   yieldWaitMs: 1500,        // 让出身体时最多等本能收拾多久
 };
+
+// 镐子等级。原版按材质；模组镐认不出材质的按石镐算（宁可少挖，不白敲）
+const TIER = { wood: 0, gold: 0, stone: 1, iron: 2, diamond: 3, netherite: 4 };
+function pickaxeTier (itemNames = []) {
+  let best = -1;
+  for (const n of itemNames) {
+    const bare = String(n).replace(/^.*:/, '');
+    if (!/pickaxe/.test(bare)) continue;
+    const m = /^(wooden|golden|stone|iron|diamond|netherite)_pickaxe$/.exec(bare);
+    const t = m ? { wooden: 0, golden: 0, stone: 1, iron: 2, diamond: 3, netherite: 4 }[m[1]]
+      : /netherite/.test(bare) ? 4 : /diamond/.test(bare) ? 3 : /iron|steel/.test(bare) ? 2 : 1;
+    if (t > best) best = t;
+  }
+  return best;   // -1 = 没有镐子
+}
+/** 矿要几级镐。表里 tier 为空 = 没查到 → 保守按铁镐（找不到证据时往安全那边靠） */
+const needTier = (tier) => (tier && TIER[tier] != null ? TIER[tier] : TIER.iron);
+const TIER_NAME = ['木镐', '石镐', '铁镐', '钻石镐', '下界合金镐'];
 
 // ------------------------------------------------------------------ 纯判据（可自测）
 
@@ -69,21 +130,21 @@ const hdist = (a, b) => Math.hypot(a.x - b.x, a.z - b.z);
  * 原版 `Player.drop()`：生成点 = 眼睛高度 - 0.3（站立时脚底 +1.32，潜行 +1.27-0.3），水平就在玩家身上。
  * 挖方块掉的在方块中心 ±0.25（离玩家至少 ~0.75），怪死掉的在怪脚下 —— 都不会落在这个小圈里。
  */
-function isThrownBy (spawnPos, playerPositions, radius = CFG.pickup.thrownRadius) {
-  if (!spawnPos) return false;
-  for (const p of playerPositions) {
+function whoThrew (spawnPos, players, radius = CFG.pickup.thrownRadius) {
+  if (!spawnPos) return null;
+  for (const { name, pos: p } of players) {
     if (!p) continue;
     const dy = spawnPos.y - (p.y + 1.32);
-    if (hdist(spawnPos, p) <= radius && dy >= -0.5 && dy <= 0.3) return true;
+    if (hdist(spawnPos, p) <= radius && dy >= -0.5 && dy <= 0.3) return name;
   }
-  return false;
+  return null;
 }
 
 /**
  * 捡不捡、捡哪几堆。
  *
  * @param ctx.self       { x, y, z }   她的脚底
- * @param ctx.drops      [{ id, pos, ageMs, thrown, item }]  item = 物品名或 null（读不到）
+ * @param ctx.drops      [{ id, pos, ageMs, thrower, item }]  thrower = 谁扔的（'self' = 她自己，玩家名，null = 不是扔的）；item = 物品名或 null（读不到）
  * @param ctx.following  { pos } | null   正在跟的玩家
  * @param ctx.fails      Map id → { n, until }
  * @param ctx.canHold    (itemName|null) → boolean
@@ -94,12 +155,12 @@ function pickPickup (ctx, cfg = CFG.pickup) {
   const { self, drops = [], following = null, fails = new Map(), canHold = () => true, now = Date.now() } = ctx;
   if (!self) return { skip: '没有位置' };
   const radius = following ? cfg.followRadius : cfg.radius;
-  const why = { young: 0, thrown: 0, far: 0, full: 0, failed: 0 };
+  const why = { young: 0, mine: 0, far: 0, full: 0, failed: 0 };
   const ok = [];
   for (const d of drops) {
     if (!d?.pos) continue;
-    if (d.ageMs < cfg.settleMs) { why.young++; continue; }
-    if (d.thrown) { why.thrown++; continue; }
+    if (d.thrower === 'self') { why.mine++; continue; }
+    if (d.ageMs < (d.thrower ? cfg.thrownSettleMs : cfg.settleMs)) { why.young++; continue; }
     const dist = hdist(d.pos, self);
     if (dist > radius || Math.abs(d.pos.y - self.y) > cfg.maxDy) { why.far++; continue; }
     if (following && hdist(d.pos, following.pos) > cfg.followLeash) { why.far++; continue; }
@@ -114,6 +175,72 @@ function pickPickup (ctx, cfg = CFG.pickup) {
   }
   ok.sort((a, b) => a.dist - b.dist);
   return { ids: ok.slice(0, cfg.batch).map(o => o.id) };
+}
+
+/**
+ * 挖哪条矿。
+ * @param ctx.ores   [{ name, pos, value, tier, drops?, visible, hazard }]  hazard = 旁边有岩浆/水
+ * @param ctx.self   她的位置；ctx.pick = pickaxeTier()；ctx.have = 物品名 → 数量（判断 low 矿缺不缺）
+ * @param ctx.fails  Map "x,y,z" → until
+ * @returns { target, count } | { skip, lacking? }   lacking = [{ name, pos, need }] 看得见但镐子不够的（告诉 mind）
+ */
+function pickOre (ctx, cfg = CFG.mine) {
+  const { ores = [], self, pick = -1, have = {}, fails = new Map(), now = Date.now() } = ctx;
+  if (!self) return { skip: '没有位置' };
+  const key = (p) => `${p.x},${p.y},${p.z}`;
+  const lacking = [];
+  const why = { far: 0, hidden: 0, hazard: 0, failed: 0, cheap: 0, tool: 0 };
+  const ok = [];
+  for (const o of ores) {
+    if (!o?.pos) continue;
+    if (hdist(o.pos, self) > cfg.radius || Math.abs(o.pos.y - self.y) > cfg.maxDy) { why.far++; continue; }
+    if (!o.visible) { why.hidden++; continue; }
+    if (o.hazard) { why.hazard++; continue; }
+    const f = fails.get(key(o.pos));
+    if (f && now < f) { why.failed++; continue; }
+    if (o.value === 'low') {
+      const got = (o.drops || []).reduce((n, d) => n + (have[d] || 0), 0);
+      if (got >= cfg.lowWhenBelow) { why.cheap++; continue; }
+    }
+    const need = needTier(o.tier);
+    if (pick < need) { why.tool++; lacking.push({ name: o.name, pos: o.pos, need }); continue; }
+    ok.push({ ...o, dist: hdist(o.pos, self), rank: o.value === 'high' ? 0 : o.value === 'mid' ? 1 : 2 });
+  }
+  if (!ok.length) {
+    const parts = Object.entries(why).filter(([, n]) => n).map(([k, n]) => `${k}=${n}`);
+    return { skip: parts.length ? `有矿但不挖（${parts.join(' ')}）` : '看不见矿', lacking };
+  }
+  ok.sort((a, b) => (a.rank - b.rank) || (a.dist - b.dist));
+  const t = ok[0];
+  const count = Math.min(cfg.maxVein, ok.filter(o => o.name === t.name).length);
+  return { target: { name: t.name, pos: t.pos }, count, lacking };
+}
+
+/**
+ * 收哪些庄稼。
+ * @param ctx.crops [{ name, pos, age, maxAge, harvest, farmland, visible }]
+ * @param ctx.inHome (pos) → boolean | null（null = 不知道家在哪）
+ * @returns { only: [pos] } | { skip }
+ */
+function pickHarvest (ctx, cfg = CFG.harvest) {
+  const { crops = [], self, inHome = () => null } = ctx;
+  if (!self) return { skip: '没有位置' };
+  const why = { far: 0, green: 0, useType: 0, notOurs: 0, hidden: 0 };
+  const ok = [];
+  for (const c of crops) {
+    if (!c?.pos) continue;
+    if (hdist(c.pos, self) > cfg.radius || Math.abs(c.pos.y - self.y) > cfg.maxDy) { why.far++; continue; }
+    if (!(c.age >= c.maxAge)) { why.green++; continue; }
+    if (c.harvest === 'use') { why.useType++; continue; }
+    if (c.farmland && inHome(c.pos) !== true) { why.notOurs++; continue; }   // 耕地上的是有人种的：只收家里的
+    if (c.visible === false) { why.hidden++; continue; }
+    ok.push(c);
+  }
+  if (ok.length < cfg.minMature) {
+    const parts = Object.entries(why).filter(([, n]) => n).map(([k, n]) => `${k}=${n}`);
+    return { skip: ok.length ? `成熟的只有 ${ok.length} 棵，攒一攒再收` : (parts.length ? `有庄稼但不收（${parts.join(' ')}）` : '附近没有庄稼') };
+  }
+  return { only: ok.map(c => c.pos) };
 }
 
 /**
@@ -137,21 +264,39 @@ function bodyBusy ({ inflight = 0, currentAction = null, windowOpen = false, qui
  */
 function install (bot, state, deps) {
   const I = state.instinct = state.instinct || {
-    cfg: { pickup: { ...CFG.pickup } },
+    cfg: {},
     inflight: 0,
     quietUntil: 0,
     running: null,      // { kind, abort(), done: Promise }
-    last: null,         // 最近一次判断（为什么捡 / 为什么不捡）
+    last: null,         // 最近一次判断（每个本能为什么做 / 为什么没做）
     log: [],            // 最近做过的事
+    events: [], evSeq: 0,   // 给 mind 的事（GET /instinct/events?since=）
+    told: new Set(),        // 已经告诉过 mind 的"镐子不够"的矿位
+    home: null,             // { center:{x,y,z}, radius }，mind 通过 POST /instinct {home} 告诉
   };
-  const spawned = new Map();   // 掉落物 id → { t, thrown }
+  // 跨重连保留状态；新加的本能补上默认配置（老的 state.instinct 里没有）
+  for (const k of ['pickup', 'harvest', 'mine']) I.cfg[k] = { ...CFG[k], ...(I.cfg[k] || {}) };
+  const spawned = new Map();   // 掉落物 id → { t, thrower }
   const fails = new Map();
+  const mineFails = new Map();   // "x,y,z" → 到什么时候之前不再试
 
   bot.on('entitySpawn', (e) => {
     try {
       if (!deps.isDropEntity(e)) return;
-      const players = Object.values(bot.players || {}).map(p => p.entity?.position).filter(Boolean);
-      spawned.set(e.id, { t: Date.now(), thrown: isThrownBy(e.position, players) });
+      const players = Object.values(bot.players || {})
+        .filter(p => p.entity?.position)
+        .map(p => ({ name: p.entity === bot.entity ? 'self' : p.username, pos: p.entity.position }));
+      spawned.set(e.id, { t: Date.now(), thrower: whoThrew(e.position, players) });
+    } catch (_) {}
+  });
+  // 她捡起了别人扔的东西：告诉物品账"这是谁给的"（collect 包点名了是哪个实体，是确证）
+  bot.on('playerCollect', (collector, collected) => {
+    try {
+      if (collector !== bot.entity) return;
+      const s = spawned.get(collected?.id);
+      if (!s?.thrower || s.thrower === 'self') return;
+      const item = deps.droppedItemOf(collected)?.name;
+      if (item) state.ledger?.note({ gift: { from: s.thrower, item } });
     } catch (_) {}
   });
   bot.on('entityGone', (e) => { spawned.delete(e?.id); fails.delete(e?.id); });
@@ -180,43 +325,152 @@ function install (bot, state, deps) {
     return null;
   }
 
-  async function runPickup (ids, followName) {
+  const event = (kind, text, extra = {}) => {
+    I.events.push({ seq: ++I.evSeq, t: Date.now(), kind, text, ...extra });
+    if (I.events.length > 50) I.events.shift();
+  };
+
+  /**
+   * 跑一件本能的事。abort() 由 yieldBody 调：置标记 + 停寻路 + 停挖（手上的 goto/dig 立刻结束，循环在下一步检查标记）。
+   * ledgerEv：这期间背包的进出算谁的（物品账）。
+   */
+  async function runJob (kind, ledgerEv, fn) {
     let aborted = false;
-    const endLedger = state.ledger ? state.ledger.begin({ instinct: 'pickup' }) : null;   // 这期间多出来的记成"捡到"
+    const endLedger = state.ledger && ledgerEv ? state.ledger.begin(ledgerEv) : null;
     const done = (async () => {
-      const before = ids.slice();
-      let r = null;
-      try {
-        r = await deps.handlers['POST /pickup']({
-          ids, count: ids.length, radius: I.cfg.pickup.radius + 2,
-          timeoutMs: I.cfg.pickup.timeoutMs, abort: () => aborted,
-        });
-      } catch (e) {
-        r = { error: e.message };
-      }
-      // 还在地上的 = 没捡到（被别人捡走/消失的会先触发 entityGone，不算她失败）
-      for (const id of before) {
-        if (!bot.entities[id]) continue;
-        const f = fails.get(id) || { n: 0, until: 0 };
-        f.n++; f.until = Date.now() + I.cfg.pickup.failCooldownMs;
-        fails.set(id, f);
-      }
-      note({ kind: 'pickup', aborted: aborted || undefined, ids: before.length, picked: r?.picked ?? 0, error: r?.error });
-      // 本来在跟人：接着跟（被命令打断的不接 —— 命令说了算）
-      if (followName && !aborted && !state.currentAction && bot.players[followName]?.entity) {
-        try { deps.hands.startFollow(bot, state, followName, 2); } catch (_) {}
-      }
+      try { return await fn(() => aborted); } catch (e) { return { error: e.message }; }
     })();
-    I.running = { kind: 'pickup', abort: () => { aborted = true; try { bot.pathfinder.stop(); } catch (_) {} }, done };
-    try { await done; } finally {
+    I.running = {
+      kind,
+      abort: () => {
+        aborted = true;
+        try { bot.pathfinder.stop(); } catch (_) {}
+        try { bot.stopDigging(); } catch (_) {}
+      },
+      done,
+    };
+    try { return { r: await done, aborted }; } finally {
       I.running = null;
       if (endLedger) { endLedger(); state.ledgerKick?.(); }
     }
   }
 
+  async function runPickup (ids, followName) {
+    const { r, aborted } = await runJob('pickup', { instinct: 'pickup' }, (abort) => deps.handlers['POST /pickup']({
+      ids, count: ids.length, radius: I.cfg.pickup.radius + 2, timeoutMs: I.cfg.pickup.timeoutMs, abort,
+    }));
+    // 还在地上的 = 没捡到（被别人捡走/消失的会先触发 entityGone，不算她失败）
+    for (const id of ids) {
+      if (!bot.entities[id]) continue;
+      const f = fails.get(id) || { n: 0, until: 0 };
+      f.n++; f.until = Date.now() + I.cfg.pickup.failCooldownMs;
+      fails.set(id, f);
+    }
+    note({ kind: 'pickup', aborted: aborted || undefined, ids: ids.length, picked: r?.picked ?? 0, error: r?.error });
+    // 本来在跟人：接着跟（被命令打断的不接 —— 命令说了算）
+    if (followName && !aborted && !state.currentAction && bot.players[followName]?.entity) {
+      try { deps.hands.startFollow(bot, state, followName, 2); } catch (_) {}
+    }
+  }
+
+  // ---- 矿表 / 作物表（整合包真值，knowledge/ores.json、crops.json）→ 本连接的方块 id
+  let tables = null;
+  function loadTables () {
+    if (tables) return tables;
+    const read = (f) => { try { return JSON.parse(require('fs').readFileSync(require('path').join(__dirname, 'knowledge', f), 'utf8')); } catch (_) { return null; } };
+    const ores = deps.tables?.ores || read('ores.json');
+    const crops = deps.tables?.crops || read('crops.json');
+    const reg = bot.registry;
+    const idOf = (n) => (reg.blocksByName[n] || reg.blocksByName[String(n).replace(/^minecraft:/, '')])?.id;
+    const index = (list) => {
+      const byId = new Map();
+      for (const x of Array.isArray(list) ? list : []) { const id = idOf(x.name); if (id != null) byId.set(id, x); }
+      return byId;
+    };
+    tables = { ores: index(ores), crops: index(crops), oresLoaded: Array.isArray(ores), cropsLoaded: Array.isArray(crops) };
+    return tables;
+  }
+
+  const bareName = (n) => String(n).replace(/^minecraft:/, '');
+  const hazardAround = (p) => {
+    for (const [dx, dy, dz] of [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]]) {
+      const b = bot.blockAt(p.offset(dx, dy, dz));
+      if (b && /lava|water/.test(b.name)) return true;
+    }
+    return false;
+  };
+  const inHome = (p) => {
+    const h = I.home;
+    if (!h) return null;
+    return Math.hypot(p.x - h.center.x, p.z - h.center.z) <= h.radius && Math.abs(p.y - h.center.y) <= 16;
+  };
+
+  async function tryHarvest () {
+    const H = I.cfg.harvest;
+    if (!H.enabled || Date.now() - (I.lastHarvestAt || 0) < H.cooldownMs) return null;
+    const T = loadTables();
+    if (!T.cropsLoaded || !T.crops.size) return { skip: '没有作物表（knowledge/crops.json）' };
+    const pts = bot.findBlocks({ matching: [...T.crops.keys()], maxDistance: H.radius, count: 256 });
+    const crops = pts.map(p => {
+      const b = bot.blockAt(p); if (!b) return null;
+      const row = T.crops.get(b.type);
+      const props = b.getProperties?.() || {};
+      const below = bot.blockAt(p.offset(0, -1, 0));
+      return {
+        name: b.name, pos: p, age: +props[row.ageProp || 'age'], maxAge: row.maxAge, harvest: row.harvest,
+        farmland: !!below && /farmland/.test(below.name),
+        visible: bot.canSeeBlock(b),
+      };
+    }).filter(Boolean);
+    const pick = pickHarvest({ crops, self: bot.entity.position, inHome });
+    if (!pick.only) return pick;
+    I.lastHarvestAt = Date.now();
+    const { r, aborted } = await runJob('harvest', { route: 'POST /farm' }, (abort) => deps.hands.farm(bot, state, {
+      radius: H.radius + 2, replant: true, plantEmpty: false, only: pick.only, abort,
+    }));
+    note({ kind: 'harvest', aborted: aborted || undefined, harvested: r?.harvested ?? 0, replanted: r?.replanted ?? 0, error: r?.error });
+    if (r?.harvested) event('harvest', `顺手收了 ${r.harvested} 棵成熟的庄稼${r.replanted ? `，补种了 ${r.replanted} 棵` : '（没种子补种）'}`);
+    return { did: 'harvest' };
+  }
+
+  async function tryMine () {
+    const M = I.cfg.mine;
+    if (!M.enabled || Date.now() - (I.lastMineAt || 0) < M.cooldownMs) return null;
+    if (bot.inventory.emptySlotCount() < CFG.minFreeSlots) return { skip: '背包快满了，不挖' };
+    const T = loadTables();
+    if (!T.oresLoaded || !T.ores.size) return { skip: '没有矿表（knowledge/ores.json）' };
+    const pts = bot.findBlocks({ matching: [...T.ores.keys()], maxDistance: M.radius, count: 64 });
+    const ores = pts.map(p => {
+      const b = bot.blockAt(p); if (!b) return null;
+      const row = T.ores.get(b.type);
+      return { name: row.name, pos: p, value: row.value, tier: row.tier, drops: (row.drops || []).map(bareName), visible: bot.canSeeBlock(b), hazard: hazardAround(p) };
+    }).filter(Boolean);
+    const have = {};
+    for (const it of bot.inventory.items()) have[bareName(it.name)] = (have[bareName(it.name)] || 0) + it.count;
+    const pick = pickOre({ ores, self: bot.entity.position, pick: pickaxeTier(bot.inventory.items().map(i => i.name)), have, fails: mineFails });
+    // 看得见、值钱、但镐子不够：告诉 mind（一个位置只说一次）
+    for (const l of pick.lacking || []) {
+      const k = `${l.pos.x},${l.pos.y},${l.pos.z}`;
+      if (I.told.has(k)) continue;
+      I.told.add(k);
+      event('ore_lacking_tool', `看见 ${l.name}（${k}），但要${TIER_NAME[l.need] || '更好的镐子'}才挖得出东西`, { ore: l.name, pos: l.pos });
+    }
+    if (!pick.target) return pick;
+    I.lastMineAt = Date.now();
+    const { r, aborted } = await runJob('mine', { route: 'POST /mine' }, (abort) => deps.handlers['POST /mine']({
+      blockName: pick.target.name, count: pick.count, maxRadius: M.radius, abort,
+    }));
+    const got = typeof r?.mined === 'number' ? r.mined : 0;   // /mine 回的是挖掉的块数
+    const k = `${pick.target.pos.x},${pick.target.pos.y},${pick.target.pos.z}`;
+    if (!got && !aborted) mineFails.set(k, Date.now() + M.failCooldownMs);
+    note({ kind: 'mine', ore: pick.target.name, aborted: aborted || undefined, mined: got, error: r?.error });
+    if (got) event('mine', `看见 ${pick.target.name} 就顺手挖了 ${got} 块`, { ore: pick.target.name });
+    return { did: 'mine' };
+  }
+
   async function tick () {
+    if (I.running || !bot.entity) return;
     const P = I.cfg.pickup;
-    if (!P.enabled || I.running || !bot.entity) return;
     const busy = bodyBusy({
       inflight: I.inflight, currentAction: state.currentAction,
       windowOpen: !!bot.currentWindow, quietUntil: I.quietUntil,
@@ -228,33 +482,41 @@ function install (bot, state, deps) {
 
     const followName = /^following (.+)$/.exec(state.currentAction || '')?.[1] || null;
     const followEnt = followName ? bot.players[followName]?.entity : null;
-    const now = Date.now();
-    const drops = Object.values(bot.entities)
-      .filter(e => e?.position && e.isValid !== false && deps.isDropEntity(e))
-      .map(e => {
-        const s = spawned.get(e.id);
-        // 本能装上之前就在地上的：没有刷出记录，当作早就落地、不是扔的
-        return {
-          id: e.id, pos: e.position,
-          ageMs: s ? now - s.t : Infinity,
-          thrown: s ? s.thrown : false,
-          item: deps.droppedItemOf(e)?.name ?? null,
-        };
-      });
-    // 夜里在露天：半径收到脚边
-    let cfg = P;
+    let nightOut = false;
     try {
       const ph = deps.night?.phaseOf(bot.time?.timeOfDay);
-      if ((ph === 'night' || ph === 'dusk') && deps.night.isOut(deps.exposureOf(bot)?.kind)) {
-        cfg = { ...P, radius: Math.min(P.radius, P.nightOutRadius), followRadius: Math.min(P.followRadius, P.nightOutRadius) };
-      }
+      nightOut = (ph === 'night' || ph === 'dusk') && deps.night.isOut(deps.exposureOf(bot)?.kind);
     } catch (_) {}
-    const pick = pickPickup({
-      self: bot.entity.position, drops, fails, canHold, now,
-      following: followEnt ? { pos: followEnt.position } : null,
-    }, cfg);
-    I.last = { t: now, ...pick };
-    if (pick.ids) await runPickup(pick.ids, followName);
+    const now = Date.now();
+    const last = {};
+
+    // ① 拾取（掉落物 5 分钟就没了，最先）
+    if (P.enabled) {
+      const drops = Object.values(bot.entities)
+        .filter(e => e?.position && e.isValid !== false && deps.isDropEntity(e))
+        .map(e => {
+          const sp = spawned.get(e.id);
+          // 本能装上之前就在地上的：没有刷出记录，当作早就落地、不是扔的
+          return { id: e.id, pos: e.position, ageMs: sp ? now - sp.t : Infinity, thrower: sp ? sp.thrower : null, item: deps.droppedItemOf(e)?.name ?? null };
+        });
+      // 夜里在露天：半径收到脚边
+      const cfg = nightOut ? { ...P, radius: Math.min(P.radius, P.nightOutRadius), followRadius: Math.min(P.followRadius, P.nightOutRadius) } : P;
+      const pick = pickPickup({ self: bot.entity.position, drops, fails, canHold, now, following: followEnt ? { pos: followEnt.position } : null }, cfg);
+      last.pickup = pick.skip || `捡 ${pick.ids.length} 堆`;
+      if (pick.ids) { I.last = { t: now, ...last }; await runPickup(pick.ids, followName); return; }
+    }
+    // 跟着人走、夜里在露天：只捡东西，不收庄稼不挖矿
+    if (followName) { I.last = { t: now, ...last, other: `跟着 ${followName}，只捡东西` }; return; }
+    if (nightOut) { I.last = { t: now, ...last, other: '夜里在露天，不收不挖' }; return; }
+
+    // ② 收获  ③ 采矿
+    for (const [k, f] of [['harvest', tryHarvest], ['mine', tryMine]]) {
+      const r = await f();
+      if (!r) continue;
+      if (r.did) { I.last = { t: now, ...last, [k]: '做了' }; return; }
+      last[k] = r.skip;
+    }
+    I.last = { t: now, ...last };
   }
 
   let ticking = false;
@@ -298,19 +560,22 @@ function selftest () {
   };
   const P = CFG.pickup;
   const me = { x: 0.5, y: 64, z: 0.5 };
-  const d = (id, x, z, extra = {}) => ({ id, pos: { x, y: 64, z }, ageMs: 5000, thrown: false, item: 'cobblestone', ...extra });
+  const d = (id, x, z, extra = {}) => ({ id, pos: { x, y: 64, z }, ageMs: 5000, thrower: null, item: 'cobblestone', ...extra });
 
   // ---- 扔出来的判定 ----
   const owner = { x: 5.5, y: 64, z: 0.5 };
-  check('★ 从玩家眼前生成 → 扔的', isThrownBy({ x: 5.6, y: 65.32, z: 0.5 }, [owner]), true);
-  check('她自己丢的也算（自己在列表里）', isThrownBy({ x: 0.5, y: 65.3, z: 0.4 }, [me]), true);
-  check('挖旁边的方块掉的（方块中心 ±0.25）→ 不是扔的', isThrownBy({ x: 6.75, y: 65.5, z: 0.5 }, [owner]), false);
-  check('怪死在玩家脚边掉的（脚底高度）→ 不是扔的', isThrownBy({ x: 5.6, y: 64.1, z: 0.5 }, [owner]), false);
+  const P2 = [{ name: 'starwish', pos: owner }, { name: 'self', pos: me }];
+  check('★ 从玩家眼前生成 → 他扔的', whoThrew({ x: 5.6, y: 65.32, z: 0.5 }, P2), 'starwish');
+  check('从她自己眼前生成 → 她自己扔的', whoThrew({ x: 0.5, y: 65.3, z: 0.4 }, P2), 'self');
+  check('挖旁边的方块掉的（方块中心 ±0.25）→ 不是扔的', whoThrew({ x: 6.75, y: 65.5, z: 0.5 }, P2), null);
+  check('怪死在玩家脚边掉的（脚底高度）→ 不是扔的', whoThrew({ x: 5.6, y: 64.1, z: 0.5 }, P2), null);
 
   // ---- 挑哪几堆 ----
   check('附近一堆 → 捡', pickPickup({ self: me, drops: [d(1, 3, 0)] }).ids?.[0], 1);
   check('刚落地 → 等等', pickPickup({ self: me, drops: [d(1, 3, 0, { ageMs: 200 })] }).ids, undefined);
-  check('★ 玩家扔的 → 不捡', pickPickup({ self: me, drops: [d(1, 3, 0, { thrown: true })] }).ids, undefined);
+  check('★ 玩家扔的（常常是扔给她的）→ 捡', pickPickup({ self: me, drops: [d(1, 3, 0, { thrower: 'starwish' })] }).ids?.[0], 1);
+  check('玩家刚扔出 1.5 秒 → 再等等（拾取延迟 + 给他反悔的时间）', pickPickup({ self: me, drops: [d(1, 3, 0, { thrower: 'starwish', ageMs: 1500 })] }).ids, undefined);
+  check('★ 她自己扔的 → 不捡（不然丢了又捡）', pickPickup({ self: me, drops: [d(1, 3, 0, { thrower: 'self' })] }).ids, undefined);
   check('太远 → 不管', pickPickup({ self: me, drops: [d(1, 20, 0)] }).ids, undefined);
   check('楼下 5 格 → 不管', pickPickup({ self: me, drops: [{ ...d(1, 2, 0), pos: { x: 2, y: 59, z: 0 } }] }).ids, undefined);
   check('装不下 → 不去', pickPickup({ self: me, drops: [d(1, 3, 0)], canHold: () => false }).ids, undefined);
@@ -322,7 +587,7 @@ function selftest () {
   const r = pickPickup({ self: me, drops: many });
   check('一次最多 batch 堆', r.ids.length, P.batch);
   check('从近到远', r.ids.join(','), '2,4,5,3');
-  check('跳过的原因写得出来', /thrown=1/.test(pickPickup({ self: me, drops: [d(1, 3, 0, { thrown: true })] }).skip), true);
+  check('跳过的原因写得出来', /mine=1/.test(pickPickup({ self: me, drops: [d(1, 3, 0, { thrower: 'self' })] }).skip), true);
   check('没有掉落物 → 如实说没有', pickPickup({ self: me, drops: [] }).skip, '附近没有掉落物');
 
   // 跟随中：离她近、离玩家也近才捡
@@ -330,6 +595,42 @@ function selftest () {
   check('跟随中：玩家身边的 → 捡', pickPickup({ self: me, drops: [d(1, 4, 0)], following: fol }).ids?.[0], 1);
   const folFar = { pos: { x: 6, y: 64, z: 0 } };   // 玩家已经往前走出 6 格
   check('★ 跟随中：离玩家太远的 → 不为它把人跟丢', pickPickup({ self: me, drops: [d(1, -4, 0)], following: folFar }).ids, undefined);
+
+  // ---- 镐子等级 ----
+  check('没有镐子 → -1', pickaxeTier(['minecraft:stick']), -1);
+  check('石镐 + 铁镐 → 取最好的（铁=2）', pickaxeTier(['stone_pickaxe', 'minecraft:iron_pickaxe']), 2);
+  check('金镐只算木级', pickaxeTier(['golden_pickaxe']), 0);
+  check('模组镐认得出材质的按材质', pickaxeTier(['somemod:diamond_pickaxe_plus']), 3);
+  check('模组镐认不出材质 → 按石镐（宁可少挖）', pickaxeTier(['somemod:crystal_pickaxe']), 1);
+  check('★ 矿表没查到等级 → 保守按铁镐', needTier(null), TIER.iron);
+
+  // ---- 挖哪条矿 ----
+  const ore = (name, x, z, extra = {}) => ({ name, pos: { x, y: 64, z }, value: 'mid', tier: 'stone', drops: ['raw_iron'], visible: true, hazard: false, ...extra });
+  const O = (ores, extra = {}) => pickOre({ ores, self: me, pick: 2, ...extra });
+  check('看得见的铁矿 → 挖', O([ore('iron_ore', 3, 0)]).target?.name, 'iron_ore');
+  check('★ 看不见的（透视）→ 不挖', O([ore('iron_ore', 3, 0, { visible: false })]).target, undefined);
+  check('★ 旁边有岩浆 → 不挖', O([ore('iron_ore', 3, 0, { hazard: true })]).target, undefined);
+  check('太远 → 不去', O([ore('iron_ore', 30, 0)]).target, undefined);
+  check('★ 高价值优先，哪怕远一点', O([ore('iron_ore', 2, 0), ore('diamond_ore', 8, 0, { value: 'high', tier: 'iron' })]).target?.name, 'diamond_ore');
+  const noTool = O([ore('diamond_ore', 3, 0, { value: 'high', tier: 'iron' })], { pick: 1 });
+  check('★ 石镐遇钻石矿 → 不挖', noTool.target, undefined);
+  check('★ …但告诉 mind 要铁镐', noTool.lacking?.[0]?.need, TIER.iron);
+  check('没有镐子 → 什么都不挖', O([ore('coal_ore', 3, 0, { value: 'low', tier: 'wood', drops: ['coal'] })], { pick: -1 }).target, undefined);
+  const coal = (n) => O([ore('coal_ore', 3, 0, { value: 'low', tier: 'wood', drops: ['coal'] })], { have: { coal: n } });
+  check('煤不够（缺火把）→ 挖', coal(3).target?.name, 'coal_ore');
+  check('★ 煤够多了 → 不为煤停下', coal(40).target, undefined);
+  check('一条矿脉一起挖（同名的数）', O([ore('iron_ore', 3, 0), ore('iron_ore', 3, 1), ore('iron_ore', 4, 1)]).count, 3);
+  check('失败过的格子冷却中 → 不挖', O([ore('iron_ore', 3, 0)], { fails: new Map([['3,64,0', 1e15]]), now: 0 }).target, undefined);
+
+  // ---- 收哪些庄稼 ----
+  const crop = (x, z, extra = {}) => ({ name: 'wheat', pos: { x, y: 64, z }, age: 7, maxAge: 7, harvest: 'break', farmland: true, visible: true, ...extra });
+  const home = () => true; const away = () => false;
+  check('家里三棵熟了 → 收', pickHarvest({ self: me, crops: [crop(1, 0), crop(2, 0), crop(3, 0)], inHome: home }).only?.length, 3);
+  check('只熟了两棵 → 攒一攒', pickHarvest({ self: me, crops: [crop(1, 0), crop(2, 0), crop(3, 0, { age: 4 })], inHome: home }).only, undefined);
+  check('★ 别人（家外）耕地上的 → 不收', pickHarvest({ self: me, crops: [crop(1, 0), crop(2, 0), crop(3, 0)], inHome: away }).only, undefined);
+  check('★ 不知道家在哪 → 耕地上的也不收', pickHarvest({ self: me, crops: [crop(1, 0), crop(2, 0), crop(3, 0)] }).only, undefined);
+  check('野生的（不在耕地上）→ 收', pickHarvest({ self: me, crops: [crop(1, 0, { farmland: false }), crop(2, 0, { farmland: false }), crop(3, 0, { farmland: false })] }).only?.length, 3);
+  check('★ 右键摘的（浆果丛）→ 不打掉', pickHarvest({ self: me, crops: [1, 2, 3].map(x => crop(x, 0, { harvest: 'use' })), inHome: home }).only, undefined);
 
   // ---- 身体空不空 ----
   check('什么都没在做 → 空', bodyBusy({}), null);
@@ -360,7 +661,7 @@ function selftest () {
   });
 }
 
-module.exports = { CFG, isThrownBy, pickPickup, bodyBusy, install, yieldBody, PASSIVE_POSTS, selftest };
+module.exports = { CFG, TIER, pickaxeTier, needTier, pickOre, pickHarvest, whoThrew, pickPickup, bodyBusy, install, yieldBody, PASSIVE_POSTS, selftest };
 
 if (require.main === module && process.argv.includes('--selftest')) {
   selftest().then(code => process.exit(code));

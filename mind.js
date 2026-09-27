@@ -33,8 +33,8 @@ const mem = require('./memory-store');
 const knowledge = require('./knowledge');
 const ambition = require('./ambition');
 const review = require('./self-review');
-const ledgerLib = require('./inventory-ledger');
-const night = require('./night');   // 天黑本能：天色变化的事件 + 今晚怎么安排（见 night.js）   // 只用它的 render（账在 bridge 记，见 inventory-ledger.js）
+const ledgerLib = require('./inventory-ledger');   // 只用它的 render（账在 bridge 记，见 inventory-ledger.js）
+const night = require('./night');   // 天黑本能：天色变化的事件 + 今晚怎么安排（见 night.js）
 const { TOOLS, bridge, parseArgs, normalizeArgs, toolSpec, summarize } = body;
 
 const CFG = {
@@ -74,6 +74,8 @@ const W = {
   lastInv: null,
   ledgerSeq: null,    // 物品账读到哪了（bridge 的 /inventory/ledger）；null = 还没读过（第一次不翻旧账）
   ledgerNew: null,    // 这一眼新看到的账
+  instinctSeq: null,  // 本能事件读到哪了（/instinct/events）
+  homeToldAt: 0,      // 上次把家告诉本能层的时间
   lastHp: null,
   players: new Set(),
   log: [],
@@ -238,6 +240,20 @@ async function look () {
     safe('/status'), safe('/inventory'), safe('/nearby?radius=16'), safe('/players'), safe('/chatlog?limit=30'), safe('/doors?radius=6'), safe('/equipment'),
     safe(`/containers/seen?since=${W.seenSince || 0}`), safe('/chests/unseen?radius=24'), safe('/light'),
   ]);
+  // 本能（身体闲着时自己做的事）：做成了什么、看见什么没做成 —— 她得知道是自己干的
+  const ins = await safe(`/instinct/events?since=${W.instinctSeq ?? 0}`);
+  if (ins && Array.isArray(ins.events)) {
+    if (W.instinctSeq == null || ins.seq < W.instinctSeq) W.instinctSeq = ins.seq;   // 刚醒 / bridge 重启：不翻旧的
+    else {
+      for (const e of ins.events) emit(`🫳 ${e.text}`, { cue: `${e.kind} ${e.ore || ''}` });
+      W.instinctSeq = ins.seq;
+    }
+  }
+  // 家在哪告诉本能层（收获本能只收家里的地）。一分钟一次，bridge 重启后也能补上
+  if (Date.now() - W.homeToldAt > 60000) {
+    const h = mem.getHome();
+    if (h) { W.homeToldAt = Date.now(); bridge.post('/instinct', { home: { center: h.center, radius: h.radius } }).catch(() => { W.homeToldAt = 0; }); }
+  }
   // 物品账：背包每次进出的原因（捡的 / 放进哪个箱子 / 吃掉 / 用坏…）。bridge 旧版本没有这个端点 → null，走老的前后对比
   const led = await safe(`/inventory/ledger?since=${W.ledgerSeq ?? 0}`);
   if (led && Array.isArray(led.entries)) {

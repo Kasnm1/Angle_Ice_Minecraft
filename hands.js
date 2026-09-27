@@ -3286,7 +3286,10 @@ async function collectDrops (bot, radius = 6) {
   return n;
 }
 
-async function farm (bot, state, { radius = 12, replant = true, plantEmpty = true, seed = null } = {}) {
+// abort：进程内调用才能传（收获本能被命令打断时用），每收一棵 / 种一块之前问一次
+// only：只收这些格子（收获本能先挑好：右键摘的、别人不让收的已经排除）
+async function farm (bot, state, { radius = 12, replant = true, plantEmpty = true, seed = null, abort = null, only = null } = {}) {
+  const stop = () => typeof abort === 'function' && abort();
   const t0 = Date.now();
   const inv0 = invCounts(bot);
   // 只找"有生长阶段（age）属性"的方块种类 —— 以前是把周围所有非空气方块都拿来筛，上限 2000 个全是房子的墙
@@ -3295,10 +3298,12 @@ async function farm (bot, state, { radius = 12, replant = true, plantEmpty = tru
     .map(b => b.id);
   const pts = bot.findBlocks({ matching: ageIds, maxDistance: radius, count: 1500 })
     .map(p => bot.blockAt(p)).filter(b => b && cropInfo(bot, b));
-  const crops = pts.map(b => ({ b, info: cropInfo(bot, b) }));
+  const onlySet = Array.isArray(only) ? new Set(only.map(p => `${p.x},${p.y},${p.z}`)) : null;
+  const crops = pts.filter(b => !onlySet || onlySet.has(`${b.position.x},${b.position.y},${b.position.z}`)).map(b => ({ b, info: cropInfo(bot, b) }));
   const mature = crops.filter(c => c.info.mature);
   let harvested = 0; let replanted = 0; let planted = 0; const notes = [];
   for (const { b } of mature.sort((a, c) => bot.entity.position.distanceTo(a.b.position) - bot.entity.position.distanceTo(c.b.position))) {
+    if (stop()) { notes.push('被新的命令打断'); break; }
     const cur = bot.blockAt(b.position);
     if (!cur || cur.name !== b.name || !cropInfo(bot, cur)?.mature) continue;
     if (eyeDist(bot, cur) > REACH) { const err = await pathTo(bot, cur.position, 2, 15000); if (err && eyeDist(bot, cur) > REACH) { notes.push(`走不到 ${b.name}(${doorKey(b.position)})`); continue; } }
@@ -3313,13 +3318,14 @@ async function farm (bot, state, { radius = 12, replant = true, plantEmpty = tru
     }
     if (harvested % 8 === 0) await collectDrops(bot, 5);
   }
-  if (harvested) await collectDrops(bot, 8);
+  if (harvested && !stop()) await collectDrops(bot, 8);
   // 空着的耕地：播种
-  if (plantEmpty) {
+  if (plantEmpty && !stop()) {
     const lands = bot.findBlocks({ matching: (b) => !!b && /farmland/.test(b.name), maxDistance: radius, count: 400 })
       .filter(p => { const up = bot.blockAt(p.offset(0, 1, 0)); return up && up.name === 'air'; }).map(p => bot.blockAt(p));
     const sdItem = () => (seed ? bot.inventory.items().find(i => fullId(i.name) === fullId(seed)) : bot.inventory.items().find(i => /seed|^carrot$|^potato$/.test(botName(i.name))));
     for (const land of lands) {
+      if (stop()) break;
       const sd = sdItem();
       if (!sd) { if (lands.length) notes.push(`还有 ${lands.length - planted} 块空地，背包里没种子了`); break; }
       if (eyeDist(bot, land) > REACH) { const err = await pathTo(bot, land.position, 2, 12000); if (err && eyeDist(bot, land) > REACH) continue; }
@@ -3707,4 +3713,4 @@ if (require.main === module && process.argv.includes('--selftest')) {
   })();
 }
 
-module.exports = { install, routes, slotByName, foodScore, fullId, botName, startFollow };
+module.exports = { install, routes, slotByName, foodScore, fullId, botName, startFollow, farm };   // farm：收获本能直接调（instinct.js）
