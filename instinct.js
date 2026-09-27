@@ -387,7 +387,9 @@ function pickHarvest (ctx, cfg = CFG.harvest) {
 const HURT_FEET = /(^|:)(sweet_berry_bush|powder_snow|fire|soul_fire|campfire|soul_campfire|cactus|wither_rose|cobweb)$/;
 const HURT_BELOW = /(^|:)(magma_block|campfire|soul_campfire)$/;
 /** 站的地方伤人吗。返回原因或 null。feet / below 是方块名（读不到给 null） */
-function hazardUnder ({ feet = null, below = null } = {}) {
+function hazardUnder ({ feet = null, below = null, fallingAbove = false } = {}) {
+  // 头顶有沙子 / 砂砾正往下掉（mindcraft modes.js 的 self_preservation 有这条；砸到头会闷死）
+  if (fallingAbove) return '头顶有沙子/砂砾掉下来';
   if (feet && HURT_FEET.test(feet)) return `陷在 ${feet} 里`;
   if (below && HURT_BELOW.test(below)) return `站在 ${below} 上`;
   return null;
@@ -887,7 +889,10 @@ function install (bot, state, deps) {
   async function tryStepOff () {
     const f = bot.entity.position.floored();
     const nm = (p) => bot.blockAt(p)?.name ?? null;
-    const why = hazardUnder({ feet: nm(f), below: nm(f.offset(0, -1, 0)) });
+    const me = bot.entity.position;
+    const fallingAbove = Object.values(bot.entities).some(e => e?.name === 'falling_block' && e.position
+      && Math.abs(e.position.x - me.x) < 1 && Math.abs(e.position.z - me.z) < 1 && e.position.y > me.y && e.position.y - me.y < 8);
+    const why = hazardUnder({ feet: nm(f), below: nm(f.offset(0, -1, 0)), fallingAbove });
     if (!why) return null;
     const cells = [];
     for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]]) {
@@ -1869,6 +1874,7 @@ function selftest () {
   check('陷在浆果丛里 → 要挪', typeof hazardUnder({ feet: 'sweet_berry_bush', below: 'grass_block' }), 'string');
   check('陷在细雪里 → 要挪', typeof hazardUnder({ feet: 'minecraft:powder_snow', below: 'stone' }), 'string');
   check('站在草地上 → 没事', hazardUnder({ feet: 'air', below: 'grass_block' }), null);
+  check('★ 头顶有沙子掉下来 → 挪开', typeof hazardUnder({ feet: 'air', below: 'stone', fallingAbove: true }), 'string');
   check('读不到 → 不当危险（不猜）', hazardUnder({}), null);
   const cell = (dx, dz, below, feet = 'air', head = 'air') => ({ dx, dz, feet, head, below });
   check('★ 挪到旁边能站的格子', pickStepOff([cell(1, 0, 'lava'), cell(-1, 0, 'stone')])?.dx, -1);
