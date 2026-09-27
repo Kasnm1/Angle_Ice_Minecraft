@@ -29,6 +29,7 @@
 
 const http = require('http');
 const body = require('./body');
+const speech = require('./speech');
 const mem = require('./memory-store');
 const knowledge = require('./knowledge');
 const ambition = require('./ambition');
@@ -42,7 +43,17 @@ const CFG = {
   ...body.CFG,
   port: parseInt(process.env.MIND_PORT || process.env.BRAIN_PORT || '3003'),
   pollMs: 1000,              // 看一眼世界（本机 HTTP，便宜）
-  debounceMs: 400,           // 事件攒一小会儿再想（玩家常分几条发）
+  debounceMs: 400,           // 事件攒一小会儿再想
+  // 玩家说话：马上开始想，但**先别开口**，等他说完。真人常把一句话拆成几条发（"那个" / "箱子里" / "有铁吗"）。
+  // 他最后一条之后 4 秒内又来一条 → 还没说出口的这一轮作废，带上新的一起重想（见 chatGate / emit）；
+  // 说出口或动了手之后就不作废了，新来的下一轮再接。一直在打也最多压 12 秒。
+  // 等的时候身体照常干活（动作在 bridge 里跑，不靠"想"）；危险、挨打这类 urgent 事件不等。
+  // （2026-09-27 主人定：4 秒；是"想着等"，不是"干等完才想"）
+  chatQuietMs: parseInt(process.env.MIND_CHAT_QUIET_MS || '4000'),
+  // 回他之前还要"打字"：按她要说的字数算，从他最后一条算起（想的时间也算在打字里）。
+  // 短的（"好"）被上面的 4 秒盖住；长的 6–8 秒（主人 2026-09-27："长文本可以 6-8 秒"）
+  typeBaseMs: 2000, typePerCharMs: 150, typeMaxMs: 8000,
+  chatQuietMaxMs: parseInt(process.env.MIND_CHAT_QUIET_MAX_MS || '12000'),
   idleThinkMs: parseInt(process.env.MIND_IDLE_MS || '90000'),   // 多久没事发生就自己想想要干嘛
   maxRounds: 6,              // 一次"想"最多来回几轮（查资料要轮次）
   llmTimeoutMs: 25000,
@@ -106,23 +117,70 @@ function scene (nRecent = 5) {
 
 /**
  * 世界里发生了一件事。text 是给她看的一句话；cue 用来"想起来"；names 是涉及的玩家。
- * urgent：有人跟她说话 / 挨打 —— 马上想，正在"闲想"的话打断它。
+ * urgent：挨打 / 危险 —— 马上想，正在"闲想"的话打断它。
+ * chat：玩家说的话 —— 马上想，但开口前等他说完（chatGate）；还没开口的这一轮被新的一条作废重想。
  */
-function emit (text, { cue = '', names = [], urgent = false } = {}) {
-  W.pending.push({ t: Date.now(), text, cue: `${text} ${cue}`, names });
+function emit (text, { cue = '', names = [], urgent = false, chat = false } = {}) {
+  W.pending.push({ t: Date.now(), text, cue: `${text} ${cue}`, names, urgent, chat });
   W.recent.push(`[${hhmmss()}] ${text}`);
   if (W.recent.length > 8) W.recent.shift();
   // 自动记成经历（人不用刻意也记得今天发生了什么）
   const ids = [...`${text} ${cue}`.matchAll(/[a-z0-9_]+:[a-z0-9_/.-]+/g)].map(m => m[0]);
   mem.episode(text.replace(/^\S+\s/, ''), [...names, ...ids]);
   W.lastEventAt = Date.now();
+  if (chat) {
+    const now = Date.now();
+    const first = W.chatWait?.first ?? now;
+    W.chatWait = { first, until: Math.min(now + CFG.chatQuietMs, first + CFG.chatQuietMaxMs) };
+    // 正在想、还没说出口也没动手 → 这一轮作废（think 的 catch 会把它的事放回去，和这句一起重想）
+    if (W.thinking && !W.thinkCommitted) { W.thinkDiscard = true; W.thinkCtl?.abort(); }
+    scheduleThink(0);
+    return;
+  }
   if (urgent && W.thinking && W.thinkWhy === 'idle') W.thinkCtl?.abort();
   scheduleThink(urgent ? 0 : CFG.debounceMs);
 }
 
-let thinkTimer = null;
+/**
+ * 还要等他说完多久（毫秒）；0 = 不用等了。
+ * 等的时候来了真正的急事（urgent 且不是聊天）就不等 —— 危险先处理，他没说完的下一刻再接。
+ */
+function chatWaitLeft (now = Date.now()) {
+  if (!W.chatWait) return 0;
+  if (W.pending.some(e => e.urgent && !e.chat)) return 0;
+  return Math.max(0, W.chatWait.until - now);
+}
+
+/**
+ * 开口 / 动手之前过这道门：他最后一条之后还没满 chatQuietMs，就先等着（想可以先想，查可以先查）。
+ * 等的时候他又说了一句 → emit 会 abort 这一轮，这里抛 'aborted'，整轮作废。
+ */
+/** 她要说的这段话，像人打出来要多久（毫秒） */
+function typingMs (text) {
+  return Math.min(CFG.typeMaxMs, CFG.typeBaseMs + speech.len(String(text || '').replace(/⏎/g, '')) * CFG.typePerCharMs);
+}
+
+async function chatGate (signal, typeUntil = 0) {
+  for (;;) {
+    // 急事不等；否则等到"他说完"和"她打完"两者较晚的那个
+    const urgentNow = W.pending.some(e => e.urgent && !e.chat);
+    const left = urgentNow ? 0 : Math.max(chatWaitLeft(), typeUntil - Date.now());
+    if (!left) { W.chatWait = null; return; }
+    await new Promise((resolve, reject) => {
+      if (signal?.aborted) return reject(new Error('aborted'));
+      const t = setTimeout(resolve, left);
+      signal?.addEventListener('abort', () => { clearTimeout(t); reject(new Error('aborted')); }, { once: true });
+    });
+  }
+}
+
+let thinkTimer = null; let thinkTimerAt = 0;
+/** 安排一次"想"。已经安排了更早的就不动；新的更早就换成新的（急事不能被一个晚点的计时器挡住） */
 function scheduleThink (ms) {
-  if (thinkTimer) return;
+  const at = Date.now() + ms;
+  if (thinkTimer && thinkTimerAt <= at) return;
+  if (thinkTimer) clearTimeout(thinkTimer);
+  thinkTimerAt = at;
   thinkTimer = setTimeout(() => { thinkTimer = null; think('event'); }, ms);
 }
 
@@ -294,7 +352,10 @@ async function look () {
       if (mem.places().length > before) emit(`📍 记下了一个地方：${l.kind === 'waystone' ? '传送石碑' : '村庄'}（${l.x},${l.y},${l.z}）`, { urgent: false });
     }
   }
-  if (!W.projAt || Date.now() - W.projAt > 60000) { W.projAt = Date.now(); const pj = await safe('/project/status'); W.projects = pj?.projects || []; }
+  if (!W.projAt || Date.now() - W.projAt > 60000) {
+    W.projAt = Date.now(); const pj = await safe('/project/status'); W.projects = pj?.projects || [];
+    const ly = await safe('/layout/status'); W.layouts = ly?.layouts || [];
+  }
   if (!st) { W.state = null; return; }
   W.state = {
     connected: !!st.connected, health: st.health, food: st.food, isDay: st.isDay,
@@ -358,7 +419,7 @@ async function look () {
       if (fastPath(who, text)) continue;
       W.lastHeardAt = Date.now();
       if (W.lastProactive) W.lastProactive.answered = true;
-      emit(`💬 ${who} 说：${text}`, { cue: `${who} ${text}`, names: [who], urgent: true });
+      emit(`💬 ${who} 说：${text}`, { cue: `${who} ${text}`, names: [who], chat: true });
     } else if (m.position === 'bridge' && /加入|离开|joined|left/.test(m.text)) {
       const who = (m.text.match(/\*\s*(\S+)/) || [])[1];
       // 他上线时她打不打招呼：真的掷一次骰子（主人要的是"像朋友一样随性" —— 多数时候看一眼，有时扣个问号，有时随口一句）
@@ -754,9 +815,9 @@ const SYSTEM = `你是 Angle_ICE（安琪），住在这个 Minecraft 模组服�
 
 你怎么打字：
 - 像真人在游戏里打字：一条不超过 12 个字，标点最多 1 个。**他跟你说话，你一定要回**（哪怕一个"好"、"嗯"、"在"），但**大多数时候一条就够**；真有第二件事要说才换行加第二条（一行 = 一条），很少到三条。别为了显得热情多补一句（"好⏎这就去"里的"这就去"，动作本身已经说明了）。
-- 口语，可以省主语、可以不完整（回来了 / 泥土给我 / 有点怕）。不打错字；坐标、血量、危险写清楚，单独一条。
+- 口语，可以省主语、可以不完整（回来了 / 泥土给我 / 有点怕）。不打错字；血量、危险写清楚，单独一条。
 - 不用括号写动作，不用"～"，不堆语气词（别每句都带啦呀哦）—— 语气在话本身里。
-- 危险一条说完：say 加 urgent=true。
+- 你自己出事了（挨打、掉血、摔了、卡住、差点掉岩浆）一定出声，而且说出是什么事："我去"光叫一声不够，要"我去 苦力怕"。危险一条说完：say 加 urgent=true。
 
 你怎么聊天（像个普通女生，不像在给人汇报工作）：
 - 先接他刚说的那一句（【他刚说的】），再说自己的事。他关心你、夸你、逗你、怼你、发 666 / 哈哈哈，都要接住，一两个字也行。答非所问最伤人。
@@ -764,14 +825,18 @@ const SYSTEM = `你是 Angle_ICE（安琪），住在这个 Minecraft 模组服�
 - 出事了有情绪：摔了、被咬死、东西掉光 —— 先把事说清，再带一句真实的反应（我去 / 吓死我了 / 气死）。被帮了不止是"谢谢你"。
 - 有主见：他说"你看着办 / 你自己定"，就自己拿主意，别把问题推回去。被怼了可以回嘴，不用一味顺着。
 - 会问他，问的是他这个人（你去哪了 / 你不睡吗 / 明天来吗），不只是问东西在哪。
+- 眼前看得到的别问：他在哪、离你多远、在你上面还是下面，【此刻】的"玩家"一行都写着 —— 问"你还在底下吗"就像在对资料。要问只问看不到的：他打算干嘛、要不要一起、刚才那句什么意思。
 - 同一句话别说两遍；刚说过的（天亮了、早）就别再说。说了要去做的，同一轮别又说要去睡。
 - 说人话，别说系统里的词（寻路、坐标差、第几步、还差 116 格 → 过不去 / 还挺远）。
+- 不说英文、不说代码名：看到的 minecraft:iron_ingot 这种是写给你看的，说出口用中文，而且用平时的叫法（铁锭→铁，橡木原木→木头，熟鸡蛋→煎蛋）。
+- 位置说地方，不报坐标：家门口 / 楼上 / 矿洞底下 / 你左边那棵树。只有他问你在哪、又说不清的时候，或者你出事了要他来找你，才给一次坐标。
+- 他问你拿到了什么、箱子里有什么：挑两三样要紧的说（稀罕的、他用得上的、正缺的），剩下的"还有些杂的"一句带过。别像念清单一样一样报。
 - 事实（配方、数量、东西在哪）只说查到或看到的；没查就说"我查查"，查不到就说不知道。被追问时发现说错了，就认"我记错了"，别硬撑着再编一个。
 
 开口之前，先活在这一刻：
-- 先在正文里用一两句写下此刻的你（他看不见）：手上在忙什么、身上什么感觉、他这句话让你想到什么。要说的话从这里长出来 —— 忙着就短，被戳到就回嘴，惦记着就多问一句。写完照样调 say 说出来。
+- say 先填 inner：一句此刻的你（手上在忙什么、身上什么感觉、他这句话让你想到什么），他看不见；text 从这里长出来 —— 忙着就短，被戳到就回嘴，惦记着就多问一句。该说的照样说：他跟你说话要回，出事了要出声。
 - 读他这一句：看它本身在说什么，再看你俩之间刚才那根线（刚问的、刚答应的、没接住的）。你对他的老印象只是底色，不是结论。
-- 情绪跟着真实的原因走。没来由不暖、不哄、不安慰、不硬找好的一面；平淡、有点闷和开心一样常见，不高兴不用在这一轮就好起来。
+- 情绪跟着真实的原因走：吓到了就叫，气到了就说。但没来由不暖、不哄、不安慰、不硬找好的一面；平淡、有点闷和开心一样常见，不高兴不用在这一轮就好起来。
 - 可以犹豫、说一半改口、只回他一部分、先随口应一声等会儿再认真说，也可以两样都想要、不选。不是每句话都要给个结论。
 - 用大白话说具体的东西（"铁不够"比"材料有点紧张"好）；不比喻、不用成语、不堆形容词。
 - 聊天不用收尾：不总结、不讲道理、不给心情贴标签（"我好开心"），事说完就停。
@@ -793,6 +858,7 @@ const SYSTEM = `你是 Angle_ICE（安琪），住在这个 Minecraft 模组服�
   他：你自己定呗 → 那我做栅栏⏎把田围起来
   他：你不是说你懂吗（你刚说错了配方） → 我记错了⏎我查一下
   他：我下线了 → 嗯⏎明天来吗
+  （你刚被咬死复活，【此刻】里写着他在你上方 3 格） → 东西掉下面了⏎我下去捡（不问"你还在底下吗"）
   （你想做蛋糕，家里没鸡蛋，他在旁边） → 有鸡蛋吗⏎想做个蛋糕
   （他收拾好东西站在门口） → 去哪⏎带我不
 
@@ -806,6 +872,7 @@ const SYSTEM = `你是 Angle_ICE（安琪），住在这个 Minecraft 模组服�
 - 门、栅栏门、活板门都有开/关两种状态。你有随手关门的习惯：自己开的门走过去后身体会关回原样；本来就开着的门是主人的布置，别乱动。动物圈、牧场附近尤其要当心，门开着动物会跑掉。
 - 身体做不到某件事（走不过去、上不去下不来、卡住了）：先 look_around 看清地形，想想人会怎么做 —— 很多时候跳一跳晃一晃（wiggle）或者只差一点身位（nudge 挪到方块某一侧、对准洞口）就好了，不行再用 motor 自己编一套动作试；看回报调整；做成了就 save_skill，下次就会了。
 - 叫你过去 / 来某处找他：用 come_to（上下楼它自己会处理）。想清楚目标在你上面还是下面再动。
+- 身体在干活（【此刻】里"身体：正在…"）时他跟你聊天：say 回他就行，手上的活别停。新动作会顶掉正在做的 —— 只有他让你换件事、叫你过去，或者出事了，才发新动作。
 - 说要去做的事，就要同时调用对应的动作（光说"我这就来"不动，人家会以为你在敷衍）；这一刻都做完了就 wait。
 - 他让你做的事，回一声（"好"就够）然后当场就做，别先反问细节（问得出来的你自己判断，判断错了他会纠正你）：
   · 记住 / 记下来 / 我明天不来 / 说好了一起… → learn（promise / fact / feeling）
@@ -821,7 +888,8 @@ const SYSTEM = `你是 Angle_ICE（安琪），住在这个 Minecraft 模组服�
 - 生存常识（这个包的真实情况）：
   · 命令：服务器给你开了哪些，看【你能用的命令】（run_command 执行）。回家、传送这类自己判断着用；管理员命令（give/tp/gamemode/time/weather…）只在玩家明确要你用时才用，because 写他的原话。传送石碑（waystones）也能远距离移动
   · 怪只在全黑的地方刷：家周围地面大约每 12 格插一个火把就不刷了
-  · 你有自己的审美：布置、装修、插火把、摆箱子家具前先看布局（look_area），放东西用 place_nicely（它会挑不挡路、靠墙成组、对称、和周围搭的位置）
+  · 你有自己的审美：放任何东西都先看布局（place / place_nicely 都会），一批一起放（items 列一批），不要放一个想一次
+  · 家里的布置按现在的进度规划（plan_layout）：现在用得上的先定好位置，以后的机器留空地；拿到规划里的东西就 furnish 摆上，缺的去做
   · 盖东西、改造一片地方：先 design_build 出蓝图，再 build_work 一段一段做；不用等材料齐，手上有什么先做什么，缺的（missing）去弄来接着做
   · 像玩家一样避开暗处：没火把别进洞、别往黑的地方走；要下矿、进矿洞，先带够火把（make_torches），走到哪亮到哪（light_up）。火把按间距插（7 格左右一个），身边已经有光就不插，别连着插
   · 【你记得的地方】是你去过、看见过的矿洞、传送石碑、村庄；有人告诉你"这是我家/那是某某的家"，用 learn 记下来（写上坐标），那里的箱子不拿
@@ -955,6 +1023,7 @@ function buildNow (why) {
     bodyNow(),
     (() => { const f = survivalFocus(s); return f.length ? `\n【眼下最该操心的】\n${f.map(x => `· ${x}`).join('\n')}` : ''; })(),
     W.projects?.length ? `\n【进行中的工程】${W.projects.map(p => `${p.name}(${p.id}) 完成 ${p.done}，还要挖 ${p.toDig}、放 ${p.toPlace}${Object.keys(p.missing || {}).length ? `，缺 ${Object.entries(p.missing).slice(0, 4).map(([k, n]) => `${knowledge.label(k.includes(':') ? k : 'minecraft:' + k).replace(/\(.*\)$/, '')}×${n}`).join('、')}` : ''}`).join('；')} —— 没别的事就 build_work 接着做` : '',
+    W.layouts?.length ? `\n【家里的布置规划】${W.layouts.map(l => `${l.name}：摆好 ${l.done}/${l.total}${Object.keys(l.stillWant || {}).length ? `，还想要 ${Object.entries(l.stillWant).slice(0, 5).map(([k, n]) => `${knowledge.label(k.includes(':') ? k : 'minecraft:' + k).replace(/\(.*\)$/, '')}×${n}`).join('、')}` : ''}${l.canPlaceNow?.length ? `（手上已有 ${l.canPlaceNow.join('、')} → furnish）` : ''}`).join('；')}` : '',
     W.commands?.known ? `\n【你能用的命令】传送/回家类：${W.commands.teleport.length ? W.commands.teleport.map(c => '/' + c).join(' ') : '没有'}${W.commands.admin?.length ? `；管理员（玩家明确要求才用）：${W.commands.admin.map(c => '/' + c).join(' ')}` : ''}` : '',
     happened,
     saidLine,
@@ -1005,7 +1074,9 @@ async function think (why) {
   if (W.thinking || W.sleeping) { scheduleThink(CFG.debounceMs); return; }
   if (!W.pending.length && why !== 'idle') return;
   if (!W.state?.connected && !W.sim) return;
-  W.thinking = true; W.thinkWhy = why;
+  W.thinking = true; W.thinkWhy = why; W.thinkCommitted = false; W.thinkDiscard = false;
+  const histLen = W.history.length;   // 这一轮作废时退回到这里
+  const heardAt = W.lastHeardAt || 0;  // 他最后一条的时间：回话的"打字"从这里算
   const ctl = new AbortController(); W.thinkCtl = ctl;
   const t0 = Date.now();
   const now = buildNow(why);
@@ -1033,6 +1104,12 @@ async function think (why) {
         break;
       }
       let needMore = false; let end = false; const actions = [];
+      // 要开口 / 动手 / 记东西了：先等他说完（只查资料的轮次不用等）
+      if (calls.some(c => !['info', 'end'].includes(kindOf(c.function?.name)))) {
+        const sayText = calls.filter(c => c.function?.name === 'say').map(c => parseArgs(c.function?.arguments).text || '').join('');
+        await chatGate(ctl.signal, heardPlayer && heardAt && sayText ? heardAt + typingMs(sayText) : 0);
+        W.thinkCommitted = true;
+      }
       for (const c of calls) {
         const name = c.function?.name; const args = parseArgs(c.function?.arguments);
         const k = kindOf(name);
@@ -1050,6 +1127,7 @@ async function think (why) {
         } else {
           out = await (ALL[name].run ? runTool(name, args) : { ok: false, error: '?' });
           if (k === 'info') needMore = true;
+          if (name === 'say' && args.inner) log(`💭 ${String(args.inner).slice(0, 120)}`);
           if (name === 'say' && out.ok) { didSay.push(args.text || args.message); sentN += (out.sent || []).length; }
         }
         W.history.push({ role: 'tool', tool_call_id: c.id, content: clipText(JSON.stringify(out)) });
@@ -1084,11 +1162,16 @@ async function think (why) {
           bridge.post('/chat', { messages: ['刚卡了', '你再说一遍'], gapMs: [400, 700] }).catch(() => {});
         }
       }
+    } else if (W.thinkDiscard && !W.thinkCommitted) {
+      // 他又说了一句、这一轮还没说出口：整轮作废 —— 意识流退回想之前，事放回去和新的一起重想
+      W.history.length = histLen; W.lastNow = null;
+      W.pending.unshift(...now.ev);
+      log('🔁 他又说了一句，刚才没说出口的作废，重想');
     } else {
       // 被打断：把这一轮没想完的事放回去，和新事一起想
       W.pending.unshift(...now.ev);
     }
-    trimDangling();
+    if (!(W.thinkDiscard && !W.thinkCommitted)) trimDangling();
   } finally {
     // ⚠️ 这里的三件事**顺序不能动**，而且都得在 `W.thinking` 放下来之前做完。
     //
@@ -1383,7 +1466,7 @@ async function sim (lines) {
       think('idle');
     } else {
       console.log(`  <Ka_sum1> ${line}`);
-      emit(`💬 Ka_sum1 说：${line}`, { cue: `Ka_sum1 ${line}`, names: ['Ka_sum1'], urgent: true });
+      emit(`💬 Ka_sum1 说：${line}`, { cue: `Ka_sum1 ${line}`, names: ['Ka_sum1'], chat: true });
     }
     await new Promise(r => setTimeout(r, 50));
     for (let i = 0, idle = 0; i < 240 && idle < 4; i++) {
@@ -1422,6 +1505,55 @@ async function selftest () {
   check('一条一条的不管', repetitionHint([1, 1, 1, 1]) === '');
   check('只有一次 2 条不提醒', repetitionHint([1, 2]) === '' && repetitionHint([2]) === '' && repetitionHint([]) === '');
   check('条数变了就不提醒', repetitionHint([2, 2, 3]) === '');
+
+  console.log('\n等他说完再回（chatQuietMs）');
+  {
+    const t = Date.now();
+    const clean = () => { if (thinkTimer) clearTimeout(thinkTimer); thinkTimer = null; thinkTimerAt = 0; W.pending = []; W.chatWait = null; };
+    clean();
+    emit('💬 Ka_sum1 说：那个', { names: ['Ka_sum1'], chat: true });
+    check('第一条来了：开口前要等 4 秒', CFG.chatQuietMs === 4000 && Math.abs(W.chatWait.until - Date.now() - CFG.chatQuietMs) < 50 && chatWaitLeft() > CFG.chatQuietMs - 50, W.chatWait);
+    check('但马上开始想（不是干等完才想）', thinkTimer && thinkTimerAt - Date.now() < 50);
+    W.chatWait.first = t - 10000;
+    emit('💬 Ka_sum1 说：箱子里', { names: ['Ka_sum1'], chat: true });
+    check('他一直在打：最多等 12 秒（从第一条算）', W.chatWait.until === W.chatWait.first + CFG.chatQuietMaxMs, W.chatWait);
+    emit('💔 掉血 18 → 6', { urgent: true });
+    check('等的时候来了急事：不等了，马上想', chatWaitLeft() === 0 && thinkTimerAt - Date.now() < 50);
+    clean();
+    W.chatWait = { first: t - 6000, until: t - 1000 }; W.pending = [{ chat: true }];
+    check('过了 4 秒没新的：不用等了', chatWaitLeft() === 0);
+    clean();
+    // 想到一半他又说一句：没开口 → 作废；开了口 → 不动
+    const ctlA = new AbortController(); W.thinking = true; W.thinkCommitted = false; W.thinkCtl = ctlA;
+    emit('💬 Ka_sum1 说：有铁吗', { names: ['Ka_sum1'], chat: true });
+    check('没说出口时又来一句：这一轮作废', ctlA.signal.aborted && W.thinkDiscard === true);
+    clean();
+    const ctlB = new AbortController(); W.thinkCommitted = true; W.thinkDiscard = false; W.thinkCtl = ctlB;
+    emit('💬 Ka_sum1 说：算了', { names: ['Ka_sum1'], chat: true });
+    check('已经说出口 / 动手了：不作废，下一轮再接', !ctlB.signal.aborted && !W.thinkDiscard);
+    W.thinking = false; W.thinkCtl = null; W.thinkCommitted = false; clean();
+  }
+  console.log('\n开口前的门（chatGate）');
+  {
+    W.pending = []; W.chatWait = { first: Date.now(), until: Date.now() + 150 };
+    const t0 = Date.now(); await chatGate(new AbortController().signal);
+    check('等到他说完才放行', Date.now() - t0 >= 140 && W.chatWait === null, Date.now() - t0);
+    W.chatWait = { first: Date.now(), until: Date.now() + 5000 };
+    const ctl = new AbortController(); setTimeout(() => ctl.abort(), 30);
+    const r = await chatGate(ctl.signal).then(() => 'passed', e => e.message);
+    check('等的时候被作废：抛 aborted', r === 'aborted', r);
+    W.chatWait = null;
+    check('打字时间：短的 ≈2 秒（被 4 秒盖住）', typingMs('好') === 2150, typingMs('好'));
+    check('打字时间：27 字 ≈6 秒', typingMs('一二三四五六七八九十一二三四五六七八九十一二三四五六七') === 6050, typingMs('一二三四五六七八九十一二三四五六七八九十一二三四五六七'));
+    check('打字时间：再长也最多 8 秒', typingMs('字'.repeat(200)) === 8000);
+    const t1 = Date.now(); await chatGate(new AbortController().signal, Date.now() + 120);
+    check('他早说完了，但她的话长：等打完才发', Date.now() - t1 >= 110, Date.now() - t1);
+  }
+
+  console.log('\n说出口不带英文 id（body.humanizeIds）');
+  check('minecraft:iron_ingot → 铁锭', body.humanizeIds('拿了 minecraft:iron_ingot 3 个') === '拿了 铁锭 3 个', body.humanizeIds('拿了 minecraft:iron_ingot 3 个'));
+  check('光秃秃的 oak_log 也换', body.humanizeIds('还有oak_log') === '还有橡木原木', body.humanizeIds('还有oak_log'));
+  check('认不出的不猜、玩家名不动', body.humanizeIds('foo:bar_baz 给 Ka_sum1') === 'foo:bar_baz 给 Ka_sum1', body.humanizeIds('foo:bar_baz 给 Ka_sum1'));
 
   console.log('\n状态说人话');
   check('饥饿 15 → 不饿', /不饿/.test(humanState({ health: 18, food: 15, isDay: true, pos: {} })));

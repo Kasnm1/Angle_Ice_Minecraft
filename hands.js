@@ -3367,11 +3367,14 @@ function projectStatus (bot, state, { id } = {}) {
 }
 
 /** 把手上的某种方块放到 pos（找一个实心邻面贴上去），核对放上了 */
-async function placeAt (bot, pos, id) {
+async function placeAt (bot, pos, id, mount) {
   const it = bot.inventory.items().find(i => bareId(i.name) === id);
   if (!it) return { ok: false, missing: true };
   if (bot.heldItem?.type !== it.type) await bot.equip(it, 'hand');
-  for (const [dx, dy, dz] of [[0, -1, 0], [1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1], [0, 1, 0]]) {
+  const faces = mount === 'wall' ? [[1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1], [0, -1, 0], [0, 1, 0]]
+    : mount === 'ceiling' ? [[0, 1, 0], [1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1], [0, -1, 0]]
+    : [[0, -1, 0], [1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1], [0, 1, 0]];
+  for (const [dx, dy, dz] of faces) {
     const ref = bot.blockAt(pos.offset(dx, dy, dz));
     if (!ref || ref.boundingBox !== 'block') continue;
     try { await plainTimeout(bot.placeBlock(ref, new Vec3(-dx, -dy, -dz)), 5000); } catch (_) { await sleep(150); }
@@ -3429,6 +3432,109 @@ async function projectWork (bot, state, { id, maxMs = 90000, maxOps = 60 } = {})
   const after = projectDiff(bot, p);
   return { id: p.id, name: p.name, done: `${after.pct}%`, placed, dug, missing: Object.keys(missing).length ? missing : undefined, skipped: skip.size || undefined,
     keptBuilt: protectedCells.length ? { cells: protectedCells.slice(0, 10), note: '这几格是人造的，没拆（要改造自己的建筑，设计时写 allowDemolish:true）' } : undefined, reason };
+}
+
+// ------------------------------------------------------------------ 布置规划：先想好家里哪儿放什么，拿到东西就摆到位
+//
+// 主人 2026-09-27：「只要是有实体的都应该看布局；应该一次多布局几个，不应该放一个箱子布局一次；
+//                  也可以自己规划长期布局，想放什么箱子 / 什么炉灶 / 什么冰箱等」。
+// 规划（分区 + 格子：放什么、在哪、挂墙/放地、为什么）存盘；status 对照世界看哪些摆好了、还缺什么；
+// furnish 把手上有的东西摆到它规划好的格子（不用再想一次）。
+
+const LAYOUT_FILE = require('path').join(__dirname, 'memory', 'layouts.json');
+function layouts (state) {
+  if (!state.__layouts) { try { state.__layouts = JSON.parse(require('fs').readFileSync(LAYOUT_FILE, 'utf8')); } catch (_) { state.__layouts = {}; } }
+  return state.__layouts;
+}
+function saveLayouts (state) {
+  try { const fs = require('fs'); const tmp = LAYOUT_FILE + '.tmp'; fs.writeFileSync(tmp, JSON.stringify(state.__layouts || {}, null, 1)); fs.renameSync(tmp, LAYOUT_FILE); } catch (_) {}
+}
+const allSlots = (L) => (L.zones || []).flatMap(z => (z.slots || []).map(sl => ({ ...sl, zone: z.name })));
+
+/** 格子现在什么样：done 摆好了 / empty 空着能放 / taken 被别的东西占了 / unknown 没加载 */
+function slotState (bot, sl) {
+  const b = bot.blockAt(new Vec3(sl.x, sl.y, sl.z));
+  if (!b) return 'unknown';
+  if (bareId(b.name) === bareId(sl.item)) return 'done';
+  if (airish(b) || /^(short_grass|grass|tall_grass|fern|snow|carpet)$/.test(bareId(b.name))) return 'empty';
+  return 'taken';
+}
+
+/** 存规划：逐格核对 —— 方块存在、格子空着、不在路上、下面/旁边有能附着的；不合格的格子退回并说明原因 */
+function layoutSave (bot, state, L = {}) {
+  if (!L.name || !Array.isArray(L.zones) || !L.zones.length) throw new Error('规划要有 name 和 zones[{name,purpose,slots:[{item,x,y,z,mount,why}]}]');
+  const cx = L.area || allSlots(L)[0];
+  const sv = survey(bot, { x: cx.x, y: cx.y, z: cx.z, r: Math.min(12, L.area?.r || 10) });
+  const clear = new Set(sv.keepClear || []);
+  const rejected = []; let kept = 0; const used = new Set();
+  for (const z of L.zones) {
+    z.slots = (z.slots || []).filter(sl => {
+      const why = (m) => { rejected.push(`${bareId(sl.item)}@(${sl.x},${sl.y},${sl.z})：${m}`); return false; };
+      sl.x = Math.floor(sl.x); sl.y = Math.floor(sl.y); sl.z = Math.floor(sl.z);
+      const k = `${sl.x},${sl.y},${sl.z}`;
+      if (!bot.registry.blocksByName[bareId(sl.item)] && !bot.registry.blocksByName[sl.item]) return why('没有这个方块');
+      if (used.has(k)) return why('和别的格子重了'); used.add(k);
+      const st = slotState(bot, sl);
+      if (st === 'taken') return why(`那里已经有 ${bareId(bot.blockAt(new Vec3(sl.x, sl.y, sl.z)).name)}`);
+      if (clear.has(k) && !/torch|lantern/.test(sl.item)) return why('在路上（门口/梯子口/走道）');
+      const p = new Vec3(sl.x, sl.y, sl.z);
+      const under = bot.blockAt(p.offset(0, -1, 0));
+      const anySolid = N6.some(([dx, dy, dz]) => { const n = bot.blockAt(p.offset(dx, dy, dz)); return n && n.boundingBox === 'block'; });
+      if (st !== 'done' && !anySolid) return why('悬空，旁边没东西能贴');
+      if (st !== 'done' && (sl.mount || 'floor') === 'floor' && !(under && under.boundingBox === 'block')) return why('下面不是实心的');
+      kept++; return true;
+    });
+  }
+  if (!kept) throw new Error(`一个格子都不合格：${rejected.slice(0, 8).join('；')}`);
+  const id = L.id || `L${Date.now().toString(36)}`;
+  const LS = layouts(state);
+  LS[id] = { ...L, id, created: LS[id]?.created || Date.now(), updated: Date.now() };
+  saveLayouts(state);
+  return { id, name: L.name, slots: kept, rejected: rejected.length ? rejected.slice(0, 12) : undefined };
+}
+
+function layoutStatus (bot, state, { id, full } = {}) {
+  const LS = layouts(state);
+  if (id && full && LS[id]) return { full: LS[id] };
+  const list = id ? [LS[id]].filter(Boolean) : Object.values(LS);
+  return {
+    layouts: list.map(L => {
+      const slots = allSlots(L).map(sl => ({ ...sl, state: slotState(bot, sl) }));
+      const pend = slots.filter(s => s.state === 'empty');
+      const want = {}; for (const s of pend) want[bareId(s.item)] = (want[bareId(s.item)] || 0) + 1;
+      const ready = Object.keys(want).filter(k => invCount(bot, k) > 0);
+      return {
+        id: L.id, name: L.name,
+        zones: (L.zones || []).map(z => { const zs = slots.filter(s => s.zone === z.name); return `${z.name}（${z.purpose || ''}）：${zs.filter(s => s.state === 'done').length}/${zs.length}`; }),
+        done: slots.filter(s => s.state === 'done').length, total: slots.length,
+        stillWant: want, canPlaceNow: ready, blocked: slots.filter(s => s.state === 'taken').length || undefined,
+      };
+    }),
+  };
+}
+
+/** 把手上有的东西摆到规划好的格子（items 限定只摆哪些） */
+async function furnish (bot, state, { id, items, maxMs = 90000 } = {}) {
+  const LS = layouts(state); const L = id ? LS[id] : Object.values(LS).sort((a, b) => b.updated - a.updated)[0];
+  if (!L) throw new Error('还没有布置规划（先 plan_layout）');
+  const only = items ? new Set([].concat(items).map(bareId)) : null;
+  const t0 = Date.now(); const placed = []; const failed = [];
+  const me = () => bot.entity.position;
+  for (const sl of allSlots(L)) {
+    if (Date.now() - t0 > maxMs) break;
+    const item = bareId(sl.item);
+    if (only && !only.has(item)) continue;
+    if (slotState(bot, sl) !== 'empty' || !invCount(bot, item)) continue;
+    const pos = new Vec3(sl.x, sl.y, sl.z);
+    const onMe = () => { const f = me().floored(); return pos.x === f.x && pos.z === f.z && (pos.y === f.y || pos.y === f.y + 1); };
+    if (me().offset(0, 1.62, 0).distanceTo(pos.offset(0.5, 0.5, 0.5)) > 4.2 || onMe()) await pathTo(bot, pos, 3, 20000, { retry: false });
+    if (onMe()) { failed.push(`${item}@(${sl.x},${sl.y},${sl.z})：站在格子上`); continue; }
+    const r = await placeAt(bot, pos, item, sl.mount);
+    if (r.ok) placed.push(`${item}→${sl.zone}(${sl.x},${sl.y},${sl.z})`); else failed.push(`${item}@(${sl.x},${sl.y},${sl.z})：${r.why || '没放上'}`);
+  }
+  L.updated = Date.now(); saveLayouts(state);
+  const st = layoutStatus(bot, state, { id: L.id }).layouts[0];
+  return { layout: L.name, placed, failed: failed.length ? failed : undefined, done: `${st.done}/${st.total}`, stillWant: st.stillWant };
 }
 
 // ------------------------------------------------------------------ 睡觉
@@ -3704,6 +3810,10 @@ function routes ({ state, withTimeout }) {
       if (vill && !out.some(o => o.kind === 'village')) out.push({ kind: 'village', name: 'villager', x: Math.floor(vill.position.x), y: Math.floor(vill.position.y), z: Math.floor(vill.position.z) });
       return { landmarks: out };
     },
+    'POST /layout/save': async (b = {}) => layoutSave(bot(), state, b),
+    'GET /layout/status': async (b = {}) => layoutStatus(bot(), state, b),
+    'POST /layout/furnish': async (b = {}) => furnish(bot(), state, b),
+    'POST /layout/cancel': async (b = {}) => { const LS = layouts(state); if (!LS[b.id]) throw new Error(`没有规划 ${b.id}`); delete LS[b.id]; saveLayouts(state); return { removed: b.id }; },
     'POST /project/save': async (b = {}) => projectSave(bot(), state, b),
     'GET /project/status': async (b = {}) => projectStatus(bot(), state, b),
     'POST /project/work': async (b = {}) => projectWork(bot(), state, b),
