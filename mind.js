@@ -894,7 +894,8 @@ const SYSTEM = `你是 Angle_ICE（安琪），住在这个 Minecraft 模组服�
 - 身体做不到某件事（走不过去、上不去下不来、卡住了）：先 look_around 看清地形，想想人会怎么做 —— 很多时候跳一跳晃一晃（wiggle）或者只差一点身位（nudge 挪到方块某一侧、对准洞口）就好了，不行再用 motor 自己编一套动作试；看回报调整；做成了就 save_skill，下次就会了。
 - 叫你过去 / 来某处找他：用 come_to（上下楼它自己会处理）。想清楚目标在你上面还是下面再动。
 - 身体在干活（【此刻】里"身体：正在…"）时他跟你聊天：只用 say 回他，手上的活别停；不要为了回应聊天调用 look_at 或别的动作。新动作会顶掉正在做的 —— 只有他让你换件事、叫你过去，或者出事了，才发新动作。
-- 说要去做的事，就要同时调用对应的动作（光说"我这就来"不动，人家会以为你在敷衍）；这一刻都做完了就 wait。
+- 说要去做的事，就要在**同一次**里把 say 和动作一起调用（光说"我这就来"不动，人家会以为你在敷衍；这次只说、下次才做，中间要白等好几秒）；这一刻都做完了就 wait。
+- 别为了回得快就乱问：问他东西在哪、怎么回事之前，先自己看一眼（scan_blocks / look_around / inventory / home_stock），看过真找不到再问。
 - 他让你做的事，回一声（"好"就够）然后当场就做，别先反问细节（问得出来的你自己判断，判断错了他会纠正你）：
   · 记住 / 记下来 / 我明天不来 / 说好了一起… → learn（promise / fact / feeling）
   · 把这次做法存下来 / 以后都这样 → save_skill（名字自己起）；照上次那样 → use_skill
@@ -1142,6 +1143,7 @@ async function think (why) {
   W.history.push(nowMsg);
   W.lastNow = { msg: nowMsg, brief: now.brief };
   const didSay = []; const didDo = []; const noted = []; const rounds = []; let sentN = 0;
+  let looked = false; let nudgedToLook = false;   // 这一轮自己看过周围 / 背包没有（问"X在哪"之前要先看）
   const heardPlayer = now.ev.some(e => /说：/.test(e.text) && e.names?.length); let nudgedToSay = false;
   // 有时模型先查配方/用途，顺手说一句“好”，然后把这一刻当成做完了。
   // 这不是“只查资料就停”的合理结束：答应过的事要么开始做，要么说明做不到。
@@ -1170,10 +1172,19 @@ async function think (why) {
         await chatGate(ctl.signal, heardPlayer && heardAt && sayText ? heardAt + typingMs(sayText) : 0);
         W.thinkCommitted = true;
       }
+      const saying = [];   // 这一轮的 say：等动作先开始再慢慢打字（见下面 startJob 之后）
       for (const c of calls) {
         const name = c.function?.name; const args = parseArgs(c.function?.arguments);
         const k = kindOf(name);
+        if (k === 'info') looked = true;
         let out;
+        if (name === 'say' && !looked && !nudgedToLook && ASKS_WHERE.test(String(args.text || ''))) {
+          // "南瓜在哪"：自己还没看一眼就问他（2026-09-28 实测：南瓜就在他脚下，她下一轮 scan_blocks 才看见）
+          nudgedToLook = true; needMore = true;
+          W.history.push({ role: 'tool', tool_call_id: c.id, content: JSON.stringify({ ok: false, error: LOOK_NUDGE }) });
+          continue;
+        }
+        if (name === 'say') { saying.push({ c, args, p: runTool(name, args) }); continue; }
         if (!k) { out = { ok: false, error: `没有 ${name} 这个工具` }; needMore = true; review.record({ kind: 'unknown_tool', tool: name, args, ...scene(3) }); }
         else if (k === 'end') { out = { ok: true }; end = true; }
         else if (k === 'action') { actions.push({ tool: name, args: normalizeArgs(name, args) }); out = { ok: true, note: '身体开始做了，做完会告诉你' }; }
@@ -1187,8 +1198,6 @@ async function think (why) {
         } else {
           out = await (ALL[name].run ? runTool(name, args) : { ok: false, error: '?' });
           if (k === 'info') needMore = true;
-          if (name === 'say' && args.inner) log(`💭 ${String(args.inner).slice(0, 120)}`);
-          if (name === 'say' && out.ok) { didSay.push(args.text || args.message); sentN += (out.sent || []).length; }
         }
         // 全随身物品可能超过普通工具结果的 1800 字；inventory 已支持 query，完整结果仍要留够
         // 空间让矿物等靠后的条目不会被截掉，避免“其实在精妙背包里却没看到”。
@@ -1213,6 +1222,13 @@ async function think (why) {
         const talk = now.ev.filter(e => /说：/.test(e.text)).map(e => e.text.replace(/^\S+\s/, '')).pop();
         const why = String(msg.content || talk || now.ev.map(e => e.text.replace(/^\S+\s/, '')).join(' ')).replace(/\s+/g, ' ').slice(0, 60);
         startJob(actions, why);
+      }
+      // 动作已经开始了，再等话打完发出去（以前先打字、打完才动 —— 说了"来啦"要好几秒才迈腿）
+      for (const { c, args, p } of saying) {
+        const out = await p;
+        if (args.inner) log(`💭 ${String(args.inner).slice(0, 120)}`);
+        if (out.ok) { didSay.push(args.text || args.message); sentN += (out.sent || []).length; }
+        W.history.push({ role: 'tool', tool_call_id: c.id, content: clipText(JSON.stringify(out)) });
       }
       if (end || !needMore) break;
     }
@@ -1276,6 +1292,9 @@ async function think (why) {
 }
 
 /** 她只在正文里"回话"时的提醒（实测：gemini 常把回话写成正文不调 say，游戏里他就看不到 —— 2026-09-26 跑分发现 52 题） */
+/** 问"X 在哪"之前没看过周围时的提醒（不替她说，只让她先看） */
+const ASKS_WHERE = /(在哪|放哪|哪里有|哪儿有|哪有)/;
+const LOOK_NUDGE = '没发出去：你还没自己看一眼就问他东西在哪。先 scan_blocks / look_around / inventory / home_stock 看看，真找不到再问。';
 const SAY_NUDGE = '（你刚才写的只是心里想的，他看不见。要回他就调 say 说出来；觉得不用回也行。）';
 
 /**
@@ -1715,6 +1734,27 @@ async function selftest () {
   check('对人的看法被她记下', mem.person('Ka_sum1').facts.includes('爱吃煎蛋'));
   check('动作进了身体（give 做完 → 自动记成经验：给过他什么）', mem.person('Ka_sum1').facts.some(f => /给过他/.test(f)), mem.person('Ka_sum1').facts);
   check('做完的结果流回意识流', W.pending.some(e => /做完了/.test(e.text)) || W.history.some(m => m.role === 'user' && /做完了/.test(m.content)));
+
+  console.log('\n问"X在哪"之前先自己看；说和做：先动再打字');
+  {
+    const order = []; const mb = mockBridge();
+    body._setBridge({ get: mb.get, post: async (p, b) => { if (!['/look', '/memory', '/stop'].includes(p)) order.push(p === '/chat' ? `chat:${(b.messages || [b.message]).join('/')}` : p); return mb.post(p, b); } });
+    const script3 = [
+      { content: '', tool_calls: [{ id: 'a1', function: { name: 'say', arguments: '{"text":"南瓜在哪"}' } }] },
+      { content: '', tool_calls: [{ id: 'a2', function: { name: 'scan_blocks', arguments: '{"filter":"pumpkin"}' } }] },
+      { content: '', tool_calls: [{ id: 'a3', function: { name: 'say', arguments: '{"text":"看到了 我去砍"}' } }, { id: 'a4', function: { name: 'come_to', arguments: '{"player":"Ka_sum1"}' } }] },
+    ];
+    body._setLLM(async () => script3.shift() || { content: '', tool_calls: [{ id: `w${Math.random()}`, function: { name: 'wait', arguments: '{}' } }] });
+    W.history = []; W.lastNow = null; W.pending = []; W.chatWait = null; W.lastHeardAt = 0;
+    emit('💬 Ka_sum1 说：去把南瓜砍了', { names: ['Ka_sum1'], urgent: true });
+    for (let i = 0; i < 40 && (W.thinking || thinkTimer || !order.some(x => x.startsWith('chat:'))); i++) await new Promise(r => setTimeout(r, 100));
+    await new Promise(r => setTimeout(r, 300));
+    check('没看就问"南瓜在哪"：没发出去', !order.some(x => /南瓜在哪/.test(x)), order);
+    check('提醒她先看', W.history.some(m => m.role === 'tool' && m.content.includes('还没自己看一眼')));
+    const iChat = order.findIndex(x => x.startsWith('chat:看到了')); const iAct = order.findIndex(x => !x.startsWith('chat:') && !x.startsWith('/scan'));
+    check('看过之后才说；动作先开始、话后发出', iChat >= 0 && iAct >= 0 && iAct < iChat, order);
+    body._setBridge(mockBridge());
+  }
 
   console.log('\n亲手做成的事自动记成经验');
   learnFromDoing('smelt', { itemName: 'egg' }, { smelted: 'minecraft:egg', in: 'smoker', got: { 'farmersdelight:fried_egg': 3 } });
