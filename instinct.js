@@ -69,6 +69,18 @@
  *     打的时候除了 停/逃/跟随/走 这几类，其他命令直接回"在打架"（不然两边抢身体）。
  *   · 打完：跟着人的接着跟；自己干活的走回锚点；告诉 mind 打了什么、剩多少血
  *
+ * ## 开宝箱本能（主人 2026-09-27）
+ *
+ * 看得见的没开过的箱子 / 木桶 / 运输矿车箱子 → 走过去开（家外的东西拿走，家里的只看看记住放了什么 —— hands.checkChests 的老规矩）。
+ * 还没看见箱子、但**认出了自然生成的建筑**（刷怪笼、苔石、沙漠神殿的錾制砂岩 + 橙陶、废弃矿井的蜘蛛网 + 铁轨、
+ * 要塞/神庙的苔石砖裂石砖、村庄的钟、下界要塞、堡垒、末地城）→ 知道里面有宝箱，走进去，建筑附近的箱子一间间看。
+ * 一路上冲她来的怪由战斗本能打（"闯关"）；血 < minHp、背包没地方、夜里在露天就不去。每座建筑只进一次。
+ *
+ * ## 采矿按进度（主人 2026-09-27：前期煤、铁，后期钻石，也包括模组矿）
+ *
+ * 还没有铁镐时：铁矿当最高价值（它就是下一步）、煤少于 32 就挖；有了铁镐之后煤按少于 16 算。
+ * 正在执行命令（赶路、干别的）时看见值钱的矿：不打断命令，只告诉 mind"路上看见了 X"（一个位置说一次），挖不挖她定。
+ *
  * ## 随身物品本能（主人 2026-09-27：至少带武器、工具、食物、搭脚方块）
  *
  * 装备单在 hands.defaultLoadout()（和"回家整理"用的是同一张单子）：镐、武器（剑或斧）、吃的、搭脚方块是 essential，
@@ -158,6 +170,15 @@ const CFG = {
     cooldownMs: 600000,     // 整理一次后 10 分钟内不再专程回去
     checkMs: 20000,
   },
+  loot: {
+    enabled: process.env.MC_INSTINCT_LOOT !== 'false',
+    radius: 24,             // 看得见的箱子多远去开
+    structRadius: 40,       // 认出的建筑多远去
+    structNear: 14,         // 进了建筑后，附近多少格的箱子一间间看
+    minHp: 14,
+    minFree: 3,
+    cooldownMs: 15000,
+  },
   minFreeSlots: 2,          // 收获、采矿至少留几个空格
   yieldWaitMs: 1500,        // 让出身体时最多等本能收拾多久
 };
@@ -245,6 +266,7 @@ function pickPickup (ctx, cfg = CFG.pickup) {
  */
 function pickOre (ctx, cfg = CFG.mine) {
   const { ores = [], self, pick = -1, have = {}, fails = new Map(), now = Date.now() } = ctx;
+  const early = pick < TIER.iron;   // 还没有铁镐：前期，铁和煤就是最值钱的
   if (!self) return { skip: '没有位置' };
   const key = (p) => `${p.x},${p.y},${p.z}`;
   const lacking = [];
@@ -258,13 +280,14 @@ function pickOre (ctx, cfg = CFG.mine) {
     if (o.notPickaxe) { why.shovel++; continue; }   // 不是镐子挖的（化石矿要铲子）—— 矿表里标出来的
     const f = fails.get(key(o.pos));
     if (f && now < f) { why.failed++; continue; }
+    const isIron = (o.drops || []).some(d => /(^|:)(raw_iron|iron_ingot|iron_nugget)$/.test(d));
     if (o.value === 'low') {
       const got = (o.drops || []).reduce((n, d) => n + (have[d] || 0), 0);
-      if (got >= cfg.lowWhenBelow) { why.cheap++; continue; }
+      if (got >= (early ? cfg.lowWhenBelow * 2 : cfg.lowWhenBelow)) { why.cheap++; continue; }
     }
     const need = needTier(o.tier);
     if (pick < need) { why.tool++; lacking.push({ name: o.name, pos: o.pos, need }); continue; }
-    ok.push({ ...o, dist: hdist(o.pos, self), rank: o.value === 'high' ? 0 : o.value === 'mid' ? 1 : 2 });
+    ok.push({ ...o, dist: hdist(o.pos, self), rank: (o.value === 'high' || (early && isIron)) ? 0 : o.value === 'mid' ? 1 : (early ? 1 : 2) });
   }
   if (!ok.length) {
     const parts = Object.entries(why).filter(([, n]) => n).map(([k, n]) => `${k}=${n}`);
@@ -410,6 +433,48 @@ function combatPlan (ctx, cfg = CFG.combat) {
   return { mode: 'melee', target: t };
 }
 
+// ---- 自然建筑：看见这些就知道里面有宝箱（min = 至少看见几块才算，防一块苔石就当地牢）
+const STRUCTURE_SIGNS = [
+  { label: '刷怪笼（地牢 / 矿井）', re: /(^|:)spawner$/, min: 1 },
+  { label: '地牢', re: /(^|:)mossy_cobblestone$/, min: 6 },
+  { label: '废弃矿井', re: /(^|:)cobweb$/, min: 3 },
+  { label: '沙漠神殿', re: /(^|:)(chiseled_sandstone|orange_terracotta)$/, min: 4 },
+  { label: '要塞 / 丛林神庙', re: /(^|:)(mossy_stone_bricks|cracked_stone_bricks|chiseled_stone_bricks)$/, min: 5 },
+  { label: '村庄', re: /(^|:)bell$/, min: 1 },
+  { label: '下界要塞', re: /(^|:)(nether_bricks|nether_brick_fence)$/, min: 12 },
+  { label: '堡垒遗迹', re: /(^|:)(gilded_blackstone|polished_blackstone_bricks|cracked_polished_blackstone_bricks)$/, min: 8 },
+  { label: '末地城', re: /(^|:)(purpur_block|purpur_pillar|end_stone_bricks)$/, min: 12 },
+];
+/** blocks：[{ name, pos }]（看得见的）→ 认出的建筑 [{ label, anchor, count, key }]（anchor = 这类方块的中心） */
+function recognizeStructures (blocks = []) {
+  const out = [];
+  for (const S of STRUCTURE_SIGNS) {
+    const hit = blocks.filter(b => S.re.test(b.name));
+    if (hit.length < S.min) continue;
+    const c = hit.reduce((a, b) => ({ x: a.x + b.pos.x / hit.length, y: a.y + b.pos.y / hit.length, z: a.z + b.pos.z / hit.length }), { x: 0, y: 0, z: 0 });
+    const anchor = { x: Math.round(c.x), y: Math.round(c.y), z: Math.round(c.z) };
+    out.push({ label: S.label, anchor, count: hit.length, key: `${S.label}@${Math.floor(anchor.x / 16)},${Math.floor(anchor.y / 16)},${Math.floor(anchor.z / 16)}` });
+  }
+  return out;
+}
+/**
+ * 开不开宝箱 / 进不进建筑。
+ * @returns { mode: 'open' } | { mode: 'explore', structure } | { skip }
+ */
+function pickLoot (c, cfg = CFG.loot) {
+  const { chests = 0, structures = [], hp = 20, free = 36, packFree = null, nightOut = false, visited = new Set(), self } = c;
+  if (hp < cfg.minHp) return { skip: `血 ${hp}，先不闯` };
+  if (free < cfg.minFree && !(packFree != null && packFree >= 4)) return { skip: '身上和背包都没地方装了' };
+  if (nightOut) return { skip: '夜里在露天，不去闯' };
+  if (chests > 0) return { mode: 'open' };
+  const todo = structures.filter(s => !visited.has(s.key))
+    .map(s => ({ ...s, dist: self ? Math.hypot(s.anchor.x - self.x, s.anchor.z - self.z) : 0 }))
+    .filter(s => s.dist <= cfg.structRadius)
+    .sort((a, b) => a.dist - b.dist);
+  if (todo.length) return { mode: 'explore', structure: todo[0] };
+  return { skip: structures.length ? '看见的建筑都进过了' : '没看见箱子，也没认出建筑' };
+}
+
 /**
  * 该不该回家整理。
  * @param c.free        背包空格数
@@ -471,7 +536,7 @@ function install (bot, state, deps) {
     home: null,             // { center:{x,y,z}, radius }，mind 通过 POST /instinct {home} 告诉
   };
   // 跨重连保留状态；新加的本能补上默认配置（老的 state.instinct 里没有）
-  for (const k of ['pickup', 'harvest', 'mine', 'sleep', 'armor', 'gaze', 'combat', 'tidy']) I.cfg[k] = { ...CFG[k], ...(I.cfg[k] || {}) };
+  for (const k of ['pickup', 'harvest', 'mine', 'sleep', 'armor', 'gaze', 'combat', 'tidy', 'loot']) I.cfg[k] = { ...CFG[k], ...(I.cfg[k] || {}) };
   const spawned = new Map();   // 掉落物 id → { t, thrower }
   const fails = new Map();
   const mineFails = new Map();   // "x,y,z" → 到什么时候之前不再试
@@ -727,6 +792,84 @@ function install (bot, state, deps) {
     if (r?.worn) event('armor', `换上了 ${p0.name}${p0.from ? `（原来穿的是 ${p0.from}）` : ''}`);
     return { did: 'armor' };
   }
+
+  // ---- 开宝箱 / 进建筑
+  I.visitedStructures ||= new Set();
+  let signIds = null;
+  const structureBlocks = (radius) => {
+    if (!signIds) signIds = Object.values(bot.registry.blocksByName).filter(b => STRUCTURE_SIGNS.some(S => S.re.test(b.name))).map(b => b.id);
+    return bot.findBlocks({ matching: signIds, maxDistance: radius, count: 128 })
+      .map(p => bot.blockAt(p)).filter(b => b && bot.canSeeBlock(b)).map(b => ({ name: b.name, pos: b.position }));
+  };
+  const summarizeLoot = (checked = []) => {
+    const got = {};
+    for (const c of checked) for (const [k, n] of Object.entries(c.looted || {})) got[k] = (got[k] || 0) + n;
+    const top = Object.entries(got).sort((a, b) => b[1] - a[1]).slice(0, 6).map(([k, n]) => `${k.replace(/^minecraft:/, '')}×${n}`);
+    const opened = checked.filter(c => !c.error).length;
+    const failed = checked.filter(c => c.error).map(c => `${c.name}：${c.error}`).slice(0, 2);
+    return { opened, top, failed };
+  };
+  async function tryLoot (nightOut) {
+    const L = I.cfg.loot;
+    if (!L.enabled || Date.now() - (I.lastLootAt || 0) < L.cooldownMs) return null;
+    const self = bot.entity.position;
+    const chests = deps.hands.unseenChests(bot, state, L.radius).length + deps.hands.unseenCarts(bot, state, 16).length;
+    const bp = state.backpackSeen;
+    const pick = pickLoot({
+      chests, structures: chests ? [] : recognizeStructures(structureBlocks(L.structRadius)),
+      hp: bot.health ?? 20, free: bot.inventory.emptySlotCount(),
+      packFree: deps.hands.wearingBackpack?.(bot, state) && bp ? bp.slots - bp.used : null,
+      nightOut, visited: I.visitedStructures, self,
+    }, L);
+    if (!pick.mode) return pick;
+    I.lastLootAt = Date.now();
+    if (pick.mode === 'open') {
+      const { r, aborted } = await runJob('loot', { route: 'POST /chests/check' }, (abort) => deps.handlers['POST /chests/check']({ radius: L.radius, home: I.home, max: 4, abort }));
+      const sm = summarizeLoot(r?.checked);
+      note({ kind: 'loot', opened: sm.opened, aborted: aborted || undefined, error: r?.error });
+      if (sm.opened || sm.failed.length) event('loot', `开了 ${sm.opened} 个箱子${sm.top.length ? `，拿到：${sm.top.join('、')}` : ''}${sm.failed.length ? `；没开成：${sm.failed.join('；')}` : ''}`);
+      return { did: 'loot' };
+    }
+    const S = pick.structure;
+    I.visitedStructures.add(S.key);   // 先记下：进不去也别来回折腾
+    event('structure', `认出附近有${S.label}（${S.anchor.x},${S.anchor.y},${S.anchor.z}，${Math.round(S.dist)} 格），里面应该有宝箱，进去看看`, { structure: S.label, pos: S.anchor });
+    const { r, aborted } = await runJob('loot', { route: 'POST /chests/check' }, async (abort) => {
+      const g = await deps.handlers['POST /go']({ x: S.anchor.x, y: S.anchor.y, z: S.anchor.z, range: 3, abort });
+      if (abort()) return { checked: [] };
+      const near = { ...S.anchor, r: L.structNear };
+      const res = await deps.handlers['POST /chests/check']({ radius: L.structNear + 6, home: I.home, max: 6, near, abort });
+      return { ...res, arrived: g?.arrived };
+    });
+    const sm = summarizeLoot(r?.checked);
+    note({ kind: 'explore', structure: S.label, opened: sm.opened, aborted: aborted || undefined, error: r?.error });
+    if (!aborted) {
+      event('structure_done', sm.opened
+        ? `${S.label}里开了 ${sm.opened} 个箱子${sm.top.length ? `，拿到：${sm.top.join('、')}` : ''}`
+        : `${S.label}里没找到能开的箱子${r?.arrived === false ? '（没走进去）' : ''}${sm.failed.length ? `：${sm.failed.join('；')}` : ''}`);
+    }
+    return { did: 'explore' };
+  }
+
+  // ---- 赶路 / 干别的时候看见值钱的矿：不打断命令，告诉 mind（一个位置一次）
+  const oreWatch = setInterval(() => {
+    try {
+      if (!bot.entity || !I.cfg.mine.enabled) return;
+      if (!(I.inflight > 0 || (state.currentAction && !/^following /.test(state.currentAction)))) return;   // 闲着时采矿本能自己会去
+      const T = loadTables();
+      if (!T.ores.size) return;
+      const pick = pickaxeTier(bot.inventory.items().map(i => i.name));
+      for (const p of bot.findBlocks({ matching: [...T.ores.keys()], maxDistance: 12, count: 16 })) {
+        const b = bot.blockAt(p); if (!b || !bot.canSeeBlock(b)) continue;
+        const row = T.ores.get(b.type);
+        const isIron = (row.drops || []).some(d => /raw_iron|iron_ingot/.test(d));
+        if (!(row.value === 'high' || (pick < TIER.iron && isIron))) continue;
+        const k = `${p.x},${p.y},${p.z}`;
+        if (I.told.has(`seen:${k}`)) continue;
+        I.told.add(`seen:${k}`);
+        event('ore_seen', `路上看见 ${row.name}（${k}）${pick >= needTier(row.tier) ? '' : `，不过要${TIER_NAME[needTier(row.tier)]}`}`, { ore: row.name, pos: { x: p.x, y: p.y, z: p.z } });
+      }
+    } catch (_) {}
+  }, 2000);
 
   // ---- 随身物品：缺什么（告诉 mind）/ 回家整理
   const kitNow = () => {
@@ -1034,8 +1177,8 @@ function install (bot, state, deps) {
     if (td?.skip) last.tidy = td.skip;
     if (nightOut) { I.last = { t: now, ...last, other: '夜里在露天，不收不挖' }; return; }
 
-    // ③ 收获  ④ 采矿  ⑤ 换护甲
-    for (const [k, f] of [['harvest', tryHarvest], ['mine', tryMine], ['armor', tryArmor]]) {
+    // ④ 收获  ⑤ 开宝箱 / 进建筑  ⑥ 采矿  ⑦ 换护甲
+    for (const [k, f] of [['harvest', tryHarvest], ['loot', () => tryLoot(nightOut)], ['mine', tryMine], ['armor', tryArmor]]) {
       const r = await f();
       if (!r) continue;
       if (r.did) { I.last = { t: now, ...last, [k]: '做了' }; return; }
@@ -1050,7 +1193,7 @@ function install (bot, state, deps) {
     ticking = true;
     try { await tick(); } catch (e) { I.last = { t: Date.now(), error: e.message }; } finally { ticking = false; }
   }, CFG.pickup.tickMs);
-  bot.once('end', () => { clearInterval(timer); clearInterval(gazeTimer); clearInterval(toolTimer); clearInterval(combatTimer); clearInterval(kitTimer); });
+  bot.once('end', () => { clearInterval(timer); clearInterval(gazeTimer); clearInterval(toolTimer); clearInterval(combatTimer); clearInterval(kitTimer); clearInterval(oreWatch); });
 }
 
 /**
@@ -1153,6 +1296,29 @@ function selftest () {
   check('一条矿脉一起挖（同名的数）', O([ore('iron_ore', 3, 0), ore('iron_ore', 3, 1), ore('iron_ore', 4, 1)]).count, 3);
   check('要铲子的矿（化石矿）→ 不用镐去敲', O([ore('fossil_ore', 3, 0, { notPickaxe: true })]).target, undefined);
   check('失败过的格子冷却中 → 不挖', O([ore('iron_ore', 3, 0)], { fails: new Map([['3,64,0', 1e15]]), now: 0 }).target, undefined);
+
+  // ---- 按进度 ----
+  const early = (ores, have = {}) => pickOre({ ores, self: me, pick: 1, have });   // 石镐：前期
+  check('★ 前期（石镐）：铁矿排在最前，哪怕旁边有青金石', early([ore('lapis_ore', 2, 0, { drops: ['lapis_lazuli'] }), ore('iron_ore', 8, 0)]).target?.name, 'iron_ore');
+  check('★ 前期：煤有 20 个还挖（前期门槛翻倍到 32）', early([ore('coal_ore', 3, 0, { value: 'low', tier: 'wood', drops: ['coal'] })], { coal: 20 }).target?.name, 'coal_ore');
+  check('后期（铁镐）：煤有 20 个就不为它停', pickOre({ ores: [ore('coal_ore', 3, 0, { value: 'low', tier: 'wood', drops: ['coal'] })], self: me, pick: 2, have: { coal: 20 } }).target, undefined);
+  check('后期：钻石排在铁前面', pickOre({ ores: [ore('iron_ore', 2, 0), ore('diamond_ore', 9, 0, { value: 'high', tier: 'iron' })], self: me, pick: 2 }).target?.name, 'diamond_ore');
+
+  // ---- 认建筑 / 开宝箱 ----
+  const blk = (name, x, n = 1) => Array.from({ length: n }, (_, i) => ({ name, pos: { x: x + i, y: 40, z: 0 } }));
+  check('★ 看见刷怪笼 → 认出地牢', recognizeStructures(blk('spawner', 10))[0]?.label, '刷怪笼（地牢 / 矿井）');
+  check('一两块苔石不算地牢', recognizeStructures(blk('mossy_cobblestone', 10, 2)).length, 0);
+  check('一片苔石 → 地牢', recognizeStructures(blk('mossy_cobblestone', 10, 8)).length, 1);
+  check('村庄的钟', recognizeStructures(blk('minecraft:bell', 5))[0]?.label, '村庄');
+  const dung = recognizeStructures(blk('spawner', 10));
+  check('★ 看得见没开过的箱子 → 去开', pickLoot({ chests: 2, self: me }).mode, 'open');
+  check('★ 认出建筑、没进过 → 进去', pickLoot({ structures: dung, self: me }).mode, 'explore');
+  check('进过的建筑不再进', pickLoot({ structures: dung, self: me, visited: new Set([dung[0].key]) }).mode, undefined);
+  check('建筑太远 → 不去', pickLoot({ structures: recognizeStructures(blk('spawner', 90)), self: me }).mode, undefined);
+  check('★ 血少 → 先不闯', pickLoot({ chests: 2, hp: 9, self: me }).mode, undefined);
+  check('身上满了、背包也满 → 不去', pickLoot({ chests: 2, free: 1, packFree: 1, self: me }).mode, undefined);
+  check('身上满了但背包还空 → 去', pickLoot({ chests: 2, free: 1, packFree: 20, self: me }).mode, 'open');
+  check('夜里在露天 → 不去', pickLoot({ chests: 2, nightOut: true, self: me }).mode, undefined);
 
   // ---- 收哪些庄稼 ----
   const crop = (x, z, extra = {}) => ({ name: 'wheat', pos: { x, y: 64, z }, age: 7, maxAge: 7, harvest: 'break', farmland: true, visible: true, ...extra });
@@ -1281,7 +1447,7 @@ function selftest () {
   });
 }
 
-module.exports = { CFG, pickTidy, mobKind, attackCooldownMs, combatPlan, COMBAT_YIELD, TIER, pickaxeTier, needTier, pickOre, pickHarvest, hazardUnder, pickStepOff, armorRank, pickArmor, toolWorn, pickGaze, whoThrew, pickPickup, bodyBusy, install, yieldBody, PASSIVE_POSTS, selftest };
+module.exports = { CFG, STRUCTURE_SIGNS, recognizeStructures, pickLoot, pickTidy, mobKind, attackCooldownMs, combatPlan, COMBAT_YIELD, TIER, pickaxeTier, needTier, pickOre, pickHarvest, hazardUnder, pickStepOff, armorRank, pickArmor, toolWorn, pickGaze, whoThrew, pickPickup, bodyBusy, install, yieldBody, PASSIVE_POSTS, selftest };
 
 if (require.main === module && process.argv.includes('--selftest')) {
   selftest().then(code => process.exit(code));
