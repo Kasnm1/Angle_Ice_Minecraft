@@ -4597,3 +4597,5 @@ bridge 以前只用 `inflight` 计数，并不阻止两个 HTTP 身体命令并�
 ### 修复
 
 增加 `body-command-lock.js`。普通身体命令重叠时，后来的请求明确返回 busy，不启动、不排队、不改变 goal；`POST /stop` 仍可立即急停。`GET /instinct.bodyCommand` 暴露当前持锁命令和持续时间。
+
+Windows 部署 `160789a` 后实测同一箱子返回 `success:true`、`block:chest`、`type:minecraft:generic_9x6`、`containerSlots:54`，读取到完整 54 格窗口。核验期间拾取本能持有 `POST /pickup` 锁，另一个 `POST /container/close` 返回 `success:false`、`busy`，没有改目标；拾取结束后重试关箱返回 `closed:true`。
