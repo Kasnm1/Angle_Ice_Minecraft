@@ -378,6 +378,60 @@ async function makeItem (itemName, count = 1, deliverTo = null, depth = 0, log =
  * 要去的地方比她高 3 格以上：寻路器不会从梯子顶迈出去（实测会把她一路带回楼下），
  * 所以先用梯子爬到那一层。附近没有往上的梯子就算了，交给寻路器试。
  */
+// ------------------------------------------------------------------ 有审美地放东西：先看、再挑、再放、再核对
+//
+// 主人 2026-09-27：「她应该有自己的审美思考，放置任何东西之前先选好位置」。
+// 以前 place 只收一个坐标，她只能"哪儿空放哪儿"。这里先 /survey 看清这一片的布局，
+// 让模型当一次"自己的眼光"：说出对这片的看法，想 2–3 个位置和理由，挑一个；放不上就试下一个。
+
+const AESTHETIC_SYS = `你是 Angle_ICE 在 Minecraft 里摆东西时自己的眼光。给你一片地方的逐层俯视图（每种材质一个字母，图例在后），和要放的东西、用途。
+先读懂这片：房子轮廓、墙、地板、屋顶、门、窗、走道（门里外两格、梯子口、常走的路）、已有的灯和家具、配色。
+然后挑位置，原则：
+- 不挡路：门前后两格、梯子上下口、走道中间、窗户正前方都不放东西
+- 家具靠墙、成组、对齐：工作台/熔炉/箱子排成一排、同高度；和已有同类挨着或对称
+- 床靠墙，床头顶墙；箱子靠墙成排，别放门口
+- 火把/灯：优先挂墙（位置选墙边的空气格，旁边就是墙），门两侧、柱子两侧对称；间距 6–8 格均匀；地上的火把放墙角，不放路中间；照亮会刷怪的暗处（darkFloor）
+- 室外：沿路边、围栏边、屋角，间隔均匀；别在别人的建筑上乱放
+- 和周围材质、风格搭（木屋配木质家具、暖色灯）
+坐标必须是图上 '.'（空气）的格子，旁边或下面有能附着的实心块；放地上的东西下面必须是实心块。
+只输出 JSON：{"view":"一句话说这片是什么样、缺什么","candidates":[{"x":0,"y":0,"z":0,"why":"一句话"}],"best":0}，candidates 2–3 个，best 是最好的那个的下标。`;
+
+function parseJsonLoose (text) {
+  const t = String(text || '');
+  const m = t.match(/\{[\s\S]*\}/);
+  if (!m) return null;
+  try { return JSON.parse(m[0]); } catch (_) {}
+  try { return JSON.parse(m[0].replace(/,\s*([}\]])/g, '$1')); } catch (_) { return null; }
+}
+
+async function placeNicely ({ itemName, purpose = '', x, y, z, r = 7 }) {
+  if (!itemName) throw new Error('itemName 要写放什么');
+  const q = x != null && y != null && z != null ? `x=${x}&y=${y}&z=${z}&r=${r}` : `r=${r}`;
+  const sv = await bridge.get(`/survey?${q}`, 8000);
+  const user = [
+    `要放：${itemName}${purpose ? `，用途：${purpose}` : ''}`,
+    `中心 ${sv.center.x},${sv.center.y},${sv.center.z}；${sv.orientation}`,
+    `固定符号：${sv.fixed}`, `材质图例：${sv.legend}`,
+    `门：${sv.doors.join(' ') || '无'}`, `光源：${sv.lights.join(' ') || '无'}`, `家具：${sv.furniture.join(' ') || '无'}`,
+    `会刷怪的暗地面（${sv.darkCount} 格）：${sv.darkFloor.join(' ') || '无'}`,
+    '', sv.layers,
+  ].join('\n');
+  const msg = await llm({ messages: [{ role: 'system', content: AESTHETIC_SYS }, { role: 'user', content: user }], timeoutMs: 30000, maxTokens: 700 });
+  const plan = parseJsonLoose(msg?.content);
+  if (!plan || !Array.isArray(plan.candidates) || !plan.candidates.length) throw new Error(`没想出位置（模型回的不是 JSON：${String(msg?.content || '').slice(0, 120)}）`);
+  const order = [plan.best || 0, ...plan.candidates.keys()].filter((v, i, a) => a.indexOf(v) === i && plan.candidates[v]);
+  const tried = [];
+  for (const i of order) {
+    const c = plan.candidates[i];
+    try {
+      await bridge.post('/go', { x: c.x, y: c.y, z: c.z, range: 3 }, 60000).catch(() => null);
+      const r2 = await bridge.post('/place', { itemName, x: c.x, y: c.y, z: c.z }, 20000);
+      return { placed: itemName, at: { x: c.x, y: c.y, z: c.z }, why: c.why, view: plan.view, alternatives: plan.candidates.filter((_, j) => j !== i).map(a => `(${a.x},${a.y},${a.z}) ${a.why}`), tried, result: summarize(r2) };
+    } catch (e) { tried.push(`(${c.x},${c.y},${c.z})：${e.message.slice(0, 80)}`); }
+  }
+  throw new Error(`挑的几个位置都没放上：${tried.join('；')}（这片的看法：${plan.view || '-'}）`);
+}
+
 async function upstairsFirst (targetY) {
   const me = await bridge.get('/position').catch(() => null);
   const y = me?.exact?.y ?? me?.y;
@@ -825,9 +879,21 @@ const TOOLS = {
     params: { itemName: { type: 'string' }, count: { type: 'number' }, player: { type: 'string' } }, required: ['itemName', 'player'],
     run: async ({ itemName, count, player }) => bridge.post('/give', { itemName, count, player }, 30000),
   },
+  look_area: {
+    kind: 'info',
+    desc: '仔细看一片地方的布局（逐层俯视图、材质配色、门、灯、家具、会刷怪的暗处）。想布置、装修、盖东西之前先看。x/y/z 是中心（默认你脚下），r 半径（默认 7）。',
+    params: { x: { type: 'number' }, y: { type: 'number' }, z: { type: 'number' }, r: { type: 'number' } }, required: [],
+    run: async (a) => bridge.get(`/survey?${Object.entries(a).filter(([, v]) => v != null).map(([k, v]) => `${k}=${v}`).join('&')}`, 8000),
+  },
+  place_nicely: {
+    kind: 'action',
+    desc: '放东西（火把、灯、箱子、床、工作台、熔炉、家具、装饰）都用这个：先看这一片布局，想 2–3 个位置挑最好看又顺手的放下（不挡门和路、靠墙成组、对称、跟周围搭）。purpose 写用途（照亮门口 / 厨房里 / 床边…），x/y/z 写大概在哪一片（默认你身边）。',
+    params: { itemName: { type: 'string' }, purpose: { type: 'string' }, x: { type: 'number' }, y: { type: 'number' }, z: { type: 'number' } }, required: ['itemName'],
+    run: async (a) => placeNicely(a),
+  },
   place: {
     kind: 'action',
-    desc: '把背包里的方块放到某个坐标（必须 4.5 格内、有实心邻块）。',
+    desc: '把背包里的方块放到一个确定的坐标（4.5 格内、有实心邻块）。垫脚、堵洞、照着蓝图施工时用；摆家具、插火把、装饰用 place_nicely。',
     params: { itemName: { type: 'string' }, x: { type: 'number' }, y: { type: 'number' }, z: { type: 'number' } }, required: ['itemName', 'x', 'y', 'z'],
     run: async (a) => bridge.post('/place', a),
   },

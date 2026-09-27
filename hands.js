@@ -2922,6 +2922,82 @@ async function runCommand (bot, state, { command, because } = {}) {
   return { ran: '/' + cmd, serverSaid: replies };
 }
 
+// ------------------------------------------------------------------ 看清一片地方的布局（审美用）
+//
+// 主人 2026-09-27：「她应该有自己的审美思考，放置任何东西之前先选好位置」。
+// 以前她只有"附近有哪些方块"的清单和 7×7 的小地图，看不出房子轮廓、墙面、走道、灯的分布。
+// 这里给一片区域（默认 15×15、脚下 2 层到头上 5 层）逐层俯视图：每种材质一个字母（看得出配色），
+// 门/梯子/光源/水固定符号；再列出家具、光源、暗处（会刷怪的地面）、空着能站的地面。
+
+const FIXED_CH = [
+  [/(^|:)(air|cave_air|void_air)$/, '.'], [/lava/, '!'], [/water|bubble_column/, '~'],
+  [/torch|lantern|campfire|candle|glowstone|sea_lantern|shroomlight|froglight/, 'i'],
+  [/ladder|scaffolding/, 'H'],
+];
+function surveyChar (b, dyn) {
+  if (!b) return '?';
+  for (const [re, ch] of FIXED_CH) if (re.test(b.name)) return ch;
+  if (isDoorLike(b)) {
+    const open = isOpen(b);
+    if (/trapdoor|hatch/.test(b.name)) return open ? 't' : 'T';
+    if (/gate/.test(b.name)) return open ? 'g' : 'G';
+    return open ? 'd' : 'D';
+  }
+  if (!dyn.has(b.name)) {
+    const pool = 'ABCEFIJKLMNOPQRSUVWXYZabcefhjklmnopqrsuvwxyz0123456789#$%&*+=^';
+    dyn.set(b.name, pool[dyn.size] || '?');
+  }
+  return dyn.get(b.name);
+}
+const FURNITURE_RE = /chest|barrel|shulker|_bed$|crafting_table|furnace|smoker|anvil|enchanting|brewing|lectern|loom|stonecutter|grindstone|smithing|cartography|fletching|composter|bookshelf|cauldron|jukebox|note_block|flower_pot|painting|item_frame|stove|cooking_pot|skillet|cutting_board|keg|fridge|freezer|cabinet|counter|table|chair|sofa|shelf|crate|drawer|waystone/;
+
+function survey (bot, { x, y, z, r = 7, below = 2, above = 5 } = {}) {
+  const c = x != null ? new Vec3(Math.floor(+x), Math.floor(+y), Math.floor(+z)) : bot.entity.position.floored();
+  r = Math.min(Math.max(3, +r || 7), 12);
+  const me = bot.entity.position.floored();
+  const dyn = new Map(); const layers = []; const furniture = []; const lights = []; const dark = []; const freeFloor = []; const doors = [];
+  for (let dy = +above; dy >= -below; dy--) {
+    const yy = c.y + dy; const rows = [];
+    for (let dz = -r; dz <= r; dz++) {
+      let row = '';
+      for (let dx = -r; dx <= r; dx++) {
+        const p = new Vec3(c.x + dx, yy, c.z + dz);
+        const b = bot.blockAt(p);
+        if (me.x === p.x && me.z === p.z && (me.y === yy || me.y + 1 === yy)) { row += '@'; continue; }
+        const ch = surveyChar(b, dyn); row += ch;
+        if (!b) continue;
+        const at = `${p.x},${p.y},${p.z}`;
+        if (ch === 'i') lights.push(`${b.name.replace(/^minecraft:/, '')}(${at})`);
+        else if (FURNITURE_RE.test(b.name)) furniture.push(`${b.name.replace(/^minecraft:/, '')}(${at})`);
+        if (isDoorLike(b) && !/trapdoor/.test(b.name)) doors.push(`${b.name.replace(/^.*:/, '')}(${at})`);
+        // 地面格：脚下实心、这格和头上是空的
+        if (ch === '.' && dy <= 1) {
+          const under = bot.blockAt(p.offset(0, -1, 0)); const head = bot.blockAt(p.offset(0, 1, 0));
+          if (under && under.boundingBox === 'block' && head && head.boundingBox === 'empty') {
+            freeFloor.push(at);
+            if (b.light != null && b.light < 1 && !(b.skyLight > 7)) dark.push(at);
+          }
+        }
+      }
+      rows.push(row);
+    }
+    // 整层都是空气就不列
+    if (rows.every(rw => /^[.@]*$/.test(rw))) continue;
+    layers.push(`y=${yy}${yy === c.y ? '（中心层）' : ''}\n${rows.join('\n')}`);
+  }
+  const legend = [...dyn.entries()].map(([n, ch]) => `${ch}=${n.replace(/^minecraft:/, '')}`).join(' ');
+  const uniq = (a) => [...new Set(a)];
+  return {
+    center: { x: c.x, y: c.y, z: c.z }, r,
+    orientation: `每层俯视：从上到下是 z=${c.z - r}..${c.z + r}（北→南），从左到右是 x=${c.x - r}..${c.x + r}（西→东）`,
+    fixed: '. 空气  @ 你  i 光源  H 梯子  D/d 门(关/开)  T/t 活板门  G/g 栅栏门  ~ 水  ! 岩浆  ? 没加载',
+    legend,
+    layers: layers.join('\n\n'),
+    doors: uniq(doors).slice(0, 12), lights: uniq(lights).slice(0, 20), furniture: uniq(furniture).slice(0, 30),
+    darkFloor: dark.slice(0, 20), darkCount: dark.length, freeFloorCount: freeFloor.length,
+  };
+}
+
 // ------------------------------------------------------------------ 睡觉
 
 async function sleepInBed (bot, state, { home = null } = {}) {
@@ -3174,6 +3250,7 @@ function routes ({ state, withTimeout }) {
       return { known: !!bot()._client.__cmdRaw, total: w.size, teleport: TP.filter(x => w.has(x)), all: [...w].sort() };
     },
     'POST /cmd': async (b = {}) => runCommand(bot(), state, b),
+    'GET /survey': async (b = {}) => survey(bot(), b),
     'GET /light': async () => ({ light: lightAt(bot()), dark: isDark(lightAt(bot())), torches: torchCount(bot()), lastBright: state.lastBright ? { x: state.lastBright.x, y: state.lastBright.y, z: state.lastBright.z } : null }),
     'POST /light_up': async (b = {}) => { const m = await makeTorches(bot(), 4); const r = await lightUp(bot(), { max: Math.min(+b.max || 3, 8), force: !!b.force }); return { ...r, made: m.made || 0, note: m.note }; },
     'POST /make_torches': async (b = {}) => makeTorches(bot(), Math.min(+b.count || 16, 64)),
