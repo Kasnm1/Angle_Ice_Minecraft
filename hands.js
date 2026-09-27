@@ -2779,6 +2779,14 @@ async function makeTorches (bot, want = 8) {
   const fuel = bot.inventory.items().filter(i => /(^|:)(coal|charcoal)$/.test(i.name)).reduce((a, i) => a + i.count, 0);
   if (!fuel) return { torches: have, note: '没有煤/木炭' };
   const times = Math.min(fuel, Math.ceil((want - have) / 4));
+  // 木棍不够：木板做木棍（木板也不够就先把原木劈成木板）—— 玩家也是顺手这么做的
+  const count = (re) => bot.inventory.items().filter(i => re.test(i.name)).reduce((a, i) => a + i.count, 0);
+  if (count(/(^|:)stick$/) < times) {
+    try {
+      if (count(/_planks$/) < 2) await craft2(bot, { itemName: bot.inventory.items().find(i => /_log$/.test(i.name) && !/stripped/.test(i.name))?.name.replace(/_log$/, '_planks') || 'minecraft:oak_planks', count: 4 }, plainTimeout);
+      await craft2(bot, { itemName: 'minecraft:stick', count: Math.max(4, times) }, plainTimeout);
+    } catch (e) { return { torches: have, note: `缺木棍，做木棍没成：${e.message}` }; }
+  }
   try { await craft2(bot, { itemName: 'minecraft:torch', count: times * 4 }, plainTimeout); } catch (e) { return { torches: torchCount(bot), note: `做火把没成：${e.message}` }; }
   return { torches: torchCount(bot), made: torchCount(bot) - have };
 }
