@@ -92,6 +92,13 @@
  *     反射（physicsTick，每 50ms）：在往下掉、算出来会摔伤（落差 > 3.5 格）→ 先把水桶换到手上；
  *     离落点 ≤ 3 格时低头倒水；落地（或落进水里）后低头用空桶把水收回来。不管是自己跳的还是被打下去的都管。
  *
+ * ## 寻路挖掘 / 家的范围随基地长大（主人 2026-09-27）
+ *
+ *   · 寻路时挡路的方块：只挖**天然地形**（pathing.naturalDigNames 的白名单，从整合包方块标签来），
+ *     家里不挖、紧挨着人造方块的不挖（多半是某个建筑的墙）。挖一格的代价仍很高，能绕就绕。
+ *   · 家的范围：在家附近时每 5 分钟数一数家周围的人造方块（isPlayerBuilt + 耕地），基地往外连着长到哪，
+ *     半径就扩到那 + 6 格（最多 128）；只扩不缩。扩了告诉 mind（她把新半径记进记忆）。
+ *
  * ## 采矿按进度（主人 2026-09-27：前期煤、铁，后期钻石，也包括模组矿）
  *
  * 还没有铁镐时：铁矿当最高价值（它就是下一步）、煤少于 32 就挖；有了铁镐之后煤按少于 16 算。
@@ -206,6 +213,8 @@ const CFG = {
     visitCell: 4,           // "去过"按几格一格子记
   },
   bridge: { enabled: process.env.MC_INSTINCT_BRIDGE !== 'false' },
+  dig: { enabled: process.env.MC_INSTINCT_DIG !== 'false' },
+  home: { grow: process.env.MC_HOME_GROW !== 'false', everyMs: 300000, gap: 8, margin: 6, cap: 128, near: 32 },
   mlg: { enabled: process.env.MC_INSTINCT_MLG !== 'false', minFall: 3.5, placeAt: 3.0 },
   minFreeSlots: 2,          // 收获、采矿至少留几个空格
   yieldWaitMs: 1500,        // 让出身体时最多等本能收拾多久
@@ -522,6 +531,18 @@ function pickCaveStep ({ cells = [], self, entry = null, visited = new Set() }, 
 }
 
 /**
+ * 家该多大。dists：家周围人造方块到家中心的水平距离（任意顺序）。
+ * 从中心往外走，相邻两个人造方块的距离差 ≤ gap 就算"还连着"；连着的最远那个 + margin 就是新半径。只扩不缩，封顶 cap。
+ */
+function homeFootprint (dists = [], radius = 24, cfg = CFG.home) {
+  const d = dists.filter(x => Number.isFinite(x)).sort((a, b) => a - b);
+  let reach = 0;
+  for (const x of d) { if (x - reach > cfg.gap && x > radius) break; reach = Math.max(reach, x); }
+  if (reach <= radius) return radius;   // 房子都还在范围里：不动（只有盖出去了才扩）
+  return Math.min(cfg.cap, Math.ceil(reach + cfg.margin));
+}
+
+/**
  * 落地水：这一拍该做什么。
  * @param c.startY 这次离地后到过的最高点；c.y 现在的脚底高度；c.vy 竖直速度（格/tick，往下是负）
  * @param c.landY  下面第一块实心方块的顶面高度（null = 下面 40 格内没有 / 读不到）；c.landIsWater 落点本来就是水
@@ -598,7 +619,7 @@ function install (bot, state, deps) {
     home: null,             // { center:{x,y,z}, radius }，mind 通过 POST /instinct {home} 告诉
   };
   // 跨重连保留状态；新加的本能补上默认配置（老的 state.instinct 里没有）
-  for (const k of ['pickup', 'harvest', 'mine', 'sleep', 'armor', 'gaze', 'combat', 'tidy', 'loot', 'cave', 'bridge', 'mlg']) I.cfg[k] = { ...CFG[k], ...(I.cfg[k] || {}) };
+  for (const k of ['pickup', 'harvest', 'mine', 'sleep', 'armor', 'gaze', 'combat', 'tidy', 'loot', 'cave', 'bridge', 'mlg', 'dig', 'home']) I.cfg[k] = { ...CFG[k], ...(I.cfg[k] || {}) };
   const spawned = new Map();   // 掉落物 id → { t, thrower }
   const fails = new Map();
   const mineFails = new Map();   // "x,y,z" → 到什么时候之前不再试
@@ -964,6 +985,51 @@ function install (bot, state, deps) {
     return { did: 'cave' };
   }
 
+  // ---- 寻路挖掘白名单：本连接的方块 id（按整合包方块标签算一次）
+  let natIds = null;
+  const naturalIds = () => {
+    if (natIds) return natIds;
+    let tagOf = () => undefined;
+    try { const kb = require('./knowledge').load(); tagOf = (t) => kb.tags.get(`block:${t}`); } catch (_) {}
+    const reg = bot.registry;
+    natIds = new Set();
+    for (const n of deps.pathing.naturalDigNames(tagOf)) {
+      const b = reg.blocksByName[n] || reg.blocksByName[n.replace(/^minecraft:/, '')];
+      if (b) natIds.add(b.id);
+    }
+    return natIds;
+  };
+  const builtNear = (p) => {
+    for (const [dx, dy, dz] of [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]]) {
+      const b = bot.blockAt(p.offset(dx, dy, dz));
+      if (b && deps.isPlayerBuilt?.(b.name)) return true;
+    }
+    return false;
+  };
+
+  // ---- 家的范围随基地长大
+  let builtIds = null;
+  const homeTimer = setInterval(() => {
+    try {
+      const H = I.cfg.home; const h = I.home;
+      if (!H.grow || !h || !bot.entity) return;
+      if (Date.now() - (I.lastHomeScan || 0) < H.everyMs) return;
+      if (Math.hypot(bot.entity.position.x - h.center.x, bot.entity.position.z - h.center.z) > h.radius + H.near) return;   // 不在家附近：区块可能没加载，数不准
+      I.lastHomeScan = Date.now();
+      if (!builtIds) builtIds = Object.values(bot.registry.blocksByName).filter(b => deps.isPlayerBuilt?.(b.name) || /farmland/.test(b.name)).map(b => b.id);
+      const { Vec3 } = require('vec3');
+      const c = new Vec3(h.center.x, h.center.y, h.center.z);
+      const pts = bot.findBlocks({ point: c, matching: builtIds, maxDistance: Math.min(H.cap, h.radius + H.near), count: 4000 })
+        .filter(p => Math.abs(p.y - h.center.y) <= 16);
+      const r = homeFootprint(pts.map(p => Math.hypot(p.x - h.center.x, p.z - h.center.z)), h.radius, H);
+      if (r > h.radius + 2) {
+        const old = h.radius;
+        h.radius = r;
+        event('home_grow', `家的范围跟着房子长大了：半径 ${old} → ${r} 格（数到 ${pts.length} 块人造方块）`, { radius: r, center: h.center });
+      }
+    } catch (_) {}
+  }, 30000);
+
   // ---- 搭路 / 落地水：按身上的东西随时调寻路（有搭脚方块才搭路；有水桶才敢往下跳高）
   const policyTimer = setInterval(() => {
     try {
@@ -977,7 +1043,12 @@ function install (bot, state, deps) {
         const ids = deps.hands.SCAFFOLD_IDS.map(n => bot.registry.itemsByName[n.replace(/^minecraft:/, '')]?.id).filter(x => x != null);
         sc = deps.pathing.setScaffold(mv, { itemIds: ids, forbid: (p) => inHome(p) === true });
       } else deps.pathing.setScaffold(mv, {});
-      I.movePolicy = { maxDrop: drop, scaffoldKinds: sc.scaffolding, scaffoldCount: mv.countScaffoldingItems?.() ?? null, homeGuard: !!I.home };
+      // 寻路挖掘：只挖天然地形（白名单），家里不挖，紧挨人造方块不挖
+      let dg = { mode: 'leavesOnly' };
+      if (I.cfg.dig.enabled && deps.pathing.setDigPolicy) {
+        dg = deps.pathing.setDigPolicy(mv, { naturalIds: naturalIds(), forbid: (p) => inHome(p) === true, builtNear });
+      }
+      I.movePolicy = { maxDrop: drop, scaffoldKinds: sc.scaffolding, scaffoldCount: mv.countScaffoldingItems?.() ?? null, homeGuard: !!I.home, dig: dg };
     } catch (_) {}
   }, 2000);
 
@@ -1383,7 +1454,7 @@ function install (bot, state, deps) {
     ticking = true;
     try { await tick(); } catch (e) { I.last = { t: Date.now(), error: e.message }; } finally { ticking = false; }
   }, CFG.pickup.tickMs);
-  bot.once('end', () => { clearInterval(timer); clearInterval(gazeTimer); clearInterval(toolTimer); clearInterval(combatTimer); clearInterval(kitTimer); clearInterval(oreWatch); clearInterval(policyTimer); });
+  bot.once('end', () => { clearInterval(timer); clearInterval(gazeTimer); clearInterval(toolTimer); clearInterval(combatTimer); clearInterval(kitTimer); clearInterval(oreWatch); clearInterval(policyTimer); clearInterval(homeTimer); });
 }
 
 /**
@@ -1509,6 +1580,13 @@ function selftest () {
   check('身上满了、背包也满 → 不去', pickLoot({ chests: 2, free: 1, packFree: 1, self: me }).mode, undefined);
   check('身上满了但背包还空 → 去', pickLoot({ chests: 2, free: 1, packFree: 20, self: me }).mode, 'open');
   check('夜里在露天 → 不去', pickLoot({ chests: 2, nightOut: true, self: me }).mode, undefined);
+
+  // ---- 家的范围 ----
+  check('房子都在半径里 → 不变', homeFootprint([3, 8, 15, 20], 24), 24);
+  check('★ 房子往外盖到 35 格（连着的）→ 扩到 41', homeFootprint([5, 12, 20, 26, 31, 35], 24), 41);
+  check('★ 远处孤零零一个（隔了一大段）→ 不算（不把邻居家当自己家）', homeFootprint([5, 12, 20, 60], 24), 24);
+  check('只扩不缩', homeFootprint([2, 3], 40), 40);
+  check('封顶 128', homeFootprint(Array.from({ length: 40 }, (_, i) => i * 5), 24), 128);
 
   // ---- 落地水 ----
   const F = (o) => mlgStep({ startY: 90, y: 75, vy: -1.2, landY: 70, hasBucket: true, holding: true, ...o });
@@ -1661,7 +1739,7 @@ function selftest () {
   });
 }
 
-module.exports = { CFG, mlgStep, pickCaveStep, STRUCTURE_SIGNS, recognizeStructures, pickLoot, pickTidy, mobKind, attackCooldownMs, combatPlan, COMBAT_YIELD, TIER, pickaxeTier, needTier, pickOre, pickHarvest, hazardUnder, pickStepOff, armorRank, pickArmor, toolWorn, pickGaze, whoThrew, pickPickup, bodyBusy, install, yieldBody, PASSIVE_POSTS, selftest };
+module.exports = { CFG, homeFootprint, mlgStep, pickCaveStep, STRUCTURE_SIGNS, recognizeStructures, pickLoot, pickTidy, mobKind, attackCooldownMs, combatPlan, COMBAT_YIELD, TIER, pickaxeTier, needTier, pickOre, pickHarvest, hazardUnder, pickStepOff, armorRank, pickArmor, toolWorn, pickGaze, whoThrew, pickPickup, bodyBusy, install, yieldBody, PASSIVE_POSTS, selftest };
 
 if (require.main === module && process.argv.includes('--selftest')) {
   selftest().then(code => process.exit(code));

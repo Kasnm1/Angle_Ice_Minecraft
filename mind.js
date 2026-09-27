@@ -246,14 +246,24 @@ async function look () {
   if (ins && Array.isArray(ins.events)) {
     if (W.instinctSeq == null || ins.seq < W.instinctSeq) W.instinctSeq = ins.seq;   // 刚醒 / bridge 重启：不翻旧的
     else {
-      for (const e of ins.events) emit(`🫳 ${e.text}`, { cue: `${e.kind} ${e.ore || ''}` });
+      for (const e of ins.events) {
+        // 房子长大了：家的半径记进记忆（只改半径，家里箱子的记忆不动）
+        if (e.kind === 'home_grow' && e.radius) { const hh = mem.getHome(); if (hh && e.radius > hh.radius) { hh.radius = e.radius; mem.touch(); } }
+        emit(`🫳 ${e.text}`, { cue: `${e.kind} ${e.ore || ''}` });
+      }
       W.instinctSeq = ins.seq;
     }
   }
   // 家在哪告诉本能层（收获本能只收家里的地）。一分钟一次，bridge 重启后也能补上
   if (Date.now() - W.homeToldAt > 60000) {
     const h = mem.getHome();
-    if (h) { W.homeToldAt = Date.now(); bridge.post('/instinct', { home: { center: h.center, radius: h.radius } }).catch(() => { W.homeToldAt = 0; }); }
+    // 本能层数出来的半径比记忆里大（mind 没醒着时长大的）：跟上
+    if (h) {
+      W.homeToldAt = Date.now();
+      bridge.post('/instinct', { home: { center: h.center, radius: h.radius } })
+        .then(r => { if (r?.home?.radius > h.radius) { h.radius = r.home.radius; mem.touch(); } })
+        .catch(() => { W.homeToldAt = 0; });
+    }
   }
   // 物品账：背包每次进出的原因（捡的 / 放进哪个箱子 / 吃掉 / 用坏…）。bridge 旧版本没有这个端点 → null，走老的前后对比
   const led = await safe(`/inventory/ledger?since=${W.ledgerSeq ?? 0}`);

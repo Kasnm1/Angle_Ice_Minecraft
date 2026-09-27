@@ -1247,7 +1247,7 @@ function createBot() {
   hands.install(state.bot, state);
   installEntitySense(state.bot);
   installLedger(state.bot);
-  instinct.install(state.bot, state, { handlers, hands, pathing, isDropEntity, droppedItemOf, aggroOf, exposureOf, night, cancelCommands, pickAutoEquip });
+  instinct.install(state.bot, state, { handlers, hands, pathing, isPlayerBuilt, isDropEntity, droppedItemOf, aggroOf, exposureOf, night, cancelCommands, pickAutoEquip });
 
   // ---- 身体反射插件 ----------------------------------------------------------
   // 加载顺序有讲究（两边项目都是 pathfinder 打头）：
@@ -6075,7 +6075,7 @@ const handlers = {
     if (!I) return { installed: false };
     return {
       installed: true,
-      pickup: I.cfg.pickup, harvest: I.cfg.harvest, mine: I.cfg.mine, sleep: I.cfg.sleep, armor: I.cfg.armor, gaze: I.cfg.gaze, combat: I.cfg.combat, tidy: I.cfg.tidy, loot: I.cfg.loot, cave: I.cfg.cave, bridge: I.cfg.bridge, mlg: I.cfg.mlg, movePolicy: I.movePolicy || null,
+      pickup: I.cfg.pickup, harvest: I.cfg.harvest, mine: I.cfg.mine, sleep: I.cfg.sleep, armor: I.cfg.armor, gaze: I.cfg.gaze, combat: I.cfg.combat, tidy: I.cfg.tidy, loot: I.cfg.loot, cave: I.cfg.cave, bridge: I.cfg.bridge, mlg: I.cfg.mlg, dig: I.cfg.dig, homeGrow: I.cfg.home, movePolicy: I.movePolicy || null,
       combatNow: I.combat && I.running?.kind === 'combat' ? { since: I.combat.started, engaged: I.combat.engaged.size, killed: I.combat.killed } : null,
       lastCancel: state.lastCancel || null,
       home: I.home,
@@ -6097,12 +6097,15 @@ const handlers = {
     const { radius, followRadius, home } = b;
     const I = state.instinct;
     if (!I) throw new Error('本能还没装上（bot 还没建好）');
-    const KINDS = ['pickup', 'harvest', 'mine', 'sleep', 'armor', 'gaze', 'combat', 'tidy', 'loot', 'cave', 'bridge', 'mlg'];
+    const KINDS = ['pickup', 'harvest', 'mine', 'sleep', 'armor', 'gaze', 'combat', 'tidy', 'loot', 'cave', 'bridge', 'mlg', 'dig'];
     for (const k of KINDS) if (typeof b[k] === 'boolean') I.cfg[k].enabled = b[k];
     // 家在哪（收获本能：耕地上的庄稼只收家里的）。mind 知道家，定期告诉这里
     if (home === null) I.home = null;
     else if (home && home.center && Number.isFinite(+home.center.x) && Number.isFinite(+home.center.z)) {
-      I.home = { center: { x: +home.center.x, y: +home.center.y || 64, z: +home.center.z }, radius: Math.max(4, +home.radius || 24) };
+      const nh = { center: { x: +home.center.x, y: +home.center.y || 64, z: +home.center.z }, radius: Math.max(4, +home.radius || 24) };
+      // 同一个家（中心没挪）：半径取大的 —— 本能层数出来的"房子长大了"不能被 mind 记忆里的旧半径盖回去（mind 看返回值跟上）
+      const same = I.home && Math.hypot(I.home.center.x - nh.center.x, I.home.center.z - nh.center.z) <= 2;
+      I.home = same ? { ...nh, radius: Math.max(nh.radius, I.home.radius) } : nh;
     }
     if (radius !== undefined && Number.isFinite(+radius)) I.cfg.pickup.radius = Math.min(Math.max(1, +radius), 16);
     if (followRadius !== undefined && Number.isFinite(+followRadius)) I.cfg.pickup.followRadius = Math.min(Math.max(1, +followRadius), 12);

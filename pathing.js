@@ -1075,6 +1075,61 @@ function setDropAllowance (mv, { water = false, nether = false } = {}) {
 }
 
 /**
+ * 寻路时能挖哪些方块 —— **白名单**（主人 2026-09-27 同意把"寻路不挖"改成"只挖天然地形"）。
+ *
+ * 以前放行挖掘用的是**黑名单**（按名字认出人造方块就不拆），模组装饰方块名字是开集、穷举必漏，实测拆过两格主人的装饰，
+ * 于是整体关掉了（MC_ALLOW_DIG=false）。白名单反过来：只列"天然地形"，认不出的一律不挖 —— 错也错在安全那边。
+ * 名单从整合包的**方块标签**来（knowledge/generated/gamedata.json，含所有模组），模组的天然石头只要打了标签就自动进来。
+ *
+ * @param tagOf (tagName) → Set<全名> | undefined
+ * @returns Set<全名>
+ */
+const NATURAL_TAGS = [
+  'minecraft:base_stone_overworld', 'minecraft:base_stone_nether', 'minecraft:dirt', 'minecraft:sand',
+  'minecraft:nylium', 'forge:stone', 'forge:gravel', 'forge:sandstone', 'forge:end_stones', 'forge:ores', 'forge:netherrack',
+];
+const NATURAL_EXTRA = ['gravel', 'clay', 'mud', 'calcite', 'dripstone_block', 'moss_block', 'soul_sand', 'soul_soil', 'magma_block',
+  // ⚠️ 知识库的 minecraft:dirt 标签里只有模组加的（原版那份没并进去，2026-09-27 实查），所以原版的这里逐个列
+  'dirt', 'end_stone', 'snow_block', 'mycelium', 'podzol', 'coarse_dirt', 'rooted_dirt', 'grass_block', 'muddy_mangrove_roots',
+  'sandstone', 'red_sandstone', 'netherrack', 'basalt', 'blackstone', 'tuff', 'deepslate', 'stone', 'granite', 'diorite', 'andesite'].map(n => `minecraft:${n}`);
+// 加工过的 / 挖了有麻烦的：一律不进白名单（哪怕某个模组把它打进了 forge:stone）
+// suspicious_*：考古方块，一挖里面的东西就没了；soil/farmland/compost：多半是主人的地；boundary/raw_*_block/decorative_blocks：不像天然地形（2026-09-27 看过真名单后补）
+const NOT_NATURAL_RE = /polished|brick|smooth|chiseled|(^|:|_)cut_|tiles?($|_)|pillar|_slab$|_stairs$|_wall$|carved|mosaic|planks|infested|cobblestone|cobbled|glass|_block_of_|bookshelf|lamp|suspicious|farmland|compost|soil|boundary|raw_\w+_block|^decorative_blocks:|dirt_path|packed_mud/;
+function naturalDigNames (tagOf = () => undefined) {
+  const out = new Set();
+  for (const t of NATURAL_TAGS) for (const n of tagOf(t) || []) out.add(n);
+  for (const n of NATURAL_EXTRA) out.add(n);
+  for (const n of [...out]) if (NOT_NATURAL_RE.test(n)) out.delete(n);
+  return out;
+}
+
+/**
+ * 装上"只挖天然地形"的挖掘闸（取代 applyPolicy 的"只拆树叶"闸；MC_ALLOW_DIG=true 时不装 —— 那是全放行）。
+ *   naturalIds ：能挖的方块 id（naturalDigNames 翻成本连接的 id）
+ *   forbid     ：(pos) → true = 这里不挖（家的范围）
+ *   builtNear  ：(pos) → true = 紧挨着人造方块（很可能是某个建筑的墙/地基）→ 不挖
+ * 树叶 / 藤蔓 / 蜘蛛网照旧能打掉（脚下的不打）。挖一格仍是 digCost（≈ 走 23 格），能绕就绕。
+ */
+function setDigPolicy (mv, { naturalIds = new Set(), forbid = null, builtNear = null } = {}) {
+  if (ALLOW_DIG) return { mode: 'all' };
+  mv.canDig = true;
+  mv.exclusionAreasBreak = (mv.exclusionAreasBreak || []).filter(f => !f.__leavesOnly && !f.__digGuard);
+  const guard = (block) => {
+    if (!block) return 100;
+    const feetY = mv.bot?.entity?.position?.y;
+    const underFeet = feetY != null && block.position && block.position.y < Math.floor(feetY);
+    if (/leaves|vine|cobweb/.test(block.name || '')) return underFeet ? 100 : 0;
+    if (!naturalIds.has(block.type)) return 100;
+    if (block.position && forbid && forbid(block.position)) return 100;
+    if (block.position && builtNear && builtNear(block.position)) return 100;
+    return 0;
+  };
+  guard.__digGuard = true;
+  mv.exclusionAreasBreak.push(guard);
+  return { mode: 'natural', natural: naturalIds.size };
+}
+
+/**
  * 搭路本能（主人 2026-09-27）：走到断崖 / 沟 / 要往上的地方，用**她自己带的搭脚方块**垫过去。
  *   itemIds  ：能拿来垫的物品 id（只放她随身带的那几种，hands.SCAFFOLD_IDS）；空数组 = 不搭（回到老行为）
  *   forbid   ：(pos) → true 表示这里不许放（家的范围：别在主人的基地里乱垫）
@@ -1848,6 +1903,30 @@ if (require.main === module && process.argv.includes('--selftest')) {
   check('再设一次不会叠两道闸', fakeMv.exclusionAreasPlace.filter(f => f.__noPlaceGuard).length, 0);
   setScaffold(fakeMv, {});
   check('没带搭脚方块 → 不搭（回到老行为）', fakeMv.scafoldingBlocks.length === 0 && fakeMv.allow1by1towers === false, true);
+  // 寻路挖掘白名单
+  const tags = { 'forge:stone': new Set(['minecraft:stone', 'somemod:limestone', 'somemod:polished_limestone']), 'minecraft:dirt': new Set(['minecraft:dirt']) };
+  const nat = naturalDigNames(t => tags[t]);
+  check('★ 模组天然石头（打了 forge:stone）→ 能挖', nat.has('somemod:limestone'), true);
+  check('★ 加工过的（polished）哪怕在标签里 → 不挖', nat.has('somemod:polished_limestone'), false);
+  check('★ 圆石不挖（常被拿来盖房子）', nat.has('minecraft:cobblestone'), false);
+  check('原版砂砾在里面', nat.has('minecraft:gravel'), true);
+  check('★ 原版泥土在里面（标签里缺，靠补充名单）', nat.has('minecraft:dirt'), true);
+  check('★ 可疑的沙（考古）不挖', naturalDigNames(t => (t === 'minecraft:sand' ? new Set(['minecraft:suspicious_sand']) : undefined)).has('minecraft:suspicious_sand'), false);
+  check('★ 耕地 / 土壤不挖（多半是主人的地）', naturalDigNames(t => (t === 'minecraft:dirt' ? new Set(['somemod:rich_soil_farmland']) : undefined)).size === NATURAL_EXTRA.length - [...NATURAL_EXTRA].filter(n => NOT_NATURAL_RE.test(n)).length, true);
+  const dm = { exclusionAreasBreak: [], bot: { entity: { position: { y: 64 } } } };
+  if (!ALLOW_DIG) {
+    setDigPolicy(dm, { naturalIds: new Set([1]), forbid: (p) => p.x === 0, builtNear: (p) => p.x === 9 });
+    const g = dm.exclusionAreasBreak.find(f => f.__digGuard);
+    const B = (type, x, name = 'stone', y = 64) => ({ type, name, position: { x, y, z: 0 } });
+    check('★ 天然石头、家外、旁边没建筑 → 能挖', g(B(1, 5)), 0);
+    check('★ 认不出的方块（模组装饰）→ 不挖', g(B(2, 5, 'somemod:vase')), 100);
+    check('★ 家里 → 不挖', g(B(1, 0)), 100);
+    check('★ 紧挨着人造方块 → 不挖（可能是墙）', g(B(1, 9)), 100);
+    check('树叶照旧能打（不在脚下）', g(B(3, 5, 'oak_leaves', 64)), 0);
+    check('脚下的树叶不打', g(B(3, 5, 'oak_leaves', 60)), 100);
+    setDigPolicy(dm, { naturalIds: new Set([1]) });
+    check('再设一次不会叠两道闸', dm.exclusionAreasBreak.filter(f => f.__digGuard).length, 1);
+  }
   check('blocksCantBreak 是"只增不减"：原有 999 还在', fakeMv.blocksCantBreak.has(999), true);
   check('blocksCantBreak 装上了 4 个受保护 ID', fakeMv.blocksCantBreak.size, 5);
   check('摘要里的 protectedCount 与实际一致', summary.protectedCount, 4);
@@ -2998,7 +3077,7 @@ if (require.main === module && process.argv.includes('--selftest')) {
     });
 }
 
-module.exports = { setDropAllowance, setScaffold, MLG_DROP,
+module.exports = { naturalDigNames, setDigPolicy, setDropAllowance, setScaffold, MLG_DROP,
   bareName,
   isProtected,
   PROTECTED_PATTERNS,
