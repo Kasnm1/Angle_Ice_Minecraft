@@ -2723,6 +2723,7 @@ function visibleOres (bot, want, radius, skip) {
     .sort((a, b) => ((want && b.name.includes(want)) - (want && a.name.includes(want))) || me.distanceTo(a.position) - me.distanceTo(b.position));
 }
 
+const BRANCH = 8;   // 鱼骨支道长度（主道每 3 格一对，支道间隔 2 格实心：1×2 通道两侧各露一格，正好不漏）
 const MINES_FILE = require('path').join(__dirname, 'memory', 'mines.json');
 function mines (state) {
   if (!state.__mines) { try { state.__mines = JSON.parse(require('fs').readFileSync(MINES_FILE, 'utf8')); } catch (_) { state.__mines = {}; } }
@@ -2867,10 +2868,22 @@ async function delve (bot, state, { target = null, targetY = null, maxMs = 12000
       if (m) { caveMoves++; log.push(`矿洞里走到 (${m.to.x},${m.to.y},${m.to.z})`); const lu = await lightUp(bot); if (lu.placed) log.push('矿洞里插了个火把'); continue; }
     }
 
-    // 4. 挖楼梯往下 / 挖矿道往前
+    // 4. 挖楼梯往下 / 挖矿道往前（到了深度用鱼骨：主道每 3 格向左、向右各挖一条 BRANCH 格的支道，再回主道）
+    //    主人 2026-09-27 问"挖矿方法是什么"：以前到深度后只一条直道，两侧各只露一格墙，效率低
     const f = bot.entity.position.floored();
-    const [dx, dz] = D.heading;
     const goingDown = f.y > ty;
+    const idxOf = (h) => DIRS.findIndex(d => d[0] === h[0] && d[1] === h[1]);
+    if (!goingDown) {
+      D.fb ||= { main: D.heading, phase: 'main', since: 0, len: 0, anchor: null, branches: 0 };
+      const mi = idxOf(D.fb.main);
+      D.heading = D.fb.phase === 'L' ? DIRS[(mi + 3) % 4] : D.fb.phase === 'R' ? DIRS[(mi + 1) % 4] : D.fb.main;
+    }
+    const endBranch = async () => {   // 支道挖完/挖不动：回到主道分叉处，换另一侧或接着挖主道
+      const a = D.fb.anchor;
+      if (a) await pathTo(bot, new Vec3(a.x, a.y, a.z), 0.6, 20000, { retry: false });
+      if (D.fb.phase === 'L') { D.fb.phase = 'R'; D.fb.len = 0; } else { D.fb.phase = 'main'; D.fb.branches++; }
+    };
+    const [dx, dz] = D.heading;
     const cells = goingDown ? [f.offset(dx, 1, dz), f.offset(dx, 0, dz), f.offset(dx, -1, dz)] : [f.offset(dx, 1, dz), f.offset(dx, 0, dz)];
     const dest = goingDown ? f.offset(dx, -1, dz) : f.offset(dx, 0, dz);
     const floor = bot.blockAt(dest.offset(0, -1, 0));
@@ -2895,12 +2908,19 @@ async function delve (bot, state, { target = null, targetY = null, maxMs = 12000
     if (why) {
       log.push(why);
       if (/镐子/.test(why)) { reason = why; break; }
+      if (!goingDown && D.fb && D.fb.phase !== 'main') { await endBranch(); continue; }   // 支道挖不动：提前收这条
       D.heading = DIRS[(DIRS.findIndex(d => d[0] === dx && d[1] === dz) + 1 + (turns % 2) * 2) % 4];   // 右转，再不行掉头
+      if (!goingDown && D.fb) D.fb.main = D.heading;
       if (++turns >= 4) { reason = `四个方向都挖不下去：${why}`; break; }
       continue;
     }
     turns = 0; D.steps++;
     D.visited.add(`${dest.x >> 2},${dest.y >> 2},${dest.z >> 2}`);
+    if (!goingDown && D.fb) {
+      if (D.fb.phase === 'main') {
+        if (++D.fb.since >= 3) { D.fb.since = 0; D.fb.phase = 'L'; D.fb.len = 0; D.fb.anchor = { x: dest.x, y: dest.y, z: dest.z }; }
+      } else if (++D.fb.len >= BRANCH) { await endBranch(); }
+    }
     // 脚下暗了就插（读不到亮度时每 torchEvery 步插一个）
     if (!nearestLight(bot, torchEvery)) { if (await placeTorchHere(bot)) log.push('插了个火把'); }   // 身边 8 格没光源才插
     if (!torchItem(bot)) { reason = '火把用完了，别再往暗处挖 —— 回去补火把'; break; }
@@ -2909,13 +2929,14 @@ async function delve (bot, state, { target = null, targetY = null, maxMs = 12000
   {
     const f = bot.entity.position.floored();
     D.last = bot.entity.position.clone(); D.deepest = Math.min(D.deepest ?? f.y, f.y);
-    if (D.entry) { mines(state)[`${D.entry.x},${D.entry.y},${D.entry.z}`] = { entry: D.entry, last: { x: f.x, y: f.y, z: f.z }, heading: D.heading, steps: D.steps, deepest: D.deepest, updated: Date.now() }; saveMines(state); }
+    if (D.entry) { mines(state)[`${D.entry.x},${D.entry.y},${D.entry.z}`] = { entry: D.entry, last: { x: f.x, y: f.y, z: f.z }, heading: D.fb ? D.fb.main : D.heading, fb: D.fb || null, steps: D.steps, deepest: D.deepest, updated: Date.now() }; saveMines(state); }
   }
   const d = delta(invBefore, invCounts(bot));
   const p = bot.entity.position;
   return {
     ok: true, reason, at: { x: Math.floor(p.x), y: Math.floor(p.y), z: Math.floor(p.z) }, fromY: Math.floor(y0), targetY: ty,
     entry: D.entry, deepest: D.deepest, resumed,
+    method: D.fb ? `鱼骨：主道朝 ${['北', '东', '南', '西'][DIRS.findIndex(d => d[0] === D.fb.main[0] && d[1] === D.fb.main[1])]}，已挖 ${D.fb.branches} 对支道，现在在${D.fb.phase === 'main' ? '主道' : D.fb.phase === 'L' ? '左支道' : '右支道'}` : '挖楼梯往下',
     heading: D.heading, steps: D.steps, oresDug: dug, torchesLeft: torchCount(bot), gained: d.gained, chests: chests.length ? chests : undefined, log: log.slice(-8),
   };
 }
@@ -3592,6 +3613,19 @@ function routes ({ state, withTimeout }) {
     },
     'POST /cmd': async (b = {}) => runCommand(bot(), state, b),
     'GET /survey': async (b = {}) => survey(bot(), b),
+    // 看得见的地标：传送石碑、村庄（钟或村民）—— mind 记进"记得的地方"
+    'GET /landmarks': async () => {
+      const b = bot(); const out = [];
+      const ids = (re) => Object.values(b.registry.blocksByName).filter(x => re.test(x.name)).map(x => x.id);
+      for (const [kind, re] of [['waystone', /waystone/], ['village', /(^|:)bell$/]]) {
+        for (const p of b.findBlocks({ matching: ids(re), maxDistance: 32, count: 8 })) {
+          const blk = b.blockAt(p); if (blk && b.canSeeBlock(blk)) out.push({ kind, name: blk.name, x: p.x, y: p.y, z: p.z });
+        }
+      }
+      const vill = Object.values(b.entities).find(e => /villager/.test(e.name || '') && e.position.distanceTo(b.entity.position) < 32);
+      if (vill && !out.some(o => o.kind === 'village')) out.push({ kind: 'village', name: 'villager', x: Math.floor(vill.position.x), y: Math.floor(vill.position.y), z: Math.floor(vill.position.z) });
+      return { landmarks: out };
+    },
     'POST /project/save': async (b = {}) => projectSave(bot(), state, b),
     'GET /project/status': async (b = {}) => projectStatus(bot(), state, b),
     'POST /project/work': async (b = {}) => projectWork(bot(), state, b),

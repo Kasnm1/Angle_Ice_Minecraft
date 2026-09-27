@@ -491,8 +491,10 @@ function notePlace ({ kind = 'mine', name, entry, last, deepest, ores = {}, ches
   load();
   S.places ||= {}; const list = (S.places[worldKey] ||= []);
   const d = (a, b) => Math.hypot(a.x - b.x, a.z - b.z);
-  let pl = list.find(x => x.kind === kind && (d(x.entry, entry) <= 48 || (last && x.last && d(x.last, last) <= 24)));
-  if (!pl) { pl = { id: list.length + 1, kind, name: name || (kind === 'mine' ? `矿洞${list.filter(x => x.kind === 'mine').length + 1}` : '地方'), entry, ores: {}, chests: 0, visits: 0, created: Date.now() }; list.push(pl); }
+  const R = kind === 'waystone' ? 4 : kind === 'village' ? 96 : 48;   // 石碑按块算，村庄范围大
+  let pl = list.find(x => x.kind === kind && (d(x.entry, entry) <= R || (last && x.last && d(x.last, last) <= 24)));
+  const KIND_ZH = { mine: '矿洞', waystone: '传送石碑', village: '村庄', camp: '营地', home_of: '别人的家', spot: '地方' };
+  if (!pl) { pl = { id: list.length + 1, kind, name: name || `${KIND_ZH[kind] || '地方'}${list.filter(x => x.kind === kind).length + 1}`, entry, ores: {}, chests: 0, visits: 0, created: Date.now() }; list.push(pl); }
   if (last) pl.last = last;
   if (deepest != null) pl.deepest = Math.min(pl.deepest ?? 999, deepest);
   for (const [k, n] of Object.entries(ores || {})) pl.ores[k] = (pl.ores[k] || 0) + n;
@@ -503,10 +505,10 @@ function notePlace ({ kind = 'mine', name, entry, last, deepest, ores = {}, ches
 }
 
 function renderPlaces (label = (x) => x) {
-  const list = places().slice().sort((a, b) => (b.updated || 0) - (a.updated || 0)).slice(0, 6);
+  const list = places().slice().sort((a, b) => (b.updated || 0) - (a.updated || 0)).slice(0, 8);
   return list.map(p => {
     const ores = Object.entries(p.ores || {}).sort((a, b) => b[1] - a[1]).slice(0, 4).map(([k, n]) => `${label(k)}×${n}`).join('、');
-    return `· ${p.name}：入口(${p.entry.x},${p.entry.y},${p.entry.z})${p.last ? `，上次停在(${p.last.x},${p.last.y},${p.last.z})` : ''}${p.deepest != null ? `，最深 y=${p.deepest}` : ''}${ores ? `，挖到过 ${ores}` : ''}${p.chests ? `，开过 ${p.chests} 个箱子` : ''}（去过 ${p.visits} 次，${when(p.updated)}）${p.note ? `；${p.note}` : ''}`;
+    return `· ${p.name}：${p.kind === 'mine' ? '入口' : '在'}(${p.entry.x},${p.entry.y},${p.entry.z})${p.last ? `，上次停在(${p.last.x},${p.last.y},${p.last.z})` : ''}${p.deepest != null ? `，最深 y=${p.deepest}` : ''}${ores ? `，挖到过 ${ores}` : ''}${p.chests ? `，开过 ${p.chests} 个箱子` : ''}（去过 ${p.visits} 次，${when(p.updated)}）${p.note ? `；${p.note}` : ''}`;
   }).join('\n');
 }
 

@@ -855,7 +855,7 @@ const TOOLS = {
   },
   delve: {
     kind: 'action',
-    desc: '像玩家一样下矿找矿：走出家门后，朝一个方向挖楼梯往下到矿石多的深度（铁 y=16、煤铜 48、金 -16、钻石红石 -58），再挖 1×2 矿道往前；挖穿到矿洞就沿着洞往下逛。路上看得见的矿都挖掉，看得见的箱子过去开。要带火把（没有会先用煤做，做不出来就不下去），暗了就插，火把用完就停；挖开会放岩浆/水就绕开。血少/怪来了/背包满/时间到就停下告诉你，接着挖就再调一次（会记得方向）。要石镐以上才挖得到铁。target 写想找的矿（iron_ore / coal_ore / diamond_ore…）。',
+    desc: '像玩家一样下矿找矿：走出家门后，朝一个方向挖楼梯往下到矿石多的深度（铁 y=16、煤铜 48、金 -16、钻石红石 -58），到了深度用鱼骨挖法（1×2 主道每 3 格向左右各挖一条 8 格支道）；挖穿到矿洞就沿着洞逛。y=0 以下能感知附近的矿挖通道过去。回到老矿洞附近会先走回上次停处接着挖。路上看得见的矿都挖掉，看得见的箱子过去开。要带火把（没有会先用煤做，做不出来就不下去），暗了就插，火把用完就停；挖开会放岩浆/水就绕开。血少/怪来了/背包满/时间到就停下告诉你，接着挖就再调一次（会记得方向）。要石镐以上才挖得到铁。target 写想找的矿（iron_ore / coal_ore / diamond_ore…）。',
     params: { target: { type: 'string' }, targetY: { type: 'number' }, seconds: { type: 'number' } }, required: [],
     run: async ({ target, targetY, seconds }) => { const ms = Math.min(Math.max(20, seconds || 90), 240) * 1000; return bridge.post('/delve', { target, targetY, maxMs: ms, home: mem.getHome() }, ms + 60000); },
   },

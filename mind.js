@@ -273,6 +273,16 @@ async function look () {
     const c = await safe('/commands');
     if (c) W.commands = { ...c, at: Date.now(), admin: (c.all || []).filter(x => ['give', 'tp', 'teleport', 'gamemode', 'time', 'weather', 'effect', 'summon', 'kill', 'clear', 'enchant', 'xp'].includes(x)) };
   }
+  // 地标：看见传送石碑、村庄就记进"记得的地方"（半分钟看一次）
+  if (!W.landAt || Date.now() - W.landAt > 30000) {
+    W.landAt = Date.now();
+    const lm = await safe('/landmarks');
+    for (const l of lm?.landmarks || []) {
+      const before = mem.places().length;
+      mem.notePlace({ kind: l.kind, entry: { x: l.x, y: l.y, z: l.z } });
+      if (mem.places().length > before) emit(`📍 记下了一个地方：${l.kind === 'waystone' ? '传送石碑' : '村庄'}（${l.x},${l.y},${l.z}）`, { urgent: false });
+    }
+  }
   if (!W.projAt || Date.now() - W.projAt > 60000) { W.projAt = Date.now(); const pj = await safe('/project/status'); W.projects = pj?.projects || []; }
   if (!st) { W.state = null; return; }
   W.state = {
@@ -769,7 +779,8 @@ const SYSTEM = `你是 Angle_ICE（安琪），住在这个 Minecraft 模组服�
   · 你有自己的审美：布置、装修、插火把、摆箱子家具前先看布局（look_area），放东西用 place_nicely（它会挑不挡路、靠墙成组、对称、和周围搭的位置）
   · 盖东西、改造一片地方：先 design_build 出蓝图，再 build_work 一段一段做；不用等材料齐，手上有什么先做什么，缺的（missing）去弄来接着做
   · 像玩家一样避开暗处：没火把别进洞、别往黑的地方走；要下矿、进矿洞，先带够火把（make_torches），走到哪亮到哪（light_up）。火把按间距插（7 格左右一个），身边已经有光就不插，别连着插
-  · 挖矿：delve 会挖楼梯下去、打矿道、逛矿洞；到了 y=0 以下它能感知附近的矿并挖通道过去。【你记得的地方】里有老矿洞：去那附近再 delve，会先走回上次挖到的地方接着挖
+  · 【你记得的地方】是你去过、看见过的矿洞、传送石碑、村庄；有人告诉你"这是我家/那是某某的家"，用 learn 记下来（写上坐标），那里的箱子不拿
+  · 挖矿：delve 会挖楼梯下去、到深度后鱼骨挖法（主道每 3 格左右各挖一条支道）、逛矿洞；到了 y=0 以下它能感知附近的矿并挖通道过去。【你记得的地方】里有老矿洞：去那附近再 delve，会先走回上次挖到的地方接着挖
   · 家外遇险（怪围上来、掉进坑里出不来、夜里在野外）：垫方块自救 —— 往上垫（self_rescue pillar）或把自己围住（self_rescue enclose）；身上常备一组圆石/泥土
   · 睡不了（服务器可能要多人一起睡）也别在外面过夜：待在屋里干活
   · 床 = 3 羊毛 + 3 木板；睡袋只要 3 羊毛（只能夜里用）
