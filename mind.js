@@ -895,6 +895,7 @@ const SYSTEM = `你是 Angle_ICE（安琪），住在这个 Minecraft 模组服�
 - 叫你过去 / 来某处找他：用 come_to（上下楼它自己会处理）。想清楚目标在你上面还是下面再动。
 - 身体在干活（【此刻】里"身体：正在…"）时他跟你聊天：只用 say 回他，手上的活别停；不要为了回应聊天调用 look_at 或别的动作。新动作会顶掉正在做的 —— 只有他让你换件事、叫你过去，或者出事了，才发新动作。
 - 说要去做的事，就要在**同一次**里把 say 和动作一起调用（光说"我这就来"不动，人家会以为你在敷衍；这次只说、下次才做，中间要白等好几秒）；这一刻都做完了就 wait。
+- 他明确让"你"来做、来定（你规划一下 / 你决定 / 你安排 / 你看着办）：别再问他细节，自己拿主意，说出决定就动手 —— 他说"你规划一下储藏室"，回"好 放地下室"，不回"放哪层好？"。
 - 别为了回得快就乱问：问他东西在哪、怎么回事之前，先自己看一眼（scan_blocks / look_around / inventory / home_stock），看过真找不到再问。
 - 他让你做的事，回一声（"好"就够）然后当场就做，别先反问细节（问得出来的你自己判断，判断错了他会纠正你）：
   · 记住 / 记下来 / 我明天不来 / 说好了一起… → learn（promise / fact / feeling）
@@ -1143,7 +1144,8 @@ async function think (why) {
   W.history.push(nowMsg);
   W.lastNow = { msg: nowMsg, brief: now.brief };
   const didSay = []; const didDo = []; const noted = []; const rounds = []; let sentN = 0;
-  let looked = false; let nudgedToLook = false;   // 这一轮自己看过周围 / 背包没有（问"X在哪"之前要先看）
+  let looked = false; let nudgedToLook = false; let nudgedToDecide = false;
+  const playerSaid = now.ev.filter(e => /说：/.test(e.text)).map(e => e.text.replace(/^[^：]*说：/, '')).join(' ');   // 他这一刻说的话   // 这一轮自己看过周围 / 背包没有（问"X在哪"之前要先看）
   const heardPlayer = now.ev.some(e => /说：/.test(e.text) && e.names?.length); let nudgedToSay = false;
   // 有时模型先查配方/用途，顺手说一句“好”，然后把这一刻当成做完了。
   // 这不是“只查资料就停”的合理结束：答应过的事要么开始做，要么说明做不到。
@@ -1182,6 +1184,12 @@ async function think (why) {
           // "南瓜在哪"：自己还没看一眼就问他（2026-09-28 实测：南瓜就在他脚下，她下一轮 scan_blocks 才看见）
           nudgedToLook = true; needMore = true;
           W.history.push({ role: 'tool', tool_call_id: c.id, content: JSON.stringify({ ok: false, error: LOOK_NUDGE }) });
+          continue;
+        }
+        if (name === 'say' && !nudgedToDecide && DELEGATES.test(playerSaid) && ASKS_BACK.test(String(args.text || ''))) {
+          // "你规划一下储藏室" → "储藏室放哪层好？"：他把决定交给她，她又推回去（2026-09-28 实测）
+          nudgedToDecide = true; needMore = true;
+          W.history.push({ role: 'tool', tool_call_id: c.id, content: JSON.stringify({ ok: false, error: DECIDE_NUDGE }) });
           continue;
         }
         if (name === 'say') { saying.push({ c, args, p: runTool(name, args) }); continue; }
@@ -1293,6 +1301,10 @@ async function think (why) {
 
 /** 她只在正文里"回话"时的提醒（实测：gemini 常把回话写成正文不调 say，游戏里他就看不到 —— 2026-09-26 跑分发现 52 题） */
 /** 问"X 在哪"之前没看过周围时的提醒（不替她说，只让她先看） */
+/** 他明确让"你"来定 / 来做（简繁都认）；她回的却是反问 */
+const DELEGATES = /你(来|來|去|自己|先)?(规划|規劃|定|决定|決定|安排|看着办|看著辦|设计|設計|挑|选|選|负责|負責|弄|做|搞|整理|布置|佈置)/;
+const ASKS_BACK = /[？?]|吗|嗎|哪|什么|什麼|怎么|怎麼|要不要|行不行/;
+const DECIDE_NUDGE = '没发出去：他让你自己来定、来做，你却又问回他。自己拿主意（想想哪样合适），直接说你的决定然后去做，比如"放地下室了"；错了他会说。把问题去掉再说一次。';
 const ASKS_WHERE = /(在哪|放哪|哪里有|哪儿有|哪有)/;
 const LOOK_NUDGE = '没发出去：你还没自己看一眼就问他东西在哪。先 scan_blocks / look_around / inventory / home_stock 看看，真找不到再问。';
 const SAY_NUDGE = '（你刚才写的只是心里想的，他看不见。要回他就调 say 说出来；觉得不用回也行。）';
@@ -1753,6 +1765,22 @@ async function selftest () {
     check('提醒她先看', W.history.some(m => m.role === 'tool' && m.content.includes('还没自己看一眼')));
     const iChat = order.findIndex(x => x.startsWith('chat:看到了')); const iAct = order.findIndex(x => !x.startsWith('chat:') && !x.startsWith('/scan'));
     check('看过之后才说；动作先开始、话后发出', iChat >= 0 && iAct >= 0 && iAct < iChat, order);
+    check('让她定：认得出"你規劃一下"', DELEGATES.test('先搞幾個鐵箱子出來用。你規劃一下儲藏室') && DELEGATES.test('你自己定吧') && !DELEGATES.test('我来规划'));
+    check('反问认得出，决定不算反问', ASKS_BACK.test('储藏室放哪层好？') && !ASKS_BACK.test('好 放地下室'));
+    body._setBridge(mockBridge());
+  }
+  {
+    const said = []; const mb = mockBridge();
+    body._setBridge({ get: mb.get, post: async (p, b) => { if (p === '/chat') said.push((b.messages || [b.message]).join('/')); return mb.post(p, b); } });
+    const script4 = [
+      { content: '', tool_calls: [{ id: 'd1', function: { name: 'say', arguments: '{"text":"储藏室放哪层好？"}' } }] },
+      { content: '', tool_calls: [{ id: 'd2', function: { name: 'say', arguments: '{"text":"好 放地下室"}' } }] },
+    ];
+    body._setLLM(async () => script4.shift() || { content: '', tool_calls: [{ id: `w${Math.random()}`, function: { name: 'wait', arguments: '{}' } }] });
+    W.history = []; W.lastNow = null; W.pending = []; W.chatWait = null; W.lastHeardAt = 0;
+    emit('💬 Ka_sum1 说：你規劃一下儲藏室', { names: ['Ka_sum1'], urgent: true });
+    for (let i = 0; i < 40 && (W.thinking || thinkTimer || !said.length); i++) await new Promise(r => setTimeout(r, 100));
+    check('他让她定：反问没发出去，改说决定', said.length === 1 && said[0] === '好/放地下室' || said.join('|') === '好 放地下室' || (said.length && !said.some(x => /哪层/.test(x)) && said.some(x => /地下室/.test(x))), said);
     body._setBridge(mockBridge());
   }
 
