@@ -393,7 +393,7 @@ const AESTHETIC_SYS = `你是 Angle_ICE 在 Minecraft 里摆东西时自己的�
 - 火把/灯：优先挂墙（位置选墙边的空气格，旁边就是墙），门两侧、柱子两侧对称；间距 6–8 格均匀；地上的火把放墙角，不放路中间；照亮会刷怪的暗处（darkFloor）
 - 室外：沿路边、围栏边、屋角，间隔均匀；别在别人的建筑上乱放
 - 和周围材质、风格搭（木屋配木质家具、暖色灯）
-坐标必须是图上 '.'（空气）的格子，旁边或下面有能附着的实心块；放地上的东西下面必须是实心块。
+坐标必须是图上 '.'（空气）的格子（'@' 是你自己站的格子，不能选），旁边或下面有能附着的实心块；放地上的东西下面必须是实心块。
 只输出 JSON：{"view":"一句话说这片是什么样、缺什么","candidates":[{"x":0,"y":0,"z":0,"why":"一句话"}],"best":0}，candidates 2–3 个，best 是最好的那个的下标。`;
 
 function parseJsonLoose (text) {
@@ -406,6 +406,12 @@ function parseJsonLoose (text) {
 
 async function placeNicely ({ itemName, purpose = '', x, y, z, r = 7 }) {
   if (!itemName) throw new Error('itemName 要写放什么');
+  const bare = String(itemName).replace(/^minecraft:/, '');
+  const haveIt = async () => ((await bridge.get('/inventory')).items || []).some(i => i.name === bare || i.name === itemName);
+  if (!await haveIt()) {
+    if (/(^|:)torch$/.test(itemName)) await bridge.post('/make_torches', { count: 8 }, 60000).catch(() => null);
+    if (!await haveIt()) throw new Error(`身上没有 ${itemName}，先去拿/做`);
+  }
   const q = x != null && y != null && z != null ? `x=${x}&y=${y}&z=${z}&r=${r}` : `r=${r}`;
   const sv = await bridge.get(`/survey?${q}`, 8000);
   const user = [
@@ -419,7 +425,9 @@ async function placeNicely ({ itemName, purpose = '', x, y, z, r = 7 }) {
   const msg = await llm({ messages: [{ role: 'system', content: AESTHETIC_SYS }, { role: 'user', content: user }], timeoutMs: 30000, maxTokens: 700 });
   const plan = parseJsonLoose(msg?.content);
   if (!plan || !Array.isArray(plan.candidates) || !plan.candidates.length) throw new Error(`没想出位置（模型回的不是 JSON：${String(msg?.content || '').slice(0, 120)}）`);
-  const order = [plan.best || 0, ...plan.candidates.keys()].filter((v, i, a) => a.indexOf(v) === i && plan.candidates[v]);
+  const meP = (await bridge.get('/position').catch(() => null)) || {};
+  const onMe = (c) => Math.floor(c.x) === meP.x && Math.floor(c.z) === meP.z && (Math.floor(c.y) === meP.y || Math.floor(c.y) === meP.y + 1);
+  const order = [plan.best || 0, ...plan.candidates.keys()].filter((v, i, a) => a.indexOf(v) === i && plan.candidates[v] && !onMe(plan.candidates[v]));
   const tried = [];
   for (const i of order) {
     const c = plan.candidates[i];
