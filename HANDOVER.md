@@ -1,3 +1,7 @@
+> ⚠️ **历史快照（2026-09-25 14:07，Windows 旧环境）**，内容停在那一天，**不再更新**。
+> 现状、架构、待办看 [`AGENTS.md`](AGENTS.md) 和最新的 [`HANDOFF-20260927.md`](HANDOFF-20260927.md)；
+> 之后的问题与修复看 [`memory/field-log.md`](memory/field-log.md)。
+
 # 交接报告 · minecraft-bridge / Angel_ICE
 
 | 项目 | 内容 |

@@ -1,7 +1,7 @@
 # Angle_Ice_Minecraft
 
 把任意 agent 接到**活着的 Minecraft Java 世界**上的本地 HTTP 桥 —— 支持 Forge/FML 模组服。
-它同时是一个**有人格的陪玩**：游戏内 ID 固定 `Angel_ICE`，有自己的情绪、自己的记忆
+它同时是一个**有人格的陪玩**：游戏内 ID 固定 `Angle_ICE`，有自己的情绪、自己的记忆
 （`memory/journal.md`），跨会话、跨 agent 都还是同一个人。
 
 > 她不是工具。默认**闭嘴**：你不问，她就不讲。不主动科普、不指路、不报键位、
@@ -9,22 +9,27 @@
 > 只有四种情况开口：**被问 / 真实危险 / 她自己出事 / 你先搭话。**
 > 人格正文见 [`PERSONA.md`](PERSONA.md)。
 
-当前版本 **1.10.0** · 许可 **MIT-0** · 上游 `minecraft-bridge` 的本地分支
+当前版本 **1.12.0** · 许可 **MIT-0** · 上游 `minecraft-bridge` 的本地分支
+
+> 开发入口是 [`AGENTS.md`](AGENTS.md)（功能分区路由、自测命令、硬规矩、现状与待办）；
+> 最近一次交接见 [`HANDOFF-20260927.md`](HANDOFF-20260927.md)。
 
 ---
 
 ## 这是什么
 
-三层，可以只用第一层：
+四层，从下往上：
 
 | 层 | 文件 | 干什么 |
 |---|---|---|
-| **手 + 眼** | `bridge-server.js` | 在 `127.0.0.1:3001` 暴露一套 HTTP 接口：读状态（位置 / 背包 / 血量 / 方块 / 附近实体 / 聊天），做动作（走 / 挖 / 放 / 给 / 丢 / 跟随 / 攻击 / 说话 / 裸按键） |
-| **脑干** | `autopilot.js` | 在 `127.0.0.1:3002` 跑自主循环 —— 感知 → 决策 → 行动，带长动作看门狗和**耳朵**（独立于 tick 的聊天监听） |
-| **人** | `PERSONA.md` + `memory/` | 她有人格和持久记忆，跨会话、跨 agent 都还是同一个人 |
+| **手 + 眼** | `bridge-server.js`（+ `hands.js` `commonsense.js` …） | 在 `127.0.0.1:3001` 暴露 HTTP 接口：读状态、做动作（走 / 挖 / 放 / 合成 / 开箱子 / 种地 / 任务书 / 命令 …） |
+| **本能** | `instinct.js`（bridge 进程内） | 身体自己会的反射：打有仇恨的怪、捡东西、收庄稼、挖看得见的矿、开宝箱、逛洞、搭路、落地水、睡觉、换护甲、整理随身物品、暗处提醒 …；任何命令一到就让出身体（只有战斗反过来叫停命令） |
+| **意识** | `mind.js` + `body.js`（`127.0.0.1:3003`） | LLM 持续经历流：她自己决定做什么、说什么、记什么；长期计划 `plan.js` 以香草纪元通关主线为骨干 |
+| **人** | `PERSONA.md` + `memory/` | 人格与持久记忆，跨会话、跨 agent 都还是同一个人 |
+
+`autopilot.js`（脑干，:3002，规则打分循环）是早期的自主层，现在部署不起它（`mind.js` 取代），保留作参考和离线自测。
 
 **不绑定任何 agent 运行时** —— 它就是个本地 HTTP 服务，谁都能驱动。
-`bridge-server.js` **自己没有自主循环**，只起它的话她会站在原地：有手有眼，没有脑干。
 
 ---
 
@@ -50,14 +55,14 @@
 npm install                          # 必须：自测里的注册表断言依赖 minecraft-data
 
 cp config.example.json config.json   # 改成本机实际值（环境变量优先级更高）
+# LLM 配置写进 .env（LLM_BASE_URL / LLM_API_KEY / MIND_MODEL …），不要提交
 
-node bridge-server.js                # 手 + 眼 → 127.0.0.1:3001
-node autopilot.js                    # 脑干   → 127.0.0.1:3002
+node bridge-server.js                # 手 + 眼 + 本能 → 127.0.0.1:3001
+node mind.js                         # 意识           → 127.0.0.1:3003
 ```
 
-- **必须先起 `bridge-server.js`**：它持有游戏连接，`autopilot.js` 通过 3001 端口操作它。
-  反过来的顺序会得到一个空转的脑干。
-- 或者用脚本：`bash scripts/start.sh` / `bash scripts/stop.sh`（只托管 `bridge-server.js`）。
+- **必须先起 `bridge-server.js`**：它持有游戏连接，上层都通过 3001 端口驱动它。
+- Windows 上用 `scripts/win/angel.ps1`（只托管 bridge 和 mind 两个进程）。
 - **Forge / 模组服**：`config.json` 里 `MC_FORGE: "1"`。没有它，服务端会以
   *"This server has mods that require Forge to be installed on the client."* 拒绝原版协议客户端。
 - **单人游戏**：ESC → 对局域网开放，把随机端口填到 `MC_PORT`。
@@ -72,59 +77,28 @@ node autopilot.js                    # 脑干   → 127.0.0.1:3002
 
 ## 目录结构
 
-| 路径 | 作用 |
+根目录的 `.js` 是扁平摆放的，按功能分 6 区（完整路由表见 [`AGENTS.md`](AGENTS.md) 第二节）：
+
+| 分区 | 文件 |
 |---|---|
-| `bridge-server.js` | **手 + 眼**。动作接口 + 状态读取。**没有自主循环** |
-| `autopilot.js` | **脑干**。① 1.5s tick ② 看门狗 700ms ③ 耳朵 2s 听聊天。后两条独立于 tick |
-| `decision.js` | 决策层。动态动作菜单 + 可插拔后端（`local`/`jev`/`auto`）+ 护栏 + 熔断 |
-| `pathing.js` | 寻路策略。代价函数 + 建筑材质硬禁 + 注册表自检 + 可攀爬方块 |
-| `place.js` | 放置几何。四个硬条件抽成纯函数 |
-| `palette-registry.js` | 把**方块**调色板写回 prismarine 注册表 |
-| `item-registry.js` | 把**物品**注册表写回 prismarine 注册表（1.10.0 新增） |
-| `block-palette.js` | 调色板解析 / 归一化 / 三道导入闸 |
-| `fml-handshake.js` | Forge 登录握手（含 `minecraft:block` / `minecraft:item` 快照解析） |
-| `registry-probe.js` | 协议补丁。修原版 `declare_commands` 解析模组命令树导致的流错位 |
-| `journal.js` | 记忆写入（`memory/journal.md`） |
-| `reconnect.js` | 断线重连 |
-| `events.js` | 决策留痕 `memory/events.jsonl` |
-| `knowledge/` | 整合包知识库（任务书 / 物品中英对照 / 模组 / 提示），从包体自动提取 |
-| `registry/` | 注册表快照、调色板、KubeJS dump 脚本与说明 |
-| `references/` | API 规格、Forge 握手说明、依赖与排错 |
-| `scripts/` | 工具与自测（一次性诊断脚本归档在 `scripts/_attic/`） |
-| `memory/` | `journal.md`（她的记忆）+ `state.json`（运行时状态） |
+| ① 桥 / 协议 / 注册表（手+眼） | `bridge-server.js` `hands.js` `instinct.js` `commonsense.js` `inventory-ledger.js` `ftbq-sync.js` `fml-handshake.js` `registry-probe.js` `block-palette.js` `palette-registry.js` `item-registry.js` `entity-registry.js` `reconnect.js` |
+| ② 寻路 / 放置 | `pathing.js` `place.js` |
+| ③ 脑干（旧自主层） | `autopilot.js` `decision.js` `reflex.js` `events.js` `journal.js` |
+| ④ 意识 / 人格 | `mind.js` `body.js` `plan.js` `night.js` `memory-store.js` `speech.js` `ambition.js` `self-review.js` `llm-*.js` `PERSONA.md` |
+| ⑤ 知识库 | `knowledge.js` + `knowledge/`（配方、标签、掉落、任务书、矿表、作物表、通关主线，从包体自动提取） |
+| ⑥ 运维 / 诊断 | `scripts/` `logs/` `memory/field-log.md`（实机问题台帐） |
+
+其余目录：`registry/`（注册表快照、调色板、KubeJS dump）、`references/`（API 规格、Forge 握手、排错）。
 
 ---
 
 ## 自测
 
-纯逻辑都抽成了可 require 的模块，**测的就是跑的那份代码**。
+纯逻辑都抽成了可 require 的模块，**测的就是跑的那份代码**。每个模块 `node <文件> --selftest`，
+完整命令清单见 [`AGENTS.md`](AGENTS.md) 第四节（断言数量会变，以实际输出为准）。
 
-> ⚠️ **先把 `npm install` 跑完再测。** `pathing` 有 6 条、`block-palette` /
-> `palette-registry` / `item-registry` 全部断言依赖 `minecraft-data`：没有 `node_modules`
-> 时前三个直接 `MODULE_NOT_FOUND`，而 `pathing` 会**静默少跑 6 条**（报 `246/246`
-> 而不是 `252/252` —— 看起来全绿，其实漏测）。
-
-```bash
-# 模块（10 个，共 627 条）
-node decision.js         --selftest   #  37
-node autopilot.js        --selftest   #  54
-node events.js           --selftest   #  17
-node place.js            --selftest   #  23
-node pathing.js          --selftest   # 252
-node block-palette.js    --selftest   #  51
-node palette-registry.js --selftest   #  39
-node item-registry.js    --selftest   #  54
-node journal.js          --selftest   #  41
-node reconnect.js        --selftest   #  59
-
-# 脚本（4 个，共 105 条）
-node scripts/fml-snapshot-test.js                # 19
-node scripts/palette-guard-test.js               # 28
-node scripts/jev-contract-test.js                # 34
-node scripts/angelpal-to-palette.js --selftest   # 24
-```
-
-合计 **732 条断言**。全绿才算改对了。
+> ⚠️ **先把 `npm install` 跑完再测**：注册表相关断言依赖 `minecraft-data`，缺了会报错或静默少跑。
+> ⚠️ **`bridge-server.js` 绝不能 `--selftest`**：一 `require` 就去连服务器，只能 `node --check`。
 
 ---
 
@@ -170,4 +144,6 @@ node scripts/angelpal-to-palette.js --selftest   # 24
 | [`PERSONA.md`](PERSONA.md) | 她的人格正文 —— 替她说话前必读 |
 | [`references/`](references/) | API 规格、Forge 握手说明、依赖指南、排错 |
 | [`knowledge/`](knowledge/) | 整合包知识库（含 `lookup.py` 查询脚本） |
-| `_meta.json` | 逐版本变更记录（1.2.0 → 1.10.0） |
+| [`AGENTS.md`](AGENTS.md) | **开发入口**：分区路由、自测、硬规矩、现状与待办 |
+| [`memory/field-log.md`](memory/field-log.md) | 实机问题台帐（P1 起，带命令和真实输出） |
+| `_meta.json` | 逐版本变更记录 |

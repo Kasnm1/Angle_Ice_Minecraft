@@ -35,6 +35,11 @@ metadata:
       label: "Vec3 — 3D coordinate helper"
 ---
 
+> 📌 **2026-09-27 更新说明**：本手册的**底层部分仍然准确**（方块/物品认知、调色板、Forge 握手、寻路安全、API）。
+> 但写它时还没有上面两层：**本能层**（`instinct.js`，bridge 进程内）和**意识层**（`mind.js` + `body.js` + 长期计划 `plan.js`，:3003）。
+> 现在部署只起 `bridge-server.js` + `mind.js`；下文讲 `autopilot.js` 的部分是**旧自主层**，留作参考。
+> 游戏内 ID 已改名 **`Angle_ICE`**（下文的 `Angel_ICE` 是旧名）。开发入口见 [`AGENTS.md`](AGENTS.md)。
+
 # Minecraft Bridge
 
 Persistent local HTTP service that bridges **any agent** to a live Minecraft Java
