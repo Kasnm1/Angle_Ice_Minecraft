@@ -4581,3 +4581,5 @@ mind 日志在 `00:06:46` 和 `00:06:52` 两次调用攻击，第二次把猪的
 - 找不到目标返回失败；一次调用只处理最近的一只，攻击按武器冷却节奏执行。
 
 详细分析与行为边界同步到 `INSTINCT-OPTIMIZATION-20260927.md`。
+
+Windows 部署 `f7dded3` 后读回自动探洞与搭路均为关闭，`scaffoldKinds:0`、`scaffoldCount:0`、`allow1by1towers:false`。不存在的目标返回 `success:false, ok:false, attacked:0`。专项测试为 instinct `214/214`、调度 `36/36`、storage policy `5/5`；未用现场动物做破坏性试杀。

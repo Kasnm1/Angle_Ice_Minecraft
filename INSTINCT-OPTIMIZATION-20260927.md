@@ -130,4 +130,6 @@ Windows 随后对一扇 `open:true` 的 `warped_door` 调用实际激活端点�
 - 追逐期间强制关闭搭路；自动搭路和自动探洞的默认值改成关闭。明确 `/delve` 仍可下矿，明确的自救/施工动作仍可放方块。
 - 同一个洞完成后只发一次 `cave_done`，避免 400ms 一条的重复事件让意识误以为反复执行了探险。
 
-部署前已通过空白检查；运行时验证与 Windows 自测结果在本节后续部署记录中补充。
+部署提交为 `f7dded3`。Windows 重启后读回：`cave.enabled:false`、`bridge.enabled:false`、`movePolicy.scaffoldKinds:0`、`scaffoldCount:0`，寻路器同时为 `allow1by1towers:false`、`scafoldingBlocks:0`。不存在的目标实测返回 `success:false, ok:false, attacked:0`，证明“没有攻击”不会再被包装成成功。
+
+Windows 验证结果：常规自测中 pathing `418/418`、hands `51/51`、mind `85/85`、palette `69/69`、block palette `93/93`、item registry `54/54`，bridge 与 body 语法检查通过；专项 instinct `214/214`、调度 `36/36`、storage policy `5/5`。为避免改变玩家世界，没有召唤或再杀一只动物；因此“移动活物在追逐中改变方向”的现场闭环尚未用真实生物验证，现有证据是运行代码、语法检查及安全失败路径。
