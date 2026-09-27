@@ -2800,11 +2800,11 @@ async function placeTorchHere (bot) {
 }
 
 /** 点亮身边：暗的地方插火把，直到脚下够亮或插够 max 个 */
-async function lightUp (bot, { max = 3 } = {}) {
+async function lightUp (bot, { max = 3, force = false } = {}) {
   let placed = 0;
   for (let i = 0; i < max; i++) {
     const l = lightAt(bot);
-    if (l && !isDark(l)) break;
+    if (l && !isDark(l) && !(force && i === 0)) break;
     if (!torchItem(bot)) break;
     if (!await placeTorchHere(bot)) break;
     placed++; await sleep(250);
@@ -3174,7 +3174,7 @@ function routes ({ state, withTimeout }) {
     },
     'POST /cmd': async (b = {}) => runCommand(bot(), state, b),
     'GET /light': async () => ({ light: lightAt(bot()), dark: isDark(lightAt(bot())), torches: torchCount(bot()), lastBright: state.lastBright ? { x: state.lastBright.x, y: state.lastBright.y, z: state.lastBright.z } : null }),
-    'POST /light_up': async (b = {}) => { const m = await makeTorches(bot(), 4); const r = await lightUp(bot(), { max: Math.min(+b.max || 3, 8) }); return { ...r, made: m.made || 0, note: m.note }; },
+    'POST /light_up': async (b = {}) => { const m = await makeTorches(bot(), 4); const r = await lightUp(bot(), { max: Math.min(+b.max || 3, 8), force: !!b.force }); return { ...r, made: m.made || 0, note: m.note }; },
     'POST /make_torches': async (b = {}) => makeTorches(bot(), Math.min(+b.count || 16, 64)),
     'POST /self_rescue': async (b = {}) => selfRescue(bot(), state, b),
     'GET /chests/unseen': async (_, q) => ({ chests: unseenChests(bot(), state, +q?.radius || 24).slice(0, 6).map(b => ({ at: storageKey(bot(), b), name: b.name, x: b.position.x, y: b.position.y, z: b.position.z, distance: +bot().entity.position.distanceTo(b.position).toFixed(1) })) }),
