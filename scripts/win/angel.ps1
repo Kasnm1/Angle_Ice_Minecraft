@@ -37,7 +37,15 @@ switch ($cmd) {
       $log = Join-Path $Logs "$w.log"
       $bat = Join-Path $Logs "run-$w.cmd"
       # 启动脚本：UTF-8 代码页、进仓库根、输出追加进日志
-      Set-Content -Path $bat -Encoding ASCII -Value "@echo off`r`nchcp 65001 >nul`r`ncd /d `"$Root`"`r`n`"$Node`" $js >> `"$log`" 2>&1`r`n"
+      # mind 要连 teamorouter（第三层模型兜底，国内直连不通）：.env 里有 LLM_PROXY 就让 Node 按环境变量走代理，
+      # 本机端口和 susu 主线路不走代理（NO_PROXY）
+      $proxyLines = ''
+      if ($w -eq 'mind') {
+        $envFile = Join-Path $Root '.env'
+        $px = if (Test-Path $envFile) { (Select-String -Path $envFile -Pattern '^LLM_PROXY=(.+)$' | Select-Object -First 1).Matches.Groups[1].Value } else { $null }
+        if ($px) { $proxyLines = "set NODE_USE_ENV_PROXY=1`r`nset HTTPS_PROXY=$($px.Trim())`r`nset NO_PROXY=127.0.0.1,localhost,susu.wiki`r`n" }
+      }
+      Set-Content -Path $bat -Encoding ASCII -Value "@echo off`r`nchcp 65001 >nul`r`n$($proxyLines)cd /d `"$Root`"`r`n`"$Node`" $js >> `"$log`" 2>&1`r`n"
       # 当前账户的完整名（机器名\用户）。别用 USERDOMAIN：SSH 会话里它是 WORKGROUP，拼出来的账户不存在
       $user = [Security.Principal.WindowsIdentity]::GetCurrent().Name
       # 用 XML 定义一个**没有触发器**的任务：只在 /Run 时启动（/SC ONCE 要日期，格式随系统区域变，还会在当天到点自己跑一次）
