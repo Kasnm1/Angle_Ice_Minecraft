@@ -624,9 +624,10 @@ const TOOLS = {
   instinct: {
     kind: 'action',
     desc: '开关身体的本能（闲着时身体自己做的事，默认都开）。pickup = 捡附近地上的东西；harvest = 收家里成熟的庄稼并补种；'
-      + 'mine = 看见值钱的矿就去挖。别人说"别捡了""别动我的地""别乱挖"就关掉对应那个；只给要改的那几个。',
-    params: { pickup: { type: 'boolean' }, harvest: { type: 'boolean' }, mine: { type: 'boolean' } }, required: [],
-    run: async (a) => bridge.post('/instinct', Object.fromEntries(['pickup', 'harvest', 'mine'].filter(k => typeof a[k] === 'boolean').map(k => [k, a[k]]))),
+      + 'mine = 看见值钱的矿就去挖；sleep = 夜里在家有床就睡；armor = 捡到更好的护甲就换上；gaze = 有人在旁边就看看他。'
+      + '别人说"别捡了""别动我的地""别乱挖""别盯着我"就关掉对应那个；只给要改的那几个。',
+    params: Object.fromEntries(['pickup', 'harvest', 'mine', 'sleep', 'armor', 'gaze'].map(k => [k, { type: 'boolean' }])), required: [],
+    run: async (a) => bridge.post('/instinct', Object.fromEntries(['pickup', 'harvest', 'mine', 'sleep', 'armor', 'gaze'].filter(k => typeof a[k] === 'boolean').map(k => [k, a[k]]))),
   },
   follow: {
     kind: 'action', continuous: true,
@@ -767,6 +768,11 @@ const TOOLS = {
       const q = findQuest(quest);
       if (!q) return { ok: false, error: `任务书里没找到「${quest}」` };
       const results = [];
+      // 点对号的任务要先点对号（提交）才能领；以前直接领，服务器不给，她说"领了还是啥都没有"（新手礼包）
+      for (const t of (q.tasks || []).filter(x => x.type === 'checkmark' && x.id)) {
+        results.push({ task: '点对号', ...(await bridge.post('/ftbq/submit', { taskId: t.id }).catch(e => ({ error: e.message }))) });
+      }
+      if (results.length) await new Promise(res => setTimeout(res, 600));
       for (const r of q.rewards.filter(x => x.id)) {
         if (r.type === 'choice') results.push({ reward: r.summary, choice: choice || 0, ...(await bridge.post('/ftbq/claim_choice', { rewardId: r.id, index: choice || 0 })) });
         else results.push({ reward: r.summary, ...(await bridge.post('/ftbq/claim', { rewardId: r.id })) });

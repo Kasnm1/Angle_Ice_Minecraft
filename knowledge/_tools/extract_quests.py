@@ -140,8 +140,12 @@ def reward_summary(r):
     if rt == 'item':
         item = r.get('item', {})
         if isinstance(item, dict):
-            item = item.get('item', '?')
-        n = r.get('count', 1)
+            # 两种写法：{item: "..."}，或 1.20 带 NBT 的 {id: "...", Count: 1, tag: {...}}（新手礼包就是后者，以前全变成 "?"）
+            n0 = item.get('Count') or item.get('count')
+            item = item.get('item') or item.get('id') or '?'
+        else:
+            n0 = None
+        n = r.get('count') or n0 or 1
         name = zh(item)
         return f'{name} x{n}' if name == item else f'{name}（{item}）x{n}'
     if rt == 'xp':
@@ -175,7 +179,7 @@ def extract_chapter(path):
         tasks = []
         for t in q.get('tasks', []) or []:
             if isinstance(t, dict):
-                raw_item = (t.get('item', {}).get('item')
+                raw_item = ((t.get('item', {}).get('item') or t.get('item', {}).get('id'))
                             if isinstance(t.get('item'), dict) else t.get('item'))
                 tasks.append({
                     'id': t.get('id'),                       # 交任务 / 点对号要用（ftbquests:submit_task 的 taskId）
