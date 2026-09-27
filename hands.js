@@ -3108,7 +3108,7 @@ async function placeAt (bot, pos, id) {
 async function projectWork (bot, state, { id, maxMs = 90000, maxOps = 60 } = {}) {
   const P = projects(state); const p = id ? P[id] : Object.values(P).find(x => x.status === 'active');
   if (!p) throw new Error(id ? `没有工程 ${id}` : '没有进行中的工程（先 design_build）');
-  const t0 = Date.now(); const skip = new Set(); const placed = {}; let dug = 0; let ops = 0; const missing = {}; let reason = null;
+  const t0 = Date.now(); const skip = new Set(); const placed = {}; let dug = 0; let ops = 0; const missing = {}; let reason = null; const protectedCells = [];
   const key = (v) => `${v.x},${v.y},${v.z}`;
   const me = () => bot.entity.position;
   const reachOK = (pos) => me().offset(0, 1.62, 0).distanceTo(pos.offset(0.5, 0.5, 0.5)) <= 4.3;
@@ -3121,6 +3121,9 @@ async function projectWork (bot, state, { id, maxMs = 90000, maxOps = 60 } = {})
     const d = projectDiff(bot, p);
     if (!d.dig.length && !d.place.length) { if (!d.unknown) { p.status = 'done'; p.doneAt = Date.now(); saveProjects(state); reason = '完工了'; } else reason = `还有 ${d.unknown} 格没加载，走近点再看`; break; }
     // ① 先挖（从上往下，近的先）
+    // 人造方块（木板、楼梯、门、玻璃…）默认不拆：设计没看清压到了房子上，照做就会拆家（实测南门石径要拆 3 块云杉木板）。
+    // 工程写了 allowDemolish（明确要改造自己的建筑）才拆
+    for (const c of d.dig) { const b = bot.blockAt(c.pos); if (!p.allowDemolish && b && BUILT_RE.test(b.name) && !skip.has(key(c.pos))) { skip.add(key(c.pos)); protectedCells.push(`${bareId(b.name)}(${key(c.pos)})`); } }
     const dig = d.dig.filter(c => !skip.has(key(c.pos))).sort((a, b) => (b.pos.y - a.pos.y) || (a.pos.distanceTo(me()) - b.pos.distanceTo(me())))[0];
     if (dig) {
       if (!await goNear(dig.pos)) { skip.add(key(dig.pos)); continue; }
@@ -3146,7 +3149,8 @@ async function projectWork (bot, state, { id, maxMs = 90000, maxOps = 60 } = {})
   if (!reason) reason = ops >= maxOps ? '这一段干完了，接着调就继续' : '时间到，接着调就继续';
   p.updated = Date.now(); saveProjects(state);
   const after = projectDiff(bot, p);
-  return { id: p.id, name: p.name, done: `${after.pct}%`, placed, dug, missing: Object.keys(missing).length ? missing : undefined, skipped: skip.size || undefined, reason };
+  return { id: p.id, name: p.name, done: `${after.pct}%`, placed, dug, missing: Object.keys(missing).length ? missing : undefined, skipped: skip.size || undefined,
+    keptBuilt: protectedCells.length ? { cells: protectedCells.slice(0, 10), note: '这几格是人造的，没拆（要改造自己的建筑，设计时写 allowDemolish:true）' } : undefined, reason };
 }
 
 // ------------------------------------------------------------------ 睡觉
