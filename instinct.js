@@ -1,6 +1,8 @@
 'use strict';
 
 const storagePolicy = require('./storage-policy');
+// 敌对判据只此一份（AGENTS.md §5）：战斗本能、hands.threatNear、bridge /nearby 都调它。
+const { isHostileEntity } = require('./entity-registry.js');
 
 /**
  * 本能层 —— 不过大脑、不过脑干，身体自己做的事（主人 2026-09-27）。
@@ -468,13 +470,6 @@ function pickGaze ({ players = [], self, now = Date.now(), next = 0 }, cfg = CFG
 
 // ---- 战斗
 /** 怪是哪一类。held = 它手上拿的物品名（mineflayer entity.equipment[0]），模组远程怪靠这个认 */
-const HOSTILE_NAME_RE = /^(blaze|bogged|breeze|creeper|drowned|elder_guardian|endermite|enderman|evoker|ghast|giant|guardian|husk|magma_cube|phantom|piglin|piglin_brute|pillager|ravager|shulker|silverfish|skeleton|slime|spider|stray|vex|vindicator|warden|witch|wither|wither_skeleton|zoglin|zombie|zombie_villager|zombified_piglin)$/;
-function isHostileEntity (entity) {
-  if (!entity || entity.type === 'player') return false;
-  if (entity.type === 'hostile') return true;
-  const n = String(entity.name || '').replace(/^.*:/, '').toLowerCase();
-  return HOSTILE_NAME_RE.test(n);
-}
 function mobKind (name, held = null) {
   const n = String(name || '').replace(/^.*:/, '');
   if (/creeper/.test(n)) return 'creeper';
@@ -752,6 +747,26 @@ function effectPlan ({ effects = null, hp = 20, hasMilk = false } = {}, cfg = CF
 }
 
 /**
+ * 第 k 圈（水平切比雪夫距离 = k）的所有偏移，每个 (dx,dz) 配 dyMin..dyMax 的竖直偏移。
+ * k=0 是她脚下那一列。由近到远一圈一圈找 —— 找到第一圈有能站的岸就不再往外看
+ * （以前 25×25×6 ≈ 3750 格一次扫完，1 秒一拍，白扫大半）。
+ *
+ * 纯函数，便于自测。返回：[{ dx, dy, dz }]，顺序：按圈内水平距离近的优先。
+ */
+function shoreRingOffsets (k, dyMin = -2, dyMax = 3) {
+  const out = [];
+  if (k < 0) return out;
+  const hs = [];
+  for (let dx = -k; dx <= k; dx++) for (let dz = -k; dz <= k; dz++) {
+    if (Math.max(Math.abs(dx), Math.abs(dz)) !== k) continue;   // 只要这一圈
+    hs.push({ dx, dz, h: Math.abs(dx) + Math.abs(dz) });
+  }
+  hs.sort((a, b) => a.h - b.h);   // 圈内斜角最后（先看正前/正侧）
+  for (const { dx, dz } of hs) for (let dy = dyMin; dy <= dyMax; dy++) out.push({ dx, dy, dz });
+  return out;
+}
+
+/**
  * 上岸去哪。cells：候选的陆地格 [{ pos, below, feet, head }]（方块名；feet/head 已经按 isStandable 判过能站 → ok 字段）。
  * 要求：脚下实心且不是水/岩浆/会伤人的，脚和头能站、不是水；挑水平最近的，高差小的优先（爬不上去的岸没用）。
  */
@@ -917,9 +932,27 @@ function install (bot, state, deps) {
   });
   bot.on('entityGone', (e) => { spawned.delete(e?.id); fails.delete(e?.id); });
 
+  // 落盘工具（主人 2026-09-28）：光进内存环形 30 条，出了问题日志里查不到 ——
+  // 审计里遍地"日志里没找到 X"就是这么来的。这里**同时** console.log 一行。
+  // 高频调用者（每 400ms 的 skip 等）**不要**走这里，只走 note/event 本身。
+  const hhmmss = (t) => new Date(t).toTimeString().slice(0, 8);
+
   const note = (entry) => {
-    I.log.push({ t: Date.now(), ...entry });
+    const at = Date.now();
+    I.log.push({ t: at, ...entry });
     if (I.log.length > 30) I.log.shift();
+    try {
+      const { kind, ...rest } = entry;
+      // 一行 ≤200 字符：长的字符串截断，不换行（日志按行读）
+      let body = '';
+      for (const [k, v] of Object.entries(rest)) {
+        if (v == null || v === false || v === '') continue;
+        let s = typeof v === 'string' ? v : JSON.stringify(v);
+        if (s && s.length > 80) s = s.slice(0, 77) + '...';
+        body += ` ${k}=${s}`;
+      }
+      console.log(`[instinct ${hhmmss(at)}] ${kind ?? '?'}${body}`.slice(0, 200));
+    } catch (_) {}
   };
 
   function canHold (itemName) {
@@ -942,8 +975,10 @@ function install (bot, state, deps) {
   }
 
   const event = (kind, text, extra = {}) => {
-    I.events.push({ seq: ++I.evSeq, t: Date.now(), kind, text, ...extra });
+    const at = Date.now();
+    I.events.push({ seq: ++I.evSeq, t: at, kind, text, ...extra });
     if (I.events.length > 50) I.events.shift();
+    try { console.log(`[instinct-event ${hhmmss(at)}] ${kind} ${text}`.slice(0, 300)); } catch (_) {}
   };
 
   /**
@@ -1162,10 +1197,17 @@ function install (bot, state, deps) {
   // ---- 开宝箱 / 进建筑
   I.visitedStructures ||= new Set();
   let signIds = null;
+  // structureBlocks 结果缓存：findBlocks 是全量扫（40 格 ×128），每拍都跑明显拖 tick。
+  // 缓存 3 秒；她走动了 4 格以上就作废（换地方了，旧的扫描结果不作数）。
+  let sbCache = null;
   const structureBlocks = (radius) => {
+    const self = bot.entity?.position;
+    if (sbCache && Date.now() - sbCache.at < 3000 && self && (!sbCache.from || self.distanceTo(sbCache.from) <= 4)) return sbCache.list;
     if (!signIds) signIds = Object.values(bot.registry.blocksByName).filter(b => STRUCTURE_SIGNS.some(S => S.re.test(b.name))).map(b => b.id);
-    return bot.findBlocks({ matching: signIds, maxDistance: radius, count: 128 })
+    const list = bot.findBlocks({ matching: signIds, maxDistance: radius, count: 128 })
       .map(p => bot.blockAt(p)).filter(b => b && bot.canSeeBlock(b)).map(b => ({ name: b.name, pos: b.position }));
+    sbCache = { at: Date.now(), from: self ? self.clone() : null, list };
+    return list;
   };
   const summarizeLoot = (checked = []) => {
     const got = {};
@@ -1181,15 +1223,17 @@ function install (bot, state, deps) {
     const self = bot.entity.position;
     const chests = deps.hands.unseenChests(bot, state, L.radius).length + deps.hands.unseenCarts(bot, state, 16).length;
     const bp = state.backpackSeen;
+    // 同一拍里 recognizeStructures 只算一次（以前结构那一支算两遍，等于白扫两趟）
+    const structs = chests ? [] : recognizeStructures(structureBlocks(L.structRadius));
     const pick = pickLoot({
-      chests, structures: chests ? [] : recognizeStructures(structureBlocks(L.structRadius)),
+      chests, structures: structs,
       hp: bot.health ?? 20, free: bot.inventory.emptySlotCount(),
       packFree: deps.hands.wearingBackpack?.(bot, state) && bp ? bp.slots - bp.used : null,
       nightOut, visited: I.visitedStructures, self,
     }, L);
     // 认出有 boss 的遗迹：只告诉 mind（一座一次），去不去她定
     if (!chests) {
-      for (const S of recognizeStructures(structureBlocks(L.structRadius)).filter(x => x.danger)) {
+      for (const S of structs.filter(x => x.danger)) {
         if (I.told.has(`danger:${S.key}`)) continue;
         I.told.add(`danger:${S.key}`);
         event('structure_danger', `认出附近是${S.label}（${S.anchor.x},${S.anchor.y},${S.anchor.z}），里面有好东西但很危险，没自己进去`, { structure: S.label, pos: S.anchor });
@@ -1344,7 +1388,11 @@ function install (bot, state, deps) {
     if (!I.cfg.cmd.enabled || !d || d.recovered || !d.told) return null;
     const cmds = await serverCmds();
     const pick = pickRecovery({ death: d, here: bot.entity.position, dim: dimNow(), hasBack: cmds.has('back'), hasTp: cmds.has('tp'), sinceMs: Date.now() - d.at }, I.cfg.cmd);
-    d.recovered = true;   // 每次死只回去一次（成不成都不来回折腾）
+    // 先置位，别让同一次死在下一拍又发一遍。但**被打断不算回收过了** ——
+    // 战斗本能打断 / 让出身体时这一趟白跑，允许下一拍再试一次（最多多试 1 次，不无限来回）。
+    d.recovered = true;
+    const tries = d.recoverTries = (d.recoverTries || 0) + 1;
+    const allowRetry = tries < 2;   // 第 1 次被打断就再给一次；第 2 次之后不再试
     if (!pick.how) { event('recover_skip', `没回去捡东西：${pick.skip}`); return { skip: pick.skip }; }
     const { r, aborted } = await runJob('recover', { instinct: 'pickup' }, async (abort) => {
       if (pick.how === 'back') await runCmd('back', '回死的地方捡东西');
@@ -1358,6 +1406,7 @@ function install (bot, state, deps) {
       return deps.handlers['POST /pickup']({ radius: 10, count: 32, timeoutMs: 6000, abort });
     });
     if (!aborted) event('recover_done', r?.error ? `回去捡东西没成：${r.error}` : `回到死的地方，捡回来 ${r?.picked ?? 0} 件`);
+    else if (allowRetry) d.recovered = false;   // 被打断 → 放开一次，下一拍再来（最多 1 次）
     return { did: 'recover' };
   }
   async function tryCommand (nightOut) {
@@ -1461,6 +1510,14 @@ function install (bot, state, deps) {
 
   // ---- 落地水反射（每个物理 tick）
   const M = { startY: null, placed: null, equipping: false, collecting: false };
+  // "身上有没有水桶"缓存：physicsTick 每 50ms 跑一次，以前每次都遍历整个背包（物品多时白烧 CPU）。
+  // 背包变化（mineflayer 的 window 插件在格子变动时发 updateSlot）才失效。读不到时就现算一次。
+  let waterBucket = null;
+  const hasWaterBucket = () => {
+    if (waterBucket === null) waterBucket = bot.inventory.items().some(i => i.name === 'water_bucket');
+    return waterBucket;
+  };
+  try { bot.inventory?.on?.('updateSlot', () => { waterBucket = null; }); } catch (_) {}
   const groundBelow = (p) => {
     const f = p.floored();
     for (let dy = 0; dy <= 40; dy++) {
@@ -1501,7 +1558,7 @@ function install (bot, state, deps) {
       const g = groundBelow(e.position);
       const act = mlgStep({
         startY: M.startY, y: e.position.y, vy: e.velocity?.y ?? 0, landY: g?.y ?? null, landIsWater: !!g?.water,
-        hasBucket: bot.inventory.items().some(i => i.name === 'water_bucket'), holding: bot.heldItem?.name === 'water_bucket',
+        hasBucket: hasWaterBucket(), holding: bot.heldItem?.name === 'water_bucket',
         nether: /nether/.test(String(bot.game?.dimension || '')), placed: !!M.placed,
       });
       if (act === 'equip' && !M.equipping) {
@@ -1885,16 +1942,23 @@ function install (bot, state, deps) {
     if (bodyBusy({ inflight: I.inflight, currentAction: state.currentAction, windowOpen: !!bot.currentWindow, quietUntil: I.quietUntil })) return;
     I.shoreRetryAt = Date.now() + S.retryMs;
     const me = bot.entity.position.floored();
-    const cells = [];
-    for (let dx = -S.radius; dx <= S.radius; dx++) for (let dz = -S.radius; dz <= S.radius; dz++) for (let dy = -2; dy <= 3; dy++) {
-      const p = me.offset(dx, dy, dz);
-      const f = bot.blockAt(p); if (!f || /water/.test(f.name)) continue;
-      const b = bot.blockAt(p.offset(0, -1, 0)); if (!b || b.boundingBox !== 'block') continue;
-      const h = bot.blockAt(p.offset(0, 1, 0));
-      cells.push({ pos: p, below: b.name, feet: f.name, head: h?.name, ok: require('./place').isStandable(f) && require('./place').isStandable(h) });
+    // 由近到远一圈一圈找（第 1 圈、第 2 圈…到 radius）：找到第一圈里有能站的格子就停，
+    // 只把那一圈交给 pickShore 挑。判据不变（place.isStandable + pickShore），只是不再一口气扫 3750 格。
+    let pick = null; let scanned = 0; let rings = 0;
+    for (let k = 0; k <= S.radius && !pick; k++) {
+      const cells = [];
+      for (const o of shoreRingOffsets(k)) {
+        scanned++;
+        const p = me.offset(o.dx, o.dy, o.dz);
+        const f = bot.blockAt(p); if (!f || /water/.test(f.name)) continue;
+        const b = bot.blockAt(p.offset(0, -1, 0)); if (!b || b.boundingBox !== 'block') continue;
+        const h = bot.blockAt(p.offset(0, 1, 0));
+        cells.push({ pos: p, below: b.name, feet: f.name, head: h?.name, ok: require('./place').isStandable(f) && require('./place').isStandable(h) });
+      }
+      rings = k + 1;
+      if (cells.length) pick = pickShore(cells, me);   // 这一圈里有可站的 → 就在这圈挑
     }
-    const pick = pickShore(cells, me);
-    if (!pick) { note({ kind: 'shore', skip: `${S.radius} 格内没找到能上的岸` }); return; }
+    if (!pick) { note({ kind: 'shore', skip: `${S.radius} 格内没找到能上的岸`, rings, scanned }); return; }
     const { r, aborted } = await runJob('shore', null, (abort) => deps.handlers['POST /go']({ x: pick.pos.x, y: pick.pos.y, z: pick.pos.z, range: 1, maxMs: 20000, abort }));
     const dry = !bot.entity.isInWater && !/water/.test(bot.blockAt(bot.entity.position.floored())?.name || '');
     note({ kind: 'shore', to: pick.pos, ok: dry, aborted: aborted || undefined, error: r?.error });
@@ -2290,6 +2354,19 @@ function selftest () {
     check('上岸：高 3 格的崖比远 2 格的平岸差', pickShore([L(2, 0, 66), L(4, 0, 64)], me)?.pos.x, 4);
     check('上岸：站不进去的不算', pickShore([L(2, 0, 64, { ok: false })], me), null);
     check('上岸：旁边没有岸 → null', pickShore([], me), null); }
+  // 上岸分圈扫：第 k 圈只含水平切比雪夫距离 = k 的格子，逐圈由近到远
+  { const r0 = shoreRingOffsets(0), r1 = shoreRingOffsets(1), r2 = shoreRingOffsets(2);
+    check('★ 第 0 圈只有中心一列（1 个水平位 ×6 个高度）', r0.length, 6);
+    check('第 1 圈水平位 8 个（3×3 去掉中心）→ ×6', r1.length, 8 * 6);
+    check('第 2 圈水平位 16 个（5×5 去掉 3×3）→ ×6', r2.length, 16 * 6);
+    check('★ 第 1 圈的每个水平偏移切比雪夫距离都是 1',
+      r1.every(o => Math.max(Math.abs(o.dx), Math.abs(o.dz)) === 1), true);
+    check('★ 第 2 圈的每个水平偏移切比雪夫距离都是 2',
+      r2.every(o => Math.max(Math.abs(o.dx), Math.abs(o.dz)) === 2), true);
+    check('★ 第 0 圈就是脚下（dx=0,dz=0）', r0.every(o => o.dx === 0 && o.dz === 0), true);
+    check('高度下限 -2 覆盖到', Math.min(...r1.map(o => o.dy)), -2);
+    check('高度上限 3 覆盖到', Math.max(...r1.map(o => o.dy)), 3);
+    check('k<0 → 空', shoreRingOffsets(-1).length, 0); }
   check('开始下雨', weatherChange({ rain: false, thunder: false }, { rain: true, thunder: false })?.kind, 'rain');
   check('★ 打雷', weatherChange({ rain: true, thunder: false }, { rain: true, thunder: true })?.kind, 'thunder');
   check('雨停', weatherChange({ rain: true, thunder: true }, { rain: false, thunder: false })?.kind, 'clear');
@@ -2453,7 +2530,9 @@ function selftest () {
   });
 }
 
-module.exports = { caveBoundary, settleJob, syncSleepState, createCheck, CFG, fillCfg, pickEat, pickShore, needBreath, effectPlan, weatherChange, pickRecovery, pickCommand, homeFootprint, darkReport, mlgStep, pickCaveStep, STRUCTURE_SIGNS, recognizeStructures, pickLoot, pickTidy, isHostileEntity, mobKind, attackCooldownMs, combatPlan, COMBAT_YIELD, TIER, pickaxeTier, needTier, pickOre, pickHarvest, hazardUnder, pickStepOff, armorRank, pickArmor, toolWorn, pickGaze, whoThrew, pickPickup, bodyBusy, install, yieldBody, PASSIVE_POSTS, selftest };
+// isHostileEntity 是**转导出**（上面从 entity-registry 拿的），不是本能层自己实现的 ——
+// 保留在导出里是为了不破坏既有引用（hands.js / 自测）。
+module.exports = { caveBoundary, settleJob, syncSleepState, createCheck, CFG, fillCfg, pickEat, pickShore, shoreRingOffsets, needBreath, effectPlan, weatherChange, pickRecovery, pickCommand, homeFootprint, darkReport, mlgStep, pickCaveStep, STRUCTURE_SIGNS, recognizeStructures, pickLoot, pickTidy, isHostileEntity, mobKind, attackCooldownMs, combatPlan, COMBAT_YIELD, TIER, pickaxeTier, needTier, pickOre, pickHarvest, hazardUnder, pickStepOff, armorRank, pickArmor, toolWorn, pickGaze, whoThrew, pickPickup, bodyBusy, install, yieldBody, PASSIVE_POSTS, selftest };
 
 if (require.main === module && process.argv.includes('--selftest')) {
   selftest().then(code => process.exit(code));

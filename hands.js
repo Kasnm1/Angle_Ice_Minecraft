@@ -3082,14 +3082,15 @@ const ORE_RE = /(_ore|ancient_debris)$/;
 let oreIdsCache = null; let oreIdsRegistry = null;
 // 1.20 原版矿石数量最多的高度（分布峰值）；模组矿、没写目标就按铁
 const ORE_Y = { coal: 48, copper: 48, iron: 16, lapis: 0, gold: -16, redstone: -58, diamond: -58, emerald: 100 };
-const HOSTILE_RE = /zombie|skeleton|creeper|spider|witch|slime|drowned|husk|stray|enderman|silverfish|pillager|vindicator|zoglin|piglin_brute|blaze|wither/;
+const { isHostileEntity } = require('./entity-registry.js');
 /**
- * 8 格内有没有威胁：原版敌对怪按名字（上面的正则），**加上**有仇恨证据的（打过她/玩家、或攻击位亮着脸朝她，
- * bridge 的 aggroOf，战斗本能同一份）—— 模组怪名字认不全，靠证据兜住（WorkBuddy 建议 28，Claude 核实）。
+ * 8 格内有没有威胁：**原版怪按名字、模组怪按仇恨证据** —— 判据只在 entity-registry.js 一处
+ * （AGENTS.md §5；以前这里有一份 `HOSTILE_RE`，比战斗本能那份短，模组怪漏了一半）。
+ * 传 `state.aggroOf`（bridge 的，战斗本能同一份）：补名后 `type` 仍是 'other' 的模组怪只能靠行为证据认。
  */
 function threatNear (bot, state, pos, r = 8) {
   return Object.values(bot.entities).find(e => e !== bot.entity && e.type !== 'player' && e.position && e.position.distanceTo(pos) < r
-    && (HOSTILE_RE.test(e.name || '') || !!state?.aggroOf?.(e))) || null;
+    && isHostileEntity(e, state?.aggroOf)) || null;
 }
 const isLiquid = (b) => !!b && /water|lava|bubble_column/.test(b.name);
 const airish = (b) => !b || (b.boundingBox === 'empty' && !isLiquid(b));

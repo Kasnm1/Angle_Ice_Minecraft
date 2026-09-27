@@ -3165,11 +3165,15 @@ const handlers = {
           //   2026-09-27：**有仇恨证据的也算 hostile**。模组怪补上名字后 type 仍是 'other'
           //   （快照不带类别），不这样的话一只模组怪追着她打，上层照样数出 0 个威胁。
           //   `aggro` 字段单独透出证据：kind 说"是不是威胁"，aggro 说"凭什么、冲谁来的"。
+          //
+          //   2026-09-28：判据收到 entity-registry.isHostileEntity 一处（AGENTS.md §5）——
+          //   以前这里的 `e.type === 'hostile' || aggro` 与 instinct / hands 各写各的、
+          //   名单还不一致（模组怪漏一半）。现在三处同一份实现。
           kind: drop
             ? 'drop'
             : (e.type === 'player'
               ? 'player'
-              : (e.type === 'hostile' || aggro
+              : (entityRegistry.isHostileEntity(e, aggroOf)
                 ? 'hostile'
                 : (e.type === 'mob' || e.type === 'animal' || e.type === 'water_creature'
                   ? 'mob'

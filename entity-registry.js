@@ -139,6 +139,53 @@ function isAggressive (entity) {
   return typeof f === 'number' && (f & FLAG_AGGRESSIVE) !== 0;
 }
 
+// ------------------------------------------------------------------ ②b 敌对判据（只此一份）
+
+/**
+ * 原版敌对生物的名字（不含命名空间，比对时先剥前缀）。
+ *
+ * ⚠️ 这份名单只有一份 —— `instinct.js` 的战斗本能、`hands.js` 的 `threatNear`、
+ *    `bridge-server.js` 的 `/nearby` 分类都调 `isHostileEntity`，不许再各写各的
+ *    （AGENTS.md §5「同一判据只写一处」）。
+ *
+ * 名单来源：三处历史名单（`instinct.js` 的 `HOSTILE_NAME_RE`、`hands.js` 的 `HOSTILE_RE`、
+ * bridge 的 `type === 'hostile'`）取**并集**；`3db1774` 补的那些（bogged/breeze/elder_guardian/
+ * endermite/evoker/giant/guardian/phantom/ravager/shulker/stray/vex/warden/wither/zoglin/
+ * zombified_piglin）全都在。
+ *
+ * 这只是**兜底**：整合包有 1851 个模组实体，名字认不全。模组怪靠两样东西补：
+ *   1. `e.type === 'hostile'` —— 名字认得出的原版/部分模组怪
+ *   2. `aggroOf(e)` 有仇恨证据 —— 补名后 `type` 仍是 `'other'` 的模组怪，靠行为证据（③ ②）
+ */
+const HOSTILE_NAMES = new Set([
+  'blaze', 'bogged', 'breeze', 'cave_spider', 'creeper', 'drowned', 'elder_guardian', 'endermite',
+  'enderman', 'evoker', 'ghast', 'giant', 'guardian', 'hoglin', 'husk', 'illusioner',
+  'magma_cube', 'phantom', 'piglin', 'piglin_brute', 'pillager', 'ravager', 'shulker',
+  'silverfish', 'skeleton', 'slime', 'spider', 'stray', 'vex', 'vindicator', 'warden',
+  'witch', 'wither', 'wither_skeleton', 'zoglin', 'zombie', 'zombie_villager',
+  'zombified_piglin',
+]);
+
+/**
+ * 这是不是"敌对怪"——该打 / 该躲 / 该算威胁。
+ *
+ * @param entity   实体（mineflayer entity 或已补名的模组实体）
+ * @param aggroOf  可选：`bridge` 的仇恨查询（见 ②）。有证据也升成敌对
+ *                 —— 模组怪补名后 `type` 仍是 `'other'`，只能靠行为证据认。
+ * @returns {boolean} 名字/类别认出 或 有仇恨证据
+ *
+ * 找不到证据时保守为 false：**"不是敌对" ≠ "友好"**，只是没证据。
+ * 玩家永远不算（PVP 不归本能管）。
+ */
+function isHostileEntity (entity, aggroOf = null) {
+  if (!entity || entity.type === 'player') return false;
+  if (entity.type === 'hostile') return true;
+  const n = normName(entity.name || '').toLowerCase();
+  if (HOSTILE_NAMES.has(n)) return true;
+  if (typeof aggroOf === 'function' && aggroOf(entity)) return true;
+  return false;
+}
+
 /**
  * 它的头朝向与"它 → 目标"方向的夹角（度）。
  * mineflayer 的 yaw 约定（conv.fromNotchianYaw = 180° - notch）：朝向向量 = (-sin yaw, -cos yaw)，yaw=0 朝北(-z)。
@@ -296,6 +343,23 @@ function selftest () {
   check('实体消失后忘掉', t.assess(gone, ctx(1)), null);
   check('玩家本身不做评估', t.assess(owner, ctx(0)), null);
 
+  // ---- ②b 敌对判据（只此一份）----
+  check('★ 原版僵尸 → 敌对', isHostileEntity({ name: 'zombie', type: 'hostile' }), true);
+  check('带命名空间也认', isHostileEntity({ name: 'minecraft:skeleton', type: 'other' }), true);
+  check('★ type=hostile 的模组怪（名字认不出）→ 敌对', isHostileEntity({ name: 'unknown', type: 'hostile' }), true);
+  const aggro = (e) => (e.hate ? { on: 'me', evidence: 'hurt' } : null);
+  check('★ 模组怪（type=other、名字不在名单）有仇恨证据 → 敌对',
+    isHostileEntity({ name: 'cataclysm:ignis', type: 'other', hate: true }, aggro), true);
+  check('模组怪没仇恨证据 → 不算敌对（保守为 false）',
+    isHostileEntity({ name: 'cataclysm:ignis', type: 'other' }, aggro), false);
+  check('被动动物（牛）→ 不敌对', isHostileEntity({ name: 'cow', type: 'animal' }, aggro), false);
+  check('★ 玩家 → 永远不敌对', isHostileEntity({ name: 'starwish', type: 'player', hate: true }, aggro), false);
+  check('null → 不敌对', isHostileEntity(null), false);
+  check('空对象（name/type 都缺）→ 不敌对', isHostileEntity({}), false);
+  check('掉落物（名字=物品名）→ 不敌对', isHostileEntity({ name: 'oak_log', type: 'object' }), false);
+  check('三处旧名单并集都在：bogged/breeze/warden/endermite',
+    ['bogged', 'breeze', 'warden', 'endermite'].every(n => isHostileEntity({ name: n, type: 'other' })), true);
+
   console.log(`\n${pass} passed, ${fail} failed`);
   return fail ? 1 : 0;
 }
@@ -307,6 +371,8 @@ module.exports = {
   buildIndex,
   patchEntity,
   isAggressive,
+  HOSTILE_NAMES,
+  isHostileEntity,
   facingAngleDeg,
   createAggroTracker,
   selftest,
