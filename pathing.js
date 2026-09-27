@@ -1059,6 +1059,11 @@ function buildProtectedIds (blocksByName) {
  * 返回一份"实际生效了什么"的摘要，直接给 GET /config 用 ——
  * 不返回的话，"策略到底有没有装上"就只能靠猜。
  */
+const SAFE_DROP = 3;    // 3 格以内落地不掉血
+const MAX_DROP = 8;     // 再高就不走
+/** 跳下 h 格的额外代价：≤3 格 0；4–8 格每格 +40（走 40 格路的代价）→ 有别的路一定绕 */
+function dropPenalty (h) { return h > SAFE_DROP ? (h - SAFE_DROP) * 40 : 0; }
+
 function applyPolicy (mv, blocksByName, opts = {}) {
   if (!mv) throw new Error('applyPolicy: 需要 Movements 实例');
 
@@ -1095,7 +1100,21 @@ function applyPolicy (mv, blocksByName, opts = {}) {
   // 跑酷跳关掉、一次最多往下跳 3 格（3 格以内不掉血）：2026-09-27 她回家路上在悬崖边连摔两次、血剩 6。
   // 以前 allowParkour 保持默认 true（能跨小沟跟上玩家），maxDropDown 默认 4（4 格就扣血）—— 安全优先
   mv.allowParkour = false;
-  mv.maxDropDown = 3;
+  // 往下跳：3 格以内正常走；4–8 格只在没别的路时才跳（每多一格加很高的代价，有路就绕）；超过 8 格不走。
+  // 主人 2026-09-27："偶尔应该允许 4-8 格掉落，但是是在没路的情况下；超过 8 格的掉落不应该寻路"
+  mv.maxDropDown = MAX_DROP;
+  if (!mv.__dropPenalty && typeof mv.getMoveDropDown === 'function') {
+    mv.__dropPenalty = true;
+    for (const fn of ['getMoveDropDown', 'getMoveDown']) {
+      const orig = mv[fn].bind(mv);
+      mv[fn] = (node, a, b) => {
+        const out = Array.isArray(b) ? b : a;           // getMoveDropDown(node, dir, neighbors) / getMoveDown(node, neighbors)
+        const n0 = out.length;
+        orig(node, a, b);
+        for (let i = n0; i < out.length; i++) out[i].cost += dropPenalty(node.y - out[i].y);
+      };
+    }
+  }
 
   // ② 硬的一层：建筑材质永不破坏。
   // blocksCantBreak 是 pathfinder 自己的默认集合（含箱子与不可破坏方块），只增不减。
@@ -1771,7 +1790,16 @@ if (require.main === module && process.argv.includes('--selftest')) {
   const brkAt = (name, y) => fakeMv.exclusionAreasBreak.reduce((a, f) => a + f({ name, position: { y } }), 0);
   check('脚下的树叶不拆', brkAt('oak_leaves', 69) >= 100, true);
   check('身体高度的树叶能拆', brkAt('oak_leaves', 70), 0);
-  check('不跑酷、最多往下跳 3 格', fakeMv.allowParkour === false && fakeMv.maxDropDown === 3, true);
+  check('不跑酷、最多往下跳 8 格', fakeMv.allowParkour === false && fakeMv.maxDropDown === 8, true);
+  check('跳 3 格不加代价、5 格加 80、8 格加 200', [dropPenalty(3), dropPenalty(5), dropPenalty(8)].join(','), '0,80,200');
+  {
+    const mv2 = { blocksCantBreak: new Set(), blocksToAvoid: new Set(),
+      getMoveDropDown (node, dir, nb) { nb.push({ y: node.y - 2, cost: 1 }, { y: node.y - 6, cost: 1 }); },
+      getMoveDown (node, nb) { nb.push({ y: node.y - 5, cost: 1 }); } };
+    applyPolicy(mv2, fakeReg.blocksByName); applyPolicy(mv2, fakeReg.blocksByName);
+    const nb = []; mv2.getMoveDropDown({ y: 70 }, {}, nb); mv2.getMoveDown({ y: 70 }, nb);
+    check('跳落代价真的加上了（且重复 apply 不叠加）', nb.map(m => m.cost).join(','), '1,121,81');
+  }
   check('石头、原木不能拆（≥100）', brk('stone') >= 100 && brk('oak_log') >= 100, true);
   applyPolicy(fakeMv, fakeReg.blocksByName);
   check('重复 apply 不叠加', fakeMv.exclusionAreasBreak.filter(f => f.__leavesOnly).length, 1);
