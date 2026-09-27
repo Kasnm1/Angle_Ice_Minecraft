@@ -1069,7 +1069,16 @@ function applyPolicy (mv, blocksByName, opts = {}) {
   //    `opts.allowDig` 是单次调用级的覆盖口子，留给将来 JEV 判定"这一趟允许挖"。
   //    放行时仍然保留"软的一层"：拆一格很贵（digCost=16 ≈ 走 23 格），绕路优先。
   const allowDig = opts.allowDig !== undefined ? !!opts.allowDig : ALLOW_DIG;
-  mv.canDig = allowDig;
+  // 不拆的时候也放行**树叶**：玩家穿树林也是随手把挡路的叶子打掉。以前一律不拆，
+  // 她走进树林就被叶子困在树干之间（2026-09-27 主人："她又卡在树之中了"）。
+  // 做法：canDig 打开，但用 exclusionAreasBreak 把树叶以外的方块全标成"拆不了"（≥100 = safeToBreak 为 false）
+  mv.canDig = true;
+  mv.exclusionAreasBreak = (mv.exclusionAreasBreak || []).filter(f => !f.__leavesOnly);
+  if (!allowDig) {
+    const leavesOnly = (block) => (/leaves|vine|cobweb/.test(block.name || '') ? 0 : 100);
+    leavesOnly.__leavesOnly = true;
+    mv.exclusionAreasBreak.push(leavesOnly);
+  }
   mv.digCost = costs.digCost;
   mv.placeCost = costs.placeCost;
   mv.liquidCost = costs.liquidCost;
@@ -1087,6 +1096,7 @@ function applyPolicy (mv, blocksByName, opts = {}) {
 
   return {
     canDig: mv.canDig,
+    leavesOnly: !allowDig,
     // 这次调用实际用的开关值。`canDig` 是写到 Movements 上的结果，
     // 两者正常情况下相等；分开报是为了让 `GET /config` 能区分
     // "策略要求不挖" 与 "Movements 上确实没开"。
@@ -1746,8 +1756,13 @@ if (require.main === module && process.argv.includes('--selftest')) {
 
   const fakeMv = { blocksCantBreak: new Set([999]), blocksToAvoid: new Set() };
   const summary = applyPolicy(fakeMv, fakeReg.blocksByName);
-  check('默认 canDig 关闭（只绕不拆）', fakeMv.canDig, false);
-  check('摘要 allowDig 与 canDig 一致（默认关）', summary.allowDig, summary.canDig);
+  check('默认只拆树叶：canDig 开、leavesOnly', fakeMv.canDig === true && summary.leavesOnly === true, true);
+  check('默认 allowDig 关', summary.allowDig, false);
+  const brk = (name) => fakeMv.exclusionAreasBreak.reduce((a, f) => a + f({ name }), 0);
+  check('树叶能拆（代价 0）', brk('oak_leaves'), 0);
+  check('石头、原木不能拆（≥100）', brk('stone') >= 100 && brk('oak_log') >= 100, true);
+  applyPolicy(fakeMv, fakeReg.blocksByName);
+  check('重复 apply 不叠加', fakeMv.exclusionAreasBreak.filter(f => f.__leavesOnly).length, 1);
   check('digCost 已写入', fakeMv.digCost, COSTS.digCost);
   check('placeCost 已写入', fakeMv.placeCost, COSTS.placeCost);
   check('liquidCost 已写入', fakeMv.liquidCost, COSTS.liquidCost);
@@ -1756,7 +1771,7 @@ if (require.main === module && process.argv.includes('--selftest')) {
   check('blocksCantBreak 是"只增不减"：原有 999 还在', fakeMv.blocksCantBreak.has(999), true);
   check('blocksCantBreak 装上了 4 个受保护 ID', fakeMv.blocksCantBreak.size, 5);
   check('摘要里的 protectedCount 与实际一致', summary.protectedCount, 4);
-  check('摘要里 canDig 为 false（供控制面核对）', summary.canDig, false);
+  check('摘要里 leavesOnly 为 true（供控制面核对）', summary.leavesOnly, true);
 
   // opts.allowDig 是单次调用级的放行口子 —— 将来由 JEV 判定"这一趟该不该挖"时走这条。
   // 默认关闭必须靠这里钉住：一旦有人把默认改回 true，上面两条会立刻红。
