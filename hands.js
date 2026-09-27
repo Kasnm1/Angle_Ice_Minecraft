@@ -1853,6 +1853,7 @@ function cellChar (b) {
   if (/slab/.test(n)) return '_';
   if (/stairs/.test(n)) return '/';
   if (/leaves/.test(n)) return '*';
+  if (/torch|lantern|campfire|candle/.test(n)) return 'i';   // 光源单独标出来（以前和草花一样是 , 她认不出自己插的火把）
   if (b.boundingBox === 'empty') return ',';
   return '#';
 }
@@ -1875,7 +1876,7 @@ function lookAround (bot, { r = 3, below = 2, above = 3 } = {}) {
   }
   return {
     center: { x: fx, y: fy, z: fz },
-    legend: '@你 #实心 .空气 H梯子 T关着的活板门 t开着的 D关着的门 d开着的 G关着的栅栏门 g开着的 |栅栏/墙 _台阶 /楼梯 ~水 !岩浆 *树叶 ,能穿过的小东西',
+    legend: '@你 #实心 .空气 H梯子 T关着的活板门 t开着的 D关着的门 d开着的 G关着的栅栏门 g开着的 |栅栏/墙 _台阶 /楼梯 ~水 !岩浆 *树叶 i火把/灯 ,能穿过的小东西',
     orientation: `每层是俯视图：从上到下是 z=${fz - r}..${fz + r}（北→南），从左到右是 x=${fx - r}..${fx + r}（西→东）`,
     map: layers.join('\n\n'),
   };

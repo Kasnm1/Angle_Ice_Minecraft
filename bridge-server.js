@@ -3244,11 +3244,14 @@ const handlers = {
 
       const block = state.bot.blockAt(p, false);
       if (!block || !block.name) return true;          // 未加载 / 认不出
-      if (block.boundingBox === 'empty' && !block.name.includes('water')) {
-        return true;                                    // 空气：**不吃 solids 配额**
+      // 只有真空气跳过。以前"没有碰撞箱"的全当空气扔掉 —— 火把、花、庄稼、树苗、铁轨都看不见，
+      // 她自己插的火把就在脚下还说"看不见火把"（2026-09-27）。这些照样记下来，只是不吃 solids 配额
+      if (/(^|:)(air|cave_air|void_air)$/.test(block.name)) return true;
+      const passable = block.boundingBox === 'empty' && !block.name.includes('water');
+      if (!passable) {
+        if (solids >= MAX_SCAN_BLOCK_POSITIONS) { truncated = true; return false; }
+        solids++;
       }
-      if (solids >= MAX_SCAN_BLOCK_POSITIONS) { truncated = true; return false; }
-      solids++;
 
       const full = block.name;
       const bare = full.includes(':') ? full.slice(full.indexOf(':') + 1) : full;
@@ -3260,7 +3263,7 @@ const handlers = {
       const dist = Math.sqrt(d2);
       let rec = counts.get(full);
       if (!rec) {
-        rec = { name: full, count: 0, nearest: { x: px, y: py, z: pz }, distance: +dist.toFixed(1) };
+        rec = { name: full, count: 0, nearest: { x: px, y: py, z: pz }, distance: +dist.toFixed(1), ...(passable ? { passable: true } : {}) };
         counts.set(full, rec);
       }
       rec.count++;
