@@ -92,7 +92,7 @@ function formScore (t, says, urgentUsed, perRound = null) {
   return { score: bad === 0 ? 2 : bad === 1 ? 1 : 0, notes };
 }
 
-const JUDGE_SYS = `你是一个严格的测评员，给一个 Minecraft 陪伴型 AI（Angel_ICE）的单轮反应打分。只输出 JSON，不要别的文字。`;
+const JUDGE_SYS = `你是一个严格的测评员，给一个 Minecraft 陪伴型 AI（Angle_ICE）的单轮反应打分。只输出 JSON，不要别的文字。`;
 function judgePrompt (t, resp) {
   return `【题目】
 类别：${t.category}

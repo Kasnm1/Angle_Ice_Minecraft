@@ -10,7 +10,7 @@
  *
  *   MC_HOST          服务器地址            (默认 localhost)
  *   MC_PORT          游戏端口              (默认 25565)
- *   MC_BOT_USERNAME  机器人游戏内名字       (默认 Angel_ICE —— 固定身份)
+ *   MC_BOT_USERNAME  机器人游戏内名字       (默认 Angle_ICE —— 固定身份)
  *   MC_BRIDGE_PORT   本地 HTTP 服务端口     (默认 3001)
  *   MC_VERSION       游戏版本              (默认 1.21.1)
  *   MC_AUTH          认证方式 offline|microsoft (默认 offline)
@@ -86,7 +86,7 @@ const path = require('path');
 const REGISTRY_DIR = path.join(__dirname, 'registry');
 
 // 机器人在游戏内的固定身份。改这里 = 改全局默认；环境变量/配置仍可临时覆盖。
-const BOT_IDENTITY = 'Angel_ICE';
+const BOT_IDENTITY = 'Angle_ICE';
 
 // `GET /scan` 单次最多检查多少个方块坐标。
 //
@@ -460,7 +460,7 @@ const CFG = {
   mc: {
     host: cfg('MC_HOST', 'localhost'),
     port: parseInt(cfg('MC_PORT', '25565')),
-    // 固定身份：Angel_ICE（见文件顶部 BOT_IDENTITY）
+    // 固定身份：Angle_ICE（见文件顶部 BOT_IDENTITY）
     username: cfg('MC_BOT_USERNAME', BOT_IDENTITY),
     version: cfg('MC_VERSION', '1.21.1'),
     auth: cfg('MC_AUTH', 'offline'),
@@ -757,7 +757,7 @@ function pushChat (text, position) {
 let lastHealth = null;
 
 // ---- 持久记忆 --------------------------------------------------------------
-// Angel_ICE 的记忆，跨会话 / 跨 agent 保留在技能目录下：
+// Angle_ICE 的记忆，跨会话 / 跨 agent 保留在技能目录下：
 //   memory/journal.md  —— 追加式事件日志（人和 agent 都能直接读）
 //   memory/state.json  —— 当前状态快照（覆盖写，随时反映"我现在在哪、还剩多少血"）
 // 设计意图：机器人重启、agent 换人，都还能读到"之前发生过什么"。

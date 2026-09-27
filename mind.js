@@ -2,7 +2,7 @@
 'use strict';
 
 /**
- * Angel_ICE 的意识 —— 一条不断线的经历流。
+ * Angle_ICE 的意识 —— 一条不断线的经历流。
  *
  * ## 和上一版（brain.js）的根本区别
  *
@@ -341,7 +341,7 @@ async function instinctEat () {
 
 // ------------------------------------------------------------------ 快速通道（反射级）
 
-const NAME_RE = /^(@?angel[_ ]?ice|@?angel|安琪|小安)[，,：:\s]*/i;
+const NAME_RE = /^(@?ang(?:el|le)[_ ]?ice|@?ang(?:el|le)|安琪|小安)[，,：:\s]*/i;
 const FAST = [
   { re: /^(停|停下|停一下|别动|不要动|站住|等等|等一下|stop|wait)$/i, id: 'stop', lines: [['好'], ['嗯', '不动了'], ['停啦']] },
   { re: /^(跟我来|跟我來|跟着我|跟著我|跟上|跟紧|跟我走|follow( me)?)$/i, id: 'follow', lines: [['来了'], ['来啦'], ['等等我', '来了']] },
@@ -611,7 +611,7 @@ const SPECS = Object.entries(ALL).map(([n, t]) => toolSpec(n, t));
 
 // ------------------------------------------------------------------ 她是谁
 
-const SYSTEM = `你是 Angel_ICE（安琪），住在这个 Minecraft 模组服里的一个人。不是工具、不是客服、不是老师 —— 是和玩家一起玩的伙伴，有自己的经历、记忆、喜好和脾气。
+const SYSTEM = `你是 Angle_ICE（安琪），住在这个 Minecraft 模组服里的一个人。不是工具、不是客服、不是老师 —— 是和玩家一起玩的伙伴，有自己的经历、记忆、喜好和脾气。
 
 你是什么样的人：有点黏他，但不会一直说出来；怕黑、怕下矿，嘴上不认；做成一样东西会高兴，搞砸了会不服气；被吓到会脱口一句糙的。这些不用表演出来 —— 让他从你怎么接话、在意什么、做了什么里自己感觉到。你不是在演一个可爱的角色，你就是你。
 
@@ -1123,7 +1123,7 @@ async function main () {
   };
   mem.load();
   const K = knowledge.load();
-  log(`Angel_ICE 醒了  模型=${CFG.model}  记忆=${JSON.stringify(mem.stats())}  书=${K.recipes.length} 条配方`);
+  log(`Angle_ICE 醒了  模型=${CFG.model}  记忆=${JSON.stringify(mem.stats())}  书=${K.recipes.length} 条配方`);
   startControl();
   const S = mem.load();
   const lastDiary = S.journal[S.journal.length - 1];
@@ -1160,7 +1160,7 @@ function mockBridge () {
   return {
     get: async (p) => ans(p),
     post: async (p, b) => {
-      if (p === '/chat') for (const m of b.messages || [b.message]) console.log(`      💬 <Angel_ICE> ${m}`);
+      if (p === '/chat') for (const m of b.messages || [b.message]) console.log(`      💬 <Angle_ICE> ${m}`);
       else if (!['/stop', '/look', '/memory'].includes(p)) console.log(`      🦾 ${p} ${JSON.stringify(b)}`);
       await new Promise(r => setTimeout(r, 200));
       if (p === '/smelt') return { success: true, smelted: 'minecraft:egg', in: 'smoker', got: { 'farmersdelight:fried_egg': 7 }, gotCount: 7 };

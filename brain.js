@@ -2,7 +2,7 @@
 'use strict';
 
 /**
- * Angel_ICE 的大脑 —— 听懂人话、马上反应、自己想下一步。
+ * Angle_ICE 的大脑 —— 听懂人话、马上反应、自己想下一步。
  *
  * ## 为什么需要这个文件
  *
@@ -78,7 +78,7 @@ const CFG = {
   bridge: process.env.MC_BRIDGE_URL || 'http://127.0.0.1:3001',
   autopilot: process.env.MC_AUTOPILOT_URL || 'http://127.0.0.1:3002',
   port: parseInt(process.env.BRAIN_PORT || '3003'),
-  botName: process.env.MC_BOT_USERNAME || 'Angel_ICE',
+  botName: process.env.MC_BOT_USERNAME || 'Angle_ICE',
 
   baseUrl: (process.env.LLM_BASE_URL || '').replace(/\/+$/, ''),
   apiKey: process.env.LLM_API_KEY || '',
@@ -626,7 +626,7 @@ function mindSummary () {
 
 // ------------------------------------------------------------------ 人格与提示词
 
-const PERSONA = `你是 Angel_ICE（安琪），住在这个 Minecraft 模组服里的陪玩。不是工具、不是客服、不是老师，是一起玩的人。
+const PERSONA = `你是 Angle_ICE（安琪），住在这个 Minecraft 模组服里的陪玩。不是工具、不是客服、不是老师，是一起玩的人。
 性格：软、黏人、有点小脾气，怕黑怕矿洞但嘴硬；会因为挖到好东西兴奋。
 说话：短（一般 5–25 字），带尾音（～ 呀 啦 诶 嘛 哦），偶尔一个括号小动作如（歪头）（蹦蹦跳跳），一句最多一个。
 数据和坐标要报时，包在她的语气里（"挖到 3 个铁矿啦！"），绝不说"已执行""正在调用"之类。
@@ -796,7 +796,7 @@ async function runJob (owner, steps, token) {
 
 // ------------------------------------------------------------------ 快速通道（0ms，不过模型）
 
-const NAME_RE = /^(@?angel[_ ]?ice|@?angel|安琪|小安)[，,：:\s]*/i;
+const NAME_RE = /^(@?ang(?:el|le)[_ ]?ice|@?ang(?:el|le)|安琪|小安)[，,：:\s]*/i;
 const FAST_PATH = [
   { re: /^(停|停下|停一下|别动|不要动|站住|等等|等一下|stop|wait)$/i, id: 'stop',
     lines: ['好～我不动啦', '嗯嗯停下啦', '（乖乖站好）'] },
@@ -1092,7 +1092,7 @@ function parseChat (m) {
 
 /** 多人时只回应点名的；只有一个玩家在线时，他说的都当是对她说的。 */
 function isAddressed (text, othersOnline) {
-  if (/angel|安琪|小安/i.test(text)) return true;
+  if (/angel|angle|安琪|小安/i.test(text)) return true;
   return othersOnline <= 1;
 }
 
@@ -1182,7 +1182,7 @@ async function main () {
     console.error('缺少 LLM_BASE_URL / LLM_API_KEY（写在 .env 或环境变量里）');
     process.exit(1);
   }
-  log(`Angel_ICE 大脑启动  快脑=${CFG.fastModel}  主脑=${CFG.planModel}  自主=${CFG.autonomy}`);
+  log(`Angle_ICE 大脑启动  快脑=${CFG.fastModel}  主脑=${CFG.planModel}  自主=${CFG.autonomy}`);
   log(`  网桥 ${CFG.bridge}   脑干 ${CFG.autopilot}`);
   // 脑干的罐头应答关掉 —— 现在由大脑来答，两边都答会一句话回两遍
   autopilot.post('/autopilot/config', { answerChat: false }).catch(() => log('  （autopilot 没在跑，大脑单独工作）'));
@@ -1222,7 +1222,7 @@ function mockBody () {
     if (p.startsWith('/status')) return { connected: true, health: 18, food: 15, isDay: true, position: { x: 10, y: 64, z: -5 } };
     if (p.startsWith('/inventory')) return { items: inv };
     if (p.startsWith('/nearby')) return { entities: [{ name: 'Ka_sum1', distance: 4 }, { name: 'cow', distance: 9 }] };
-    if (p.startsWith('/players')) return { players: [{ username: 'Ka_sum1', distance: 4, position: { x: 13, y: 64, z: -5 } }, { username: 'Angel_ICE', isSelf: true }] };
+    if (p.startsWith('/players')) return { players: [{ username: 'Ka_sum1', distance: 4, position: { x: 13, y: 64, z: -5 } }, { username: 'Angle_ICE', isSelf: true }] };
     if (p.startsWith('/scan')) return { blocks: [{ name: 'oak_log', count: 24, nearest: 5.1 }, { name: 'stone', count: 300, nearest: 2 }, { name: 'grass_block', count: 80, nearest: 1 }] };
     if (p.startsWith('/memory')) return { journal: ['[09-24] 你说明天要带我去打末影龙'] };
     if (p.startsWith('/knowledge')) return { result: { output: '（模拟）知识库：木镐 = 3 木板 + 2 木棍，需要工作台' } };
@@ -1235,7 +1235,7 @@ function mockBody () {
       get: async (p) => { calls.push(['GET', p]); return answer(p); },
       post: async (p, b) => {
         calls.push(['POST', p, b]);
-        if (p === '/chat') console.log(`      💬 <Angel_ICE> ${b.message}`);
+        if (p === '/chat') console.log(`      💬 <Angle_ICE> ${b.message}`);
         else if (!['/look', '/memory', '/stop'].includes(p)) console.log(`      🦾 ${p} ${JSON.stringify(b)}`);
         await new Promise(r => setTimeout(r, 150));
         return answer(p);
@@ -1299,7 +1299,7 @@ async function selftest () {
   console.log('\n快速通道（0ms，不过模型）');
   check('"安琪跟我来" → follow', matchFastPath('安琪跟我来')?.id, 'follow');
   check('"跟我來！" → follow（繁体+标点）', matchFastPath('跟我來！')?.id, 'follow');
-  check('"Angel_ICE, stop" → stop', matchFastPath('Angel_ICE, stop')?.id, 'stop');
+  check('"Angle_ICE, stop" → stop', matchFastPath('Angle_ICE, stop')?.id, 'stop');
   check('"过来～" → come', matchFastPath('过来～')?.id, 'come');
   check('"你跟我来然后帮我挖矿" → 不走快速通道（复杂的交给模型）', matchFastPath('你跟我来然后帮我挖矿'), null);
   check('"停在那边的是什么" → 不误判成停', matchFastPath('停在那边的是什么'), null);

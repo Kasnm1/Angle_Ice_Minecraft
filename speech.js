@@ -143,7 +143,7 @@ function selftest () {
     console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${label}${ok ? '' : `\n        实际 ${JSON.stringify(got)}`}`);
   };
   console.log('\n分段');
-  check('长句拆成几条', segment('诶诶——有人在吗？我是 Angel_ICE，刚刚才醒过来…你在哪儿呀，我去找你～'), s => s.length >= 3 && s.length <= 4 && s.every(x => len(x) <= 14));
+  check('长句拆成几条', segment('诶诶——有人在吗？我是 Angle_ICE，刚刚才醒过来…你在哪儿呀，我去找你～'), s => s.length >= 3 && s.length <= 4 && s.every(x => len(x) <= 14));
   check('已经够短的不拆', segment('你来啦'), ['你来啦']);
   check('她自己用换行分好的条原样保留', segment('好\n我去拿'), ['好', '我去拿']);
   check('口头禅 10 分钟内只出现一次', [segment('诶？\n你来啦'), segment('诶？\n又来啦')].map(x => x[0]), ['诶？', '又来啦']);

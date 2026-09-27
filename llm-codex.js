@@ -134,7 +134,7 @@ if (require.main === module) {
   else if (process.argv.includes('--live')) {
     const t0 = Date.now();
     chat({
-      messages: [{ role: 'system', content: '你是 Minecraft 里的玩家 Angel_ICE，说话简短自然。' }, { role: 'user', content: 'Ka_sum1 说：给我一个面包' }],
+      messages: [{ role: 'system', content: '你是 Minecraft 里的玩家 Angle_ICE，说话简短自然。' }, { role: 'user', content: 'Ka_sum1 说：给我一个面包' }],
       tools: [{ type: 'function', function: { name: 'give', description: '把东西递给玩家', parameters: { properties: { itemName: { type: 'string' }, player: { type: 'string' } }, required: ['itemName'] } } }],
     }).then(r => console.log(Date.now() - t0, 'ms', JSON.stringify(r.message))).catch(e => console.log('ERR', e.message));
   }

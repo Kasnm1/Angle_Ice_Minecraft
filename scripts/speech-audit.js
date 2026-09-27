@@ -22,7 +22,7 @@ const { audit } = require('../speech');
 const file = path.join(__dirname, '..', 'memory', 'journal.md');
 const sinceArg = process.argv.indexOf('--since');
 const since = sinceArg > 0 ? process.argv[sinceArg + 1] : null;
-const bot = process.env.MC_BOT_USERNAME || 'Angel_ICE';
+const bot = process.env.MC_BOT_USERNAME || 'Angle_ICE';
 
 const her = []; const players = [];
 for (const line of fs.readFileSync(file, 'utf8').split('\n')) {

@@ -174,7 +174,7 @@ function renderSample (r) {
   return [...L, ...renderContext(r)].join('\n');
 }
 
-function render (entries, { title = 'Angel_ICE 自我复盘', since = null } = {}) {
+function render (entries, { title = 'Angle_ICE 自我复盘', since = null } = {}) {
   if (!entries.length) return `# ${title}\n\n（${since ? `${fmtT(since)} 以来` : ''}没有记到不对劲的地方）\n`;
   const t0 = Math.min(...entries.map(r => r.t)); const t1 = Math.max(...entries.map(r => r.t));
   const self = entries.filter(r => r.source === 'self').sort((a, b) => a.t - b.t);

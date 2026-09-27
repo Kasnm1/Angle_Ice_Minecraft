@@ -1,6 +1,6 @@
 {
   "_comment": "复制为 config.json 并改成本机实际值即可；环境变量优先级高于本文件。",
-  "_identity_note": "MC_BOT_USERNAME 固定为 Angel_ICE —— 机器人在游戏内的身份，非必要不要改。",
+  "_identity_note": "MC_BOT_USERNAME 固定为 Angle_ICE —— 机器人在游戏内的身份，非必要不要改。",
   "_auth_note": "MC_AUTH=offline 用于离线/本地服务器；正版服务器用 MC_AUTH=microsoft。",
   "_forge_note": "MC_FORGE=1 用于 Forge / 模组服务器（启用 FML 登录握手，并在握手中拿到整张 minecraft:block 快照）。原版服务器留 0。",
   "_lan_note": "单人游戏用 ESC -> 对局域网开放，把随机端口填到 MC_PORT。",
@@ -10,7 +10,7 @@
 
   "MC_HOST": "localhost",
   "MC_PORT": "25565",
-  "MC_BOT_USERNAME": "Angel_ICE",
+  "MC_BOT_USERNAME": "Angle_ICE",
   "MC_VERSION": "1.20.1",
   "MC_AUTH": "offline",
   "MC_FORGE": "0",

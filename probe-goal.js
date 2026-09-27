@@ -6,7 +6,7 @@ const { pathfinder, goals } = require('mineflayer-pathfinder');
 
 const bot = mineflayer.createBot({
   host: '139.196.98.255', port: 25565,
-  username: 'Angel_ICE_probe', version: '1.20.1', auth: 'offline',
+  username: 'Angle_ICE_probe', version: '1.20.1', auth: 'offline',
 });
 
 const goalEvents = [];

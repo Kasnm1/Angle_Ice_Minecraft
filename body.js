@@ -34,7 +34,7 @@ loadDotEnv();
 
 const CFG = {
   bridge: process.env.MC_BRIDGE_URL || 'http://127.0.0.1:3001',
-  botName: process.env.MC_BOT_USERNAME || 'Angel_ICE',
+  botName: process.env.MC_BOT_USERNAME || 'Angle_ICE',
   baseUrl: (process.env.LLM_BASE_URL || '').replace(/\/+$/, ''),
   apiKey: process.env.LLM_API_KEY || '',
   model: process.env.MIND_MODEL || process.env.BRAIN_FAST_MODEL || 'gemini-3.8-flash',

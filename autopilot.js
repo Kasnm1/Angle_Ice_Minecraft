@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Angel_ICE 的自主行为循环 —— 她的"脑干"。
+ * Angle_ICE 的自主行为循环 —— 她的"脑干"。
  *
  * ## 为什么需要这个文件
  *
@@ -542,7 +542,7 @@ if (process.argv.includes('--selftest')) {
   check('非 chat 位置的不算（系统消息不当作玩家说话）',
     watchChat([{ t: 3000, position: 'system', text: '<Ka_sum1> 你' }]), 0);
   check('她自己的话不计入 earsHeard（否则指标会把"她说话"当成"听到玩家说话"）',
-    watchChat([chatMsg(4000, '<Angel_ICE> 诶？我在呀～')]), 0);
+    watchChat([chatMsg(4000, '<Angle_ICE> 诶？我在呀～')]), 0);
   check('耳朵回路存在且是可调用的异步函数', typeof earsLoop, 'function');
   check('耳朵间隔是正数', CFG.earsMs > 0, true);
   check('耳朵间隔远小于最长动作时长（否则挪出 tick 也没意义）',
@@ -2436,13 +2436,13 @@ function watchChat (messages) {
     // ⚠️ 这一步必须在 fresh++ **之前** —— 否则 earsHeard 会把
     // "她自己说的话"也统计成"听到玩家说话"，指标虚高，
     // 于是"耳朵到底有没有在工作"就再也看不出来了。
-    if (/^<Angel_ICE>/.test(m.text)) continue;
+    if (/^<Angle_ICE>/.test(m.text)) continue;
     fresh++;
 
     // "在跟她说话"的判定。不能只认名字 —— 玩家经常直接说"你…"，
     // 例如 "<Ka_sum1> you are my cooker only belong to me i love u" 就是对她说的。
     const mentioned =
-      /Angel_ICE|Angel|安琪|angel/i.test(m.text) ||
+      /Angle_ICE|Angel_ICE|Angle|Angel|安琪|angel/i.test(m.text) ||
       /\b(you|your|yours|u|ur|you're|youre|your'e)\b/i.test(m.text) ||
       /你|妳|咱/.test(m.text);
 
@@ -3579,7 +3579,7 @@ async function perform (chosen, { threat, player, self, inventory, nearby }) {
 }
 
 async function loop () {
-  log('Angel_ICE 自主循环启动');
+  log('Angle_ICE 自主循环启动');
   log(`  网桥   ${CFG.bridge}`);
   log(`  控制面 http://127.0.0.1:${CFG.port}/autopilot`);
   log(`  说话纪律：只在被问 / 危险时开口（冷却 ${CFG.speakCooldownMs / 1000}s）`);

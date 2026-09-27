@@ -137,14 +137,14 @@ function selftest () {
   let pass = 0; let total = 0;
   const check = (label, ok, got) => { total++; if (ok) pass++; console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${label}${ok ? '' : `\n        实际 ${JSON.stringify(got)}`}`); };
   const msgs = [
-    { role: 'system', content: '你是 Angel_ICE' },
+    { role: 'system', content: '你是 Angle_ICE' },
     { role: 'user', content: 'Ka_sum1：帮我拿面包' },
     { role: 'assistant', content: null, tool_calls: [{ id: 'a', type: 'function', function: { name: 'inventory', arguments: '{}' } }] },
     { role: 'tool', tool_call_id: 'a', name: 'inventory', content: '面包×3' },
   ];
   const tools = [{ type: 'function', function: { name: 'give', description: '递东西', parameters: { properties: { itemName: { type: 'string' } }, required: ['itemName'] } } }];
   const r = render(msgs, tools);
-  check('系统提示词单独拿出来', r.system === '你是 Angel_ICE', r.system);
+  check('系统提示词单独拿出来', r.system === '你是 Angle_ICE', r.system);
   check('历史、工具结果、工具清单都在提示里', /帮我拿面包/.test(r.prompt) && /inventory\(\{\}\)/.test(r.prompt) && /面包×3/.test(r.prompt) && /give：递东西/.test(r.prompt), r.prompt);
   const m1 = toMessage(parseReply('{"content":"给你","tool_calls":[{"name":"give","arguments":{"itemName":"bread"}}]}'));
   check('还原成 OpenAI tool_calls', m1.content === '给你' && m1.tool_calls[0].function.name === 'give' && JSON.parse(m1.tool_calls[0].function.arguments).itemName === 'bread', m1);
@@ -163,7 +163,7 @@ if (require.main === module) {
   else if (process.argv.includes('--live')) {
     const t0 = Date.now();
     chat({
-      messages: [{ role: 'system', content: '你是 Minecraft 里的玩家 Angel_ICE，说话简短自然。' }, { role: 'user', content: 'Ka_sum1 说：给我一个面包' }],
+      messages: [{ role: 'system', content: '你是 Minecraft 里的玩家 Angle_ICE，说话简短自然。' }, { role: 'user', content: 'Ka_sum1 说：给我一个面包' }],
       tools: [{ type: 'function', function: { name: 'give', description: '把东西递给玩家', parameters: { properties: { itemName: { type: 'string' }, player: { type: 'string' } }, required: ['itemName'] } } }],
     }).then(r => console.log(Date.now() - t0, 'ms', JSON.stringify(r.message))).catch(e => console.log('ERR', e.message));
   }
