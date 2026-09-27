@@ -494,7 +494,7 @@ function attackCooldownMs (item) {
 }
 /**
  * 这一拍怎么打。
- * @param ctx.targets [{ id, name, pos, dist, on, evidence, kind }]  已经过滤成"有仇恨的"
+ * @param ctx.targets [{ id, name, pos, dist, on, evidence, kind }]  已经过滤成"可见敌对目标"
  * @param ctx.hp / hasShield / anchor({x,y,z}|null)
  * @returns { mode: 'melee'|'shield'|'avoid'|'retreat', target } | null
  */
@@ -1701,7 +1701,7 @@ function install (bot, state, deps) {
     if (I.running && I.running.kind !== 'combat') { const old = I.running; old.abort(); if (!await settleJob(old)) { I.last = { t: Date.now(), skip: '战斗等待旧本能收尾' }; return; } }
     if (ended || I.urgent !== 'combat') return;
     const interrupted = I.inflight > 0 || (state.currentAction && !followName) ? (state.currentAction || '一个命令') : null;
-    if (I.inflight > 0 || state.currentAction) deps.cancelCommands?.(`战斗本能：${first.name} ${first.on === 'me' ? '冲她来了' : `在打 ${first.on}`}`);
+    if (I.inflight > 0 || state.currentAction) deps.cancelCommands?.(`战斗本能：${first.name} ${first.on ? (first.on === 'me' ? '冲她来了' : `在打 ${first.on}`) : '在附近'}`);
     const anchorAt = () => (followName ? bot.players[followName]?.entity?.position : null) || I.combat.anchor;
     I.combat = { anchor: bot.entity.position.clone(), engaged: new Set(), killed: [], started: Date.now(), followName, hp0: bot.health };
     const hasShield = await equipForFight();
@@ -1776,7 +1776,7 @@ function install (bot, state, deps) {
     try {
       const targets = hostileTargets();
       d.targets = targets.length;
-      if (!targets.length) { d.skip = '没有仇恨证据'; return; }
+      if (!targets.length) { d.skip = '没有可见敌对目标'; return; }
       const plan = combatPlan({ targets, hp: (bot.health ?? 20) - (I.effectHpCost || 0), hasShield: /shield/.test(bot.inventory.slots[45]?.name || '') || bot.inventory.items().some(i => /shield/.test(i.name)), anchor: null }, I.cfg.combat);
       if (!plan) return;
       fighting = true;
