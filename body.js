@@ -398,10 +398,11 @@ async function makeItem (itemName, count = 1, deliverTo = null, depth = 0, log =
 // 以前 place 只收一个坐标，她只能"哪儿空放哪儿"。这里先 /survey 看清这一片的布局，
 // 让模型当一次"自己的眼光"：说出对这片的看法，想 2–3 个位置和理由，挑一个；放不上就试下一个。
 
+const FURNISH_RE = /chest|barrel|shulker|_bed$|crafting_table|furnace|smoker|anvil|enchanting|brewing|lectern|loom|stonecutter|grindstone|smithing|cartography|fletching|composter|bookshelf|cauldron|jukebox|flower_pot|torch|lantern|campfire|candle|stove|cooking_pot|skillet|cutting_board|keg|fridge|freezer|cabinet|table|chair|sofa|crate|drawer|waystone|painting|item_frame|banner|sign/;
 const AESTHETIC_SYS = `你是 Angle_ICE 在 Minecraft 里摆东西时自己的眼光。给你一片地方的逐层俯视图（每种材质一个字母，图例在后），和要放的东西、用途。
 先读懂这片：房子轮廓、墙、地板、屋顶、门、窗、走道（门里外两格、梯子口、常走的路）、已有的灯和家具、配色。
 然后挑位置，原则：
-- 不挡路：门前后两格、梯子上下口、走道中间、窗户正前方都不放东西
+- 不挡路：给你的"必须留空的路"格子绝对不放（门前后、梯子口、走道）；窗户正前方也不放
 - 家具靠墙、成组、对齐：工作台/熔炉/箱子排成一排、同高度；和已有同类挨着或对称
 - 床靠墙，床头顶墙；箱子靠墙成排，别放门口
 - 火把/灯：离已有光源（光源列表）6 格以内不要再放 —— 已经够亮就回 candidates 为空、view 里说明；优先挂墙（位置选墙边的空气格，旁边就是墙），门两侧、柱子两侧对称；间距 6–8 格均匀；地上的火把放墙角，不放路中间；照亮会刷怪的暗处（darkFloor）
@@ -434,6 +435,7 @@ async function placeNicely ({ itemName, purpose = '', x, y, z, r = 7 }) {
     `固定符号：${sv.fixed}`, `材质图例：${sv.legend}`,
     `门：${sv.doors.join(' ') || '无'}`, `光源：${sv.lights.join(' ') || '无'}`, `家具：${sv.furniture.join(' ') || '无'}`,
     `会刷怪的暗地面（${sv.darkCount} 格）：${sv.darkFloor.join(' ') || '无'}`,
+    `必须留空的路（门前后、梯子口、走道，这些格子绝不能放东西）：${(sv.keepClear || []).join(' ') || '无'}`,
     '', sv.layers,
   ].join('\n');
   const msg = await llm({ messages: [{ role: 'system', content: AESTHETIC_SYS }, { role: 'user', content: user }], timeoutMs: 30000, maxTokens: 700 });
@@ -442,7 +444,11 @@ async function placeNicely ({ itemName, purpose = '', x, y, z, r = 7 }) {
   if (!plan || !Array.isArray(plan.candidates) || !plan.candidates.length) throw new Error(`没想出位置（模型回的不是 JSON：${String(msg?.content || '').slice(0, 120)}）`);
   const meP = (await bridge.get('/position').catch(() => null)) || {};
   const onMe = (c) => Math.floor(c.x) === meP.x && Math.floor(c.z) === meP.z && (Math.floor(c.y) === meP.y || Math.floor(c.y) === meP.y + 1);
-  const order = [plan.best || 0, ...plan.candidates.keys()].filter((v, i, a) => a.indexOf(v) === i && plan.candidates[v] && !onMe(plan.candidates[v]));
+  const clear = new Set(sv.keepClear || []);
+  const onPath = (c) => !/torch|lantern/.test(itemName) && clear.has(`${Math.floor(c.x)},${Math.floor(c.y)},${Math.floor(c.z)}`);   // 挂墙的灯不占地，可以在路边
+  const blocked = plan.candidates.filter(onPath).map(c => `(${c.x},${c.y},${c.z}) 在路上`);
+  const order = [plan.best || 0, ...plan.candidates.keys()].filter((v, i, a) => a.indexOf(v) === i && plan.candidates[v] && !onMe(plan.candidates[v]) && !onPath(plan.candidates[v]));
+  if (!order.length) throw new Error(`挑的位置都不行：${blocked.join('；') || '都是自己站的格子'}（这片的看法：${plan.view || '-'}）—— 换个地方（x/y/z）再试`);
   const tried = [];
   for (const i of order) {
     const c = plan.candidates[i];
@@ -518,13 +524,34 @@ async function upstairsFirst (targetY) {
   return null;
 }
 
+/**
+ * 说出口之前把物品/方块的注册名换成中文（minecraft:iron_ingot → 铁锭，oak_log → 橡木原木）。
+ * 工具结果里满是英文 id，她偶尔会照抄进聊天 —— 真人不会说 "iron_ingot"。
+ * 认不出的原样留着（不猜）；玩家名（Ka_sum1 这种带数字/大写的）不会被当成 id。
+ */
+function humanizeIds (text) {
+  const zh = (id) => { const l = knowledge.label(id); return l && l !== id ? l.replace(/\([^)]*\)$/, '') : null; };
+  return String(text)
+    .replace(/\b([a-z0-9_.-]+):([a-z0-9_/.-]+)\b/g, (m) => zh(m) || m)
+    .replace(/\b[a-z]+(?:_[a-z]+)+\b/g, (m) => zh(`minecraft:${m}`) || m);
+}
+
 const TOOLS = {
   say: {
     kind: 'speech',
-    desc: '在游戏聊天里说话。像打字那样：几条短消息，用换行分开，每条不超过 12 个字（会按这个样子一条条发出去）。urgent=true 是危险提示，一条说完不拆。',
-    params: { text: { type: 'string' }, urgent: { type: 'boolean' } }, required: ['text'],
+    desc: '在游戏聊天里说话。先写 inner（此刻的你，他看不见），再写 text（说出口的）。像打字那样：几条短消息，用换行分开，每条不超过 12 个字（会按这个样子一条条发出去）。urgent=true 是危险提示，一条说完不拆。',
+    // inner 放第一个：模型按字段顺序写，先写此刻的自己，话再从里面长出来。
+    // 思路借自 HDS Interlude（_ref/hds-interlude）"先写剧本、再写 interaction"的输出顺序。
+    // 以前让她先在正文里写心里话，结果常常只写了心里话、不调 say（2026-09-27 跑分：12 题做了事一声不吭）；
+    // 放进同一个调用里，想和说就分不开了。
+    params: {
+      inner: { type: 'string', description: '先写这个：此刻的你 —— 手上在忙什么、身上什么感觉、他这句话让你想到什么。一句，他看不见' },
+      text: { type: 'string', description: '说出口的话' },
+      urgent: { type: 'boolean' },
+    },
+    required: ['text'],
     run: async ({ text, urgent }) => {
-      const t = String(text || '').trim().slice(0, 400);
+      const t = humanizeIds(String(text || '').trim()).slice(0, 400);
       if (!t) return { ok: false, error: 'empty' };
       let parts = urgent ? [t.replace(/\n+/g, ' ').slice(0, 256)] : speech.segment(t, { maxSegments: 3 });
       // 同一句 3 分钟内不再说（实测：连着两轮"天亮了/早呀"、一轮里"好/来啦"说两遍）。危险提示不拦
@@ -1015,7 +1042,9 @@ const TOOLS = {
     kind: 'action',
     desc: '把背包里的方块放到一个确定的坐标（4.5 格内、有实心邻块）。垫脚、堵洞、照着蓝图施工时用；摆家具、插火把、装饰用 place_nicely。',
     params: { itemName: { type: 'string' }, x: { type: 'number' }, y: { type: 'number' }, z: { type: 'number' } }, required: ['itemName', 'x', 'y', 'z'],
-    run: async (a) => bridge.post('/place', a),
+    // 家具、箱子、灯这类摆设：就算她直接给了坐标也走 place_nicely（她图快用 place 自己报坐标，箱子堵了路，2026-09-27）；
+    // 坐标只当"大概放在这附近"。建材（垫脚、堵洞、施工）照原样放
+    run: async (a) => (FURNISH_RE.test(String(a.itemName || '')) ? placeNicely({ itemName: a.itemName, purpose: a.purpose || '放在这附近', x: a.x, y: a.y, z: a.z, r: 5 }) : bridge.post('/place', a)),
   },
 };
 
@@ -1054,6 +1083,6 @@ function summarize (r) {
 
 module.exports = {
   parseSSE,
-  CFG, TOOLS, hooks, bridge, httpJson, parseArgs, normalizeArgs, toolSpec, summarize,
+  CFG, TOOLS, hooks, bridge, httpJson, parseArgs, normalizeArgs, toolSpec, summarize, humanizeIds,
   usage, recent, llm: (...a) => llm(...a), _setLLM: (f) => { llm = f; }, _setBridge: (b) => { Object.assign(bridge, b); },
 };

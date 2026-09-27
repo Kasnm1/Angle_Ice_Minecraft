@@ -3253,6 +3253,23 @@ function survey (bot, { x, y, z, r = 7, below = 2, above = 5 } = {}) {
   }
   const legend = [...dyn.entries()].map(([n, ch]) => `${ch}=${n.replace(/^minecraft:/, '')}`).join(' ');
   const uniq = (a) => [...new Set(a)];
+  // 要留空的格子（路）：门前后、梯子上下口、1 格宽的走道。放东西绝不能占（实测箱子堵了路，2026-09-27）
+  const free = new Set(freeFloor);
+  const keepClear = new Set();
+  const H4 = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+  for (let dx = -r; dx <= r; dx++) for (let dz = -r; dz <= r; dz++) for (let dy = -below; dy <= above; dy++) {
+    const p = new Vec3(c.x + dx, c.y + dy, c.z + dz); const b = bot.blockAt(p); if (!b) continue;
+    if ((isDoorLike(b) && !/trapdoor/.test(b.name)) || /ladder/.test(b.name)) {
+      for (const [ax, az] of H4) for (const k of [1, 2]) for (const yy of [0, 1, -1]) { const q = `${p.x + ax * k},${p.y + yy},${p.z + az * k}`; if (free.has(q)) keepClear.add(q); }
+      for (const yy of [1, -1]) { const q = `${p.x},${p.y + yy},${p.z}`; if (free.has(q)) keepClear.add(q); }
+    }
+  }
+  for (const at of freeFloor) {
+    const [x0, y0, z0] = at.split(',').map(Number);
+    const n = H4.map(([ax, az]) => free.has(`${x0 + ax},${y0},${z0 + az}`));
+    const cnt = n.filter(Boolean).length;
+    if (cnt === 2 && ((n[0] && n[1]) || (n[2] && n[3]))) keepClear.add(at);   // 两边是墙、前后通：走道
+  }
   return {
     center: { x: c.x, y: c.y, z: c.z }, r,
     orientation: `每层俯视：从上到下是 z=${c.z - r}..${c.z + r}（北→南），从左到右是 x=${c.x - r}..${c.x + r}（西→东）`,
@@ -3261,6 +3278,7 @@ function survey (bot, { x, y, z, r = 7, below = 2, above = 5 } = {}) {
     layers: layers.join('\n\n'),
     doors: uniq(doors).slice(0, 12), lights: uniq(lights).slice(0, 20), furniture: uniq(furniture).slice(0, 30),
     darkFloor: dark.slice(0, 20), darkCount: dark.length, freeFloorCount: freeFloor.length,
+    keepClear: [...keepClear].slice(0, 60), keepClearCount: keepClear.size,
   };
 }
 
