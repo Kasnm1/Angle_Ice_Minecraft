@@ -98,7 +98,15 @@ const W = {
   lastSaid: null,            // 她最近说的一句
   replyShapes: [],           // 最近几次回他各分成了几条（最新在后）—— 防止条数定型，见 repetitionHint
   recentLines: [],           // 她最近发出去的几条（最新在后）—— 防止语气词变口头禅，见 particleHint
-  stats: { thinks: 0, llmMs: 0, sleeps: 0, fastPath: 0, instinct: 0, errors: 0 },
+  stats: { thinks: 0, llmMs: 0, sleeps: 0, fastPath: 0, instinct: 0, errors: 0, idleSkipped: 0 },
+  // ── 线路出毛病时的自我节制（见 think 的 catch）─────────────────────────────
+  // 以前一坏就 1 秒一次死循环：2026-09-28 审计实测 53 次 403 一秒一发，10 秒里烧掉 53 次请求。
+  failStreak: 0,            // 连续失败了几次（成功一次清零）
+  failUntil: 0,             // 歇到什么时候（连续 5 次失败 → 停 5 分钟）
+  blockedFrom: 0,           // 上一次成功时意识流有多长 —— 403 压缩时从这里往后掐
+  auditStreak: 0,           // 连续 403 内容审计几次（到 2 次就压缩那段发不出去的内容）
+  groupRound: 0,            // "想"到第几轮了（按需组的有效期按它算）
+  groupActive: {},          // { 组名: 到期轮次 }
 };
 
 function log (msg) {
@@ -180,6 +188,17 @@ async function chatGate (signal, typeUntil = 0) {
 let thinkTimer = null; let thinkTimerAt = 0;
 /** 安排一次"想"。已经安排了更早的就不动；新的更早就换成新的（急事不能被一个晚点的计时器挡住） */
 function scheduleThink (ms) {
+  // 线路歇着的时候，别安排比"歇完"更早的——但急事（他喊她）该把它叫醒
+  if (Date.now() < W.failUntil) {
+    const rest = W.failUntil - Date.now();
+    // 已经排得比"歇完"还晚就不用动；否则一律顺延到歇完那一刻（别在歇息里偷偷早醒）
+    if (!thinkTimer || thinkTimerAt <= Date.now() + rest) {
+      if (thinkTimer) clearTimeout(thinkTimer);
+      thinkTimerAt = Date.now() + rest + 100;
+      thinkTimer = setTimeout(() => { thinkTimer = null; think('event'); }, rest + 100);
+    }
+    return;
+  }
   const at = Date.now() + ms;
   if (thinkTimer && thinkTimerAt <= at) return;
   if (thinkTimer) clearTimeout(thinkTimer);
@@ -218,6 +237,17 @@ function tonight (s) {
     following: s.following || null,
     sleepFail: sf ? sf.why : null,
   });
+}
+
+/** 战斗本能在打吗？在打就返回它打的是谁（mind 用这个把身体让开）。
+ *  bridge 的 GET /instinct 给 combatNow（只在战斗时非 null）和 urgent；名字从她看到的怪里挑离得最近的。 */
+function combatInstinct (s) {
+  const I = s?.instinct;
+  const now = I?.combatNow || (I?.urgent === 'combat' ? {} : null);
+  if (!now) return null;
+  const hostile = (s.nearby || []).filter(e => e.kind === 'hostile').sort((a, b) => (a.distance ?? 99) - (b.distance ?? 99))[0];
+  const name = hostile ? knowledge.label(hostile.name.includes(':') ? hostile.name : `minecraft:${hostile.name}`) : '怪';
+  return { name, since: now.since || null, killed: now.killed || 0, engaged: now.engaged || 0 };
 }
 
 function survivalFocus (s) {
@@ -302,10 +332,12 @@ async function look () {
   // 分两档（WorkBuddy 建议 32，Claude 核实：原来每秒 12 个请求打到 bridge，和本能、物理抢同一个事件循环）：
   // 快的每一眼都看（状态、背包、附近、玩家、聊天、增量的箱子记录）；慢的（门、装备、没开过的箱子、亮度）slowLookMs 看一次，中间用上次的
   const slowDue = Date.now() - (W.slowLook?.at || 0) >= CFG.slowLookMs;
-  const [st, inv, near, pl, chat, seen, slow] = await Promise.all([
+  const [st, inv, near, pl, chat, seen, slow, insNow] = await Promise.all([
     safe('/status'), safe('/inventory'), safe('/nearby?radius=16'), safe('/players'), safe('/chatlog?limit=30'),
     safe(`/containers/seen?since=${W.seenSince || 0}`),
     slowDue ? Promise.all([safe('/doors?radius=6'), safe('/equipment'), safe('/chests/unseen?radius=24'), safe('/light')]) : null,
+    // 本能现在的样子：战斗本能在打的时候，她不该抢着手（见 buildNow 的"【本能】"与 attack 工具）
+    safe('/instinct'),
   ]);
   if (slow) W.slowLook = { at: Date.now(), v: slow };
   const [doors, eq, boxes, lit] = W.slowLook?.v || [null, null, null, null];
@@ -390,6 +422,8 @@ async function look () {
     backpack: eq?.backpack || null,
     unseenChests: boxes?.chests || [],
     light: lit?.light || null, dark: !!lit?.dark, torches: lit?.torches ?? null, lastBright: lit?.lastBright || null,
+    // 本能层此刻在做什么：战斗本能在打的时候，她不该再伸手（见 combatInstinct / attack 工具）
+    instinct: insNow && insNow.installed !== false ? { combatNow: insNow.combatNow || null, urgent: insNow.urgent || null, running: insNow.running || null } : null,
   };
   // 天色变了（太阳下山 / 天黑 / 天亮）：说一声，连同今晚的安排。边沿触发，一晚只说一次
   const pev = night.phaseEvent(W.phase, W.state.phase);
@@ -623,8 +657,10 @@ function fmtArgs (a) {
 }
 
 async function runTool (name, args) {
-  const t = TOOLS[name];
-  if (!t) return { ok: false, error: `没有 ${name} 这个动作` };
+  // 她自己的工具（recall / my_dream / home_stock / tools…）住在 MIND_TOOLS 里，不在 body 的 TOOLS 里。
+  // 以前这里只看 TOOLS，于是这些 info 类工具一被调用就回"没有 X 这个动作"（recall 从没被调过，所以一直没被发现）。
+  const t = TOOLS[name] || (typeof MIND_TOOLS !== 'undefined' ? MIND_TOOLS[name] : null);
+  if (!t || !t.run) return { ok: false, error: `没有 ${name} 这个动作` };
   try {
     const r = await t.run(normalizeArgs(name, args) || {});
     if (r && (r.success === false || r.ok === false)) return { ok: false, error: r.error || 'failed', ...r };
@@ -808,6 +844,17 @@ const MIND_TOOLS = {
     desc: '这一刻没什么要说要做的了，等下一件事发生。（安静陪着也是陪伴）',
     params: { reason: { type: 'string' } }, required: [],
   },
+  tools: {
+    kind: 'info',
+    desc: '把一组工具拿出来用（平时只带着常用的那些，别的先收着）。要用到没带在身上的工具时，先把它叫出来：build 建造/布置、farm 农活/动物/做饭、store 箱子/仓库、quest 任务书/交易、travel 远行/下矿、skill 存技能。叫过之后接下来几轮都在。不给 group 就列出每组装了什么。',
+    params: { group: { type: 'string', enum: ['core', 'build', 'farm', 'store', 'quest', 'travel', 'skill'] } }, required: [],
+    run: ({ group }) => {
+      if (!group) {
+        return { groups: Object.fromEntries(Object.entries(GROUPS).map(([g, l]) => [g, l.filter(n => ALL[n])])), 现在带着的: [...activeGroups()] };
+      }
+      return activateGroup(group);
+    },
+  },
 };
 
 const ALL = { ...TOOLS, ...MIND_TOOLS };
@@ -819,6 +866,113 @@ function kindOf (name) {
   return t.kind;   // speech / info / memory / end
 }
 const SPECS = Object.entries(ALL).map(([n, t]) => toolSpec(n, t));
+
+// --------------------------------------------------------------- 工具按场景分组
+//
+// 为什么（2026-09-28 输入审计）：89 个工具 26,059 字符，占一次输入 ~49%，而 19 个从没被调过、
+// 30 个全程 ≤2 次。冷门工具合计 5,672 字符 = 工具定义的 39.7%。所以每轮只带"常驻组 + 当前用得上的按需组"。
+// **一个工具都没删**（fish/animal/ride 这些新加的也照留）—— 她需要时会自己用 tools(group) 或关键词自动带出来。
+//
+// 分组原则：
+//   · core 常驻 —— 说话 / 看 / 走 / 拿 / 最基本的手上活。日志里最高频的都在这里（say 396、wait 365、
+//     look_at 112、pickup 105、craft 95、goto 88、scan_blocks 76、come_to 70、attack 65、knowledge_search 60…）
+//   · 其余按"什么时候才用得上"分：站在工地上才用得上 build、蹲在箱子前才用得上 store…
+const GROUPS = {
+  // 常驻：任何时刻都可能要用的
+  core: ['say', 'wait', 'stop', 'look_at', 'look_around', 'look_area', 'scan_blocks', 'inventory', 'item_info', 'recipe',
+    'knowledge_search', 'guide_search', 'item_uses', 'how_to_obtain', 'recall', 'learn', 'revise', 'judge', 'use_skill',
+    'my_dream', 'report_issue', 'tools', 'goto', 'come_to', 'follow', 'climb', 'climb_down', 'pickup', 'mine', 'craft',
+    'use_item', 'wear', 'equip', 'unequip', 'eat', 'attack', 'give', 'nudge', 'motor', 'door', 'sleep_in_bed', 'go_home',
+    'self_rescue', 'focus_on', 'plan_view'],
+
+  // 按需：建造 / 布置家里
+  build: ['place', 'place_nicely', 'place_structure', 'design_build', 'build_work', 'build_status', 'build_cancel',
+    'plan_layout', 'furnish', 'layout_status', 'plan_set', 'plan_step', 'light_up', 'make_torches', 'wiggle'],
+
+  // 按需：农活 / 养动物 / 做饭
+  farm: ['till', 'farm', 'animal', 'ride', 'fish', 'bucket', 'cook_pot', 'make_item', 'smelt'],
+
+  // 按需：箱子 / 仓库整理
+  store: ['open_container', 'container_put', 'container_take', 'container_close', 'store_items', 'take_items',
+    'organize_storage', 'sort_container', 'sort_inventory', 'check_chests', 'loot_nearby', 'open_backpack', 'home_stock', 'set_home'],
+
+  // 按需：任务书 / 交易
+  quest: ['quest_submit', 'quest_claim'],
+
+  // 按需：出远门 / 探险 / 下矿
+  travel: ['delve', 'material_plan', 'run_command'],
+
+  // 按需：把做成功的做法沉淀成技能（低频，平常不用占位置）
+  skill: ['save_skill'],
+};
+// 每个工具归到哪些组（一个工具可以属于多组；core 里的工具照样可以再出现，去重时以 core 优先）
+const TOOL_GROUPS = {};
+for (const [g, list] of Object.entries(GROUPS)) {
+  for (const n of list) { if (!ALL[n]) continue; (TOOL_GROUPS[n] ||= []).push(g); }
+}
+// 没写进任何组的工具：兜底进 core（宁可多带一个，也不能让她"想不起来还有这工具"）
+const UNGROUPED = Object.keys(ALL).filter(n => !TOOL_GROUPS[n]);
+for (const n of UNGROUPED) (TOOL_GROUPS[n] ||= []).push('core');
+
+const ON_DEMAND = Object.keys(GROUPS).filter(g => g !== 'core');
+// 这一轮带出来的按需组还有几轮有效（tools(group) 叫进来的组管 N 轮；自动激活的只这一轮）
+const GROUP_ROUNDS = 8;
+W.groupActive = {};   // { [组名]: 到期轮次序号 }
+
+/** 场景关键词 → 该带哪些按需组（从聊天/事件的原话里认） */
+const GROUP_CUES = [
+  { re: /钓|魚|鱼|船|boat|划船/i, groups: ['farm'] },
+  { re: /种|耕|地|庄稼|田|麦|小麥|胡萝卜|馬鈴薯|南瓜|西瓜|甘蔗|牧|牛|羊|鸡|豬|猪|马|馬|驯|養|养|钓|烤|煮|菜|饭|飯|吃/i, groups: ['farm'] },
+  { re: /箱子|箱|柜|櫃|存|放进去|拿出来|整理|分类|骨粉盒|仓库|倉庫|背包|装进|裝進/i, groups: ['store'] },
+  { re: /造|建|盖|蓋|盖房|房子|房|墙|牆|楼|樓|地板|屋顶|屋頂|装修|裝修|摆|擺|布置|佈置|家具|火把|点亮|點亮|设计|設計|图纸|圖紙/i, groups: ['build', 'store'] },
+  { re: /任务|任務|任务书|任務書|任务奖励|章节|章節|FTBQ|提交|交任务/i, groups: ['quest'] },
+  { re: /矿洞|礦洞|下矿|下礦|洞穴|探险|探險|遗迹|遺跡|远|遠|出门|出門|挖矿|挖礦|钻石|鑽石|装备|裝備|附魔/i, groups: ['travel'] },
+  { re: /技能|记下做法|記下做法|存成|下次照做/i, groups: ['skill'] },
+];
+/** 身体状态 → 该带哪些按需组 */
+function groupsFromBody (s) {
+  const g = new Set();
+  if (!s) return g;
+  // 脚边有箱子/桶（或开着 GUI）：仓储那组带上
+  if ((s.unseenChests || []).length || (s.nearby || []).some(e => /chest|barrel|shulker|hopper|drawer/i.test(e.name || ''))) g.add('store');
+  // 手里拿着能放的东西、又在家：建造那组带上
+  const holding = String(s.equipment?.mainhand || s.items?.[0]?.name || '');
+  if (holding && /torch|lantern|planks|brick|stone|glass|slab|stairs|fence|door|bed|chest|carpet|wool|sign|flower|pot|frame|candle|lamp/i.test(holding)) { g.add('build'); }
+  // 骑着东西 / 在身上有船（水里）：载具钓鱼那组
+  if (/boat|minecart/i.test(holding) || (s.nearby || []).some(e => /boat|minecart/i.test(e.name || ''))) g.add('farm');
+  // 身边有动物：农牧那组
+  if ((s.nearby || []).some(e => e.kind === 'animal' || /cow|sheep|chicken|pig|horse|rabbit|bee|villager/i.test(e.name || ''))) g.add('farm');
+  // 很暗 / 身上没火把 —— 点亮（light_up / make_torches）就在建造组里，不带出来她这时候就使不上
+  const hasTorch = (s.items || []).some(i => /torch|lantern/i.test(i.name || '')) || /torch|lantern/i.test(holding);
+  if (s.dark || s.torches === 0 || (!hasTorch && (s.items || []).some(i => /coal|charcoal|stick|planks|log/i.test(i.name || '')))) g.add('build');
+  return g;
+}
+/** 这一轮该发哪些工具的 spec：常驻组 + 当前激活的按需组。always 里的工具一定带上（她刚叫过的组）。 */
+function pickSpecs (s, activeGroups = new Set()) {
+  const want = new Set(['core', ...activeGroups]);
+  const out = [];
+  for (const [n, t] of Object.entries(ALL)) {
+    const gs = TOOL_GROUPS[n] || ['core'];
+    if (gs.some(g => want.has(g))) out.push(toolSpec(n, t));
+  }
+  return out;
+}
+/** 她调 tools(group) 时用的：把组叫进来，管 GROUP_ROUNDS 轮（含叫它的这一轮） */
+function activateGroup (name) {
+  if (!GROUPS[name]) return { ok: false, error: `没有这个组：${name}`, groups: Object.keys(GROUPS) };
+  const from = W.groupRound || 0;
+  W.groupActive[name] = from + GROUP_ROUNDS;   // 第 from+GROUP_ROUNDS 轮结束时到期
+  return { ok: true, group: name, 带上: GROUPS[name].length, 管到第几轮: W.groupActive[name] };
+}
+/** 当前生效的按需组（过期的清掉） */
+function activeGroups () {
+  const r = W.groupRound || 0;
+  const out = new Set();
+  for (const [g, until] of Object.entries(W.groupActive || {})) {
+    if (until > r) out.add(g); else delete W.groupActive[g];   // until = 到期的那一轮，那一轮开始就不带了
+  }
+  return out;
+}
 
 // ------------------------------------------------------------------ 她是谁
 //
@@ -1093,6 +1247,7 @@ function buildNow (why) {
     dropLine(s),
     (() => { const open = (s?.doors || []).filter(d => d.open); return open.length ? `身边开着的门：${open.slice(0, 5).map(d => `${d.kind}(${d.x},${d.y},${d.z})`).join('、')}` : ''; })(),
     bodyNow(),
+    (() => { const ci = combatInstinct(s); return ci ? `身体正在自己打${ci.name}${ci.killed ? `（已经打死 ${ci.killed} 只）` : ''}（战斗本能），不用你动手；要逃就说逃` : ''; })(),
     (() => { const f = survivalFocus(s); return f.length ? `\n【眼下最该操心的】\n${f.map(x => `· ${x}`).join('\n')}` : ''; })(),
     W.projects?.length ? `\n【进行中的工程】${W.projects.map(p => `${p.name}(${p.id}) 完成 ${p.done}，还要挖 ${p.toDig}、放 ${p.toPlace}${Object.keys(p.missing || {}).length ? `，缺 ${Object.entries(p.missing).slice(0, 4).map(([k, n]) => `${knowledge.label(k.includes(':') ? k : 'minecraft:' + k).replace(/\(.*\)$/, '')}×${n}`).join('、')}` : ''}`).join('；')}` : '',
     W.layouts?.length ? `\n【家里的布置规划】${W.layouts.map(l => `${l.name}：摆好 ${l.done}/${l.total}${Object.keys(l.stillWant || {}).length ? `，还想要 ${Object.entries(l.stillWant).slice(0, 5).map(([k, n]) => `${knowledge.label(k.includes(':') ? k : 'minecraft:' + k).replace(/\(.*\)$/, '')}×${n}`).join('、')}` : ''}${l.canPlaceNow?.length ? `（手上已有 ${l.canPlaceNow.join('、')}）` : ''}${l.stale?.length ? `；要重新想的区：${l.stale.join('、')}` : ''}`).join('；')}` : '',
@@ -1153,20 +1308,50 @@ function particleHint (lines) {
   return `（你最近老带${hot.length ? `"${hot.join('""')}"` : '语气词'} —— 这次不带${hot.length ? '这个' : ''}，平平地说就行）`;
 }
 
+/**
+ * 空闲闸门：这一轮该不该跳过、不调模型。
+ * 条件（**全中才跳**，任何一条不满足都放她去想）：
+ *   1. 没有新事（W.pending 空）—— 有新事就必须想
+ *   2. 没有人在跟她说话（这一刻的事里没有"说："）
+ *   3. 没有紧急事（这一刻没有 urgent 标记）
+ *   4. 身体正忙着自己的活（W.job 在跑，还没做完）
+ *   5. 上一轮她什么也没说、什么也没做（只在等）
+ * 满足 = "她闲着、身体在忙、也没人找她" —— 再问一遍模型只会得到又一个 wait。
+ */
+function idleGate () {
+  if (W.pending.length) return false;                                   // 1 有新事
+  const ev = W.lastNowEv || [];
+  if (ev.some(e => /说：/.test(e.text))) return false;                   // 2 有人说话
+  if (ev.some(e => e.urgent)) return false;                             // 3 有紧急事
+  if (!W.job) return false;                                             // 4 身体没在忙（job 做完就置 null）
+  if (W.job.holding) return false;                                      //    只是"一直跟着"不算在干活
+  const lr = W.lastRoundResult;
+  if (!lr || (lr.said && lr.said.length) || (lr.did && lr.did.length)) return false;   // 5 上一轮没在纯等
+  return true;
+}
+
 function compactLastNow () {
   if (W.lastNow) { W.lastNow.msg.content = W.lastNow.brief; W.lastNow = null; }
 }
 
 async function think (why) {
   if (W.thinking || W.sleeping) { scheduleThink(CFG.debounceMs); return; }
+  // 线路连着坏了 5 次：歇着，别空转（时间到了自然会被下一次 scheduleThink 唤醒）
+  if (Date.now() < W.failUntil) { scheduleThink(W.failUntil - Date.now() + 100); return; }
   if (!W.pending.length && why !== 'idle') return;
   if (!W.state?.connected && !W.sim) return;
+  // 空闲闸门（2026-09-28 审计方案 6A）：上一轮她啥也没干、只是在等，这一轮又没有新事、
+  // 身体还自己忙着自己的活 —— 那就没必要再问模型一遍。省下的是"她闲着、身体在忙"这类
+  // 最没信息量、却占了 15% 调用（日志里 232 次 `轮次：wait`）的往返。
+  // ⚠️ 宁可放她过去（真的有事就让她想），也不要把有事的一轮挡掉 —— 所以条件卡得很死。
+  if (idleGate()) { W.stats.idleSkipped = (W.stats.idleSkipped || 0) + 1; return; }
   W.thinking = true; W.thinkWhy = why; W.thinkCommitted = false; W.thinkDiscard = false;
   const histLen = W.history.length;   // 这一轮作废时退回到这里
   const heardAt = W.lastHeardAt || 0;  // 他最后一条的时间：回话的"打字"从这里算
   const ctl = new AbortController(); W.thinkCtl = ctl;
   const t0 = Date.now();
   const now = buildNow(why);
+  W.lastNowEv = now.ev;   // 空闲闸门看"这一刻有没有人说话/急事"（见 idleGate）
   compactLastNow();
   const nowMsg = { role: 'user', content: now.text };
   W.history.push(nowMsg);
@@ -1175,13 +1360,28 @@ async function think (why) {
   let looked = false; let nudgedToLook = false; let nudgedToDecide = false;
   const playerSaid = now.ev.filter(e => /说：/.test(e.text)).map(e => e.text.replace(/^[^：]*说：/, '')).join(' ');   // 他这一刻说的话   // 这一轮自己看过周围 / 背包没有（问"X在哪"之前要先看）
   const heardPlayer = now.ev.some(e => /说：/.test(e.text) && e.names?.length); let nudgedToSay = false;
+  // 这一轮带哪些工具：常驻组 + 她叫过的组 + 场景认出来的组（见 GROUPS）。
+  // 认场景只看"他刚说的 + 这一刻发生的事 + 身体的处境"——不多看历史，免得组一旦带出来就再也收不回去。
+  W.groupRound = (W.groupRound || 0) + 1;
+  const groupsOn = activeGroups();
+  {
+    const talk = [playerSaid, now.ev.map(e => e.text).join(' ')].join(' ');
+    for (const c of GROUP_CUES) if (c.re.test(talk)) for (const g of c.groups) groupsOn.add(g);
+    for (const g of groupsFromBody(W.state)) groupsOn.add(g);
+  }
+  // 这一轮真正要发的工具：每次调模型前重算 —— 她这一轮里刚用 tools(group) 叫进来的组要立刻生效
+  const specsForRound = () => pickSpecs(W.state, new Set([...groupsOn, ...activeGroups()]));
   // 有时模型先查配方/用途，顺手说一句“好”，然后把这一刻当成做完了。
   // 这不是“只查资料就停”的合理结束：答应过的事要么开始做，要么说明做不到。
   let nudgedToAct = false;
   try {
     for (let round = 0; round < CFG.maxRounds; round++) {
       W.history = repairHistory(W.history);
-      const msg = await body.llm({ messages: [{ role: 'system', content: SYSTEM }, ...W.history], tools: SPECS, timeoutMs: CFG.llmTimeoutMs, signal: ctl.signal });
+      // 每一轮都重算：她这一轮里新叫的组（tools）要立刻生效
+      const msg = await body.llm({ messages: [{ role: 'system', content: SYSTEM }, ...W.history], tools: specsForRound(), timeoutMs: CFG.llmTimeoutMs, signal: ctl.signal });
+      // 线路通了：把失败计数清零，并记住"这次成功时意识流到哪了"——
+      // 以后再被 403 挡住，就从这里往后把发不出去的那段掐掉（见 catch 里的压缩）
+      W.failStreak = 0; W.auditStreak = 0; W.failUntil = 0; W.blockedFrom = W.history.length;
       const calls = msg.tool_calls || [];
       rounds.push(calls.length ? calls.map(c => c.function?.name).join('+') : (msg.content ? '只写了正文' : '空回复'));
       W.history.push({ role: 'assistant', content: msg.content || '', ...(calls.length ? { tool_calls: calls } : {}) });
@@ -1269,16 +1469,44 @@ async function think (why) {
       if (end || !needMore) break;
     }
   } catch (e) {
-    if (e.message !== 'aborted') {
+    // 内容审计（403）也是"不可重试"的一种 —— 但它是唯一一种掐掉内容后还有救的，
+    // 所以单独走上面的 audit 分支（压缩 → 再试），不算致命错。
+    const isAudit = e.kind === 'content' || (e.status === 403 && e.message !== 'aborted');
+    if (e.message !== 'aborted' && (isAudit || e.retryable !== false)) {
       W.stats.errors++;
       log(`❌ 想的时候出错：${e.message}`);
-      review.record({ kind: 'llm_error', error: e.message, retry: now.ev.some(x => x.retried), ...scene(3) });
+      review.record({ kind: 'llm_error', error: e.message, errKind: e.kind, retry: now.ev.some(x => x.retried), ...scene(3) });
       const talked = now.ev.some(x => x.names.length && /说：/.test(x.text));
-      if (!now.ev.some(x => x.retried)) {
-        // 先别说"卡了"：把这些事放回去，过 3 秒再想一次（线路的毛病多半一会儿就好）
+      if (isAudit) {
+        W.auditStreak++;
+        if (W.auditStreak >= 2) {
+          const from = W.blockedFrom || 0;
+          if (W.history.length > from) {
+            const dropped = W.history.length - from;
+            W.history = W.history.slice(0, from);
+            W.history.push({ role: 'user', content: '（有一段内容发不出去，已略过）', keep: true });
+            W.lastNow = null;
+            log(`🚫 内容发不出去，掐掉意识流后段 ${dropped} 条，重试`);
+          }
+        }
+      }
+      W.failStreak++;
+      // 连着失败太多次（线路真坏了 / 内容一直发不出去）：别一秒一次空转 —— 停 5 分钟。
+      // 玩家那边不提技术细节，只说一句她自己的话。
+      if (W.failStreak >= 5) {
+        W.failUntil = Date.now() + 5 * 60 * 1000;
+        W.failStreak = 0; W.auditStreak = 0;
+        log('⏸ 线路连着失败 5 次，歇 5 分钟');
         for (const x of now.ev) x.retried = true;
         W.pending.unshift(...now.ev);
-        setTimeout(() => scheduleThink(0), 3000);
+        emit(talked ? '我先缓一下，等会儿再说' : '脑子有点转不动，歇一会儿', {});
+      } else if (!now.ev.some(x => x.retried)) {
+        // 先别说"卡了"：把这些事放回去，过一会儿再想一次（线路的毛病多半一会儿就好）
+        for (const x of now.ev) x.retried = true;
+        W.pending.unshift(...now.ev);
+        const backoff = Math.min(2000 * 2 ** (W.failStreak - 1), 60000);   // 2s → 4s → 8s … 最多 60s
+        log(`⏳ ${backoff / 1000}s 后再想（连续失败 ${W.failStreak} 次）`);
+        setTimeout(() => scheduleThink(0), backoff);
       } else if (talked) {
         // 第二次还是不行：有人在跟她说话，至少让他知道她听见了
         // 5 分钟内只说一次：以前线路一坏，这句被连着发了 12 遍，成了她的"台词"
@@ -1287,6 +1515,12 @@ async function think (why) {
           bridge.post('/chat', { messages: ['刚卡了', '你再说一遍'], gapMs: [400, 700] }).catch(() => {});
         }
       }
+    } else if (e.message !== 'aborted') {
+      // 不可重试的错（400 请求格式、404 之类）：重试也是一样的结果，留着现场别空转
+      W.stats.errors++;
+      log(`❌ 这一轮发不出去（${e.kind || 'request'}）：${e.message}`);
+      review.record({ kind: 'llm_error', error: e.message, errKind: e.kind || 'request', fatal: true, ...scene(3) });
+      W.pending.unshift(...now.ev);
     } else if (W.thinkDiscard && !W.thinkCommitted) {
       // 他又说了一句、这一轮还没说出口：整轮作废 —— 意识流退回想之前，事放回去和新的一起重想
       W.history.length = histLen; W.lastNow = null;
@@ -1322,6 +1556,8 @@ async function think (why) {
     if (historyChars() > CFG.maxHistoryChars) {
       try { await sleepAndSort({ internal: true }); } catch (e2) { log(`😴 整理记忆失败：${e2.message}`); }
     }
+    // 记下这一轮的结果：空闲闸门看"上一轮是不是纯等"（见 idleGate）
+    W.lastRoundResult = { said: didSay.slice(), did: didDo.slice(), rounds: rounds.slice(), at: Date.now() };
     W.thinking = false; W.thinkWhy = null; W.lastThinkAt = Date.now();
     W.stats.thinks++; W.stats.llmMs += Date.now() - t0;
   }
@@ -1391,7 +1627,9 @@ function trimDangling () {
   while (W.history.length) {
     const last = W.history[W.history.length - 1];
     if (last.role === 'assistant' && last.tool_calls) { W.history.pop(); continue; }
-    if (last.role === 'user' && W.pending.length) { W.history.pop(); continue; }
+    // 内容发不出去时留下的那一行要留着 —— 它是那段被掐掉内容的唯一交代
+    // （普通的 user 消息后面会由 pending 重新补上，这一行没有地方补）
+    if (last.role === 'user' && W.pending.length && !last.keep) { W.history.pop(); continue; }
     break;
   }
 }
@@ -1512,7 +1750,7 @@ function startControl () {
         body: bodyNow(), historyChars: historyChars(), historyMessages: W.history.length,
         stats: { ...W.stats, avgThinkMs: W.stats.thinks ? Math.round(W.stats.llmMs / W.stats.thinks) : null },
         memory: mem.stats(),
-        llmUsage: { ...body.usage, perHour: (() => { const h = (Date.now() - body.usage.since) / 3600000; return h > 0.01 ? { calls: Math.round(body.usage.calls / h), inTok: Math.round(body.usage.inTok / h), outTok: Math.round(body.usage.outTok / h) } : null; })() },
+        llmUsage: { ...body.usage, perHour: (() => { const h = (Date.now() - body.usage.since) / 3600000; return h > 0.01 ? { calls: Math.round(body.usage.calls / h), inTok: Math.round(body.usage.inTok / h), outTok: Math.round(body.usage.outTok / h), inChars: Math.round(body.usage.inChars / h) } : null; })(), avgInChars: body.usage.calls ? Math.round(body.usage.inChars / body.usage.calls) : null },
         people: S.people,
         recentMemories: S.memories.slice(-15),
         log: W.log.slice(-40),
@@ -1543,6 +1781,12 @@ async function main () {
     const since = Date.now() - (W.lastHeardAt || 0);
     if (since < want) await new Promise(r => setTimeout(r, want - since));
     W.lastHeardAt = 0;   // 同一轮里第二句不用再等那么久
+  };
+  // 战斗本能在打：身体不在她手上，attack 这一下直接回给她，不发 HTTP（2026-09-28 审计：她连打 22 次同一只骷髅，
+  // 全是在跟本能抢手；本能自己会打完）。要她逃就说逃 —— 逃是 stop / goto，不是 attack。
+  body.hooks.beforeAttack = () => {
+    const ci = combatInstinct(W.state);
+    return ci ? `本能在打${ci.name}，不用插手` : '';
   };
   // 2026-09-27 用户现场纠错：旧版探洞事件把“人在洞里”写成“挖到了洞”。
   // 修正由程序写入的那条假经历；“我说过什么”保留为真实对话记录。
@@ -1590,6 +1834,9 @@ function mockBridge () {
     if (p.startsWith('/players')) return { players: [{ username: 'Ka_sum1', distance: 3, position: { x: 37, y: 64, z: -138 } }] };
     if (p.startsWith('/chatlog')) return { messages: [] };
     if (p.startsWith('/scan')) return { blocks: [{ name: 'smoker', count: 1, nearest: { x: 38, y: 64, z: -139 }, distance: 3.2 }] };
+    // 本能层现在什么样（战斗本能在打时 combatNow 非 null）
+    if (p.startsWith('/instinct/events')) return { seq: 0, events: [] };
+    if (p.startsWith('/instinct')) return { installed: true, combatNow: null, urgent: null, running: null };
     return { success: true };
   };
   return {
@@ -1935,6 +2182,308 @@ async function selftest () {
   trimDangling();
   check('去掉没有结果的 tool_calls', !W.history.some(m => m.tool_calls));
 
+  console.log('\n线路坏了别死循环（403 / 502 退避、压缩、停 5 分钟）');
+  {
+    const realBodyLlm = body.llm;
+    const err = (msg, extra = {}) => Object.assign(new Error(msg), extra);
+    const runThink = async (failKind, times = 1) => {
+      let n = 0;
+      body._setLLM(async () => {
+        n++;
+        if (n <= times) {
+          if (failKind === 'content') throw err('模型报错 403：content_policy_violation', { retryable: false, kind: 'content', status: 403 });
+          throw err('模型报错 502：上游挂了', { retryable: true, kind: 'transient', status: 502 });
+        }
+        return { content: '好了', tool_calls: [] };
+      });
+      return n;
+    };
+    const reset = () => { W.history = []; W.pending = []; W.job = null; W.lastNow = null; W.failStreak = 0; W.auditStreak = 0; W.failUntil = 0; W.blockedFrom = 0; };
+    const evt = () => ({ t: Date.now(), text: 'Ka_sum1 说：安琪', names: ['Ka_sum1'] });
+    const realSetTimeout = global.setTimeout;
+
+    // 一、可重试的错：退避 2s、4s、8s …（不是以前固定 3 秒，也不是 1 秒一次）
+    reset();
+    const seen = [];
+    global.setTimeout = (fn, ms) => { if (ms >= 2000 && ms <= 60000) seen.push(ms); return realSetTimeout(fn, ms); };
+    try {
+      await runThink('transient', 3);
+      for (let i = 0; i < 3; i++) { W.pending = [evt()]; await think('event'); }
+    } finally { global.setTimeout = realSetTimeout; }
+    check('第一轮失败 → 2 秒后再想', seen[0] === 2000, seen.slice(0, 5));
+    check('第二轮失败 → 4 秒（指数退避，不是固定值）', seen[1] === 4000, seen.slice(0, 5));
+    check('第三轮失败 → 8 秒', seen[2] === 8000, seen.slice(0, 5));
+    check('连着失败计数在涨', W.failStreak >= 2, W.failStreak);
+
+    // 二、成功一次就把退避清零
+    reset();
+    W.pending = [evt()];
+    await runThink('transient', 1); await think('event');
+    check('失败一次后记着', W.failStreak === 1, W.failStreak);
+    W.pending = [evt()];
+    await runThink('transient', 0); await think('event');
+    check('成功一次 → 退避计数清零（下次再坏还是从 2 秒起）', W.failStreak === 0, W.failStreak);
+
+    // 三、403 内容审计：连着 2 次就把"上次成功之后新进意识流的内容"压成一行再重试
+    reset();
+    // 模拟"上一次成功时意识流里有这两条"（blokedFrom 记在成功那一刻）
+    W.history = [{ role: 'user', content: '早上他给我鸡蛋' }, { role: 'assistant', content: '收下了' }];
+    W.blockedFrom = W.history.length;
+    let peak = 0;
+    body._setLLM(async () => { peak = Math.max(peak, W.history.length + 1); throw err('模型报错 403：content_policy_violation', { retryable: false, kind: 'content', status: 403 }); });
+    W.pending = [evt()];
+    await think('event');
+    check('第一次 403：不掐内容，先原样再试一次', W.history.some(m => /早上他给我鸡蛋/.test(m.content)) && W.auditStreak === 1, W.auditStreak);
+    W.pending = [evt()];
+    await think('event');
+    check('第二次 403：新进的那段被压成一行"发不出去，已略过"', W.history.some(m => /有一段内容发不出去，已略过/.test(m.content)), W.history.map(m => String(m.content).slice(0, 24)));
+    check('压缩后只留"上次成功前"的 + 那一行', W.history.length === 3 && W.history[0].content === '早上他给我鸡蛋', W.history.map(m => String(m.content).slice(0, 16)));
+    check('确实掐掉了这一轮新进的（压缩前更长）', peak > 3, peak);
+    check('最早的经历不会被连累丢掉', W.history.some(m => /早上他给我鸡蛋/.test(m.content)));
+
+    // 四、不可重试：400 请求格式错不安排重试，别空转
+    reset();
+    W.pending = [evt()];
+    body._setLLM(async () => { throw err('模型报错 400：请求格式错', { retryable: false, kind: 'request', status: 400 }); });
+    await think('event');
+    check('不可重试的错（400）：不安排重试（pending 不为空、等着下次想起来）', W.pending.length > 0, W.pending.length);
+
+    // 五、连着失败 5 次 → 停 5 分钟，并留一句她自己的话（不透技术细节）
+    reset();
+    W.failStreak = 4;   // 这一次就是第 5 次
+    W.pending = [evt()];
+    const oldPost = bridge.post;
+    const captured = [];
+    bridge.post = async (p, b) => { captured.push([p, b]); return { ok: true }; };
+    body._setLLM(async () => { throw err('模型报错 502：上游挂了', { retryable: true, kind: 'transient', status: 502 }); });
+    try { await think('event'); } finally { bridge.post = oldPost; }
+    check('连着失败 5 次 → 歇 5 分钟（failUntil 设上了）', W.failUntil > Date.now() + 4.5 * 60 * 1000, Math.round((W.failUntil - Date.now()) / 1000));
+    check('歇着的时候 think 直接返回，不空转', await (async () => { const h = W.history.length; const n0 = W.stats.errors; W.pending = [evt()]; await think('event'); return W.history.length === h && W.stats.errors === n0; })());
+    check('歇着的时候他喊她：scheduleThink 会排到歇完那一刻', (() => { const ok = thinkTimerAt > Date.now() + 4.5 * 60 * 1000; return ok; })());
+    // 叫醒：清掉歇息，下一次想能正常走
+    W.failUntil = 0; W.failStreak = 0;
+    if (thinkTimer) { clearTimeout(thinkTimer); thinkTimer = null; }
+    body._setLLM(async () => ({ content: '好了', tool_calls: [] }));
+    W.pending = [evt()];
+    await think('event');
+    check('歇完了他再喊：正常答应（不是一直哑着）', W.failUntil === 0 && W.failStreak === 0);
+
+    body._setLLM(realBodyLlm);
+    body._setBridge(mockBridge());
+  }
+
+  console.log('\n不和战斗本能抢怪（N-3）');
+  {
+    const savedState = W.state;
+    const savedHook = body.hooks.beforeAttack;
+    // 一只骷髅在身边，战斗本能在打它
+    const withSkeleton = () => ({
+      connected: true, health: 18, food: 15, isDay: false, pos: { x: 0, y: 64, z: 0 },
+      items: [], players: [], nearby: [
+        { name: 'minecraft:skeleton', kind: 'hostile', distance: 3, type: 'hostile' },
+        { name: 'Ka_sum1', kind: 'player', distance: 5, type: 'player' },
+      ],
+      instinct: { combatNow: { since: Date.now() - 5000, engaged: 1, killed: 2 }, urgent: 'combat', running: 'combat' },
+    });
+
+    W.state = withSkeleton();
+    const ci = combatInstinct(W.state);
+    check('读出战斗本能正在打', !!ci && ci.killed === 2, ci);
+    check('知道打的是骷髅（从身边的怪里挑）', /骷髅/.test(ci.name), ci.name);
+    const nowText = buildNow('event').text;
+    check('【此刻】写明"身体正在自己打…（战斗本能），不用你动手"', /身体正在自己打.*（战斗本能），不用你动手/.test(nowText), nowText.match(/身体正在自己打[^\n]*/)?.[0]);
+    check('【此刻】写明"要逃就说逃"', /要逃就说逃/.test(nowText));
+    check('说了已经打死几只', /已经打死 2 只/.test(nowText), nowText.match(/身体正在自己打[^\n]*/)?.[0]);
+
+    // 没在打：不该出现这句
+    W.state = { ...withSkeleton(), instinct: { combatNow: null, urgent: null, running: null } };
+    check('本能没在打：不出现这句（免得她以为被挡）', !/身体正在自己打/.test(buildNow('event').text));
+    check('combatInstinct 没有战斗时返回 null', combatInstinct(W.state) === null);
+
+    // attack 工具：本能在打 → 直接回话，不发 HTTP
+    body.hooks.beforeAttack = () => { const x = combatInstinct(W.state); return x ? `本能在打${x.name}，不用插手` : ''; };
+    W.state = withSkeleton();
+    const posted = [];
+    const oldBridge = body.bridge;
+    body._setBridge({ get: async () => ({ success: true }), post: async (p, b) => { posted.push([p, b]); return { success: true }; } });
+    const blocked = await body.TOOLS.attack.run({ target: 'skeleton', radius: 6 });
+    check('本能在打时调 attack：返回"本能在打…不用插手"', /本能在打/.test(blocked.error || '') && /不用插手/.test(blocked.error || ''), blocked);
+    check('这一下没有发 HTTP 到 /attack', !posted.some(([p]) => p === '/attack'), posted);
+    check('如实标成没打成（不是假装成功）', blocked.ok === false && blocked.guarded === true, blocked);
+
+    // 本能没在打：照常发 HTTP
+    W.state = { ...withSkeleton(), instinct: { combatNow: null, urgent: null, running: null } };
+    posted.length = 0;
+    await body.TOOLS.attack.run({ target: 'zombie', radius: 6 });
+    check('本能没在打：attack 照常发出去', posted.some(([p]) => p === '/attack'), posted);
+    body._setBridge(mockBridge());
+
+    body.hooks.beforeAttack = savedHook;
+    W.state = savedState;
+  }
+
+  console.log('\n用量记账（这一轮发了多少字符 / 缓存命中）');
+  {
+    const realFetch = global.fetch;
+    const realCfg = { baseUrl: body.CFG.baseUrl, apiKey: body.CFG.apiKey, model: body.CFG.model };
+    const before = { calls: body.usage.calls, inChars: body.usage.inChars, cachedTok: body.usage.cachedTok, cachedKnown: body.usage.cachedKnown };
+    const reply = (bodyObj) => ({ ok: true, status: 200, text: async () => JSON.stringify(bodyObj) });
+    body.CFG.baseUrl = 'http://fake'; body.CFG.apiKey = 'k'; body.CFG.model = 'm';
+    let sent = null;
+
+    // 一、有 cached_tokens（顶层）时累加
+    global.fetch = async (url, opt) => { sent = JSON.parse(opt.body); return reply({ choices: [{ message: { content: 'hi' }, finish_reason: 'stop' }], usage: { prompt_tokens: 100, completion_tokens: 5, cached_tokens: 80 } }); };
+    const msgs = [{ role: 'system', content: 'S'.repeat(500) }, { role: 'user', content: '你好' }];
+    await body._callLLM({ model: 'm', messages: msgs, tools: [], timeoutMs: 5000 });
+    check('按字符记账：这一轮发的字符数记下了', body.usage.inChars - before.inChars === JSON.stringify(msgs).length, body.usage.inChars - before.inChars);
+    check('命中缓存：cached_tokens 累加', body.usage.cachedTok - before.cachedTok === 80, body.usage.cachedTok - before.cachedTok);
+    check('知道这次是有缓存数字的', body.usage.cachedKnown > before.cachedKnown);
+
+    // 二、prompt_tokens_details.cached_tokens（另一种写法）也认
+    const b2 = body.usage.cachedTok;
+    global.fetch = async () => reply({ choices: [{ message: { content: 'hi' }, finish_reason: 'stop' }], usage: { prompt_tokens: 100, completion_tokens: 5, prompt_tokens_details: { cached_tokens: 64 } } });
+    await body._callLLM({ model: 'm', messages: msgs, tools: [], timeoutMs: 5000 });
+    check('两种缓存写法都认（prompt_tokens_details.cached_tokens）', body.usage.cachedTok - b2 === 64, body.usage.cachedTok - b2);
+
+    // 三、没有缓存字段：不瞎猜，记 0
+    const b3 = { tok: body.usage.cachedTok, known: body.usage.cachedKnown };
+    global.fetch = async () => reply({ choices: [{ message: { content: 'hi' }, finish_reason: 'stop' }], usage: { prompt_tokens: 100, completion_tokens: 5 } });
+    await body._callLLM({ model: 'm', messages: msgs, tools: [], timeoutMs: 5000 });
+    check('没有缓存字段：不瞎猜成命中，cachedTok 不动、cachedKnown 不涨', body.usage.cachedTok === b3.tok && body.usage.cachedKnown === b3.known, [body.usage.cachedTok, body.usage.cachedKnown]);
+    check('但字符数照样记（缓存有没有不影响她发了多少）', body.usage.inChars - before.inChars === 3 * JSON.stringify(msgs).length, body.usage.inChars - before.inChars);
+
+    global.fetch = realFetch;
+    Object.assign(body.CFG, realCfg);
+  }
+
+  console.log('\n工具按场景分组（一个都不丢，随场景带出来）');
+  {
+    const allNames = Object.keys(ALL);
+    const coreNames = pickSpecs({}, new Set()).map(x => x.function.name);
+    const fullNames = pickSpecs({}, new Set(Object.keys(GROUPS))).map(x => x.function.name);
+    // 一、覆盖：一个工具都不能丢
+    check('带上所有组 = 原来的全部工具（一个没丢）', fullNames.length === allNames.length && allNames.every(n => fullNames.includes(n)), [fullNames.length, allNames.length]);
+    check('没写进组的工具兜底进 core（不会没人管）', allNames.every(n => (TOOL_GROUPS[n] || []).length > 0), allNames.filter(n => !(TOOL_GROUPS[n] || []).length));
+    // 二、常驻组大小受控（审计要 ~25，这里含"看/问/身上活"的都要常在，落在 40 上下可接受）
+    check('常驻组没把全部工具都塞进去（确实分出去了）', coreNames.length < allNames.length && coreNames.length <= 50, coreNames.length);
+    check('冷门工具（fish/animal/ride）不在常驻组，但一个都没删', !['fish', 'animal', 'ride'].some(n => coreNames.includes(n)) && ['fish', 'animal', 'ride'].every(n => allNames.includes(n)), coreNames.filter(n => /fish|animal|ride/.test(n)));
+    check('常驻里有 tools 这个元工具（她想不起来还能这么干时能查）', coreNames.includes('tools'));
+    // 三、SYSTEM 里点名的工具：要么在常驻组，要么"保证拿得到"（属于某个能激活的按需组）。
+    // 这里把两类都列出来核对 —— 任务书要求"SYSTEM 点名的工具必须常驻或保证可激活"。
+    const named = allNames.filter(n => new RegExp(`\\b${n}\\b`).test(SYSTEM));
+    const notResident = named.filter(n => !coreNames.includes(n));
+    const unreachable = notResident.filter(n => !(TOOL_GROUPS[n] || []).some(g => g !== 'core'));
+    console.log(`      SYSTEM 点名 ${named.length} 个；其中 ${named.length - notResident.length} 个常驻、${notResident.length} 个按需（${[...new Set(notResident.map(n => (TOOL_GROUPS[n] || []).join('/')))].join('、')}）`);
+    check('SYSTEM 点名的工具都在常驻组或某个按需组里（没有够不着的）', unreachable.length === 0, unreachable);
+    // 每个按需组都得能"激活"（有 tools(group) 这条路；关键词/身体至少一条自动路径）
+    const autoByCue = new Set(GROUP_CUES.flatMap(c => c.groups));
+    const autoByBody = new Set([...groupsFromBody({ dark: true }), ...groupsFromBody({ nearby: [{ name: 'cow', kind: 'animal', distance: 3 }] }), ...groupsFromBody({ unseenChests: [{ name: 'chest', at: 1 }] })]);
+    check('每个按需组都至少有一条自动激活的路（关键词或身体）', Object.keys(GROUPS).filter(g => g !== 'core').every(g => autoByCue.has(g) || autoByBody.has(g)), Object.keys(GROUPS).filter(g => g !== 'core' && !autoByCue.has(g) && !autoByBody.has(g)));
+    check('暗处 / 要火把：建造组带出来（不然 light_up、make_torches 使不上）', groupsFromBody({ dark: true, nearby: [], items: [], equipment: {} }).has('build'));
+    check('身上有煤木棍但没火把：建造组也带出来（能做火把）', groupsFromBody({ dark: false, torches: 0, nearby: [], items: [{ name: 'coal', count: 3 }], equipment: {} }).has('build'));
+    // 四、激活 / 过期
+    W.groupActive = {}; W.groupRound = 0;
+    check('一开始没有按需组是激活的', activeGroups().size === 0);
+    const r = activateGroup('farm');
+    check('叫 farm：带上了', r.ok === true && r.带上 > 0, r);
+    check('叫了之后 farm 就在生效列表里', activeGroups().has('farm'));
+    W.groupRound += GROUP_ROUNDS - 1;   // 管 8 轮：第 8 轮结束时还在（叫它时是第 1 轮）
+    check('管 8 轮：第 8 轮结束时还在', activeGroups().has('farm'), W.groupRound);
+    W.groupRound += 1;   // 第 9 轮
+    check('第 9 轮到期，自己收回去（不用手动清）', !activeGroups().has('farm'));
+    check('叫一个不存在的组：如实说没有，不假装成功', activateGroup('nope').ok === false && /没有这个组/.test(activateGroup('nope').error));
+    // 五、场景自动带出来
+    W.groupActive = {}; W.groupRound = 0;
+    const farmSpecs = pickSpecs({ nearby: [{ name: 'cow', kind: 'animal', distance: 4 }] }, groupsFromBody({ nearby: [{ name: 'cow', kind: 'animal', distance: 4 }] }));
+    check('身边有牛：农活组自动带出来（animal/ride 能用）', farmSpecs.map(x => x.function.name).includes('animal'), farmSpecs.map(x => x.function.name).filter(n => ['animal', 'ride', 'fish'].includes(n)));
+    const storeS = groupsFromBody({ unseenChests: [{ name: 'chest', at: 1 }] });
+    check('看见没开过的箱子：仓储组自动带出来', storeS.has('store'), [...storeS]);
+    check('脚边没东西、手是空的：不乱带按需组', groupsFromBody({ nearby: [], items: [], equipment: {} }).size === 0, [...groupsFromBody({ nearby: [], items: [], equipment: {} })]);
+    // 关键词认场景
+    const hit = (t) => GROUP_CUES.filter(c => c.re.test(t)).flatMap(c => c.groups);
+    check('他说"去钓鱼/拿船" → 农活组', hit('带我去钓鱼').includes('farm'));
+    check('他说"把东西放进箱子" → 仓储组', hit('把这些放进箱子里').includes('store'));
+    check('他说"帮我把墙盖起来" → 建造组', hit('帮我把这面墙盖起来').includes('build'));
+    check('他说"任务书交一下" → 任务组', hit('任务书那个交一下').includes('quest'));
+    check('他说"我们下矿吧" → 远行组', hit('我们下矿吧').includes('travel'));
+    check('纯闲聊不乱带组', hit('你在干嘛呀').length === 0, hit('你在干嘛呀'));
+    // 六、省了多少
+    W.groupActive = {}; W.groupRound = 0;
+    const coreS = JSON.stringify(pickSpecs(W.state || {}, new Set()));
+    check('只带常驻：比全带省下三成以上', coreS.length < JSON.stringify(SPECS).length * 0.7, [coreS.length, JSON.stringify(SPECS).length]);
+    // 七、她这一轮里叫的组，同一轮的下一趟就得生效
+    W.groupActive = {}; W.groupRound = 5;
+    const seenTools = [];
+    const realLlm = body.llm;
+    let n = 0;
+    body._setLLM(async (o) => {
+      seenTools.push(o.tools.map(x => x.function.name));
+      n++;
+      if (n === 1) return { content: '', tool_calls: [{ id: 'g', function: { name: 'tools', arguments: JSON.stringify({ group: 'farm' }) } }] };
+      return { content: '', tool_calls: [{ id: 'w', function: { name: 'wait', arguments: '{}' } }] };
+    });
+    W.pending = [{ t: Date.now(), text: '（测试）', names: [] }];
+    W.lastNowEv = []; W.lastRoundResult = null; W.job = null;
+    await think('event');
+    check('★ 第一趟没带 farm（她还没叫）', !seenTools[0].includes('animal'), seenTools[0].length);
+    check('★ 她叫了 farm 之后，同一轮的下一趟就带上了 animal', seenTools[1] && seenTools[1].includes('animal'), [seenTools[0]?.length, seenTools[1]?.length]);
+    body._setLLM(realLlm);
+    W.groupActive = {}; W.groupRound = 0;
+    W.pending = [];
+  }
+
+  console.log('\n她自己的工具也能被调用（runTool 只看 TOOLS 的老毛病）');
+  {
+    check('recall（在 MIND_TOOLS 里）能被调用，不再回"没有这个动作"', (await runTool('recall', { query: '铁' })).ok === true);
+    check('tools（元工具）能被调用', (await runTool('tools', {})).ok === true);
+    check('my_dream 能被调用', (await runTool('my_dream', {})).ok === true);
+    W.groupActive = {}; W.groupRound = 0;
+  }
+
+  console.log('\n空闲闸门（她闲着、身体在忙、也没人找她 → 不问模型）');
+  {
+    const save = { job: W.job, lastNowEv: W.lastNowEv, lastRoundResult: W.lastRoundResult, pending: W.pending };
+    const busyJob = { steps: [{ tool: 'goto' }, { tool: 'mine' }], i: 0, why: '挖矿' };
+    const idleLast = { said: [], did: [], rounds: ['wait'], at: Date.now() };
+    const actLast = { said: [], did: ['mine'], rounds: ['mine'], at: Date.now() };
+    const sayLast = { said: ['好'], did: [], rounds: ['say'], at: Date.now() };
+    const set = (o) => { W.pending = []; W.job = busyJob; W.lastNowEv = [{ t: Date.now(), text: '身体：闲着', names: [] }]; W.lastRoundResult = idleLast; Object.assign(W, o); };
+
+    set({});
+    check('★ 没新事 + 身体在忙 + 上轮纯等 → 跳过（不问模型）', idleGate() === true);
+    set({ pending: [{ t: Date.now(), text: '他：安琪' }] });
+    check('有新事：不跳（放她去想）', idleGate() === false);
+    set({ lastNowEv: [{ t: Date.now(), text: 'Ka_sum1 说：安琪', names: ['Ka_sum1'] }] });
+    check('有人跟她说话：不跳', idleGate() === false);
+    set({ lastNowEv: [{ t: Date.now(), text: '😖 被打了一下', names: [], urgent: true }] });
+    check('有紧急事（挨打）：不跳', idleGate() === false);
+    set({ job: null });
+    check('身体闲着：不跳（她该自己想想干嘛）', idleGate() === false);
+    set({ lastRoundResult: actLast });
+    check('上一轮她动过手：不跳', idleGate() === false);
+    set({ lastRoundResult: sayLast });
+    check('上一轮她说过话：不跳', idleGate() === false);
+    set({ lastRoundResult: null });
+    check('没有上一轮的记录（刚起来）：不跳，宁可想一次', idleGate() === false);
+
+    // 真走一遍 think：验证跳过时根本不调模型
+    const realBodyLlm = body.llm;
+    let called = 0;
+    body._setLLM(async () => { called++; return { content: '', tool_calls: [{ id: 'w', function: { name: 'wait', arguments: '{}' } }] }; });
+    set({ lastNowEv: [], lastRoundResult: idleLast });
+    W.stats.idleSkipped = 0;
+    await think('idle');
+    check('★ 闸门开着时：think 直接返回，一次模型都没调', called === 0, called);
+    check('跳过记了数（:3003/mind 的 stats 里看得见）', W.stats.idleSkipped === 1, W.stats.idleSkipped);
+    // 有人说话时照样调
+    called = 0;
+    set({ pending: [{ t: Date.now(), text: 'Ka_sum1 说：来', names: ['Ka_sum1'] }] });
+    await think('event');
+    check('有人喊她：正常调模型（闸门不误伤）', called > 0, called);
+    body._setLLM(realBodyLlm);
+    W.job = save.job; W.lastNowEv = save.lastNowEv; W.lastRoundResult = save.lastRoundResult; W.pending = save.pending;
+  }
+
   console.log('\n自我复盘（不对劲的地方留证据）');
   {
     const since = Date.now() - 1;
@@ -2061,4 +2610,4 @@ if (require.main === module) {
   else main();
 }
 
-module.exports = { W, emit, think, buildNow, matchFast, humanState, learnFromDoing, repetitionHint, SYSTEM, SPECS, SAY_NUDGE };   // SYSTEM/SPECS 给 scripts/dialogue-eval.js 离线跑分用
+module.exports = { W, emit, think, buildNow, matchFast, humanState, learnFromDoing, repetitionHint, SYSTEM, SPECS, SAY_NUDGE, ALL, MIND_TOOLS, GROUPS, pickSpecs, groupsFromBody, activeGroups, activateGroup, TOOL_GROUPS, GROUP_CUES };   // SYSTEM/SPECS 给 scripts/dialogue-eval.js 离线跑分用

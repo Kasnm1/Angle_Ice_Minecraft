@@ -74,7 +74,9 @@ function findQuest (key) {
 
 const saidRecently = [];   // 她最近 3 分钟说过的话（say 去重用）
 
-const hooks = { onSay: () => {}, beforeSay: async () => {} };
+// beforeAttack：她（mind）想动手打怪之前的最后一道闸。返回非空字符串 = 这一下不打了，
+// 字符串原样当结果回给她（战斗本能在打时用它挡掉抢手，见 mind.js）。
+const hooks = { onSay: () => {}, beforeSay: async () => {}, beforeAttack: () => '' };
 
 const fullItemId = (name) => String(name || '').includes(':') ? String(name) : `minecraft:${name}`;
 
@@ -195,7 +197,7 @@ const BREAKER_MS = 5 * 60 * 1000;
 
 const recent = [];
 const noTemp = new Set();   // 不接受 temperature 参数的模型（报过 400 的记住，以后不发）
-const usage = { calls: 0, inTok: 0, outTok: 0, since: Date.now(), byModel: {} };
+const usage = { calls: 0, inTok: 0, outTok: 0, inChars: 0, cachedTok: 0, cachedKnown: 0, since: Date.now(), byModel: {} };
 
 async function callLLM ({ model, messages, tools, timeoutMs, signal, maxTokens = 1200, route = 'main' }) {
   const baseUrl = route === 'backup' ? CFG.backupBaseUrl : route === 'fallback' ? CFG.fallbackBaseUrl : CFG.baseUrl;
@@ -217,10 +219,10 @@ async function callLLM ({ model, messages, tools, timeoutMs, signal, maxTokens =
     if (/^\s*data:/.test(text)) data = parseSSE(text);
     else if (/^\s*</.test(text)) {
       // 网关 / 限流页（HTML）：当成过载，走重试和备用线路
-      const e = new Error(`模型线路返回了网页（HTTP ${res.status}，多半是限流或网关出错）`); e.retryable = true; throw e;
+      const e = new Error(`模型线路返回了网页（HTTP ${res.status}，多半是限流或网关出错）`); e.retryable = true; e.kind = 'transient'; e.status = res.status; throw e;
     } else {
       try { data = JSON.parse(text); } catch (_) {
-        const e = new Error(`模型返回的不是 JSON（HTTP ${res.status}）：${text.slice(0, 120)}`); e.retryable = true; throw e;
+        const e = new Error(`模型返回的不是 JSON（HTTP ${res.status}）：${text.slice(0, 120)}`); e.retryable = true; e.kind = 'transient'; e.status = res.status; throw e;
       }
     }
     if (!res.ok || data.error) {
@@ -230,33 +232,51 @@ async function callLLM ({ model, messages, tools, timeoutMs, signal, maxTokens =
       }
       const e = new Error(`模型报错 ${res.status}：${JSON.stringify(data.error || data).slice(0, 200)}`);
       // 中转站排队 / 高负载有时回 400（"当前模型高负载队列排队中，请稍候重试"）—— 是一时的，要重试、换备用
-      e.retryable = res.status === 429 || res.status >= 500 || /overload|负载|排队|稍候重试|busy|capacity/i.test(text);
+      const transient = res.status === 429 || res.status >= 500 || /overload|负载|排队|稍候重试|busy|capacity/i.test(text);
+      // 内容审计拒绝（403 content_policy_violation）：同一段上下文原样再发还是一样被拒，
+      // 重试没有意义 —— 只有把发不出去的那段掐掉再试才可能过。见 mind.js 里的压缩逻辑。
+      // （换一家模型审计规则不同，多半能过，所以还是要让它去试备用线路。）
+      const audit = res.status === 403 && /content_policy_violation|content[_ ]?filter|safety|审核/i.test(text);
+      // 400 请求格式错：同一份请求发给谁都是错的，重试和换线路都没用。403 权限/404 同理。
+      const fatal = !audit && (res.status === 400 || res.status === 403 || res.status === 404);
+      e.retryable = audit ? true : (transient || !fatal);
+      e.kind = audit ? 'content' : fatal ? 'request' : transient ? 'transient' : 'unknown';
+      e.status = res.status;
       throw e;
     }
     const msg = data.choices?.[0]?.message;
     // 中转站上游失败时会回一个"成功"的空壳（一个字没生成：没正文、没工具调用）—— 当成失败，重试或换备用线路
     if (msg && !msg.content && !(msg.tool_calls || []).length && !msg.reasoning_content && !(data.usage?.completion_tokens > 0)) {
-      const e = new Error('模型回了个空壳（一个字没生成，多半是中转站上游失败）'); e.retryable = true;
+      const e = new Error('模型回了个空壳（一个字没生成，多半是中转站上游失败）'); e.retryable = true; e.kind = 'transient';
       recent.push({ t: Date.now(), route, model, empty: true, raw: text.slice(0, 400) }); if (recent.length > 8) recent.shift();
       throw e;
     }
     // 最近几次模型的原样回复（排查"想了却什么都没做"用）
     recent.push({ t: Date.now(), route, model, ms: 0, promptMsgs: messages.length, promptChars: JSON.stringify(messages).length, finish: data.choices?.[0]?.finish_reason, raw: text.slice(0, 1500) });
     if (recent.length > 8) recent.shift();
-    if (!msg) { const e = new Error(`模型返回里没有 message：${text.slice(0, 120)}`); e.retryable = true; throw e; }
+    if (!msg) { const e = new Error(`模型返回里没有 message：${text.slice(0, 120)}`); e.retryable = true; e.kind = 'transient'; throw e; }
     // 用量：心里有数才能控制花费
+    // inChars：这一轮发出去多少字符（审计报告量 token 用的就是它）；
+    // cachedTok / cachedKnown：命中前缀缓存的部分（以前只记 prompt/completion，看不出缓存有没有生效）。
+    // 中转站有的给 cached_tokens、有的给 prompt_tokens_details.cached_tokens，都给不到就记 0 并标 cachedKnown=0。
+    const inChars = JSON.stringify(messages).length;
+    const cached = data.usage?.cached_tokens ?? data.usage?.prompt_tokens_details?.cached_tokens;
     usage.calls++;
     usage.inTok += data.usage?.prompt_tokens || 0;
     usage.outTok += data.usage?.completion_tokens || 0;
-    const bm = usage.byModel[`${route}:${model}`] ||= { calls: 0, inTok: 0, outTok: 0 };
+    usage.inChars += inChars;
+    if (Number.isFinite(cached)) { usage.cachedTok += cached; usage.cachedKnown++; }
+    const bm = usage.byModel[`${route}:${model}`] ||= { calls: 0, inTok: 0, outTok: 0, inChars: 0, cachedTok: 0, cachedKnown: 0 };
     bm.calls++; bm.inTok += data.usage?.prompt_tokens || 0; bm.outTok += data.usage?.completion_tokens || 0;
+    bm.inChars += inChars;
+    if (Number.isFinite(cached)) { bm.cachedTok += cached; bm.cachedKnown++; }
     return msg;
   } catch (e) {
     if (e.name === 'AbortError') {
       if (signal?.aborted) throw new Error('aborted');
-      const err = new Error(`模型超时 ${timeoutMs}ms`); err.retryable = true; throw err;
+      const err = new Error(`模型超时 ${timeoutMs}ms`); err.retryable = true; err.kind = 'timeout'; throw err;
     }
-    if (e.retryable === undefined && !String(e.message).startsWith('模型')) e.retryable = true;
+    if (e.retryable === undefined && !String(e.message).startsWith('模型')) { e.retryable = true; e.kind ||= 'network'; }
     throw e;
   } finally {
     clearTimeout(timer);
@@ -290,11 +310,12 @@ let llm = async function (opts) {
     }
   }
   // susu 整条线路都不通：换 teamorouter，按顺序每个模型试一次（deepseek-flash-free → deepseek-flash → gemini-3.8-flash）
+  // 内容审计（403）另说：换一家模型多半能过（审计规则不同），但这条线路本身不是"不通"，别把它记成线路故障
   if (last?.message !== 'aborted' && last?.retryable !== false && CFG.backupBaseUrl && CFG.backupApiKey) {
     for (const m of CFG.backupModels) {
       try { return await callLLM({ ...opts, model: m, route: 'backup' }); } catch (e) {
         if (e.message === 'aborted') throw e;
-        last = new Error(`${last.message}；teamorouter ${m} 也没成：${e.message}`); last.retryable = true;
+        last = new Error(`${last.message}；teamorouter ${m} 也没成：${e.message}`); last.retryable = true; last.kind = e.kind || last.kind;
       }
     }
   }
@@ -312,7 +333,7 @@ let llm = async function (opts) {
         return r.message;
       } catch (e) {
         if (e.message === 'aborted') throw e;
-        last = new Error(`${last.message}；${name} 兜底也没成：${e.message}`); last.retryable = true;
+        last = new Error(`${last.message}；${name} 兜底也没成：${e.message}`); last.retryable = true; last.kind = e.kind || last.kind;
       }
     }
   }
@@ -1227,7 +1248,12 @@ const TOOLS = {
     kind: 'action',
     desc: '近战攻击附近的怪：radius 只负责搜索目标；找到后会先走到 3 格内再挥击，走不过去就如实失败，不会隔空攻击。target 可指定实体名（如 zombie），不给就打最近的敌对生物。',
     params: { target: { type: 'string' }, radius: { type: 'number' } }, required: [],
-    run: async ({ target, radius }) => bridge.post('/attack', { target, radius: radius || 6 }, CFG.actionTimeoutMs),
+    run: async ({ target, radius }) => {
+      // 战斗本能在打同一只（或任何一只）时：身体不在她手上，这一下直接回给她，不发 HTTP
+      const blocked = hooks.beforeAttack({ target, radius });
+      if (blocked) return { ok: false, error: blocked, guarded: true };
+      return bridge.post('/attack', { target, radius: radius || 6 }, CFG.actionTimeoutMs);
+    },
   },
   give: {
     kind: 'action',
@@ -1344,4 +1370,5 @@ module.exports = {
   parseSSE,
   CFG, TOOLS, hooks, bridge, httpJson, parseArgs, normalizeArgs, toolSpec, summarize, humanizeIds,
   usage, recent, llm: (...a) => llm(...a), _setLLM: (f) => { llm = f; }, _setBridge: (b) => { Object.assign(bridge, b); }, _personalInventory: personalInventory,
+  _callLLM: callLLM,   // 自测用：直接走一次真实请求解析（不动全局 llm）
 };
