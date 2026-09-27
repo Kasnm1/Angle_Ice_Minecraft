@@ -1,5 +1,7 @@
 'use strict';
 
+const storagePolicy = require('./storage-policy');
+
 /**
  * 本能层 —— 不过大脑、不过脑干，身体自己做的事（主人 2026-09-27）。
  *
@@ -65,7 +67,7 @@
  *   · 苦力怕：不近战，保持 creeperSafe 格以外
  *   · 远程怪（名字，或者手上拿着弓/弩/三叉戟 —— 模组怪也认得）：有盾就举盾贴上去打；没盾就拉开距离躲
  *   · 血 ≤ lowHp：跑（拉开距离），告诉 mind
- *   · 这是唯一会**反过来打断命令**的本能：正在挖矿时怪扑上来 → cancelCommands() 叫停命令，先打。
+ *   · 战斗、危险方块退开和上浮会**反过来打断命令**：正在挖矿时怪扑上来 → cancelCommands() 叫停命令，先打。
  *     打的时候除了 停/逃/跟随/走 这几类，其他命令直接回"在打架"（不然两边抢身体）。
  *   · 打完：跟着人的接着跟；自己干活的走回锚点；告诉 mind 打了什么、剩多少血
  *
@@ -81,7 +83,7 @@
  * 闲着、站在地下的天然洞穴里（hands.inCave：身边一大片空气、没有天光）→ 往洞里没去过的地方走一步（看得见、站得住、
  * 旁边没岩浆、落差不大），到了插个火把（light_up 自己会按间距插）。看见矿 → 采矿本能挖；看见箱子 → 开宝箱本能开；
  * 怪 → 战斗本能打 —— 几个本能接力，就是"逛矿洞"。每个洞（按入口所在的 32 格网格）最多走 maxSteps 步、不离入口 range 格，
- * 逛完告诉 mind。下礦（/delve）里的逛洞是 mind 叫的，那一套归 hands.delve 管，这里不碰。
+ * 家的水平范围内（包括地下任意深度）不自动探洞；家范围未知也暂不启动。逛完告诉 mind。下礦（/delve）里的逛洞是 mind 叫的，那一套归 hands.delve 管，这里不碰。
  *
  * ## 搭路本能 / 落地水本能（主人 2026-09-27）
  *
@@ -215,7 +217,9 @@ const CFG = {
     cooldownMs: 15000,
   },
   cave: {
-    enabled: process.env.MC_INSTINCT_CAVE !== 'false',
+    // 自动探洞会把“人在洞里”误当成“主人让我探险”。默认关闭；明确下矿走 /delve，
+    // 只有运维显式设置 MC_INSTINCT_CAVE=true 时才恢复这项自主行为。
+    enabled: process.env.MC_INSTINCT_CAVE === 'true',
     scan: 16,               // 往多远找下一步
     minStep: 5,             // 每步至少走这么远（别原地挪）
     maxDrop: 4,             // 下一步比脚下低这么多以内
@@ -224,7 +228,9 @@ const CFG = {
     minHp: 12,
     visitCell: 4,           // "去过"按几格一格子记
   },
-  bridge: { enabled: process.env.MC_INSTINCT_BRIDGE !== 'false' },
+  // 搭路会真实消耗并改变世界。普通赶路、拾取、追动物不应因此自动垫块；
+  // 只有显式打开才交给 pathfinder 使用。
+  bridge: { enabled: process.env.MC_INSTINCT_BRIDGE === 'true' },
   dig: { enabled: process.env.MC_INSTINCT_DIG !== 'false' },
   home: { grow: process.env.MC_HOME_GROW !== 'false', everyMs: 300000, gap: 8, margin: 6, cap: 128, near: 32 },
   mlg: { enabled: process.env.MC_INSTINCT_MLG !== 'false', minFall: 3.5, placeAt: 3.0 },
@@ -777,6 +783,64 @@ function fillCfg (cfg) {
   return cfg;
 }
 
+/** 自动探洞不能把住宅地下当成空闲任务；明确下矿命令不经过此入口。 */
+function caveBoundary (self, home) {
+  if (!home?.center || !Number.isFinite(home.radius)) return '家的范围未知，暂不自动探洞';
+  if (Math.hypot(self.x - home.center.x, self.z - home.center.z) <= home.radius) return '家范围内不自动探洞，等明确下矿指令';
+  return null;
+}
+
+/** 以实体姿态纠正 mineflayer 的睡眠缓存；缺失姿态时不猜。
+ * 来源：mineflayer/lib/plugins/entities.js 只在姿态 2 时 emit entitySleep，
+ * 恢复清醒却依赖另一个 animation 包；若未收到该包，会一直拦住本能。
+ */
+function syncSleepState (bot, sleepAnchor = null) {
+  const keys = bot.registry?.entitiesByName?.player?.metadataKeys;
+  const index = keys?.indexOf('pose') ?? -1;
+  const pose = index >= 0 ? bot.entity?.metadata?.[index] : undefined;
+  if (!Number.isInteger(pose) || pose < 0) {
+    // 某些登录/重连包没有 pose，但身体已经走离当时睡觉的位置：这比旧缓存可靠。
+    const moved = !!(bot.isSleeping && sleepAnchor && bot.entity?.position
+      && bot.entity.position.distanceTo(sleepAnchor) > 1.5);
+    if (moved) { bot.isSleeping = false; bot.emit('wake'); }
+    return { pose: null, sleeping: !!bot.isSleeping, corrected: moved, reason: moved ? '已走离睡觉位置' : '姿态未读到' };
+  }
+  const sleeping = pose === 2;
+  const corrected = !!bot.isSleeping !== sleeping;
+  if (corrected) {
+    bot.isSleeping = sleeping;
+    bot.emit(sleeping ? 'sleep' : 'wake');
+  }
+  return { pose, sleeping, corrected };
+}
+
+/** 事件立即唤醒，定时器兜底；同一检查不重入，错误不会变成未处理 rejection。 */
+function createCheck (name, fn, diagnostics, now = Date.now) {
+  let active = false;
+  return async (source = 'timer') => {
+    if (active) return;
+    active = true;
+    const d = diagnostics[name] = { at: now(), source, active: true };
+    try { await fn(d); } catch (e) { d.error = String(e.message || e); } finally {
+      d.durationMs = now() - d.at;
+      d.active = false;
+      active = false;
+    }
+  };
+}
+
+/** 中止后的收尾设上限；超时保留旧任务占用，下次重试，绝不让两个动作重叠。 */
+async function settleJob (job, ms = 800) {
+  if (!job) return true;
+  let timer;
+  try {
+    return await Promise.race([
+      job.done.then(() => true, () => true),
+      new Promise(resolve => { timer = setTimeout(() => resolve(false), ms); }),
+    ]);
+  } finally { clearTimeout(timer); }
+}
+
 function install (bot, state, deps) {
   const I = state.instinct = state.instinct || {
     cfg: {},
@@ -791,6 +855,19 @@ function install (bot, state, deps) {
   };
   // 跨重连保留状态；新加的本能补上默认配置（老的 state.instinct 里没有）
   fillCfg(I.cfg);
+  I.diagnostics = {};
+  I.urgent = null;
+  let ended = false;
+  let sleepAnchor = null;
+  const sleeping = () => {
+    if (bot.isSleeping && !sleepAnchor && bot.entity?.position) sleepAnchor = bot.entity.position.clone();
+    const result = syncSleepState(bot, sleepAnchor);
+    if (!result.sleeping) sleepAnchor = null;
+    const bedKey = bot.registry?.entitiesByName?.player?.metadataKeys?.indexOf('sleeping_pos') ?? -1;
+    I.sleepState = { ...result, bedPosition: bedKey >= 0 ? bot.entity?.metadata?.[bedKey] ?? null : null, at: Date.now() };
+    if (result.corrected) I.sleepCorrections = (I.sleepCorrections || 0) + 1;
+    return result.sleeping;
+  };
   const spawned = new Map();   // 掉落物 id → { t, thrower }
   const fails = new Map();
   const mineFails = new Map();   // "x,y,z" → 到什么时候之前不再试
@@ -850,12 +927,13 @@ function install (bot, state, deps) {
    * ledgerEv：这期间背包的进出算谁的（物品账）。
    */
   async function runJob (kind, ledgerEv, fn) {
+    if (ended || (I.urgent && I.urgent !== kind)) return { r: { error: '已让出身体给紧急本能' }, aborted: true };
     let aborted = false;
     const endLedger = state.ledger && ledgerEv ? state.ledger.begin(ledgerEv) : null;
     const done = (async () => {
       try { return await fn(() => aborted); } catch (e) { return { error: e.message }; }
     })();
-    I.running = {
+    const job = I.running = {
       kind,
       abort: () => {
         aborted = true;
@@ -865,7 +943,7 @@ function install (bot, state, deps) {
       done,
     };
     try { return { r: await done, aborted }; } finally {
-      I.running = null;
+      if (I.running === job) I.running = null;
       if (endLedger) { endLedger(); state.ledgerKick?.(); }
     }
   }
@@ -984,7 +1062,7 @@ function install (bot, state, deps) {
   }
 
   // ---- 危险方块退开（保命：连"刚被叫停"也不拦它）
-  async function tryStepOff () {
+  function stepOffPlan () {
     const f = bot.entity.position.floored();
     const nm = (p) => bot.blockAt(p)?.name ?? null;
     const me = bot.entity.position;
@@ -998,11 +1076,18 @@ function install (bot, state, deps) {
       cells.push({ dx, dz, feet: nm(c), head: nm(c.offset(0, 1, 0)), below: nm(c.offset(0, -1, 0)) });
     }
     const to = pickStepOff(cells);
+    if (!to) return { why };
+    return { why, f, to };
+  }
+
+  async function tryStepOff (plan = stepOffPlan()) {
+    if (!plan) return null;
+    const { why, f, to } = plan;
     if (!to) { event('hazard_stuck', `${why}，旁边也没有能站的地方`); return { skip: why }; }
     const { goals } = require('mineflayer-pathfinder');
-    await runJob('stepoff', null, async () => {
+    await runJob('stepoff', null, async (abort) => {
       await Promise.race([bot.pathfinder.goto(new goals.GoalBlock(f.x + to.dx, f.y, f.z + to.dz)), new Promise(r => setTimeout(r, 2500))]);
-      try { bot.pathfinder.setGoal(null); } catch (_) {}
+      if (!abort()) { try { bot.pathfinder.setGoal(null); } catch (_) {} }
     });
     note({ kind: 'stepoff', why });
     return { did: 'stepoff' };
@@ -1014,7 +1099,8 @@ function install (bot, state, deps) {
     if (!S.enabled || bot.isSleeping || Date.now() < (I.sleepRetryAt || 0)) return null;
     if (deps.night?.phaseOf(bot.time?.timeOfDay) !== 'night' && !I.weather?.thunder) return null;   // 打雷时白天也能睡
     if (inHome(bot.entity.position) !== true) return { skip: '不在家（或不知道家在哪）' };
-    const { r } = await runJob('sleep', null, () => deps.handlers['POST /sleep']({ home: I.home }));
+    const { r, aborted } = await runJob('sleep', null, (abort) => deps.handlers['POST /sleep']({ home: I.home, abort }));
+    if (aborted || r?.aborted) return { skip: '睡觉被紧急动作或命令打断' };
     if (r?.sleeping || r?.already) event('sleep', '天黑了，在家上床睡了');
     else {
       I.sleepRetryAt = Date.now() + S.retryMs;
@@ -1120,6 +1206,8 @@ function install (bot, state, deps) {
     const C = I.cfg.cave;
     I.caveDone ||= new Set();
     if (!C.enabled || !deps.hands.inCave?.(bot)) return null;
+    const boundary = caveBoundary(bot.entity.position, I.home);
+    if (boundary) return { skip: boundary };
     if ((bot.health ?? 20) < C.minHp) return { skip: `血 ${bot.health}，先不逛洞` };
     const here = bot.entity.position.floored();
     const caveKey = (p) => `${Math.floor(p.x / 32)},${Math.floor(p.y / 32)},${Math.floor(p.z / 32)}`;
@@ -1128,7 +1216,7 @@ function install (bot, state, deps) {
       const key = caveKey(here);
       if (I.caveDone.has(key)) return { skip: '这个洞逛过了' };
       I.cave = { key, entry: { x: here.x, y: here.y, z: here.z }, steps: 0, visited: new Set() };
-      event('cave', `挖到了一个天然洞穴（${here.x},${here.y},${here.z}），进去看看`, { pos: I.cave.entry });
+      event('cave', `当前位置像洞穴（${here.x},${here.y},${here.z}），自动探洞本能准备探索；未记录进入方式`, { pos: I.cave.entry, source: 'instinct', entryMethod: 'unknown' });
     }
     if (I.cave.steps >= C.maxSteps) {
       if (!I.caveDone.has(I.cave.key)) { I.caveDone.add(I.cave.key); event('cave_done', `这个洞逛了 ${I.cave.steps} 步，差不多了`); }
@@ -1151,19 +1239,25 @@ function install (bot, state, deps) {
     }
     const step = pickCaveStep({ cells, self: bot.entity.position, entry: I.cave.entry, visited: I.cave.visited }, C);
     if (!step) {
-      I.caveDone.add(I.cave.key);
-      event('cave_done', `这个洞看得见的地方都走过了（${I.cave.steps} 步）`);
+      // 同一洞之后每 400ms 仍会走到这里。只在第一次完成时记事件，避免 mind
+      // 收到几十条相同“探完了”并误以为她反复执行过探险任务。
+      if (!I.caveDone.has(I.cave.key)) {
+        I.caveDone.add(I.cave.key);
+        event('cave_done', `这个洞看得见的地方都走过了（${I.cave.steps} 步）`);
+      }
       return { skip: '洞里没有新地方了' };
     }
     I.cave.visited.add(step.cell);
     I.cave.visited.add(`${Math.floor(here.x / C.visitCell)},${Math.floor(here.y / C.visitCell)},${Math.floor(here.z / C.visitCell)}`);
     I.cave.steps++;
+    const from = { x: here.x, y: here.y, z: here.z };
     const { r, aborted } = await runJob('cave', null, async (abort) => {
       const g = await deps.handlers['POST /go']({ x: step.pos.x, y: step.pos.y, z: step.pos.z, range: 1.5, maxMs: 20000, abort });
       if (!abort()) { try { await deps.handlers['POST /light_up']({ max: 1 }); } catch (_) {} }
       return g;
     });
-    note({ kind: 'cave', to: step.pos, step: I.cave.steps, aborted: aborted || undefined, arrived: r?.arrived, error: r?.error });
+    note({ kind: 'cave', from, to: step.pos, step: I.cave.steps, aborted: aborted || undefined, arrived: r?.arrived, error: r?.error });
+    if (!aborted && r?.arrived === true) event('cave_move', `自动探洞本能执行走路：从（${from.x},${from.y},${from.z}）走到（${step.pos.x},${step.pos.y},${step.pos.z}）；这是寻路到达记录，不是挖穿或坠落的证据`, { from, to: step.pos, action: 'go', arrived: true });
     return { did: 'cave' };
   }
 
@@ -1329,7 +1423,7 @@ function install (bot, state, deps) {
       const nether = /nether/.test(String(bot.game?.dimension || ''));
       const drop = deps.pathing.setDropAllowance(mv, { water: I.cfg.mlg.enabled && names.has('water_bucket'), nether });
       let sc = { scaffolding: 0 };
-      if (I.cfg.bridge.enabled) {
+      if (I.cfg.bridge.enabled && !state.noScaffoldDepth) {
         const ids = (deps.hands.scaffoldIds ? deps.hands.scaffoldIds() : deps.hands.SCAFFOLD_IDS).map(n => bot.registry.itemsByName[n.replace(/^minecraft:/, '')]?.id).filter(x => x != null);
         sc = deps.pathing.setScaffold(mv, { itemIds: ids, forbid: (p) => inHome(p) === true });
       } else deps.pathing.setScaffold(mv, {});
@@ -1487,13 +1581,15 @@ function install (bot, state, deps) {
       }
       // 背着背包：先把背包里的倒出来一起整理（不然背包满了就永远满着，每次都白跑回家）。最多两轮
       let r = null; let unpacked = 0;
+      const organizeArgs = storagePolicy.storageRequest(h, { abort }, { discover: false });
+      if (!organizeArgs.only?.length) return { error: '家里的仓库还没有登记；自动整理不会猜哪些箱子能动，请先让我人工整理一次' };
       for (let round = 0; round < 2 && !abort(); round++) {
         let u = null;
         if (deps.hands.wearingBackpack?.(bot, state)) {
           try { u = await deps.handlers['POST /backpack/tidy']({ stash: false, restock: false, unpack: true, abort }); } catch (_) {}
           unpacked += u?.unpacked || 0;
         }
-        r = await deps.handlers['POST /storage/organize']({ abort });
+        r = await deps.handlers['POST /storage/organize'](organizeArgs);
         if (!u?.unpacked) break;
       }
       return { ...r, unpacked };
@@ -1503,7 +1599,8 @@ function install (bot, state, deps) {
     if (!aborted) {
       event('tidy', r?.error
         ? `想回家整理（${pick.why}），没做成：${String(r.error).slice(0, 80)}`
-        : `回家整理了（${pick.why}）：搬了 ${r?.moved ?? 0} 组${r?.unpacked ? `（其中从背包倒出来 ${r.unpacked} 组）` : ''}${after.short.length ? `；还缺 ${after.short.join('、')}` : '，该带的都带上了'}`);
+        : `回家整理了（${pick.why}）：搬了 ${r?.moved ?? 0} 组${r?.unpacked ? `（其中从背包倒出来 ${r.unpacked} 组）` : ''}${after.short.length ? `；还缺 ${after.short.join('、')}` : '，该带的都带上了'}`,
+      r?.boxes ? { storage: { completed: r.completed === true, boxes: r.boxes } } : {});
     }
     return { did: 'tidy' };
   }
@@ -1591,13 +1688,15 @@ function install (bot, state, deps) {
     const C = I.cfg.combat;
     const { goals } = require('mineflayer-pathfinder');
     const followName = /^following (.+)$/.exec(state.currentAction || '')?.[1] || null;
-    // 手上有命令 / 在做别的本能：叫停，先打（这是唯一反过来打断命令的本能）
-    if (I.running && I.running.kind !== 'combat') { I.running.abort(); await Promise.race([I.running?.done, sleepMs(800)]).catch(() => {}); }
+    // 手上有命令 / 在做别的本能：叫停，先打；先停止移动，再等旧动作清理
+    if (I.running && I.running.kind !== 'combat') { const old = I.running; old.abort(); if (!await settleJob(old)) { I.last = { t: Date.now(), skip: '战斗等待旧本能收尾' }; return; } }
+    if (ended || I.urgent !== 'combat') return;
     const interrupted = I.inflight > 0 || (state.currentAction && !followName) ? (state.currentAction || '一个命令') : null;
     if (I.inflight > 0 || state.currentAction) deps.cancelCommands?.(`战斗本能：${first.name} ${first.on === 'me' ? '冲她来了' : `在打 ${first.on}`}`);
     const anchorAt = () => (followName ? bot.players[followName]?.entity?.position : null) || I.combat.anchor;
     I.combat = { anchor: bot.entity.position.clone(), engaged: new Set(), killed: [], started: Date.now(), followName, hp0: bot.health };
     const hasShield = await equipForFight();
+    if (ended || I.urgent !== 'combat') return;
     let lastSeen = Date.now(); let lastHit = 0; let shieldUp = false; let lastMode = null; let lastTargetId = null;
     const shield = (up) => { if (up === shieldUp) return; shieldUp = up; try { up ? bot.activateItem(true) : bot.deactivateItem(); } catch (_) {} };
     let aborted = false;
@@ -1652,29 +1751,34 @@ function install (bot, state, deps) {
     const names = [...new Set(cb.killed)];
     event('combat', `${interrupted ? `（打断了：${interrupted}）` : ''}打完了${names.length ? `：打死 ${cb.killed.length} 只（${names.join('、')}）` : '（没打死，怪跑了或者够不着）'}，血 ${cb.hp0} → ${bot.health}${aborted ? '，被叫停' : ''}`, { killed: cb.killed });
     note({ kind: 'combat', killed: cb.killed.length, hp: bot.health, aborted: aborted || undefined });
-    // 收尾：跟着人的接着跟；自己干活的走回锚点（叫停的不动）
+    // 回位交给普通本能；战斗扫描立即恢复，不在回程的 15 秒里失明。
     if (aborted) return;
     if (followName && bot.players[followName]?.entity) { try { deps.hands.startFollow(bot, state, followName, 2); } catch (_) {} return; }
-    if (cb.anchor && bot.entity.position.distanceTo(cb.anchor) > 3) {
-      try { await Promise.race([bot.pathfinder.goto(new goals.GoalNear(cb.anchor.x, cb.anchor.y, cb.anchor.z, 1)), sleepMs(15000)]); } catch (_) {}
-      try { bot.pathfinder.setGoal(null); } catch (_) {}
-    }
+    if (cb.anchor && bot.entity.position.distanceTo(cb.anchor) > 3) I.returnAfterCombat = cb.anchor;
   }
 
-  // 战斗的"眼睛"：比别的本能快（250ms），不等身体空闲 —— 这是唯一抢身体的本能
+  // 战斗的"眼睛"：比别的本能快（250ms），不等身体空闲 —— 紧急本能可抢身体
   let fighting = false;
-  const combatTimer = setInterval(async () => {
-    if (fighting || !bot.entity || bot.isSleeping || !I.cfg.combat.enabled) return;
-    if (I.running?.kind === 'combat' || bot.currentWindow) return;
+  const checkCombat = createCheck('combat', async (d) => {
+    if (ended || !state.connected || !bot.entity || !I.cfg.combat.enabled) { d.skip = '未就绪或已关闭'; return; }
+    if (fighting || I.urgent) { d.skip = '紧急动作正在执行'; return; }
+    if (sleeping()) { d.skip = '正在睡觉'; return; }
+    if (I.running?.kind === 'combat') return;
     try {
       const targets = hostileTargets();
-      if (!targets.length) return;
+      d.targets = targets.length;
+      if (!targets.length) { d.skip = '没有仇恨证据'; return; }
       const plan = combatPlan({ targets, hp: (bot.health ?? 20) - (I.effectHpCost || 0), hasShield: /shield/.test(bot.inventory.slots[45]?.name || '') || bot.inventory.items().some(i => /shield/.test(i.name)), anchor: null }, I.cfg.combat);
       if (!plan) return;
       fighting = true;
+      I.urgent = 'combat';
+      // 有确证的敌人时先关闭容器，不能因为开着箱子一直挨打。
+      if (bot.currentWindow) bot.closeWindow(bot.currentWindow);
+      event('combat_start', `发现 ${plan.target.name} 正在攻击${plan.target.on === 'me' ? '她' : plan.target.on}，立即接管`, { source: d.source });
       await fight(plan.target);
-    } catch (e) { I.last = { t: Date.now(), error: `combat: ${e.message}` }; } finally { fighting = false; }
-  }, CFG.combat.scanMs);
+    } catch (e) { I.last = { t: Date.now(), error: `combat: ${e.message}` }; } finally { fighting = false; if (I.urgent === 'combat') I.urgent = null; }
+  }, I.diagnostics);
+  const combatTimer = setInterval(() => checkCombat(), CFG.combat.scanMs);
 
   // ---- 身上的效果（读不到 = null，不猜）：minecraft-data 的名字 'Poison' 'Wither' …
   const effectNames = () => {
@@ -1686,11 +1790,12 @@ function install (bot, state, deps) {
 
   // ---- 吃（主人 2026-09-27：饥饿条掉 2 格就吃）
   let eating = false;
-  const eatTimer = setInterval(async () => {
-    if (!I.cfg.eat.enabled || eating || !bot.entity || bot.isSleeping) return;
+  const checkEat = createCheck('eat', async (d) => {
+    if (ended || !state.connected || !I.cfg.eat.enabled || eating || !bot.entity || sleeping() || I.urgent) return;
     const hasFood = bot.inventory.items().some(i => deps.hands.foodScore(i) > 0);
     const busy = bodyBusy({ inflight: I.inflight, currentAction: state.currentAction, windowOpen: false, quietUntil: 0 }) || (I.running && I.running.kind !== 'combat' ? `本能在做 ${I.running.kind}` : null);
     const pick = pickEat({ food: bot.food, busy, fighting, windowOpen: !!bot.currentWindow, eating, hasFood, failUntil: I.eatFailUntil || 0 }, I.cfg.eat);
+    d.skip = pick?.skip || (pick?.eat ? null : '还不饿');
     if (!pick?.eat) {
       if (pick?.skip === '身上没有吃的' && bot.food <= I.cfg.eat.urgentAt && Date.now() - (I.hungryToldAt || 0) > 600000) {
         I.hungryToldAt = Date.now();
@@ -1707,32 +1812,40 @@ function install (bot, state, deps) {
       I.eatFailUntil = Date.now() + I.cfg.eat.failCooldownMs;
       event('eat_failed', `想吃东西没吃成：${String(e.message).slice(0, 80)}`);
     } finally { eating = false; }
-  }, CFG.eat.checkMs);
+  }, I.diagnostics);
+  const eatTimer = setInterval(() => checkEat(), CFG.eat.checkMs);
 
   // ---- 憋气：头在水里、氧气快没了 → 叫停命令，一直跳上去（寻路算不出水下的路，跳最快）
   let breathing = false;
-  const breathTimer = setInterval(async () => {
-    if (!I.cfg.breathe.enabled || breathing || !bot.entity || fighting) return;
+  const checkBreath = createCheck('breathe', async (d) => {
+    if (ended || !state.connected || !I.cfg.breathe.enabled || breathing || !bot.entity) return;
+    if (I.urgent && I.urgent !== 'combat') return;
+    if (fighting && I.running?.kind !== 'combat') return; // 战斗装备/收尾期间先等它进入可取消阶段
     const head = bot.blockAt(bot.entity.position.offset(0, 1.62, 0));
     const headInWater = !!head && (/water|bubble_column/.test(head.name) || head.getProperties?.().waterlogged === true);
     const eff = effectNames();
     if (!needBreath({ oxygen: bot.oxygenLevel ?? null, headInWater, waterBreathing: !!eff?.includes('WaterBreathing') }, I.cfg.breathe)) return;
     breathing = true;
+    I.urgent = 'breathe';
     try {
-      if (I.running && I.running.kind !== 'combat') I.running.abort();
+      if (I.running) I.running.abort();
       deps.cancelCommands?.('憋不住气了，先上去换气');
       event('breathe', `在水里憋不住气了（氧气 ${bot.oxygenLevel}/20），先游上去换气`);
-      const r = await deps.handlers['POST /jump']({ durationMs: I.cfg.breathe.jumpMs, stopAtOxygen: 18 });
+      const old = I.running;
+      if (!await settleJob(old)) { d.skip = '等待旧本能收尾'; return; }
+      if (ended || I.urgent !== 'breathe') return;
+      const { r } = await runJob('breathe', null, (abort) => deps.handlers['POST /jump']({ durationMs: I.cfg.breathe.jumpMs, stopAtOxygen: 18, abort }));
       note({ kind: 'breathe', oxygen: r?.oxygen, jumped: r?.jumped });
       I.breathedAt = Date.now();
-    } catch (e) { I.last = { t: Date.now(), error: `breathe: ${e.message}` }; } finally { breathing = false; }
-  }, CFG.breathe.checkMs);
+    } catch (e) { I.last = { t: Date.now(), error: `breathe: ${e.message}` }; } finally { breathing = false; if (I.urgent === 'breathe') I.urgent = null; }
+  }, I.diagnostics);
+  const breathTimer = setInterval(() => checkBreath(), CFG.breathe.checkMs);
 
   // ---- 上岸：身体空着泡在水里 → 走到最近的陆地（刚上浮换完气也算）
   let inWaterSince = 0;
   const shoreTimer = setInterval(async () => {
     const S = I.cfg.shore;
-    if (!S.enabled || !bot.entity || bot.vehicle || fighting || breathing || I.running) return;
+    if (!S.enabled || !bot.entity || bot.vehicle || fighting || breathing || I.urgent || I.running) return;
     const feet = bot.blockAt(bot.entity.position.floored());
     const wet = !!bot.entity.isInWater || /water|bubble_column/.test(feet?.name || '');
     if (!wet) { inWaterSince = 0; return; }
@@ -1770,7 +1883,7 @@ function install (bot, state, deps) {
     const key = plan ? plan.bad.join('+') : '';
     if (key && key !== I.effectTold) event('effect', `中了${plan.bad.map(b => ({ Poison: '毒', Wither: '凋零' }[b])).join('和')}（血 ${Math.round(bot.health ?? 0)}）${hasMilk ? '' : '，身上没有牛奶'}`, { effects: plan.bad });
     I.effectTold = key;
-    if (!plan?.milk || bot.currentWindow || fighting) return;
+    if (!plan?.milk || bot.currentWindow || fighting || I.urgent || eating || I.running || I.inflight) return;
     drinking = true;
     try {
       const milk = bot.inventory.items().find(i => i.name === 'milk_bucket');
@@ -1810,19 +1923,42 @@ function install (bot, state, deps) {
     } catch (_) {}
   });
 
+  const checkHazard = createCheck('hazard', async (d) => {
+    if (ended || !state.connected || !bot.entity || I.urgent || sleeping()) return;
+    const plan = stepOffPlan();
+    if (!plan) { d.skip = '脚下安全'; return; }
+    if (!plan.to) { d.skip = `${plan.why}，没有安全落脚点`; return; }
+    I.urgent = 'stepoff';
+    try {
+      const old = I.running;
+      if (old) old.abort();
+      deps.cancelCommands?.(`危险方块：${plan.why}，先退开`);
+      if (bot.currentWindow) bot.closeWindow(bot.currentWindow);
+      // 等旧动作真正收尾，避免旧 finally 清掉新的寻路。
+      if (!await settleJob(old)) { d.skip = '等待旧本能收尾'; return; }
+      if (ended || I.urgent !== 'stepoff') return;
+      await tryStepOff();
+    } finally { if (I.urgent === 'stepoff') I.urgent = null; }
+  }, I.diagnostics);
+  const hazardTimer = setInterval(() => checkHazard(), 250);
+
   async function tick () {
-    if (I.running || !bot.entity || bot.isSleeping || fighting) return;
-    // ⓪ 危险方块：身体没被命令占着就挪开（不看"刚被叫停"—— 站在岩浆块上不能听"别动"）
-    if (!I.inflight && !bot.currentWindow && (!state.currentAction || /^following /.test(state.currentAction))) {
-      const h = await tryStepOff();
-      if (h?.did) { I.last = { t: Date.now(), hazard: '挪开了' }; return; }
-    }
+    const skip = ended || !state.connected ? '已断线或等待出生' : !bot.entity ? '等待实体' : sleeping() ? '正在睡觉'
+      : I.urgent ? `紧急动作：${I.urgent}` : I.running ? `本能在做：${I.running.kind}` : fighting ? '正在战斗' : null;
+    if (skip) { I.last = { t: Date.now(), skip }; return; }
     const P = I.cfg.pickup;
     const busy = bodyBusy({
       inflight: I.inflight, currentAction: state.currentAction,
       windowOpen: !!bot.currentWindow, quietUntil: I.quietUntil,
     });
+    if (eating || drinking || breathing) { I.last = { t: Date.now(), skip: '正在吃喝或换气' }; return; }
     if (busy) { I.last = { t: Date.now(), skip: busy }; return; }
+    if (I.returnAfterCombat) {
+      const pos = I.returnAfterCombat;
+      I.returnAfterCombat = null;
+      await runJob('combatReturn', null, (abort) => deps.handlers['POST /go']({ x: pos.x, y: pos.y, z: pos.z, range: 1, maxMs: 15000, abort }));
+      return;
+    }
     // 换护甲放在"有怪盯着"和"血少"之前：被盯上时正是该穿好的时候（WorkBuddy 建议 17，Claude 核实）
     const ar = await tryArmor();
     if (ar?.did) { I.last = { t: Date.now(), armor: '做了' }; return; }
@@ -1886,12 +2022,42 @@ function install (bot, state, deps) {
   }
 
   let ticking = false;
+  let lastTickAt = Date.now();
+  let tickStartedAt = 0;
   const timer = setInterval(async () => {
+    const now = Date.now();
+    I.scheduler = { at: now, maxLagMs: Math.max(I.scheduler?.maxLagMs || 0, now - lastTickAt - CFG.pickup.tickMs), lagMs: Math.max(0, now - lastTickAt - CFG.pickup.tickMs), busyForMs: ticking ? now - tickStartedAt : 0 };
+    lastTickAt = now;
     if (ticking) return;
+    tickStartedAt = now;
     ticking = true;
     try { await tick(); } catch (e) { I.last = { t: Date.now(), error: e.message }; } finally { ticking = false; }
   }, CFG.pickup.tickMs);
-  bot.once('end', () => { clearInterval(timer); clearInterval(gazeTimer); clearInterval(toolTimer); clearInterval(combatTimer); clearInterval(kitTimer); clearInterval(oreWatch); clearInterval(policyTimer); clearInterval(homeTimer); clearInterval(eatTimer); clearInterval(breathTimer); clearInterval(shoreTimer); clearInterval(effectTimer); });
+  let wakeQueued = false;
+  const wakeChecks = () => {
+    if (ended || wakeQueued) return;
+    wakeQueued = true;
+    setImmediate(() => {
+      wakeQueued = false;
+      if (ended) return;
+      // 氧气优先；合并同一个包触发的多个事件，避免密集包重复扫描。
+      checkBreath('event');
+      checkCombat('event');
+      checkEat('event');
+    });
+  };
+  let lastUpdateWake = 0;
+  const onUpdate = (e) => {
+    if (Date.now() - lastUpdateWake < 100) return; // 高频姿态包合并；受伤/氧气事件不受此限制
+    if (e === bot.entity || (e?.position && bot.entity?.position && e.position.distanceTo(bot.entity.position) <= I.cfg.combat.detect)) {
+      lastUpdateWake = Date.now(); wakeChecks();
+    }
+  };
+  bot.on('entityHurt', wakeChecks);
+  bot.on('breath', wakeChecks);
+  bot.on('health', wakeChecks);
+  bot.on('entityUpdate', onUpdate);
+  bot.once('end', () => { ended = true; bot.removeListener('entityHurt', wakeChecks); bot.removeListener('breath', wakeChecks); bot.removeListener('health', wakeChecks); bot.removeListener('entityUpdate', onUpdate); clearInterval(hazardTimer); clearInterval(timer); clearInterval(gazeTimer); clearInterval(toolTimer); clearInterval(combatTimer); clearInterval(kitTimer); clearInterval(oreWatch); clearInterval(policyTimer); clearInterval(homeTimer); clearInterval(eatTimer); clearInterval(breathTimer); clearInterval(shoreTimer); clearInterval(effectTimer); });
 }
 
 /**
@@ -1903,7 +2069,10 @@ async function yieldBody (state, key, args = {}) {
   if (!I) return;
   // 只有明说"站住"（hold）才静默。mind 换任务前、脑干看门狗脱困时也会调 /stop —— 那是"换件事"，不是"别动"。
   if (key === 'POST /stop' && args?.hold) I.quietUntil = Date.now() + I.cfg.pickup.quietAfterStopMs;
+  if (I.urgent && !COMBAT_YIELD.has(key)) return { reject: `正在执行紧急本能：${I.urgent}` };
+  if (I.urgent && key === 'POST /stop' && !args?.hold) return { reject: `正在执行紧急本能：${I.urgent}` };
   const r = I.running;
+  if (I.urgent && (!r || r.kind !== 'combat')) I.urgent = null;
   if (!r) return;
   // 打架的时候：只让 停 / 逃 / 跟随 / 走 / 关本能 这几类打断；别的命令等打完（不然两边抢身体）
   // /stop 只有明说"站住"（hold）才算：脑干看门狗一见怪就发不带 hold 的 /stop，不能让它把正在打的架叫停
@@ -2243,7 +2412,7 @@ function selftest () {
   });
 }
 
-module.exports = { CFG, fillCfg, pickEat, pickShore, needBreath, effectPlan, weatherChange, pickRecovery, pickCommand, homeFootprint, darkReport, mlgStep, pickCaveStep, STRUCTURE_SIGNS, recognizeStructures, pickLoot, pickTidy, mobKind, attackCooldownMs, combatPlan, COMBAT_YIELD, TIER, pickaxeTier, needTier, pickOre, pickHarvest, hazardUnder, pickStepOff, armorRank, pickArmor, toolWorn, pickGaze, whoThrew, pickPickup, bodyBusy, install, yieldBody, PASSIVE_POSTS, selftest };
+module.exports = { caveBoundary, settleJob, syncSleepState, createCheck, CFG, fillCfg, pickEat, pickShore, needBreath, effectPlan, weatherChange, pickRecovery, pickCommand, homeFootprint, darkReport, mlgStep, pickCaveStep, STRUCTURE_SIGNS, recognizeStructures, pickLoot, pickTidy, mobKind, attackCooldownMs, combatPlan, COMBAT_YIELD, TIER, pickaxeTier, needTier, pickOre, pickHarvest, hazardUnder, pickStepOff, armorRank, pickArmor, toolWorn, pickGaze, whoThrew, pickPickup, bodyBusy, install, yieldBody, PASSIVE_POSTS, selftest };
 
 if (require.main === module && process.argv.includes('--selftest')) {
   selftest().then(code => process.exit(code));

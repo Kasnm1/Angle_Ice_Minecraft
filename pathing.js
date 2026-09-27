@@ -326,36 +326,7 @@ function resolveClimbableBlockIds (nameToId, names) {
  *
  * 补丁**只包一次**（`__climbablePatched`），重连时只替换集合，不重复套娃。
  */
-/**
- * 开着的门当成能走的格子。
- *
- * mineflayer-pathfinder 判"能不能走进去"只看 `boundingBox === 'block'`（movements.js getBlock），
- * 门（不管开没开）都是 'block' —— 于是在它眼里**开着的门也是一堵墙**，
- * 门里面就成了死路：`POST /move` 到门外 → `No path found`（2026-09-26 实测：
- * 厨房出口那扇被踏板顶开的 dark_oak_door，open=true，她在门里出不来）。
- * 真实碰撞：开着的门只剩贴在门框一侧的一块薄板，顺着门洞方向走过去不受影响。
- *
- * 只放行**开着的**门（名字以 _door / door 结尾，不含活板门 trapdoor）；关着的门仍是墙，
- * 由 hands.js go() 的"开挡路的门"那一步去开（真人也是先开门再走）。
- *
- * ## ⚠️ 整格放行会**沿着门板方向**误放行 —— 这里按门板法线轴收窄
- *
- * 寻路器是**按格**判断的（`getBlock` 只有位置、没有方向），说不出"这一格只许从某个方向进"。
- * 而开着的门板是**一块薄板**：它只挡**门板法线那根轴**（= 与 `facing` 垂直的轴），
- * 顺着门洞方向走过去不挡。于是"整格放行"等于把门板也一起放行了：
- *
- *   · 门**嵌在墙里**（常态）——法线轴两侧是墙，本来就不可能横穿，放行无害 ✓
- *   · 门**独立站着 / 双开门外侧没墙**——寻路器会规划出"从一侧进来、穿过门板、从另一侧出去"
- *     的路径，服务端有真实碰撞把她推回来 → 橡皮筋。
- *
- * 所以加一道**可证伪的闸**：读出门板法线轴，只有该轴**两侧都走得进去**时才不放行
- * （那时当墙 —— 绕过去就行，两侧都是通路所以一定绕得开），其余一律放行。
- * 判据是"从世界读出来的邻格"，不是猜。
- *
- * 读不到 `facing` 时（模组门可能用别的属性名）**保持放行**：这是这一版修好的那个 bug，
- * 不能因为拿不到属性就退回"门里出不去"；但记一笔（`stats.noFacing`），
- * `GET /debug/mvblock` 里看得见 —— "读不到"要报出来，别混进"没有"。
- */
+/** 门格放行，门板的横向碰撞在 getNeighbors 的有向边上判断。 */
 const DOOR_NAME_RE = /(^|_)door$/;
 
 /** 方块的属性表。`getProperties()` 优先，退回 `_properties`。读不到返回 null。 */
@@ -396,42 +367,107 @@ function doorPlateAxis (b) {
  * 但**故意不看**门那条豁免 —— 否则"双开门"里两个门格会互相证明对方可走，
  * 闸门就形同虚设。取的是保守那一侧。
  */
-function isWalkableCell (b) {
-  return !!b && (b.boundingBox === 'empty' || b.climbable === true);
-}
-
-function applyOpenDoors (mv) {
+function applyOpenDoors (mv, bot = null) {
   if (!mv || typeof mv.getBlock !== 'function') throw new Error('applyOpenDoors: 需要 Movements 实例');
   if (mv.__openDoorsPatched) return { installed: true, already: true, stats: mv.__openDoorsStats };
   const orig = mv.getBlock.bind(mv);
   // `stats` 是**活对象**：调用方拿到的引用会一直更新（和 applyUnknownBlockPolicy 的 stats 同理）。
-  const stats = { passed: 0, refused: 0, noFacing: 0, refusedAt: [] };
+  const stats = { passed: 0, refused: 0, noFacing: 0, refusedAt: [], closedOpenable: 0, reroutes: 0, blockedAt: [] };
+  const blockedEdges = new Map();
+  const edgeKey = (a, b) => `${a.x},${a.y},${a.z}>${b.x},${b.y},${b.z}`;
+  mv.canOpenDoors = true;
   mv.getBlock = function (pos, dx, dy, dz) {
     const b = orig(pos, dx, dy, dz);
-    if (!b || !b.name || !DOOR_NAME_RE.test(bareName(b.name)) || !isOpenBlock(b)) return b;
-    const axis = doorPlateAxis(b);
-    if (!axis) {
-      stats.noFacing++;
-    } else if (pos) {
-      const nx = axis === 'x' ? 1 : 0;
-      const nz = axis === 'z' ? 1 : 0;
-      const a = orig(pos, dx - nx, dy, dz - nz);
-      const c = orig(pos, dx + nx, dy, dz + nz);
-      if (isWalkableCell(a) && isWalkableCell(c)) {
-        stats.refused++;
-        if (stats.refusedAt.length < 8) {
-          stats.refusedAt.push({ x: pos.x + dx, y: pos.y + dy, z: pos.z + dz, name: b.name, axis });
-        }
-        return b;   // 门板两侧都是通路 → 保守当墙（绕得开），不猜
+    if (!b || !b.name || !DOOR_NAME_RE.test(bareName(b.name))) return b;
+    if (!isOpenBlock(b)) {
+      if (/iron/.test(bareName(b.name))) return b;
+      const half = String(blockProps(b)?.half || '').toLowerCase();
+      if (half === 'upper') {
+        // pathfinder 先检查头部，再处理下半格的 useOne；上半格不能先把路堵死。
+        b.safe = true;
+        b.physical = false;
+        return b;
       }
+      b.openable = true;
+      // 模组调色板有些门缺形状；非空形状是库触发 useOne 的必要条件。
+      if (!b.shapes?.length) b.shapes = [[0, 0, 0, 1, 1, 1]];
+      stats.closedOpenable++;
+      return b;
     }
-    // 放行：`height` 取本格地板高度（= "没有碰撞"时 movements.getBlock 自己会算出的值）
+    if (!doorPlateAxis(b)) stats.noFacing++;
+    // 开门后门洞可走；不能横穿门板的约束由下方 getNeighbors 检查整条边。
     b.safe = true;
     b.physical = false;
     b.height = pos.y + dy;
     stats.passed++;
     return b;
   };
+  if (typeof mv.getNeighbors === 'function') {
+    const originalNeighbors = mv.getNeighbors.bind(mv);
+    mv.getNeighbors = function (node) {
+      const sourceBlock = orig(node, 0, 0, 0);
+      return originalNeighbors(node).filter(next => {
+        const key = edgeKey(node, next);
+        const until = blockedEdges.get(key);
+        if (until) {
+          if (until > Date.now()) return false;
+          blockedEdges.delete(key);
+        }
+        const dx = next.x - node.x;
+        const dz = next.z - node.z;
+        if (!dx && !dz) return true;
+        if (dx && dz) {
+          // 库的斜走只要求两个转角有一边能走；门板、立起的活板门有真实厚度，
+          // 贴角抄近路会在门框反复撞停。门口统一走正交格，再由当前格重新规划。
+          const corners = [
+            { x: node.x + dx, y: node.y, z: node.z },
+            { x: node.x, y: node.y, z: node.z + dz },
+            { x: node.x + dx, y: node.y + 1, z: node.z },
+            { x: node.x, y: node.y + 1, z: node.z + dz },
+          ];
+          if (corners.some(p => /(^|_)(trap)?door$/.test(bareName(orig(p, 0, 0, 0)?.name)))) {
+            stats.refused++;
+            return false;
+          }
+        }
+        for (const [p, b] of [[node, sourceBlock], [next, orig(next, 0, 0, 0)]]) {
+          if (!b?.name || !DOOR_NAME_RE.test(bareName(b.name))) continue;
+          const axis = doorPlateAxis(b);
+          if (axis && (axis === 'x' ? dx : dz)) {
+            stats.refused++;
+            if (stats.refusedAt.length < 8) stats.refusedAt.push({ x: p.x, y: p.y, z: p.z, name: b.name, axis });
+            return false;
+          }
+        }
+        return true;
+      });
+    };
+  }
+  if (bot?.on && bot?.entity) {
+    let livePath = null;
+    const { Vec3 } = require('vec3');
+    bot.on('path_update', result => { if (result?.path?.length) livePath = result.path; });
+    bot.on('path_reset', reason => {
+      if (reason !== 'stuck' || !livePath?.length || !bot.entity?.position) return;
+      const from = bot.entity.position.floored();
+      const next = livePath[0];
+      livePath = null;
+      if (Math.abs(next.x - from.x) > 1 || Math.abs(next.z - from.z) > 1 || Math.abs(next.y - from.y) > 1) return;
+      // 只给门口的停滞边记短期禁行；普通障碍交给库原有的重规划。
+      let nearDoor = false;
+      for (const p of [from, next, { x: from.x, y: from.y, z: next.z }, { x: next.x, y: from.y, z: from.z }]) {
+        for (const y of [p.y, p.y + 1]) {
+          const b = bot.blockAt(new Vec3(p.x, y, p.z));
+          if (/(^|_)(trap)?door$/.test(bareName(b?.name))) nearDoor = true;
+        }
+      }
+      if (!nearDoor) return;
+      blockedEdges.set(edgeKey(from, next), Date.now() + 20000);
+      stats.reroutes++;
+      if (stats.blockedAt.length >= 8) stats.blockedAt.shift();
+      stats.blockedAt.push({ from: `${from.x},${from.y},${from.z}`, to: `${next.x},${next.y},${next.z}` });
+    });
+  }
   mv.__openDoorsPatched = true;
   mv.__openDoorsStats = stats;
   return { installed: true, stats };
@@ -3010,7 +3046,7 @@ if (require.main === module && process.argv.includes('--selftest')) {
 
   check('模组床是矮方块（9/16 高）', lowBlockHeight('handcrafted:oak_fancy_bed'), 0.5625);
   check('床头柜之类不是', lowBlockHeight('handcrafted:oak_nightstand'), 0);
-  // ---- 开着的门能走、关着的门和活板门不变；门板两侧都通时**不当能穿门板放行** ----
+  // ---- 开门路径：开门格可走，但不能横穿门板；关门格触发 useOne ----
   // ⚠️ 用一个**按坐标取方块**的假世界。上一版把 `dx` 当字典键用，所以"读邻格"那条判据
   //    根本走不到（邻格恒为 undefined）—— 自测测不到真代码，等于没测。
   {
@@ -3025,15 +3061,25 @@ if (require.main === module && process.argv.includes('--selftest')) {
           const solid = d ? d.solid !== false : false;
           const props = { open: d && d.open ? 'TRUE' : 'false' };
           if (d && d.facing !== undefined) props.facing = d.facing;
+          if (d && d.half !== undefined) props.half = d.half;
           const b = {
             name,
+            position: { x: pos.x + dx, y: pos.y + dy, z: pos.z + dz },
             getProperties: () => props,
             boundingBox: solid ? 'block' : 'empty',
             safe: !solid,
             physical: solid,
+            shapes: solid ? [[0, 0, 0, 1, 1, 1]] : [],
             height: pos.y + dy,
           };
           return b;
+        },
+        getNeighbors (node) {
+          return [
+            { x: node.x + 1, y: node.y, z: node.z },
+            { x: node.x, y: node.y, z: node.z + 1 },
+            { x: node.x - 1, y: node.y, z: node.z },
+          ];
         },
       };
     };
@@ -3054,12 +3100,34 @@ if (require.main === module && process.argv.includes('--selftest')) {
       check('门嵌在墙里：放行计数 1、拒绝 0', `${rep.stats.passed}/${rep.stats.refused}`, '1/0');
     }
     {
-      // 独立门：门板法线轴两侧都是通路 → 寻路器会规划出"穿门板"，保守当墙
+      // 两侧都通时门格仍须可走；禁的是横穿门板的有向边。
       const mv = makeMv([['0,64,0', door('south')], ['1,64,0', air], ['-1,64,0', air]]);
       const rep = applyOpenDoors(mv);
       const b = at(mv);
-      check('门板两侧都通：不放行（还是墙）', `${b.safe}/${b.physical}`, 'false/true');
-      check('门板两侧都通：记下拒绝与轴', `${rep.stats.refused}/${rep.stats.refusedAt[0]?.axis}`, '1/x');
+      check('门板两侧都通：门格可走', `${b.safe}/${b.physical}`, 'true/false');
+      const edges = mv.getNeighbors({ x: 0, y: 64, z: 0 });
+      check('门板方向横穿被拦，门洞方向可走', edges.map(p => `${p.x},${p.z}`).join(' | '), '0,1');
+      check('横穿拒绝记下位置与轴', `${rep.stats.refused}/${rep.stats.refusedAt[0]?.axis}`, '2/x');
+    }
+    {
+      const mv = makeMv([['-1,64,0', door('north')], ['0,64,1', { name: 'dark_oak_trapdoor', open: true, solid: true }]]);
+      mv.getNeighbors = () => [{ x: -1, y: 64, z: 1 }];
+      applyOpenDoors(mv);
+      check('门与活板门夹角不能斜切', mv.getNeighbors({ x: 0, y: 64, z: 0 }).length, 0);
+    }
+    {
+      const { EventEmitter } = require('events');
+      const { Vec3 } = require('vec3');
+      const mv = makeMv([['1,64,0', door('east', false)]]);
+      const bot = new EventEmitter();
+      bot.entity = { position: new Vec3(0.5, 64, 0.5) };
+      bot.blockAt = p => mv.getBlock(p, 0, 0, 0);
+      const rep = applyOpenDoors(mv, bot);
+      const path = [{ x: 1, y: 64, z: 0 }];
+      bot.emit('path_update', { path });
+      bot.emit('path_reset', 'stuck');
+      check('门口卡住：原边暂时禁行，试别的边', mv.getNeighbors(new Vec3(0, 64, 0)).map(p => `${p.x},${p.z}`).join('|'), '0,1|-1,0');
+      check('门口卡住：换路计数留证据', rep.stats.reroutes, 1);
     }
     {
       // 只有一侧是墙 → 横穿不可能 → 放行
@@ -3077,14 +3145,14 @@ if (require.main === module && process.argv.includes('--selftest')) {
       check('facing=east：看法线轴 Z，X 两侧通不拦', at(mv).safe, true);
     }
     {
-      // 同一个门把 Z 两侧也打通 → 该拦
+      // 同一个门把 Z 两侧也打通，仍可沿 X 穿过门洞。
       const mv = makeMv([
         ['0,64,0', door('east')], ['1,64,0', air], ['-1,64,0', air],
         ['0,64,1', air], ['0,64,-1', air],
       ]);
       const rep = applyOpenDoors(mv);
       const b = at(mv);
-      check('facing=east：Z 两侧都通 → 拦下', `${b.safe}/${b.physical}/${rep.stats.refused}`, 'false/true/1');
+      check('facing=east：门格可走，Z 向边被拦', `${b.safe}/${b.physical}/${mv.getNeighbors({ x: 0, y: 64, z: 0 }).length}/${rep.stats.refused}`, 'true/false/2/1');
     }
     {
       const mv = makeMv([
@@ -3095,6 +3163,7 @@ if (require.main === module && process.argv.includes('--selftest')) {
       ]);
       applyOpenDoors(mv);
       check('关着的门：还是墙', `${at(mv).safe}/${at(mv).physical}`, 'false/true');
+      check('关着的木门纳入路径开门动作', `${mv.canOpenDoors}/${at(mv).openable}`, 'true/true');
       check('活板门不归它管',
         mv.getBlock({ x: 2, y: 64, z: 0 }, 0, 0, 0).physical, true);
       check('模组的门（名字以 _door 结尾）也认',
@@ -3103,6 +3172,32 @@ if (require.main === module && process.argv.includes('--selftest')) {
       const again = applyOpenDoors(mv);
       check('重复装不会套娃', mv.getBlock === g1, true);
       check('重复装时把原来的 stats 一起报回来', again.stats === mv.__openDoorsStats, true);
+    }
+    {
+      const mv = makeMv([
+        ['0,64,0', { ...door('south', false), half: 'lower' }],
+        ['0,65,0', { ...door('south', false), half: 'upper' }],
+      ]);
+      applyOpenDoors(mv);
+      check('关门上半格不阻断开门路径', mv.getBlock({ x: 0, y: 64, z: 0 }, 0, 1, 0).safe, true);
+      check('关门下半格仍需先开', `${at(mv).safe}/${at(mv).openable}`, 'false/true');
+    }
+    {
+      // 用真正的 mineflayer-pathfinder getMoveForward 验证 useOne，不手抄它的判据。
+      const { Movements } = require('mineflayer-pathfinder');
+      const mv = makeMv([
+        ['0,64,0', { ...door('south', false), half: 'lower' }],
+        ['0,65,0', { ...door('south', false), half: 'upper' }],
+        ['0,63,0', wall],
+      ]);
+      mv.exclusionStep = () => 0;
+      mv.getNumEntitiesAt = () => 0;
+      mv.safeOrBreak = b => b.safe ? 0 : 100;
+      applyOpenDoors(mv);
+      const next = [];
+      Movements.prototype.getMoveForward.call(mv, { x: 0, y: 64, z: -1, remainingBlocks: 0 }, { x: 0, z: 1 }, next);
+      check('真正的寻路器把关门算成可走的一步', next.length, 1);
+      check('真正的寻路器在这一步安排右键开门', next[0]?.toPlace[0]?.useOne, true);
     }
     {
       // 读不到 facing（模组门可能用别的属性名）：保持放行 —— 不能退回"门里出不去"

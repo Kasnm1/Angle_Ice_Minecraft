@@ -281,18 +281,48 @@ function installDoorHabit (bot, state) {
   if (typeof bot.activateBlock !== 'function' || bot.__doorHabit) return;
   bot.__doorHabit = true;
   state.doorsIOpened = new Map();   // key → {pos, name, openedAt}
+  state.doorActivations = new Map(); // 同一扇门的右键串行化，避免两条路线同时切换两次
   state.doorsLeftOpen = state.doorsLeftOpen || [];   // 走远了没来得及关的
   const orig = bot.activateBlock.bind(bot);
   bot.activateBlock = async (block, ...rest) => {
-    const base = block && doorBase(bot, block.position);
-    const wasClosed = base && isDoorLike(base) && !isOpen(base);
-    const r = await orig(block, ...rest);
-    if (wasClosed && !state.__closingDoor) {
-      await sleep(250);
-      const now = bot.blockAt(base.position);
-      if (now && isDoorLike(now) && isOpen(now)) state.doorsIOpened.set(doorKey(base.position), { pos: base.position.clone(), name: now.name, openedAt: Date.now(), wasAt: bot.entity.position.clone() });
+    let base = block && doorBase(bot, block.position);
+    if (!base || !isDoorLike(base)) return orig(block, ...rest);
+
+    const pos = base.position.clone();
+    const key = doorKey(pos);
+    const wantsOpen = !state.__closingDoor;
+    const pending = state.doorActivations.get(key);
+    if (pending) await pending.catch(() => {});
+
+    // 规划时可能还是关着的，走到门前时已经被上一条路线打开了。
+    // 必须以右键前这一刻的世界状态为准；否则右键会把开门变成关门，下一轮又打开。
+    base = doorBase(bot, pos);
+    if (!base || !isDoorLike(base)) return orig(block, ...rest);
+    const openNow = isOpen(base);
+    if (openNow === wantsOpen) {
+      state.doorStateSkips = (state.doorStateSkips || 0) + 1;
+      state.lastDoorSkipped = { pos: key, name: base.name, open: openNow, wanted: wantsOpen, at: Date.now() };
+      return { skipped: true, reason: openNow ? '门已经开着' : '门已经关着' };
     }
-    return r;
+
+    let release;
+    const lock = new Promise(resolve => { release = resolve; });
+    state.doorActivations.set(key, lock);
+    const wasAt = bot.entity?.position?.clone?.();
+    try {
+      const r = await orig(base, ...rest);
+      if (wantsOpen) {
+        await sleep(250);
+        const now = doorBase(bot, pos);
+        if (now && isDoorLike(now) && isOpen(now)) {
+          state.doorsIOpened.set(key, { pos, name: now.name, openedAt: Date.now(), wasAt: wasAt || bot.entity.position.clone() });
+        }
+      }
+      return r;
+    } finally {
+      release();
+      if (state.doorActivations.get(key) === lock) state.doorActivations.delete(key);
+    }
   };
 
   // 每 300ms 看一眼：自己开的门，人已经过去了（离开门那格 1.5 格以上）就关上
@@ -395,17 +425,27 @@ function readSophItem (bot, buf, o) {
   return new Item(id, count, 0, tag || undefined);
 }
 
-/** 背包界面里哪一段是她自己的 36 格：拿身上的东西去比对（背包界面还可能带升级格，不能简单按"最后 36 格"算） */
-function locatePlayerInv (bot, items) {
+/**
+ * 背包界面里哪一段是她自己的 36 格。
+ *
+ * 精妙背包还会在玩家物品栏后面附加升级格，不能简单取最后 36 格。旧实现只数
+ * “相同的非空格”，普通物品栏装满了刚从背包搬出的东西时，背包开头和真正的玩家段
+ * 会同分，并错误选择第 0 格。这里同时比较空格，平分时优先上次可信边界，再按
+ * “容量是 9 的倍数、尾部升级格不超过 16 格”的界面结构选择。
+ */
+function locatePlayerInv (bot, items, preferred = null) {
   const mine = bot.inventory.slots.slice(9, 45).map(x => (x ? `${x.type}:${x.count}` : '-'));
-  if (mine.every(x => x === '-')) return Math.max(0, items.length - 36);
-  let best = -1; let bestScore = -1;
+  let bestScore = -1; const best = [];
   for (let k = 0; k + 36 <= items.length; k++) {
     let sc = 0;
-    for (let j = 0; j < 36; j++) { const x = items[k + j]; if ((x ? `${x.type}:${x.count}` : '-') === mine[j] && mine[j] !== '-') sc++; }
-    if (sc > bestScore) { bestScore = sc; best = k; }
+    for (let j = 0; j < 36; j++) { const x = items[k + j]; if ((x ? `${x.type}:${x.count}` : '-') === mine[j]) sc++; }
+    if (sc > bestScore) { bestScore = sc; best.length = 0; best.push(k); }
+    else if (sc === bestScore) best.push(k);
   }
-  return best < 0 ? Math.max(0, items.length - 36) : best;
+  if (Number.isInteger(preferred) && preferred > 0 && best.includes(preferred)) return preferred;
+  const structural = best.filter(k => k > 0 && k % 9 === 0 && items.length - (k + 36) >= 0 && items.length - (k + 36) <= 16);
+  if (structural.length) return structural[structural.length - 1];
+  return best.filter(k => k > 0).pop() ?? -1;
 }
 
 // ------------------------------------------------------------------ FTB 任务书（Architectury 网络）
@@ -494,10 +534,13 @@ function installModProtocols (bot, state) {
         for (let k = 0; k < n; k++) items.push(readSophItem(bot, buf, o));
         if (w.slots.length !== n) { const old = w.slots; w.slots = new Array(n).fill(null); for (let k = 0; k < Math.min(old.length, n); k++) w.slots[k] = old[k]; }
         for (let k = 0; k < n; k++) w.slots[k] = items[k];
-        const start = locatePlayerInv(bot, items);
+        const preferred = state.backpackSeen?.slots || state.lastSophGoodStart || null;
+        const start = locatePlayerInv(bot, items, preferred);
         w.inventoryStart = start; w.inventoryEnd = start + 36; w.hotbarStart = start + 27;
         w.__sophisticated = true;
-        state.lastSophSync = { windowId, slots: n, playerInvAt: start, at: Date.now() };
+        w.__sophBoundaryValid = start > 0 && start + 36 <= n;
+        if (w.__sophBoundaryValid) state.lastSophGoodStart = start;
+        state.lastSophSync = { windowId, slots: n, playerInvAt: start, boundaryValid: w.__sophBoundaryValid, at: Date.now() };
       } else {
         const slot = buf.readInt16BE(o.i); o.i += 2;
         const it = readSophItem(bot, buf, o);
@@ -533,10 +576,13 @@ function noteCurios (state, w) {
 
 /** 背包里有什么：开过就记下（背在背上的背包不开也看不到） */
 function noteBackpack (state, w) {
-  if (!w || state.backpackWindowId !== w.id) return;
+  // 不能拿旧 windowId 当身份：服务端会把编号复用给普通箱子/模组界面。
+  // 同步标记、格子边界都有效才更新；读不到时保留上一次可信快照，绝不写成“空”。
+  if (!w?.__sophisticated || !Number.isInteger(w.inventoryStart) || w.inventoryStart <= 0 || !Array.isArray(w.slots) || w.inventoryStart > w.slots.length) return false;
   const items = {};
   for (let i = 0; i < w.inventoryStart; i++) { const it = w.slots[i]; if (it) items[fullId(it.name)] = (items[fullId(it.name)] || 0) + it.count; }
   state.backpackSeen = { items, slots: w.inventoryStart, used: w.slots.slice(0, w.inventoryStart).filter(Boolean).length, at: Date.now() };
+  return true;
 }
 
 async function curiosEquip (bot, state, { itemName } = {}) {
@@ -596,8 +642,14 @@ async function backpackOpen (bot, state, retry = true) {
   await sleep(200);
   state.openContainerPos = null;   // 不是家里的箱子，不记进"家里有什么"
   state.backpackWindowId = w.id;
-  // 刚关完别的界面马上开，偶尔格子同步对不上（界面 0 格）：关掉等一下再开一次
-  if (!(w.__sophisticated && w.inventoryStart > 0) && retry) { bot.closeWindow(w); await sleep(800); return backpackOpen(bot, state, false); }
+  // 刚关完别的界面马上开，偶尔格子同步对不上：关掉等一下再开一次。
+  // 第二次仍认不出边界就必须失败；若把 0 当成功，后续 take_items 会在错误格段搬东西。
+  const valid = w.__sophisticated && w.__sophBoundaryValid && w.inventoryStart > 0;
+  if (!valid && retry) { bot.closeWindow(w); await sleep(800); return backpackOpen(bot, state, false); }
+  if (!valid) {
+    if (bot.currentWindow?.id === w.id) bot.closeWindow(w);
+    throw new Error(`精妙背包同步到了 ${w.slots?.length || 0} 格，但无法识别玩家物品栏边界；已停止存取，避免搬错东西`);
+  }
   noteBackpack(state, w);
   return { backpack: true, synced: (state.lastSophSync?.at || 0) > syncBefore, ...summarizeWindow(bot, state) };
 }
@@ -1175,6 +1227,11 @@ function ladderColumns (bot, maxDistance = 16) {
   return out;
 }
 
+/** 梯子底端离当前脚高不超过 2 格时，交给 stepInto 实际尝试；再高才是真的够不到。 */
+function ladderBottomReachable (col, feetY) {
+  return Math.abs(col.bottom - Math.floor(feetY)) <= 2.5;
+}
+
 async function holdControls (bot, controls, ms) {
   for (const c of controls) bot.setControlState(c, true);
   await sleep(ms);
@@ -1309,7 +1366,9 @@ async function climbUp (bot, state, { targetY, maxLadders = 4 } = {}) {
     if (goal != null && feet.y >= goal - 0.5) break;
     // 能从这层走过去的、往上的梯子：底部在脚下附近，顶部比现在高
     const cols = ladderColumns(bot, 16)
-      .filter(c => !used.has(`${c.x},${c.z},${c.bottom}`) && c.top >= feet.y && Math.abs(c.bottom - Math.floor(feet.y)) <= 1.5)
+      // 梯子最低一格可能装在腰/头顶高度（现场：脚 y=121、梯子 bottom=123）。
+      // stepInto 会用寻路 + 跳跃核对是否真能进去；这里先给它尝试机会，别在候选阶段误删。
+      .filter(c => !used.has(`${c.x},${c.z},${c.bottom}`) && c.top >= feet.y && ladderBottomReachable(c, feet.y))
       .sort((a, b) => Math.hypot(a.x + 0.5 - feet.x, a.z + 0.5 - feet.z) - Math.hypot(b.x + 0.5 - feet.x, b.z + 0.5 - feet.z));
     if (!cols.length) {
       if (!done.length) throw new Error('附近 16 格内没有从这层往上的梯子');
@@ -1449,12 +1508,28 @@ async function pathTo (bot, pos, range, ms, { retry = true } = {}) {
     return null;
   } catch (e) {
     bot.pathfinder.setGoal(null);
-    // 走不通：先跳一跳晃一晃，换个站位再试一次（很多"找不到路"只是被卡在方块边上）
-    if (retry) {
+    // 门口失败时别原地蹦跳：门应由寻路器的开门动作处理，跳跃只会撞门框。
+    const nearDoor = bot.registry?.blocksByName && doorsNear(bot, 3).some(d =>
+      Math.abs(d.y - Math.floor(bot.entity.position.y)) <= 1);
+    if (retry && !nearDoor) {
       const w = await wiggle(bot, { rounds: 1 }).catch(() => null);
       if (w?.freed) return pathTo(bot, pos, range, ms, { retry: false });
     }
     return e.message || String(e);
+  }
+}
+
+/** 跨层后横向靠近目标：临时禁止寻路跌回下面楼层。 */
+async function pathToKeepingFloor (bot, pos, range, ms, minFeetY) {
+  const mv = bot.pathfinder?.movements;
+  if (!mv?.exclusionAreasStep || !Number.isFinite(minFeetY)) return pathTo(bot, pos, range, ms, { retry: false });
+  const floorGuard = block => block?.position?.y < minFeetY ? 100 : 0;
+  mv.exclusionAreasStep.push(floorGuard);
+  try {
+    return await pathTo(bot, pos, range, ms, { retry: false });
+  } finally {
+    const i = mv.exclusionAreasStep.indexOf(floorGuard);
+    if (i !== -1) mv.exclusionAreasStep.splice(i, 1);
   }
 }
 
@@ -1763,26 +1838,55 @@ async function go (bot, state, { x, y, z, player, range = 1.8, maxMs = 90000, ab
 
   // ① 楼上楼下
   const dy = target().y - Math.floor(bot.entity.position.y + 0.01);
+  let keepFloorAt = null;
   if (Math.abs(dy) >= 3) {
     try {
       const r = dy > 0 ? await climbUp(bot, state, { targetY: target().y }) : await climbDown(bot, state, { targetY: target().y });
       tried.push(`${dy > 0 ? '上楼' : '下楼'}：${r.fromY}→${r.toY}`);
+      // 已爬到目标所在楼层后，后续横向靠近不能把跳下楼当捷径。
+      if (dy > 0 && r.toY >= target().y - 1.5) keepFloorAt = Math.floor(r.toY) - 1;
     } catch (e) { tried.push(`${dy > 0 ? '上楼' : '下楼'}没成：${e.message}`); }
     checkStop();
   }
 
   // ② 走到旁边
-  let err = await pathTo(bot, target(), range, eta());
+  let err = keepFloorAt == null
+    ? await pathTo(bot, target(), range, eta())
+    : await pathToKeepingFloor(bot, target(), range, eta(), keepFloorAt);
   checkStop();
   if (near()) return { arrived: true, distance: +dist().toFixed(1), tried, ms: Date.now() - t0 };
   err ||= `寻路器说走完了，其实还差 ${dist().toFixed(1)} 格`;
   tried.push(`寻路：${err}`);
 
+  // 跨层路线常会先走到一个更高的平台，再因为当前 A* 搜索边界结束而返回失败。
+  // 只要实际距离明显缩短，就以**此刻位置**为新起点继续算；不重复旧起点，也不在没进展时死循环。
+  let bestDist = Math.min(startDist, dist());
+  for (let retry = 1; retry <= 3 && Date.now() - t0 < maxMs; retry++) {
+    checkStop();
+    const before = dist();
+    if (before > bestDist + 0.75 || before <= range + 0.8) break;
+    const leftMs = Math.max(5000, maxMs - (Date.now() - t0));
+    const nextErr = keepFloorAt == null
+      ? await pathTo(bot, target(), range, Math.min(eta(), leftMs))
+      : await pathToKeepingFloor(bot, target(), range, Math.min(eta(), leftMs), keepFloorAt);
+    checkStop();
+    const after = dist();
+    if (near()) return { arrived: true, distance: +after.toFixed(1), tried: [...tried, `从当前位置续算第 ${retry} 次：到达`], ms: Date.now() - t0 };
+    if (after < before - 0.75) {
+      bestDist = Math.min(bestDist, after);
+      tried.push(`从当前位置续算第 ${retry} 次：${before.toFixed(1)}→${after.toFixed(1)} 格`);
+      err = nextErr || `还差 ${after.toFixed(1)} 格`;
+      continue;
+    }
+    tried.push(`从当前位置续算第 ${retry} 次没有进展（${after.toFixed(1)} 格），停止重复`);
+    break;
+  }
+
   // ③ 开挡路的门（往目标那边的、关着的）
   for (let n = 0; n < 3 && Date.now() - t0 < maxMs; n++) {
     checkStop();
     const me = bot.entity.position; const tg = target();
-    const doors = doorsNear(bot, 10).filter(d => !d.open && !/iron/.test(d.name))
+    const doors = doorsNear(bot, 10).filter(d => !d.open && !/iron|trapdoor|hatch/.test(d.name))
       .map(d => ({ ...d, toTarget: Math.hypot(d.x + 0.5 - tg.x, d.z + 0.5 - tg.z) }))
       .filter(d => d.toTarget < Math.hypot(me.x - tg.x, me.z - tg.z) + 2)
       .sort((a, b) => (a.distance + a.toTarget) - (b.distance + b.toTarget));
@@ -1792,7 +1896,9 @@ async function go (bot, state, { x, y, z, player, range = 1.8, maxMs = 90000, ab
       await setDoor(bot, state, { x: d.x, y: d.y, z: d.z, open: true });
       tried.push(`开了挡路的${d.kind}(${d.x},${d.y},${d.z})`);
     } catch (e) { tried.push(`想开${d.kind}(${d.x},${d.y},${d.z})没开成：${e.message}`); break; }
-    err = await pathTo(bot, target(), range, eta());
+    err = keepFloorAt == null
+      ? await pathTo(bot, target(), range, eta())
+      : await pathToKeepingFloor(bot, target(), range, eta(), keepFloorAt);
     checkStop();
     if (near()) return { arrived: true, distance: +dist().toFixed(1), tried, ms: Date.now() - t0 };
   }
@@ -1801,7 +1907,9 @@ async function go (bot, state, { x, y, z, player, range = 1.8, maxMs = 90000, ab
   for (const r2 of [3, 5]) {
     if (Date.now() - t0 > maxMs) break;
     checkStop();
-    err = await pathTo(bot, target(), r2, eta());
+    err = keepFloorAt == null
+      ? await pathTo(bot, target(), r2, eta())
+      : await pathToKeepingFloor(bot, target(), r2, eta(), keepFloorAt);
     checkStop();
     if (!err) { tried.push(`放宽到 ${r2} 格：走到了`); break; }
     tried.push(`放宽到 ${r2} 格：${err}`);
@@ -1810,11 +1918,15 @@ async function go (bot, state, { x, y, z, player, range = 1.8, maxMs = 90000, ab
     const me = bot.entity.position; const tg = target();
     const k = Math.min(1, 8 / dist());
     const mid = new Vec3(Math.floor(me.x + (tg.x - me.x) * k), Math.floor(me.y), Math.floor(me.z + (tg.z - me.z) * k));
-    const e2 = await pathTo(bot, mid, 3, 20000);
+    const e2 = keepFloorAt == null
+      ? await pathTo(bot, mid, 3, 20000)
+      : await pathToKeepingFloor(bot, mid, 3, 20000, keepFloorAt);
     checkStop();
     tried.push(e2 ? `先往目标走一段：${e2}` : `先往目标走了一段到 (${mid.x},${mid.z})`);
     if (!e2) {
-      err = await pathTo(bot, target(), range, eta());
+      err = keepFloorAt == null
+        ? await pathTo(bot, target(), range, eta())
+        : await pathToKeepingFloor(bot, target(), range, eta(), keepFloorAt);
       checkStop();
       // 只信实际距离（第四处，和上面三处同一个判据）
       if (near()) return { arrived: true, distance: +dist().toFixed(1), tried, ms: Date.now() - t0 };
@@ -2033,8 +2145,17 @@ async function containerOpen (bot, state, { x, y, z }) {
   await approach(bot, block);
   const opened = new Promise((resolve) => {
     const t = setTimeout(() => { bot.removeListener('windowOpen', on); resolve(null); }, 4000);
-    function on (w) { clearTimeout(t); resolve(w); }
-    bot.once('windowOpen', on);
+    function on (w) {
+      const type = String(w?.__menu || w?.type || state.lastWindowInfo?.menu || '');
+      // 上一次 open_backpack 的迟到事件不能冒充这次方块开箱成功。现场曾右键 minecraft:chest，
+      // 却返回 sophisticatedbackpacks:backpack 0 格，意识层随后继续对错误窗口存取。
+      if (!/sophisticatedbackpacks:/.test(block.name) && /sophisticatedbackpacks:backpack/.test(type)) {
+        state.lastRejectedWindow = { expected: block.name, got: type, id: w?.id, at: Date.now() };
+        return;
+      }
+      clearTimeout(t); bot.removeListener('windowOpen', on); resolve(w);
+    }
+    bot.on('windowOpen', on);
   });
   await bot.lookAt(block.position.offset(0.5, 0.5, 0.5), true);
   await bot.activateBlock(block);
@@ -2132,6 +2253,43 @@ function tally (list) {
   return m;
 }
 
+/** 同 ID 但附魔、耐久、NBT 不同的物品不能当成同一堆。 */
+function stackIdentity (it) {
+  return `${it?.type ?? '?'}|${it?.metadata ?? 0}|${JSON.stringify(it?.nbt || null)}`;
+}
+
+function compareSortedItems (bot, a, b) {
+  const ca = CAT_ORDER.indexOf(categoryOf(bot, a)); const cb = CAT_ORDER.indexOf(categoryOf(bot, b));
+  if (ca !== cb) return ca - cb;
+  const ia = fullId(a.name); const ib = fullId(b.name);
+  if (ia !== ib) return ia < ib ? -1 : 1;
+  if (a.count !== b.count) return b.count - a.count;
+  const sa = stackIdentity(a); const sb = stackIdentity(b);
+  return sa < sb ? -1 : sa > sb ? 1 : 0;
+}
+
+/** 排完后验收：顺序、空格压紧、可合并残堆和鼠标游标都必须正确。 */
+function auditSortedRange (bot, w, start, end) {
+  const items = []; let compact = true; let seenEmpty = false;
+  for (let i = start; i < end; i++) {
+    const it = w.slots[i];
+    if (!it) { seenEmpty = true; continue; }
+    if (seenEmpty) compact = false;
+    items.push(it);
+  }
+  let ordered = true;
+  for (let i = 1; i < items.length; i++) if (compareSortedItems(bot, items[i - 1], items[i]) > 0) { ordered = false; break; }
+  const groups = new Map();
+  for (const it of items) {
+    const k = stackIdentity(it); const g = groups.get(k) || { count: 0, stacks: 0, size: it.stackSize || 64 };
+    g.count += it.count; g.stacks++; groups.set(k, g);
+  }
+  let mergeableStacks = 0;
+  for (const g of groups.values()) mergeableStacks += Math.max(0, g.stacks - Math.ceil(g.count / g.size));
+  const cursorEmpty = !w.selectedItem;
+  return { sorted: ordered && compact && mergeableStacks === 0 && cursorEmpty, ordered, compact, mergeableStacks, cursorEmpty, occupied: items.length };
+}
+
 /** 存进当前打开的箱子：items 指定要存的（物品/分类/标签）；all=true 全存，keep 里的留下 */
 async function deposit (bot, state, { items, all = false, keep = [] } = {}) {
   const w = bot.currentWindow;
@@ -2187,7 +2345,6 @@ async function withdraw (bot, state, { items = [], all = false } = {}) {
  * 全靠点击交换，不用把东西拿出来。
  */
 async function sortRange (bot, w, start, end) {
-  const key = (it) => `${String(CAT_ORDER.indexOf(categoryOf(bot, it))).padStart(2, '0')}|${fullId(it.name)}`;
   let clicks = 0;
   // ① 合并：后面的零散堆往前面的同种堆上叠
   for (let i = start; i < end; i++) {
@@ -2195,21 +2352,21 @@ async function sortRange (bot, w, start, end) {
     if (!a || a.count >= a.stackSize) continue;
     for (let j = i + 1; j < end && w.slots[i] && w.slots[i].count < w.slots[i].stackSize; j++) {
       const b = w.slots[j];
-      if (!b || b.type !== a.type || JSON.stringify(b.nbt || null) !== JSON.stringify(a.nbt || null)) continue;
+      if (!b || stackIdentity(b) !== stackIdentity(a)) continue;
       await click(bot, j); await click(bot, i); clicks += 2;
       if (w.selectedItem) { await click(bot, j); clicks++; }
     }
   }
   // ② 排序：选择排序，每次把该在第 i 格的东西换过来
   const items = []; for (let i = start; i < end; i++) if (w.slots[i]) items.push(w.slots[i]);
-  const order = items.map(it => ({ k: key(it), type: it.type, count: it.count })).sort((a, b) => (a.k < b.k ? -1 : a.k > b.k ? 1 : b.count - a.count));
+  const order = items.map(it => ({ item: it, sig: stackIdentity(it), type: it.type, count: it.count })).sort((a, b) => compareSortedItems(bot, a.item, b.item));
   for (let n = 0; n < order.length; n++) {
     const i = start + n; const want = order[n];
     const cur = w.slots[i];
-    if (cur && cur.type === want.type && cur.count === want.count) continue;
+    if (cur && stackIdentity(cur) === want.sig && cur.count === want.count) continue;
     let j = -1;
-    for (let k = i + 1; k < end; k++) { const x = w.slots[k]; if (x && x.type === want.type && x.count === want.count) { j = k; break; } }
-    if (j < 0) for (let k = i + 1; k < end; k++) { const x = w.slots[k]; if (x && x.type === want.type) { j = k; break; } }
+    for (let k = i + 1; k < end; k++) { const x = w.slots[k]; if (x && stackIdentity(x) === want.sig && x.count === want.count) { j = k; break; } }
+    if (j < 0) for (let k = i + 1; k < end; k++) { const x = w.slots[k]; if (x && stackIdentity(x) === want.sig) { j = k; break; } }
     if (j < 0) continue;
     await click(bot, j); await click(bot, i); clicks += 2;       // 拿起 j，放到 i（i 原来的东西到了手上）
     if (w.selectedItem) { await click(bot, j); clicks++; }       // 手上的放回 j
@@ -2236,7 +2393,8 @@ async function sortContainer (bot) {
   r.clicks += r2.clicks;
   await sleep(200);
   const sum = {}; for (let i = 0; i < w.inventoryStart; i++) if (w.slots[i]) { const c = categoryOf(bot, w.slots[i]); sum[c] = (sum[c] || 0) + 1; }
-  return { sorted: true, ...r, byCategory: sum };
+  const verification = auditSortedRange(bot, w, 0, w.inventoryStart);
+  return { sorted: verification.sorted, ...r, byCategory: sum, verification };
 }
 
 async function sortInventory (bot) {
@@ -2244,7 +2402,8 @@ async function sortInventory (bot) {
   const w = bot.inventory;
   const r = await sortRange(bot, w, 9, 36);    // 主背包 27 格；快捷栏（36–44）不动
   await sleep(300);
-  return { sorted: true, ...r, note: '快捷栏没动' };
+  const verification = auditSortedRange(bot, w, 9, 36);
+  return { sorted: verification.sorted, ...r, verification, note: '快捷栏没动' };
 }
 
 // ------------------------------------------------------------------ 整理仓库（周围所有箱子一起分类 + 随身带什么）
@@ -2264,6 +2423,7 @@ function findStorage (bot, radius) {
 
 const TIERS = ['netherite', 'diamond', 'iron', 'stone', 'golden', 'wooden'];
 const tierOf = (name) => { const i = TIERS.findIndex(t => name.includes(t)); return i < 0 ? 3.5 : i; };
+const knownTierOf = (name) => { const i = TIERS.findIndex(t => String(name).includes(t)); return i < 0 ? null : i; };
 
 /**
  * 默认随身装备：最好的镐/斧/剑、一组最顶饱的吃的、16 火把、32 搭脚方块（主人 2026-09-27：至少带武器、工具、食物、搭脚方块）。
@@ -2427,6 +2587,22 @@ function storageKey (bot, block) {
   return doorKey(pair[0]);
 }
 
+function snapshotContainer (bot, w) {
+  const cats = {}; const items = []; const contents = [];
+  for (let i = 0; i < w.inventoryStart; i++) {
+    const it = w.slots[i];
+    if (!it) continue;
+    const c = categoryOf(bot, it);
+    cats[c] = (cats[c] || 0) + 1; items.push(c);
+    contents.push({ name: it.name, count: it.count, type: it.type, metadata: it.metadata, stackSize: it.stackSize || 64, identity: stackIdentity(it) });
+  }
+  return { cats, items, contents, used: items.length };
+}
+
+function applyBoxSnapshot (box, snap) {
+  box.cats = snap.cats; box.items = snap.items; box.contents = snap.contents; box.used = snap.used;
+}
+
 // abort：进程内调用才能传（随身物品本能被命令打断时用），每开一个箱子之前问一次
 async function organizeStorage (bot, state, { radius = 12, assign = {}, loadout = null, maxPasses = 4, dryRun = false, only = null, allFloors = false, skip = [], abort = null } = {}) {
   const t0 = Date.now();
@@ -2448,7 +2624,7 @@ async function organizeStorage (bot, state, { radius = 12, assign = {}, loadout 
     if (stop()) throw new Error('被新的命令打断（还没开始搬）');
     const k = storageKey(bot, b);
     if (covered.has(k) || covered.has(doorKey(b.position))) continue;
-    if (skipSet.has(k)) { covered.add(k); boxes.push({ pos: b.position.clone(), key: k, name: b.name, slots: /chest/.test(b.name) && k !== doorKey(b.position) ? 54 : 27, cats: {}, used: 0, items: [], skipped: true }); continue; }
+    if (skipSet.has(k)) { covered.add(k); boxes.push({ pos: b.position.clone(), key: k, name: b.name, slots: /chest/.test(b.name) && k !== doorKey(b.position) ? 54 : 27, cats: {}, used: 0, items: [], contents: [], skipped: true }); continue; }
     let info;
     try { info = await containerOpen(bot, state, b.position); } catch (e) { log.push(`打不开 ${b.name}(${k})：${e.message}`); continue; }
     const w = bot.currentWindow;
@@ -2456,9 +2632,8 @@ async function organizeStorage (bot, state, { radius = 12, assign = {}, loadout 
     // 大箱子：把另一半那格也标成看过了（它的 storageKey 和这格一样）
     for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) { const nb = bot.blockAt(b.position.offset(dx, 0, dz)); if (nb && nb.name === b.name && storageKey(bot, nb) === k) covered.add(doorKey(nb.position)); }
     covered.add(k);
-    const cats = {}; const items = [];
-    for (let i = 0; i < n; i++) if (w.slots[i]) { const c = categoryOf(bot, w.slots[i]); cats[c] = (cats[c] || 0) + 1; items.push(c); }
-    boxes.push({ pos: b.position.clone(), key: k, name: b.name, slots: n, cats, items, used: items.length });
+    const snap = snapshotContainer(bot, w);
+    boxes.push({ pos: b.position.clone(), key: k, name: b.name, slots: n, ...snap });
     noteSeen(bot, state, w, state.openContainerPos); bot.closeWindow(w); await sleep(150);
   }
   if (!boxes.length) throw new Error('周围的箱子一个都打不开');
@@ -2542,43 +2717,71 @@ async function organizeStorage (bot, state, { radius = 12, assign = {}, loadout 
         if (!w.slots[i]) { changed++; moved++; }
       }
       // 更新心里的账：这个箱子现在装着什么
-      box.items = []; for (let i = 0; i < w.inventoryStart; i++) if (w.slots[i]) box.items.push(categoryOf(bot, w.slots[i]));
-      box.used = box.items.length;
+      applyBoxSnapshot(box, snapshotContainer(bot, w));
       noteSeen(bot, state, w, state.openContainerPos); bot.closeWindow(w); await sleep(150);
     }
     log.push(`第 ${pass + 1} 轮去了 ${todo.length} 个箱子，搬了 ${changed} 组`);
     if (!changed) break;
   }
 
-  // ④ 每个箱子里面再排好；⑤ 随身装备缺的从箱子里拿（空箱子不去）
-  for (const box of boxes.filter(b => b.used > 0)) {
+  // ④ 每个箱子里面再排好；⑤ 随身装备缺的从箱子里拿（空箱子不去）。
+  // 已知材质的高级工具箱先看，避免先拿木镐后就把“有一把镐”误当成已经满足。
+  const boxTier = (box) => Math.min(...(box.contents || []).map(x => knownTierOf(x.name)).filter(x => x != null), 99);
+  for (const box of boxes.filter(b => b.used > 0).sort((a, b) => boxTier(a) - boxTier(b))) {
     if (stop()) break;
     try { await containerOpen(bot, state, box.pos); } catch (_) { continue; }
     const w = bot.currentWindow;
     await sortRange(bot, w, 0, w.inventoryStart);
-    const have = []; for (let i = w.inventoryStart; i < w.inventoryEnd; i++) if (w.slots[i]) have.push({ slot: i, item: w.slots[i] });
     for (const L of kit) {
-      const got = have.filter(e => kitMatch(bot, L, e.item)).reduce((a, e) => a + e.item.count, 0);
-      if (got >= (L.kind === 'best' ? 1 : L.count)) continue;
-      for (let i = 0; i < w.inventoryStart; i++) {
+      const haveEntries = () => {
+        const out = []; for (let i = w.inventoryStart; i < w.inventoryEnd; i++) if (w.slots[i]) out.push({ slot: i, item: w.slots[i] });
+        return out;
+      };
+      let have = haveEntries();
+      let got = have.filter(e => kitMatch(bot, L, e.item)).reduce((a, e) => a + e.item.count, 0);
+      const target = L.kind === 'best' ? 1 : L.count;
+      let sources = [];
+      for (let i = 0; i < w.inventoryStart; i++) if (w.slots[i] && kitMatch(bot, L, w.slots[i])) sources.push(i);
+      if (L.kind === 'best') sources.sort((a, b) => tierOf(w.slots[a].name) - tierOf(w.slots[b].name));
+
+      // 只在两边材质等级都认得时升级，认不出的模组工具不猜强弱、也不自动换掉。
+      if (L.kind === 'best' && got > 0 && sources.length) {
+        const carried = have.filter(e => kitMatch(bot, L, e.item));
+        const currentRank = Math.min(...carried.map(e => knownTierOf(e.item.name)).filter(x => x != null), 99);
+        const candidateRank = knownTierOf(w.slots[sources[0]].name);
+        if (candidateRank != null && currentRank !== 99 && candidateRank < currentRank) {
+          for (const e of carried.filter(e => knownTierOf(e.item.name) === currentRank)) await click(bot, e.slot, 0, 1);
+          have = haveEntries(); got = have.filter(e => kitMatch(bot, L, e.item)).reduce((a, e) => a + e.item.count, 0);
+        }
+      }
+      if (got >= target) continue;
+      // 一堆不够就继续下一堆；每次按窗口里的真实变化重算，不能只相信 transfer 没抛错。
+      for (const i of sources) {
         const it = w.slots[i];
-        if (!it) continue;
-        const ok = kitMatch(bot, L, it);
-        if (!ok) continue;
-        const n = Math.min(it.count, (L.kind === 'best' ? 1 : L.count) - got);
-        if (n <= 0) break;
-        await bot.transfer({ window: w, itemType: it.type, metadata: null, count: n, sourceStart: i, sourceEnd: i + 1, destStart: w.inventoryStart, destEnd: w.inventoryEnd });
-        break;
+        if (!it || !kitMatch(bot, L, it) || got >= target) continue;
+        const n = Math.min(it.count, target - got);
+        const before = got;
+        await bot.transfer({ window: w, itemType: it.type, metadata: it.metadata, nbt: it.nbt, count: n, sourceStart: i, sourceEnd: i + 1, destStart: w.inventoryStart, destEnd: w.inventoryEnd });
+        have = haveEntries(); got = have.filter(e => kitMatch(bot, L, e.item)).reduce((a, e) => a + e.item.count, 0);
+        if (got <= before) log.push(`${L.label} 从 ${box.key} 拿取后数量没有增加`);
       }
     }
+    applyBoxSnapshot(box, snapshotContainer(bot, w));
     noteSeen(bot, state, w, state.openContainerPos); bot.closeWindow(w); await sleep(150);
   }
 
   const layout = {};
   for (const [c, keys] of Object.entries(owner)) for (const k of keys) (layout[k] ||= []).push(c);
   const carry = {}; for (const it of bot.inventory.items()) carry[fullId(it.name)] = (carry[fullId(it.name)] || 0) + it.count;
+  const misplacedStacks = boxes.reduce((n, b) => n + misplaced(b), 0);
+  const shortfall = kitShortfall(bot, bot.inventory.items(), kit).filter(x => x.label !== '武器');
+  const blocked = log.some(x => /打不开|放不下|被新的命令打断|数量没有增加/.test(x));
+  const cursorEmpty = !bot.currentWindow?.selectedItem;
+  const completed = !stop() && !blocked && misplacedStacks === 0 && cursorEmpty;
   return {
     boxes: boxes.map(b => ({ at: b.key, name: b.name, slots: b.slots, holds: layout[b.key] || [], used: b.used, skipped: !!b.skipped })),
+    completed, status: completed ? 'completed' : (stop() ? 'aborted' : 'partial'),
+    verification: { misplacedStacks, cursorEmpty, loadoutShortfall: shortfall },
     moved, visits, carrying: carry, notes: log, seconds: Math.round((Date.now() - t0) / 1000),
   };
 }
@@ -3682,7 +3885,8 @@ async function furnish (bot, state, { id, items, maxMs = 90000 } = {}) {
 
 // ------------------------------------------------------------------ 睡觉
 
-async function sleepInBed (bot, state, { home = null } = {}) {
+async function sleepInBed (bot, state, { home = null, abort } = {}) {
+  if (abort?.()) return { ok: false, aborted: true };
   if (bot.isSleeping) return { already: true };
   // 床：名字以 bed 结尾的；女僕床、宠物床这种不是给人睡的
   const ids = Object.values(bot.registry.blocksByName)
@@ -3693,24 +3897,30 @@ async function sleepInBed (bot, state, { home = null } = {}) {
   beds.sort((a, b) => (inHome(b.position) - inHome(a.position)) || (bot.entity.position.distanceTo(a.position) - bot.entity.position.distanceTo(b.position)));
   const why = [];
   for (const bed of beds.slice(0, 4)) {
+    if (abort?.()) return { ok: false, aborted: true };
     // 睡不了的时候服务器会在动作栏说原因（只能晚上睡 / 附近有怪 / 床被占了）
     const said = [];
     const onMsg = (m, pos) => { if (pos === 'game_info' || pos === 'system') said.push(String(m.toString())); };
     bot.on('message', onMsg);
     try {
-      if (bot.entity.position.distanceTo(bed.position) > 3) await go(bot, state, { x: bed.position.x, y: bed.position.y, z: bed.position.z, range: 2 });
+      if (bot.entity.position.distanceTo(bed.position) > 3) await go(bot, state, { x: bed.position.x, y: bed.position.y, z: bed.position.z, range: 2, abort });
+      if (abort?.()) return { ok: false, aborted: true };
       if (bot.isABed(bed)) {
         await bot.sleep(bed);
       } else {
         // 模组的床（比如 handcrafted 的）：mineflayer 只认原版 16 色床名，自己右键它
         await bot.lookAt(bed.position.offset(0.5, 0.5, 0.5), true);
+        if (abort?.()) return { ok: false, aborted: true };
         await bot.activateBlock(bed);
-        for (let t = 0; t < 20 && !bot.isSleeping; t++) await sleep(100);
+        for (let t = 0; t < 20 && !bot.isSleeping && !abort?.(); t++) await sleep(100);
       }
+      if (abort?.()) return { ok: false, aborted: true };
       await sleep(300);
+      if (abort?.()) return { ok: false, aborted: true };
       if (bot.isSleeping) return { sleeping: true, bed: bed.name, at: doorKey(bed.position), inHome: !!inHome(bed.position) };
       why.push(`${bed.name}(${doorKey(bed.position)})：${said.join(' ') || '右键了但没躺下'}`);
     } catch (e) {
+      if (abort?.()) return { ok: false, aborted: true };
       const m = `${String(e.message || e)} ${said.join(' ')}`;
       why.push(`${bed.name}(${doorKey(bed.position)})：${/day|night|not possible|time/i.test(m) ? '现在不是晚上，睡不了' : /monster|mob|enem|safe/i.test(m) ? '附近有怪，睡不了' : /occupied/i.test(m) ? '床被占了' : m}`);
       if (/day|night|time|monster|mob|safe/i.test(m)) break;   // 时间/怪的问题换床也没用
@@ -3899,7 +4109,7 @@ function routes ({ state, withTimeout }) {
     'POST /motor': async (b = {}) => motor(bot(), state, b),
     'POST /nudge': async (b = {}) => nudge(bot(), b),
     'POST /wiggle': async (b = {}) => wiggle(bot(), b),
-    'GET /doors': async (_, q) => ({ doors: doorsNear(bot(), Math.min(+(q?.radius || 8), 16)), iOpened: [...(state.doorsIOpened || new Map()).values()].map(d => ({ ...d, pos: doorKey(d.pos) })), leftOpen: (state.doorsLeftOpen || []).slice(-5), lastClosed: state.lastDoorClosed || null }),
+    'GET /doors': async (_, q) => ({ doors: doorsNear(bot(), Math.min(+(q?.radius || 8), 16)), iOpened: [...(state.doorsIOpened || new Map()).values()].map(d => ({ ...d, pos: doorKey(d.pos) })), leftOpen: (state.doorsLeftOpen || []).slice(-5), lastClosed: state.lastDoorClosed || null, stateSkips: state.doorStateSkips || 0, lastSkipped: state.lastDoorSkipped || null }),
     'POST /door': async (b = {}) => {
       const r = await setDoor(bot(), state, b);
       // keepOpen：她明确要让门一直开着（比如放动物进圈），就不按习惯关
@@ -4020,7 +4230,8 @@ function routes ({ state, withTimeout }) {
       for (const dy of [-1, 0, 1]) {
         const b = mv.getBlock(new Vec3(+q.x, +q.y, +q.z), 0, dy, 0);
         let props = null; try { props = b?.getProperties?.(); } catch (e) { props = 'ERR ' + e.message; }
-        out.push({ y: +q.y + dy, name: b?.name, props, hasGP: typeof b?.getProperties, stateId: b?.stateId, safe: b?.safe, physical: b?.physical, height: b?.height, bbox: b?.boundingBox, shapes: b?.shapes?.length });
+        out.push({ y: +q.y + dy, name: b?.name, props, hasGP: typeof b?.getProperties, stateId: b?.stateId, safe: b?.safe, physical: b?.physical, height: b?.height, bbox: b?.boundingBox, shapes: b?.shapes?.length,
+          doorShapes: /(^|_)(trap)?door$/.test(b?.name || '') ? b?.shapes : undefined });
       }
       return { patched: !!mv.__openDoorsPatched, blocks: out };
     },
@@ -4087,6 +4298,28 @@ if (require.main === module && process.argv.includes('--selftest')) {
   });
 
   (async () => {
+    console.log('\n[0] 精妙背包快照：窗口编号复用不能伪造空背包');
+    {
+      const old = { items: { 'minecraft:iron_ingot': 58 }, slots: 108, used: 1, at: 1 };
+      const state = { backpackWindowId: 7, backpackSeen: old };
+      const ordinary = { id: 7, inventoryStart: 0, slots: [] }; // 普通窗口碰巧复用了旧编号
+      check('旧编号相同但没有精妙同步标记 → 不覆写', noteBackpack(state, ordinary), false);
+      check('原来的可信快照保留', state.backpackSeen, old);
+      const soph = { id: 8, __sophisticated: true, inventoryStart: 2, slots: [{ name: 'iron_ingot', count: 58 }, null, null, null] };
+      check('真实精妙窗口会更新', noteBackpack(state, soph), true);
+      check('记录真实容量与铁锭', { slots: state.backpackSeen.slots, used: state.backpackSeen.used, iron: state.backpackSeen.items['minecraft:iron_ingot'] }, { slots: 2, used: 1, iron: 58 });
+      const bad = { id: 9, __sophisticated: true, inventoryStart: 0, slots: [] };
+      check('同步不完整的 0 格窗口也不覆写', noteBackpack(state, bad), false);
+
+      const inv = [...Array(36)].map((_, i) => ({ type: 1000 + i, count: i + 1 }));
+      const bot = { inventory: { slots: [...Array(9).fill(null), ...inv] } };
+      const packet = Array(149).fill(null);
+      for (let i = 0; i < 36; i++) { packet[i] = { ...inv[i] }; packet[108 + i] = { ...inv[i] }; }
+      check('背包开头与玩家段内容相同 → 按界面结构选 108，不选 0', locatePlayerInv(bot, packet), 108);
+      const emptyBot = { inventory: { slots: Array(45).fill(null) } };
+      check('普通物品栏全空也能从 149 格结构认出 108', locatePlayerInv(emptyBot, Array(149).fill(null)), 108);
+    }
+
     console.log('\n[1/8] 同层 → 交给 GoalFollow 贴着走');
     {
       const { bot, pathfinder, setGoalCalls } = rig();
@@ -4166,7 +4399,67 @@ if (require.main === module && process.argv.includes('--selftest')) {
       check('跟随退出时没有动 /move 的 GoalNear', pathfinder.goal === near, true);
     }
 
-    console.log('\n[7/8] go：被叫停时立刻抛 aborted（`/stop` 要停得住在途路线）');
+    console.log('\n[7/9] 门：右键前读实时状态，已开不再切成关');
+    {
+      const makeDoorBot = (initialOpen, delay = 0) => {
+        let open = initialOpen; let calls = 0;
+        const pos = new Vec3(3, 64, 4);
+        const block = () => ({
+          name: 'minecraft:oak_door', position: pos.clone(),
+          getProperties: () => ({ open, half: 'lower', facing: 'north' }),
+        });
+        const bot = {
+          __get: () => ({ open, calls }),
+          entity: { position: new Vec3(3.5, 64, 5.5) },
+          blockAt: () => block(),
+          lookAt: async () => {},
+          activateBlock: async () => { calls++; if (delay) await sleep(delay); open = !open; },
+        };
+        return { bot, block };
+      };
+
+      const a = makeDoorBot(true);
+      const sa = {};
+      installDoorHabit(a.bot, sa);
+      const skipped = await a.bot.activateBlock(a.block());
+      check('门已经 open=true → 不右键', `${a.bot.__get().open}/${a.bot.__get().calls}/${skipped.skipped}`, 'true/0/true');
+      check('跳过操作会留下状态证据', `${sa.doorStateSkips}/${sa.lastDoorSkipped.open}`, '1/true');
+
+      const b = makeDoorBot(false, 20);
+      const sb = {};
+      installDoorHabit(b.bot, sb);
+      await Promise.all([b.bot.activateBlock(b.block()), b.bot.activateBlock(b.block())]);
+      check('同一扇关门并发要求打开 → 只右键一次', `${b.bot.__get().open}/${b.bot.__get().calls}`, 'true/1');
+      check('第二次在等待后看到已开并跳过', sb.doorStateSkips, 1);
+      sb.doorsIOpened.clear();
+
+      sb.__closingDoor = true;
+      await b.bot.activateBlock(b.block());
+      check('明确要求关门时，open=true 才右键', `${b.bot.__get().open}/${b.bot.__get().calls}`, 'false/2');
+      await b.bot.activateBlock(b.block());
+      check('明确要求关门时，已经 closed 就不再右键', `${b.bot.__get().open}/${b.bot.__get().calls}`, 'false/2');
+      sb.doorsIOpened.clear();
+    }
+
+    console.log('\n跨层入口：高两格的梯子仍应实际尝试');
+    check('脚 y=121、梯子底 y=123 → 候选保留', ladderBottomReachable({ bottom: 123 }, 121.02), true);
+    check('脚 y=121、梯子底 y=124 → 确实够不到', ladderBottomReachable({ bottom: 124 }, 121.02), false);
+    {
+      const mv = { exclusionAreasStep: [] };
+      let costs = null;
+      const bot = {
+        pathfinder: {
+          movements: mv,
+          goto: async () => { const guard = mv.exclusionAreasStep[0]; costs = [guard({ position: { y: 127 } }), guard({ position: { y: 128 } })]; },
+          setGoal: () => {},
+        },
+      };
+      await pathToKeepingFloor(bot, new Vec3(0, 129, 0), 2, 100, 128);
+      check('爬上楼后：低于守住楼层的路径被禁', costs, [100, 0]);
+      check('楼层保护只在本次寻路期间安装', mv.exclusionAreasStep.length, 0);
+    }
+
+    console.log('\n[8/9] go：被叫停时立刻抛 aborted（`/stop` 要停得住在途路线）');
     {
       let aborted = false;
       const bot = mkGoBot(async () => { aborted = true; throw new Error('GoalChanged'); });
@@ -4176,7 +4469,7 @@ if (require.main === module && process.argv.includes('--selftest')) {
       check('错误信息是"被叫停了"', err?.message, '被叫停了');
     }
 
-    console.log('\n[8/8] go：abort 一直为假 → 不误报"被叫停"');
+    console.log('\n[9/9] go：abort 一直为假 → 不误报"被叫停"');
     {
       const bot = mkGoBot(async () => { throw new Error('GoalChanged'); });
       let err = null;
@@ -4234,4 +4527,4 @@ if (require.main === module && process.argv.includes('--selftest')) {
   })();
 }
 
-module.exports = { zoneArea, zoneWants, install, routes, slotByName, foodScore, fullId, botName, startFollow, farm, kitShortfall, kitAvailable, defaultLoadout, wearingBackpack, backpackTidy, unseenChests, unseenCarts, inHomeArea, inCave, SCAFFOLD_IDS, scaffoldIds };   // farm：收获本能直接调（instinct.js）
+module.exports = { zoneArea, zoneWants, install, installDoorHabit, routes, slotByName, foodScore, fullId, botName, startFollow, farm, kitShortfall, kitAvailable, defaultLoadout, wearingBackpack, backpackTidy, unseenChests, unseenCarts, inHomeArea, inCave, SCAFFOLD_IDS, scaffoldIds };   // farm：收获本能直接调（instinct.js）

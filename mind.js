@@ -37,6 +37,7 @@ const review = require('./self-review');
 const ledgerLib = require('./inventory-ledger');   // 只用它的 render（账在 bridge 记，见 inventory-ledger.js）
 const night = require('./night');   // 天黑本能：天色变化的事件 + 今晚怎么安排（见 night.js）
 const plan = require('./plan');     // 长期计划：没人找她时自己推进游戏（见 plan.js）
+const storagePolicy = require('./storage-policy');
 const { TOOLS, bridge, parseArgs, normalizeArgs, toolSpec, summarize } = body;
 
 const CFG = {
@@ -315,6 +316,11 @@ async function look () {
       for (const e of ins.events) {
         // 房子长大了：家的半径记进记忆（只改半径，家里箱子的记忆不动）
         if (e.kind === 'home_grow' && e.radius) { const hh = mem.getHome(); if (hh && e.radius > hh.radius) { hh.radius = e.radius; mem.touch(); } }
+        // 自动整理也会改变箱内存货；只有 bridge 完整验收过，才把布局/空箱写回长期记忆。
+        if (e.kind === 'tidy' && e.storage?.completed && Array.isArray(e.storage.boxes)) {
+          const { layout, empty } = storagePolicy.layoutFromBoxes(e.storage.boxes);
+          mem.setHomeStorage(layout, { empty });
+        }
         emit(`🫳 ${e.text}`, { cue: `${e.kind} ${e.ore || ''}` });
       }
       W.instinctSeq = ins.seq;
@@ -326,7 +332,10 @@ async function look () {
     // 本能层数出来的半径比记忆里大（mind 没醒着时长大的）：跟上
     if (h) {
       W.homeToldAt = Date.now();
-      bridge.post('/instinct', { home: { center: h.center, radius: h.radius } })
+      bridge.post('/instinct', { home: {
+        center: h.center, radius: h.radius,
+        storage: h.storage || {}, emptyBoxes: h.emptyBoxes || [], protected: h.protected || [],
+      } })
         .then(r => { if (r?.home?.radius > h.radius) { h.radius = r.home.radius; mem.touch(); } })
         .catch(() => { W.homeToldAt = 0; });
     }
@@ -841,6 +850,9 @@ const SYSTEM = `你是 Angle_ICE（安琪），住在这个 Minecraft 模组服�
 - 位置说地方，不报坐标：家门口 / 楼上 / 矿洞底下 / 你左边那棵树。只有他问你在哪、又说不清的时候，或者你出事了要他来找你，才给一次坐标。
 - 他问你拿到了什么、箱子里有什么：挑两三样要紧的说（稀罕的、他用得上的、正缺的），剩下的"还有些杂的"一句带过。别像念清单一样一样报。
 - 事实（配方、数量、东西在哪）只说查到或看到的；没查就说"我查查"，查不到就说不知道。被追问时发现说错了，就认"我记错了"，别硬撑着再编一个。
+- 普通物品栏和穿戴的精妙背包都是“你自己的随身物品”。找东西必须用 inventory(query) 同时查两处；返回 absenceProven=false 就先 open_backpack 刷新。没有查完两处，不准说“我没有”“弄丢了”“死时掉了”，更不能编物品消失的原因。
+- **自己的动作和因果也算事实**：你在地下，不等于你挖穿地板或掉下来。说“我挖穿了／摔下来了／被怪打下来”之前，必须有本轮工具结果或明确的本能动作记录证明这件事；只有位置变化、掉血或“当前位置像洞穴”都不算。没证据就说“我走到下面了，刚才怎么下来的我不确定”；玩家亲眼说是走下来的，要承认并改口，不能继续编原因。
+- 本能事件中的 entryMethod:unknown 是“没有记录进入方式”。任何事件文字和你的 inner 都可能不完整；只把已执行工具的返回和动作记录当作自己做过的证据。
 
 开口之前，先活在这一刻：
 - say 先填 inner：一句此刻的你（手上在忙什么、身上什么感觉、他这句话让你想到什么），他看不见；text 从这里长出来 —— 忙着就短，被戳到就回嘴，惦记着就多问一句。该说的照样说：他跟你说话要回，出事了要出声。
@@ -1040,7 +1052,7 @@ function buildNow (why) {
   const parts = [
     head,
     humanState(s) + (() => { const h = mem.getHome(); return h ? (mem.inHome(s?.pos) ? '、在家' : `、离家 ${Math.round(Math.hypot((s?.pos?.x ?? 0) - h.center.x, (s?.pos?.z ?? 0) - h.center.z))} 格`) : ''; })(),
-    `背包：${invText(s?.items)}`,
+    `普通物品栏（也是你的随身物品）：${invText(s?.items)}`,
     (() => {
       const e = s?.equipment; if (!e) return '';
       const zh = { head: '头', torso: '身上', legs: '腿', feet: '脚', 'off-hand': '副手', hand: '手里拿着' };
@@ -1048,10 +1060,16 @@ function buildNow (why) {
       return `穿戴：${on.length ? on.join('、') : '什么都没穿'}（装备栏里的不算在背包里）`;
     })(),
     (() => {
-      // 饰品栏（背饰、戒指…）和背在背上的背包里装着什么 —— 不开界面看不到，这是上次看到的
+      // 饰品栏（背饰、戒指…）和背在背上的精妙背包 —— 两者都属于她自己的随身物品。
+      // 不开界面只能用上次可信快照；0 格是“读不到”，绝不能渲染成“空”。
       const c = s?.curios; if (!c?.length) return '';
       const bp = s?.backpack;
-      const inside = bp ? `（背包里：${Object.entries(bp.items).map(([k, n]) => `${knowledge.label(k)}×${n}`).join('、') || '空的'}，${bp.used}/${bp.slots} 格，open_backpack 打开存取）` : '';
+      const valid = bp && Number.isFinite(bp.slots) && bp.slots > 0 && bp.items && typeof bp.items === 'object';
+      const age = valid && Number.isFinite(bp.at) ? Math.max(0, Math.round((Date.now() - bp.at) / 1000)) : null;
+      const when = age == null ? '' : age < 60 ? `${age} 秒前` : `${Math.round(age / 60)} 分钟前`;
+      const inside = valid
+        ? `（我的精妙背包，${when}打开时看到：${Object.entries(bp.items).map(([k, n]) => `${knowledge.label(k)}×${n}`).join('、') || '确实是空的'}，${bp.used}/${bp.slots} 格；查东西用 inventory(query)，需要确认现在没有就先 open_backpack 刷新）`
+        : '（我的精妙背包；内容暂时读不到，不代表空，先 open_backpack 刷新）';
       return `饰品：${c.map(x => knowledge.label(x)).join('、')}${c.some(x => /backpack/.test(x)) ? inside : ''}`;
     })(),
     people ? `玩家：${people}` : '',
@@ -1168,7 +1186,9 @@ async function think (why) {
           if (name === 'say' && args.inner) log(`💭 ${String(args.inner).slice(0, 120)}`);
           if (name === 'say' && out.ok) { didSay.push(args.text || args.message); sentN += (out.sent || []).length; }
         }
-        W.history.push({ role: 'tool', tool_call_id: c.id, content: clipText(JSON.stringify(out)) });
+        // 全随身物品可能超过普通工具结果的 1800 字；inventory 已支持 query，完整结果仍要留够
+        // 空间让矿物等靠后的条目不会被截掉，避免“其实在精妙背包里却没看到”。
+        W.history.push({ role: 'tool', tool_call_id: c.id, content: clipText(JSON.stringify(out), name === 'inventory' ? 6000 : 1800) });
       }
       const spokeOnly = !actions.length && !end && calls.every(c => ['speech', 'memory'].includes(kindOf(c.function?.name)));
       if (spokeOnly && round < CFG.maxRounds - 1) needMore = true;
@@ -1439,7 +1459,17 @@ async function main () {
     if (since < want) await new Promise(r => setTimeout(r, want - since));
     W.lastHeardAt = 0;   // 同一轮里第二句不用再等那么久
   };
-  mem.load();
+  // 2026-09-27 用户现场纠错：旧版探洞事件把“人在洞里”写成“挖到了洞”。
+  // 修正由程序写入的那条假经历；“我说过什么”保留为真实对话记录。
+  const loadedMemory = mem.load();
+  let correctedCaveEpisode = false;
+  for (const e of loadedMemory.episodes || []) {
+    if (e.text === '挖到了一个天然洞穴（32,94,11），进去看看') {
+      e.text = '更正：当时已在住宅下方的洞里；进入方式没有动作记录。玩家说明是走下来的，不能说挖穿或掉下来。';
+      correctedCaveEpisode = true;
+    }
+  }
+  if (correctedCaveEpisode) mem.touch();
   const K = knowledge.load();
   log(`Angle_ICE 醒了  模型=${CFG.model}  记忆=${JSON.stringify(mem.stats())}  书=${K.recipes.length} 条配方`);
   startControl();
@@ -1532,6 +1562,23 @@ async function selftest () {
   console.log = ((o) => (...a) => { if (!String(a[0]).startsWith('      ')) o(...a); })(console.log);
   W.sim = true;
   W.state = { connected: true, health: 18, food: 15, isDay: true, pos: { x: 0, y: 64, z: 0 }, items: [], nearby: [], players: [] };
+
+  console.log('\n全部随身物品：普通物品栏 + 精妙背包');
+  {
+    const now = Date.now();
+    body._setBridge({ get: async (p) => p === '/inventory'
+      ? { items: [{ name: 'iron_ingot', count: 3 }] }
+      : { curios: ['sophisticatedbackpacks:diamond_backpack'], equipment: {}, backpack: { items: { 'minecraft:raw_iron': 13 }, slots: 108, used: 1, at: now } } });
+    const found = await body._personalInventory({ query: '铁' });
+    check('查询同时合并普通物品栏和精妙背包', found.combined['minecraft:iron_ingot'] === 3 && found.combined['minecraft:raw_iron'] === 13, found);
+    check('刚刷新过两处，可以判断有没有', found.absenceProven === true, found);
+    body._setBridge({ get: async (p) => p === '/inventory'
+      ? { items: [] }
+      : { curios: ['sophisticatedbackpacks:diamond_backpack'], equipment: {}, backpack: { items: {}, slots: 0, used: 0, at: now } } });
+    const unreadable = await body._personalInventory({ query: '铁锭' });
+    check('0/0 是读不到，不是假装空背包', unreadable.sophisticatedBackpack.readable === false && unreadable.absenceProven === false && /不能说没有/.test(unreadable.note), unreadable);
+    body._setBridge(mockBridge());
+  }
 
   console.log('\n快速通道');
   check('"安琪跟我来" → follow', matchFast('安琪跟我来')?.id === 'follow');
@@ -1659,7 +1706,7 @@ async function selftest () {
     W.pending.push({ t: Date.now(), text: '💬 Ka_sum1 说：第二句', cue: 'Ka_sum1', names: ['Ka_sum1'] });
     await think('event');
     const us = W.history.filter(m => m.role === 'user');
-    check('只有最新一刻带背包等状态', us.filter(m => /背包：/.test(m.content)).length === 1 && /背包：/.test(us[us.length - 1].content), us.map(m => m.content.slice(0, 40)));
+    check('只有最新一刻带普通物品栏等状态', us.filter(m => /普通物品栏/.test(m.content)).length === 1 && /普通物品栏/.test(us[us.length - 1].content), us.map(m => m.content.slice(0, 40)));
     check('旧的一刻还留着发生了什么', /第一句/.test(us[0].content) && /【此刻/.test(us[0].content), us[0].content);
     check('旧的一刻去掉了想起来的记忆', !/给我鸡蛋的好人/.test(us[0].content), us[0].content);
   }

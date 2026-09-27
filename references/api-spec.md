@@ -466,14 +466,23 @@ Example:
 本能层现状与开关（见 `instinct.js`）。`GET /instinct` 给各本能配置、`home`、正在做什么（`running`、`combatNow`）、
 最近一次判断（`last` 里每个本能为什么做 / 为什么没做）、最近 10 条记录、`lastCancel`（战斗本能上次叫停了什么命令）。
 
+调度诊断（2026-09-27）：`diagnostics` 分别记录 combat / breathe / eat / hazard 的检查时间、触发来源
+（timer / event）、是否执行中、跳过原因和耗时。耗时包含整个动作，**不等于发现敌人的延迟**。
+`scheduler` 给出普通循环的最近/最大定时器延迟 `lagMs` / `maxLagMs` 及本轮占用时长 `busyForMs`；
+`sleepState` 给出姿态、睡眠缓存和床位，姿态缺失为 null；`sleepCorrections` 是睡眠缓存纠正次数。
+`urgent` 表示紧急动作已预留身体，即使尚在等待旧动作收尾也会阻止普通命令抢占。
+
 `POST /instinct`：`{ pickup?, harvest?, mine?, sleep?, armor?, gaze?, combat?: true|false, radius?, followRadius?, home?: {center:{x,y,z}, radius} | null }`。
 关掉正在做的那个会立刻打断它。`home` 由 mind 每分钟告诉一次（收获只收家里的地、睡觉只在家里睡）。
 
 `GET /instinct/events?since=<seq>` → `{ seq, events:[{ seq, t, kind, text, ... }] }`：本能做成了什么、看见什么没做成
 （`harvest` `mine` `ore_lacking_tool` `sleep` `sleep_failed` `armor` `tool_worn` `combat` `combat_retreat` `hazard_stuck`）。mind 读成"🫳 …"。
+`cave` 事件只陈述当前位置像洞穴，`entryMethod:unknown` 表示没有进入方式记录；`cave_move` 在寻路确认到达时记录起点和终点。家的水平范围覆盖地下任意深度，自动探洞本能在此范围内关闭；明确的下矿工具调用不受此规则影响。
 
 **战斗时**：除 `/flee` `/follow` `/go` `/move` `/self_rescue` 和 `/stop {hold:true}` 外，会动身体的命令直接回 `{ ok:false, error:'在打架…' }`。
 战斗本能开打时会叫停正在跑的命令（路由给每个命令注入了 `abort()`）。
+危险方块退开和上浮也会预留身体、取消普通动作；上浮可以中断正在执行的战斗。
+`POST /sleep` 与 `POST /jump` 已接入取消链；明确的停止/逃离/移动命令仍可中止紧急动作。
 
 会动身体的 POST（除 `/chat` `/instinct` `/look` `/memory` 等只读或不动身体的）执行前都会先让本能让出身体。
 `POST /stop { "hold": true }` = 站住，之后 20 秒本能也不动；不带 `hold` 的 `/stop` 只是"停下换件事"。
@@ -607,6 +616,8 @@ Notes:
 ---
 
 ## POST /move
+
+门路径（2026-09-27）：木门纳入寻路，经过时自动开门；她自己开的门，离开后会关回去。门口卡住时从当前格换路。只读诊断 `GET /debug/route?x=21&y=123&z=12` 返回规划的格子序列；`path[].open=true` 表示该步会右键开门。它只预览，不移动身体。`GET /config` 的 `pathfinder.openDoors.stats` 包含门板方向拒绝和停滞换路计数。
 
 Pathfind to target coordinates.
 
@@ -804,7 +815,9 @@ Response:
 ## POST /attack
 
 Melee attack. Defaults to the nearest hostile mob; pass `target` to name a specific
-entity type.
+entity type. `radius` is a search radius, not attack reach. The bot approaches the
+nearest matching entity and only swings at 3 blocks or closer. Chasing never places
+scaffolding blocks; an unreachable target returns an honest failure.
 
 Request:
 ```json
@@ -816,12 +829,14 @@ Request:
 
 Response:
 ```json
-{"success": true, "attacked": 6, "targets": ["skeleton"]}
+{"success": true, "attacked": 2, "targets": ["skeleton"], "approached": true,
+ "startDistance": 8.4, "targetGone": true, "failures": []}
 ```
 
-`radius` is clamped to 1–16. Up to 3 targets, 6 swings each. If nothing matches:
+`radius` is clamped to 1–16. One nearest target is handled per call, with up to 6
+cooldown-paced swings. If nothing matches:
 ```json
-{"success": true, "attacked": 0, "message": "no hostile mob within 4"}
+{"success": false, "attacked": 0, "message": "no hostile mob within 4"}
 ```
 
 Built-in hostile list: skeleton, zombie, spider, creeper, witch, enderman, husk,

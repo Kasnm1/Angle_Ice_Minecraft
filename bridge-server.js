@@ -61,6 +61,7 @@ const entityRegistry = require('./entity-registry.js');
 const instinct = require('./instinct.js');
 // 物品账：背包每次进出记下"变了什么、为什么"（捡的 / 放进哪个箱子 / 吃掉 / 用坏…），mind 读它。见 inventory-ledger.js。
 const inventoryLedger = require('./inventory-ledger.js');
+const storagePolicy = require('./storage-policy.js');
 // FTB 任务书进度：哪些任务做完了（长期计划看主线做到哪了）。格式见 ftbq-sync.js（反编译核对过）
 const ftbqSync = require('./ftbq-sync.js');
 // 天色与遮蔽：/status 给 phase（day/dusk/night/dawn）和 exposure（头顶有没有东西挡着），mind 据此安排夜里做什么。见 night.js。
@@ -78,6 +79,8 @@ let mineflayer, pathfinderPlugin, Movements, goals, Vec3;
 let autoEatPlugin = null, toolPlugin = null, collectBlockPlugin = null;
 try {
   mineflayer = require('mineflayer');
+  const doorPatch = require('./scripts/patch-pathfinder-door').ensure();
+  if (doorPatch.changed) console.log('[pathing] 已修复寻路库开门后空队列导致的崩溃');
   const pf = require('mineflayer-pathfinder');
   pathfinderPlugin = pf.pathfinder;
   Movements = pf.Movements;
@@ -1005,11 +1008,15 @@ async function useBlockAt (pos, opts = {}) {
   if (dist > 6) throw new Error(`too far to activate: ${dist.toFixed(2)} blocks (max 6)`);
 
   const normal = face ? FACES[face] : pathing.faceTowardBlock(pos, eye);
-  const before = { stateId: block.stateId, name: block.name };
+  let beforeProps = null;
+  try { beforeProps = block.getProperties?.() || null; } catch (_) {}
+  const before = { stateId: block.stateId, name: block.name,
+    open: beforeProps && 'open' in beforeProps ? String(beforeProps.open).toLowerCase() === 'true' : undefined };
+  let activationResult = null;
 
   state.currentAction = `activate ${before.name || 'stateId ' + before.stateId} @ ${pos.x},${pos.y},${pos.z}`;
   try {
-    await state.bot.activateBlock(block, new Vec3(normal[0], normal[1], normal[2]), new Vec3(0.5, 0.5, 0.5));
+    activationResult = await state.bot.activateBlock(block, new Vec3(normal[0], normal[1], normal[2]), new Vec3(0.5, 0.5, 0.5));
     // 等服务端把新的 blockUpdate 推回来 —— 立刻读会读到旧状态，
     // 那样 stateChanged 恒为 false，调用方会以为"没生效"。
     await sleepMs(300);
@@ -1018,13 +1025,18 @@ async function useBlockAt (pos, opts = {}) {
   }
 
   const after = state.bot.blockAt(pos);
-  const afterInfo = after ? { stateId: after.stateId, name: after.name } : null;
+  let afterProps = null;
+  try { afterProps = after?.getProperties?.() || null; } catch (_) {}
+  const afterInfo = after ? { stateId: after.stateId, name: after.name,
+    open: afterProps && 'open' in afterProps ? String(afterProps.open).toLowerCase() === 'true' : undefined } : null;
   return {
     activated: { x: pos.x, y: pos.y, z: pos.z },
     face: face || `auto(${normal.join(',')})`,
     distance: +dist.toFixed(2),
     before,
     after: afterInfo,
+    skipped: activationResult?.skipped === true,
+    skipReason: activationResult?.reason,
     // 这是"到底开没开"的判据：stateId 变了 = 服务端真的改了方块状态。
     // 没变不一定失败（有些方块右键不改变 state），但变了就一定成功。
     stateChanged: !!afterInfo && afterInfo.stateId !== before.stateId,
@@ -1155,7 +1167,10 @@ function installLedger (bot) {
 
   const describeWindow = (w) => {
     if (!w) return null;
-    if (w.__sophisticated || w.id === state.backpackWindowId) return { kind: 'backpack', where: '背包' };
+    // windowId 会被服务端循环复用。只凭“和上次背包同号”会把后来打开的普通箱子
+    // 当成精妙背包，甚至用箱子的占位格子把背包快照覆写成“空的 0/0 格”。
+    // __sophisticated 只在收到精妙核心自己的格子同步后才会标上，才是真凭据。
+    if (w.__sophisticated) return { kind: 'backpack', where: '精妙背包' };
     const menu = String(w.__menu || state.lastWindowInfo?.menu || w.type || '');
     if (/crafting/.test(menu)) return { kind: 'crafting' };
     if (/furnace|smoker|blast/.test(menu)) return { kind: 'furnace' };
@@ -1390,8 +1405,8 @@ function createBot() {
         + '导入办法见 GET /palette 的 hint。');
     }
 
-    // 开着的门当成能走的格子（寻路器原本把所有门都当墙，门里面就成了死路，见 pathing.applyOpenDoors）
-    state.pfOpenDoors = pathing.applyOpenDoors(mv);
+    // 木门纳入路径：关着时右键，开着时按门洞方向通过；门口卡住就从当前位置换路。
+    state.pfOpenDoors = pathing.applyOpenDoors(mv, state.bot);
     state.bot.pathfinder.setMovements(mv);
 
     // ---- collectblock / auto-eat 的运行时配置 ------------------------------------
@@ -1494,13 +1509,10 @@ function createBot() {
       + (state.pfUnknown.passableStateIds.length ? `；可穿过白名单 stateId=[${state.pfUnknown.passableStateIds.join(', ')}]` : '')
       + (state.pfUnknown.nameResolver ? `；名字解析器已接（调色板${state.palette ? `已加载，${state.paletteMeta.entries} 个方块` : '未加载'}）` : '；没有名字解析器'));
 
-    console.log(`[pathing] 开着的门：${state.pfOpenDoors?.installed
-      ? '放行（关着的门/活板门照旧当墙）'
+    console.log(`[pathing] 门路径：${state.pfOpenDoors?.installed
+      ? '开门、按门洞方向通行；门口停滞时从当前格换路'
       : `未启用（${JSON.stringify(state.pfOpenDoors)}）`}`
-      // 计数是**运行期**才有的（寻路器每问一次记一笔），启动时都是 0。
-      // 真正有用的是跑起来以后从 GET /config 看：refused 大 → 说明"门板两侧都通"的门不少，
-      // 那些门被保守当墙、她会绕路；noFacing 大 → 模组门的属性名和原版不一样，得看 /debug/mvblock。
-      + '；两侧都通被保守当墙的、读不到 facing 的，都在 GET /config 的 pathing.openDoors 里计数');
+      + '；门板方向拒绝、缺少 facing、停滞后换路次数见 GET /config 的 pathing.openDoors');
 
     // 审计每一次挖方块。寻路器拆方块走的是 bot.dig，所以包一层就能抓到
     // "不是挖掘任务、却把方块拆了"的情况 —— 这正是玩家房子被拆那次没留痕的原因。
@@ -2788,6 +2800,24 @@ const handlers = {
       recentGoalEvents: state.__goalTrace.slice(-20),
     };
   },
+  'GET /debug/route': async (_, q = {}) => {
+    if (![q.x, q.y, q.z].every(v => v !== undefined && Number.isFinite(+v))) throw new Error('x y z required');
+    const goal = new goals.GoalBlock(+q.x, +q.y, +q.z);
+    const generator = state.bot.pathfinder.getPathFromTo(
+      state.bot.pathfinder.movements, state.bot.entity.position, goal,
+      { timeout: 1500, optimizePath: false },
+    );
+    const result = generator.next().value?.result;
+    return {
+      status: result?.status || 'unavailable',
+      visitedNodes: result?.visitedNodes ?? null,
+      path: (result?.path || []).slice(0, 80).map(p => ({
+        x: p.x, y: p.y, z: p.z,
+        open: p.toPlace?.some(v => v.useOne) || false,
+        dig: p.toBreak?.length || 0,
+      })),
+    };
+  },
 
   'GET /status': async () => ({
     connected: state.connected,
@@ -4072,7 +4102,9 @@ const handlers = {
     return { lookingAt: { x: +x, y: +y, z: +z } };
   },
 
-  // 近战攻击：默认打最近的敌对生物，也可以指定 target=<实体名>
+  // 近战攻击：搜索半径只用来找目标；真正挥击前必须走到近战距离。
+  // 旧实现把 radius（最多 16 格）同时当成攻击距离，导致她站在原地隔空杀动物，
+  // 语言却说“追过去”——动作记录与事实不一致，也会被服务器的宽松校验掩盖。
   'POST /attack': async ({ target, radius = 4 }) => {
     radius = Math.min(Math.max(1, +radius), 16);
     const HOSTILE = new Set([
@@ -4088,28 +4120,69 @@ const handlers = {
       .sort((a, b) => a.position.distanceTo(self.position) - b.position.distanceTo(self.position));
 
     if (!candidates.length) {
-      return { attacked: 0, message: target ? `no ${target} within ${radius}` : `no hostile mob within ${radius}` };
+      return { ok: false, attacked: 0, message: target ? `no ${target} within ${radius}` : `no hostile mob within ${radius}` };
     }
 
+    const victim = candidates[0];
+    const reach = 3.0;
+    const distance = () => victim?.position && state.bot.entity?.position
+      ? victim.position.distanceTo(state.bot.entity.position)
+      : Infinity;
+    const startDistance = distance();
+    const approaches = [];
+    const failures = [];
+
     state.currentAction = `attacking ${target || 'hostile mob'}`;
+    // 追逐动物属于普通走路，绝不能为了贴近目标垫方块或原地起柱。
+    state.noScaffoldDepth = (state.noScaffoldDepth || 0) + 1;
+    try { pathing.setScaffold(state.bot.pathfinder?.movements, {}); } catch (_) {}
     let hits = 0;
+    let lastHitDistance = null;
     try {
-      for (const e of candidates.slice(0, 3)) {
-        for (let i = 0; i < 6; i++) {
-          if (!e.isValid || !e.position) break;
-          if (e.position.distanceTo(state.bot.entity.position) > radius + 2) break;
+      for (let i = 0; i < 6; i++) {
+        if (victim.isValid === false || !victim.position) break;
+
+        // 动物会走动，所以每次挥击前重新量距离；最多从当前位置重算三次路线。
+        for (let attempt = 0; distance() > reach && attempt < 3; attempt++) {
+          const before = distance();
+          const p = victim.position.floored();
           try {
-            await state.bot.lookAt(e.position.offset(0, e.height ? e.height * 0.6 : 0.9, 0), true);
-          } catch (_) {}
-          state.bot.attack(e);
-          hits++;
-          await new Promise(r => setTimeout(r, 350));
+            const moved = await handlers['POST /go']({ x: p.x, y: p.y, z: p.z, range: 1.7, maxMs: 15000 });
+            approaches.push({ before: +before.toFixed(1), after: +distance().toFixed(1), arrived: moved?.arrived === true });
+          } catch (e) {
+            failures.push(`走近目标失败：${e.message}`);
+            break;
+          }
         }
+
+        const atHit = distance();
+        if (atHit > reach) {
+          failures.push(`仍离目标 ${Number.isFinite(atHit) ? atHit.toFixed(1) : '?'} 格，未发送远距攻击`);
+          break;
+        }
+        try {
+          await state.bot.lookAt(victim.position.offset(0, victim.height ? victim.height * 0.6 : 0.9, 0), true);
+        } catch (_) {}
+        state.bot.attack(victim);
+        hits++;
+        lastHitDistance = atHit;
+        await new Promise(r => setTimeout(r, instinct.attackCooldownMs(state.bot.heldItem?.name)));
       }
     } finally {
+      state.noScaffoldDepth = Math.max(0, (state.noScaffoldDepth || 1) - 1);
       state.currentAction = null;
     }
-    return { attacked: hits, targets: candidates.slice(0, 3).map(e => e.name) };
+    return {
+      attacked: hits,
+      targets: [victim.name],
+      approached: approaches.length > 0,
+      startDistance: +startDistance.toFixed(1),
+      hitDistance: lastHitDistance == null ? null : +lastHitDistance.toFixed(1),
+      targetGone: victim.isValid === false,
+      approaches,
+      failures,
+      ok: hits > 0,
+    };
   },
 
   // 从背包装备物品：destination = hand | off-hand | head | torso | legs | feet
@@ -6019,7 +6092,7 @@ const handlers = {
   //
   // ⚠️ `durationMs` 是**最长**时间，不是保证时间。到水面就提前停：
   //    氧气在回涨就说明已经能呼吸了，继续按着跳会让"站在岸边"变成"一直跳"。
-  'POST /jump': async ({ durationMs = 1200, stopAtOxygen = 60 } = {}) => {
+  'POST /jump': async ({ durationMs = 1200, stopAtOxygen = 60, abort } = {}) => {
     durationMs = Math.min(Math.max(100, +durationMs || 1200), 10000);
 
     state.currentAction = 'jumping（上浮 / 越过障碍）';
@@ -6030,7 +6103,7 @@ const handlers = {
       // 每 100ms 一跳而不是"按住不放"：
       // mineflayer 的 setControlState('jump', true) 在服务端只保证**当前 tick** 生效，
       // 按住需要客户端持续发包。分段跳既完成上浮，又给了中断的机会。
-      while (Date.now() - t0 < durationMs) {
+      while (Date.now() - t0 < durationMs && !abort?.()) {
         state.bot.setControlState('jump', true);
         await sleep(100);
         state.bot.setControlState('jump', false);
@@ -6154,6 +6227,11 @@ const handlers = {
       pickup: I.cfg.pickup, harvest: I.cfg.harvest, mine: I.cfg.mine, sleep: I.cfg.sleep, armor: I.cfg.armor, gaze: I.cfg.gaze, combat: I.cfg.combat, tidy: I.cfg.tidy, loot: I.cfg.loot, cave: I.cfg.cave, bridge: I.cfg.bridge, mlg: I.cfg.mlg, dig: I.cfg.dig, homeGrow: I.cfg.home, cmd: I.cfg.cmd, death: I.death || null, movePolicy: I.movePolicy || null,
       combatNow: I.combat && I.running?.kind === 'combat' ? { since: I.combat.started, engaged: I.combat.engaged.size, killed: I.combat.killed } : null,
       lastCancel: state.lastCancel || null,
+      diagnostics: I.diagnostics || {},
+      scheduler: I.scheduler || null,
+      urgent: I.urgent || null,
+      sleepState: I.sleepState || null,
+      sleepCorrections: I.sleepCorrections || 0,
       home: I.home,
       running: I.running ? I.running.kind : null,
       inflight: I.inflight,
@@ -6168,7 +6246,7 @@ const handlers = {
     if (!I) return { seq: 0, events: [] };
     return { seq: I.evSeq, events: I.events.filter(e => e.seq > (+since || 0)) };
   },
-  // { pickup? harvest? mine? sleep? armor? gaze?: true|false, radius?, followRadius?, home?: { center:{x,y,z}, radius } | null }
+  // home 除了几何位置，也带仓库白名单/保护规则；自动整理和 mind 手动整理必须共用。
   'POST /instinct': async (b = {}) => {
     const { radius, followRadius, home } = b;
     const I = state.instinct;
@@ -6178,7 +6256,12 @@ const handlers = {
     // 家在哪（收获本能：耕地上的庄稼只收家里的）。mind 知道家，定期告诉这里
     if (home === null) I.home = null;
     else if (home && home.center && Number.isFinite(+home.center.x) && Number.isFinite(+home.center.z)) {
-      const nh = { center: { x: +home.center.x, y: +home.center.y || 64, z: +home.center.z }, radius: Math.max(4, +home.radius || 24) };
+      const store = storagePolicy.normalizeStorage(home);
+      const nh = {
+        center: { x: +home.center.x, y: +home.center.y || 64, z: +home.center.z },
+        radius: Math.max(4, +home.radius || 24), storage: store.storage,
+        emptyBoxes: store.empty, protected: store.protected,
+      };
       // 同一个家（中心没挪）：半径取大的 —— 本能层数出来的"房子长大了"不能被 mind 记忆里的旧半径盖回去（mind 看返回值跟上）
       const same = I.home && Math.hypot(I.home.center.x - nh.center.x, I.home.center.z - nh.center.z) <= 2;
       I.home = same ? { ...nh, radius: Math.max(nh.radius, I.home.radius) } : nh;

@@ -12,6 +12,7 @@ const path = require('path');
 const knowledge = require('./knowledge');
 const speech = require('./speech');
 const mem = require('./memory-store');
+const storagePolicy = require('./storage-policy');
 // 世界 = 连的是哪个服务器（config.json 的 MC_HOST:MC_PORT）；每个世界一个家
 try {
   const conf = JSON.parse(fs.readFileSync(path.join(__dirname, 'config.json'), 'utf8'));
@@ -74,6 +75,59 @@ function findQuest (key) {
 const saidRecently = [];   // 她最近 3 分钟说过的话（say 去重用）
 
 const hooks = { onSay: () => {}, beforeSay: async () => {} };
+
+const fullItemId = (name) => String(name || '').includes(':') ? String(name) : `minecraft:${name}`;
+
+/**
+ * “我身上的东西”必须同时包含原版物品栏和穿戴的精妙背包。
+ * 精妙背包不开界面时只有上次可信快照；查询“有没有”时把新鲜度和能否证明没有一并返回，
+ * 避免模型把“普通物品栏没看到”说成“我没有/死时掉了”。
+ */
+async function personalInventory ({ query = '' } = {}) {
+  const [main, eq] = await Promise.all([
+    bridge.get('/inventory').catch(e => ({ error: e.message, items: [] })),
+    bridge.get('/equipment').catch(e => ({ error: e.message })),
+  ]);
+  const q = String(query || '').trim().toLowerCase();
+  const matches = (id, display = '') => !q || id.toLowerCase().includes(q) || String(display).toLowerCase().includes(q) || knowledge.label(id).toLowerCase().includes(q);
+  const tally = (entries) => {
+    const out = {};
+    for (const x of entries) {
+      const id = fullItemId(x.name);
+      if (matches(id, x.displayName)) out[id] = (out[id] || 0) + (+x.count || 0);
+    }
+    return out;
+  };
+  const ordinary = tally(main.items || []);
+  const worn = (eq.curios || []).some(x => /backpack/.test(x)) || /backpack/.test(eq.equipment?.torso || '');
+  const bp = eq.backpack;
+  const readable = !!(bp && Number.isFinite(bp.slots) && bp.slots > 0 && bp.items && typeof bp.items === 'object');
+  const backpack = {};
+  if (readable) for (const [name, count] of Object.entries(bp.items)) {
+    const id = fullItemId(name);
+    if (matches(id)) backpack[id] = +count || 0;
+  }
+  const ageSeconds = readable && Number.isFinite(bp.at) ? Math.max(0, Math.round((Date.now() - bp.at) / 1000)) : null;
+  const combined = { ...ordinary };
+  for (const [id, count] of Object.entries(backpack)) combined[id] = (combined[id] || 0) + count;
+  // 要断言“现在没有”，精妙背包必须刚看过；旧快照只能证明“上次看时有/没有”。
+  const absenceProven = !!q && !main.error && (!worn || (readable && ageSeconds <= 30));
+  return {
+    scope: '普通物品栏和穿戴的精妙背包都是我的随身物品',
+    query: query || null,
+    ordinaryInventory: { readable: !main.error, items: ordinary, ...(main.error ? { error: main.error } : {}) },
+    sophisticatedBackpack: worn
+      ? (readable
+          ? { worn: true, readable: true, lastCheckedSecondsAgo: ageSeconds, slots: bp.slots, used: bp.used, items: backpack }
+          : { worn: true, readable: false, note: '内容暂时读不到，不代表空；先 open_backpack 刷新' })
+      : { worn: false, readable: true, items: {} },
+    combined,
+    absenceProven,
+    note: q && !Object.keys(combined).length
+      ? (absenceProven ? '两处都查过，当前没有匹配物品' : '还不能说没有或掉了；先 open_backpack 刷新，再用同一 query 查询')
+      : 'combined 是我全部随身物品中本次匹配到的结果',
+  };
+}
 
 // ------------------------------------------------------------------ HTTP
 
@@ -723,9 +777,9 @@ const TOOLS = {
 
   inventory: {
     kind: 'info',
-    desc: '看自己背包里有什么。',
-    params: {}, required: [],
-    run: async () => bridge.get('/inventory'),
+    desc: '查看自己的全部随身物品：普通物品栏 + 穿戴的精妙背包。查某样东西时把名字写进 query；只有返回 absenceProven=true 才能说“我没有”，否则先 open_backpack 刷新，不能猜是掉了。',
+    params: { query: { type: 'string', description: '要找的物品名，如 铁锭、粗铁；不填则列出全部随身物品' } }, required: [],
+    run: personalInventory,
   },
   scan_blocks: {
     kind: 'info',
@@ -1005,22 +1059,15 @@ const TOOLS = {
       const home = mem.getHome();
       const me = await bridge.get('/position').catch(() => null);
       const atHome = home && me && mem.inHome(me.exact || me);
-      // 在家：按记住的分类（她自己或主人改过的 assign 优先）；只动家里这一层的箱子
-      // 一类可以占好几个箱子：{ 类别: [箱子…] }（以前 fromEntries 只留了最后一个 → 另一个箱子的东西全被当成放错，白搬一趟）
-      const remembered = {};
-      if (atHome) for (const [k, cats] of Object.entries(home.storage)) for (const c of cats) (remembered[c] ||= []).push(k);
-      const assign = { ...remembered, ...(a.assign || {}) };
-      const skip = atHome ? (home.emptyBoxes || []).filter(k => !home.storage[k]) : [];
-      // ⚠️ 家里已经登记过仓库：只动登记过的箱子（+ 主人明确点名的）。
-      //    以前"只管她这一层"—— 她站在一楼厨房时就把主人的橱柜、冰箱整个重新分类了（实测），还把仓库的分类覆盖掉了
+      // 人工第一次整理可以发现附近箱子；一旦登记过，和自动整理共用同一份白名单/保护规则。
+      // 以前这里只在意识层拼规则，bridge 内的自动整理会绕过去，仍可能动到主人厨房。
+      const request = atHome ? storagePolicy.storageRequest(home, a, { discover: true }) : a;
       const registered = atHome ? Object.keys(home.storage || {}) : [];
-      const only = a.only || (registered.length ? [...registered, ...(home.emptyBoxes || [])] : null);
-      const exclude = atHome ? (home.protected || []) : [];
-      const r = await bridge.post('/storage/organize', { ...a, assign, skip, only: only && only.filter(k => !exclude.includes(k)), allFloors: !!only }, 600000);
+      const r = await bridge.post('/storage/organize', request, 600000);
       if (atHome && r.boxes) {
-        const layout = Object.fromEntries(r.boxes.filter(b => b.holds.length).map(b => [b.at, b.holds]));
+        const { layout, empty } = storagePolicy.layoutFromBoxes(r.boxes);
         // 只在第一次登记（还没有仓库）时整份写入；之后只补充，不覆盖
-        mem.setHomeStorage(layout, { replace: !registered.length, empty: r.boxes.filter(b => !b.holds.length && !b.used).map(b => b.at) });
+        if (r.completed !== false) mem.setHomeStorage(layout, { replace: !registered.length, empty });
         r.rememberedAsHome = true;
       }
       return r;
@@ -1169,7 +1216,7 @@ const TOOLS = {
   },
   attack: {
     kind: 'action',
-    desc: '攻击附近的怪。target 可指定实体名（如 zombie），不给就打最近的敌对生物。',
+    desc: '近战攻击附近的怪：radius 只负责搜索目标；找到后会先走到 3 格内再挥击，走不过去就如实失败，不会隔空攻击。target 可指定实体名（如 zombie），不给就打最近的敌对生物。',
     params: { target: { type: 'string' }, radius: { type: 'number' } }, required: [],
     run: async ({ target, radius }) => bridge.post('/attack', { target, radius: radius || 6 }, CFG.actionTimeoutMs),
   },
@@ -1287,5 +1334,5 @@ function summarize (r) {
 module.exports = {
   parseSSE,
   CFG, TOOLS, hooks, bridge, httpJson, parseArgs, normalizeArgs, toolSpec, summarize, humanizeIds,
-  usage, recent, llm: (...a) => llm(...a), _setLLM: (f) => { llm = f; }, _setBridge: (b) => { Object.assign(bridge, b); },
+  usage, recent, llm: (...a) => llm(...a), _setLLM: (f) => { llm = f; }, _setBridge: (b) => { Object.assign(bridge, b); }, _personalInventory: personalInventory,
 };
