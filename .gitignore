@@ -85,3 +85,7 @@ __pycache__/
 memory/containers-seen.json*
 memory/projects.json*
 memory/mines.json*
+memory/layouts.json*
+
+# memory/plan.json 是她自己写的长期计划（plan.js）
+memory/plan.json*
