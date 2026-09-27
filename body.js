@@ -628,10 +628,11 @@ const TOOLS = {
       + 'combat = 怪冲你或冲玩家来就打（苦力怕躲开、远程怪没盾就躲、血少就跑）；'
       + 'tidy = 身上满了先装精妙背包、缺吃的/镐子/武器/搭脚方块先从背包拿，都不行再回家整理；'
       + 'loot = 看见没开过的箱子就去开、认出地牢/神殿/矿井这类建筑就进去找宝箱；cave = 挖到天然洞穴就进去逛（边走边插火把）；'
-      + 'bridge = 走不过去时用身上的搭脚方块垫路（家里不垫）；mlg = 带着水桶时敢往下跳、落地前倒水保命再收回。'
+      + 'bridge = 走不过去时用身上的搭脚方块垫路（家里不垫）；mlg = 带着水桶时敢往下跳、落地前倒水保命再收回；'
+      + 'dig = 寻路时挖挡路的天然石头泥土（家里和建筑旁边不挖）；cmd = 死了回去捡东西（有 /back 就用）、在家顺手 /sethome、夜里离家太远或快死了用 /home。'
       + '别人说"别捡了""别动我的地""别乱挖""别盯着我"就关掉对应那个；只给要改的那几个。',
-    params: Object.fromEntries(['pickup', 'harvest', 'mine', 'sleep', 'armor', 'gaze', 'combat', 'tidy', 'loot', 'cave', 'bridge', 'mlg'].map(k => [k, { type: 'boolean' }])), required: [],
-    run: async (a) => bridge.post('/instinct', Object.fromEntries(['pickup', 'harvest', 'mine', 'sleep', 'armor', 'gaze', 'combat', 'tidy', 'loot', 'cave', 'bridge', 'mlg'].filter(k => typeof a[k] === 'boolean').map(k => [k, a[k]]))),
+    params: Object.fromEntries(['pickup', 'harvest', 'mine', 'sleep', 'armor', 'gaze', 'combat', 'tidy', 'loot', 'cave', 'bridge', 'mlg', 'dig', 'cmd'].map(k => [k, { type: 'boolean' }])), required: [],
+    run: async (a) => bridge.post('/instinct', Object.fromEntries(['pickup', 'harvest', 'mine', 'sleep', 'armor', 'gaze', 'combat', 'tidy', 'loot', 'cave', 'bridge', 'mlg', 'dig', 'cmd'].filter(k => typeof a[k] === 'boolean').map(k => [k, a[k]]))),
   },
   follow: {
     kind: 'action', continuous: true,

@@ -99,6 +99,17 @@
  *   · 家的范围：在家附近时每 5 分钟数一数家周围的人造方块（isPlayerBuilt + 耕地），基地往外连着长到哪，
  *     半径就扩到那 + 6 格（最多 128）；只扩不缩。扩了告诉 mind（她把新半径记进记忆）。
  *
+ * ## 指令本能（主人 2026-09-27：死亡之后或者需要的时候自动用指令）
+ *
+ * 用哪些命令看**服务器实际给了什么**（命令树，GET /commands）—— 这个包可能根本没开放普通玩家的传送命令，没有就走路。
+ * 管理员命令一律不碰（runCommand 本来就拦着）。自动用的命令之间至少隔 cmdGapMs。
+ *   · 死了：记下死在哪。重生后告诉 mind，并回去捡东西（掉落物 5 分钟就没了）：
+ *       有 /back 就用；没有就在同一维度、recoverMax 格内走回去，到了把附近的掉落物都捡起来。
+ *       死在岩浆里（东西烧没了）、太远、别的维度 → 不白跑，只告诉 mind。每次死只回去一次。
+ *   · 家：mind 定了家、服务器有 /sethome → 她站在家里时顺手设一下（以后 /home 才回得去）
+ *   · 天黑还在野外、离家太远走不回去、服务器有 /home → 用
+ *   · 血 ≤ 4 还在被打（战斗本能在跑开）、有 /home 或 /spawn → 传走保命
+ *
  * ## 采矿按进度（主人 2026-09-27：前期煤、铁，后期钻石，也包括模组矿）
  *
  * 还没有铁镐时：铁矿当最高价值（它就是下一步）、煤少于 32 就挖；有了铁镐之后煤按少于 16 算。
@@ -216,6 +227,14 @@ const CFG = {
   dig: { enabled: process.env.MC_INSTINCT_DIG !== 'false' },
   home: { grow: process.env.MC_HOME_GROW !== 'false', everyMs: 300000, gap: 8, margin: 6, cap: 128, near: 32 },
   mlg: { enabled: process.env.MC_INSTINCT_MLG !== 'false', minFall: 3.5, placeAt: 3.0 },
+  cmd: {
+    enabled: process.env.MC_INSTINCT_CMD !== 'false',
+    cmdGapMs: 60000,
+    recoverMax: 400,        // 死了走回去捡东西：同一维度这么远以内
+    despawnMs: 300000,      // 掉落物 5 分钟消失
+    nightFarHome: 160,      // 夜里离家超过这么远才用 /home（近的走回去）
+    panicHp: 4,
+  },
   minFreeSlots: 2,          // 收获、采矿至少留几个空格
   yieldWaitMs: 1500,        // 让出身体时最多等本能收拾多久
 };
@@ -531,6 +550,38 @@ function pickCaveStep ({ cells = [], self, entry = null, visited = new Set() }, 
 }
 
 /**
+ * 死了之后怎么把东西拿回来。
+ * @returns { how: 'back' | 'walk' } | { skip }
+ */
+function pickRecovery (c, cfg = CFG.cmd) {
+  const { death, here, dim, hasBack = false, sinceMs = 0 } = c;
+  if (!death) return { skip: '没死过' };
+  if (death.lava) return { skip: '死在岩浆里，东西烧没了' };
+  if (sinceMs > cfg.despawnMs - 20000) return { skip: '掉的东西快消失了（或者已经没了）' };
+  if (hasBack) return { how: 'back' };
+  if (death.dim !== dim) return { skip: `死在${death.dim}，现在在${dim}，走不回去` };
+  const d = here ? Math.hypot(death.pos.x - here.x, death.pos.z - here.z) : Infinity;
+  if (d > cfg.recoverMax) return { skip: `死的地方离这里 ${Math.round(d)} 格，太远了` };
+  return { how: 'walk', dist: Math.round(d) };
+}
+
+/**
+ * 需要的时候用哪条命令（死亡回收之外的）。cmds = 服务器给了的命令名 Set。
+ * @returns { cmd, why } | null
+ */
+function pickCommand (c, cfg = CFG.cmd) {
+  const { cmds = new Set(), hp = 20, fleeing = false, nightOut = false, homeDist = null, atHome = false, homeSynced = false, sinceLast = Infinity } = c;
+  if (sinceLast < cfg.cmdGapMs) return null;
+  if (hp <= cfg.panicHp && fleeing) {
+    if (cmds.has('home')) return { cmd: 'home', why: `血只剩 ${hp}，跑不掉了，传回家` };
+    if (cmds.has('spawn')) return { cmd: 'spawn', why: `血只剩 ${hp}，跑不掉了，传回出生点` };
+  }
+  if (atHome && !homeSynced && cmds.has('sethome')) return { cmd: 'sethome', why: '在家，把服务器的 /home 也设在这里' };
+  if (nightOut && homeDist != null && homeDist > cfg.nightFarHome && homeSynced && cmds.has('home')) return { cmd: 'home', why: `天黑了还在野外、离家 ${Math.round(homeDist)} 格，传回家` };
+  return null;
+}
+
+/**
  * 家该多大。dists：家周围人造方块到家中心的水平距离（任意顺序）。
  * 从中心往外走，相邻两个人造方块的距离差 ≤ gap 就算"还连着"；连着的最远那个 + margin 就是新半径。只扩不缩，封顶 cap。
  */
@@ -619,7 +670,7 @@ function install (bot, state, deps) {
     home: null,             // { center:{x,y,z}, radius }，mind 通过 POST /instinct {home} 告诉
   };
   // 跨重连保留状态；新加的本能补上默认配置（老的 state.instinct 里没有）
-  for (const k of ['pickup', 'harvest', 'mine', 'sleep', 'armor', 'gaze', 'combat', 'tidy', 'loot', 'cave', 'bridge', 'mlg', 'dig', 'home']) I.cfg[k] = { ...CFG[k], ...(I.cfg[k] || {}) };
+  for (const k of ['pickup', 'harvest', 'mine', 'sleep', 'armor', 'gaze', 'combat', 'tidy', 'loot', 'cave', 'bridge', 'mlg', 'dig', 'home', 'cmd']) I.cfg[k] = { ...CFG[k], ...(I.cfg[k] || {}) };
   const spawned = new Map();   // 掉落物 id → { t, thrower }
   const fails = new Map();
   const mineFails = new Map();   // "x,y,z" → 到什么时候之前不再试
@@ -1007,6 +1058,73 @@ function install (bot, state, deps) {
     return false;
   };
 
+  // ---- 指令本能
+  let cmdCache = { at: 0, set: new Set() };
+  const serverCmds = async () => {
+    if (Date.now() - cmdCache.at < 300000) return cmdCache.set;
+    try { const r = await deps.handlers['GET /commands'](); cmdCache = { at: Date.now(), set: new Set(r?.all || []) }; } catch (_) {}
+    return cmdCache.set;
+  };
+  const runCmd = async (cmd, why) => {
+    I.lastCmdAt = Date.now();
+    let r = null;
+    try { r = await deps.handlers['POST /cmd']({ command: cmd }); } catch (e) { r = { error: e.message }; }
+    event('command', `${why}：用了 /${cmd}${r?.error ? `，没成：${r.error}` : (r?.serverSaid?.length ? `（服务器说：${r.serverSaid.join(' / ').slice(0, 80)}）` : '')}`, { cmd });
+    return r;
+  };
+  const dimNow = () => String(bot.game?.dimension || '').replace(/^minecraft:/, '') || '?';
+  bot.on('death', () => {
+    try {
+      const p = bot.entity.position.floored();
+      const lava = [[0, 0, 0], [0, -1, 0], [0, 1, 0]].some(([dx, dy, dz]) => /lava/.test(bot.blockAt(p.offset(dx, dy, dz))?.name || ''));
+      I.death = { pos: { x: p.x, y: p.y, z: p.z }, dim: dimNow(), at: Date.now(), lava, recovered: false };
+      if (I.running) I.running.abort();
+    } catch (_) {}
+  });
+  bot.on('spawn', () => {
+    // 重生（spawn 在死后重生时也会发）：告诉 mind，再回去捡
+    const d = I.death;
+    if (!d || d.told) return;
+    d.told = true;
+    event('died', `死了一次（死在 ${d.pos.x},${d.pos.y},${d.pos.z}，${d.dim}${d.lava ? '，掉进了岩浆' : ''}），已经重生；身上的东西掉在那里，5 分钟内不捡就没了`, { pos: d.pos });
+  });
+  async function tryRecover () {
+    const d = I.death;
+    if (!I.cfg.cmd.enabled || !d || d.recovered || !d.told) return null;
+    const cmds = await serverCmds();
+    const pick = pickRecovery({ death: d, here: bot.entity.position, dim: dimNow(), hasBack: cmds.has('back'), sinceMs: Date.now() - d.at }, I.cfg.cmd);
+    d.recovered = true;   // 每次死只回去一次（成不成都不来回折腾）
+    if (!pick.how) { event('recover_skip', `没回去捡东西：${pick.skip}`); return { skip: pick.skip }; }
+    const { r, aborted } = await runJob('recover', { instinct: 'pickup' }, async (abort) => {
+      if (pick.how === 'back') await runCmd('back', '回死的地方捡东西');
+      else {
+        event('recover', `走回死的地方捡东西（${pick.dist} 格）`);
+        const g = await deps.handlers['POST /go']({ x: d.pos.x, y: d.pos.y, z: d.pos.z, range: 3, maxMs: 240000, abort });
+        if (abort() || g?.arrived === false) return { error: `没走到${g?.error ? `：${g.error}` : ''}` };
+      }
+      if (abort()) return {};
+      return deps.handlers['POST /pickup']({ radius: 10, count: 32, timeoutMs: 6000, abort });
+    });
+    if (!aborted) event('recover_done', r?.error ? `回去捡东西没成：${r.error}` : `回到死的地方，捡回来 ${r?.picked ?? 0} 件`);
+    return { did: 'recover' };
+  }
+  async function tryCommand (nightOut) {
+    if (!I.cfg.cmd.enabled) return null;
+    const cmds = await serverCmds();
+    if (!cmds.size) return null;
+    const h = I.home;
+    const pick = pickCommand({
+      cmds, hp: bot.health ?? 20, fleeing: I.running?.kind === 'combat' && I.combat?.retreating, nightOut,
+      homeDist: h ? Math.hypot(bot.entity.position.x - h.center.x, bot.entity.position.z - h.center.z) : null,
+      atHome: inHome(bot.entity.position) === true, homeSynced: !!(h && I.homeSyncedAt && I.homeSyncedFor === `${h.center.x},${h.center.z}`),
+      sinceLast: Date.now() - (I.lastCmdAt || 0),
+    }, I.cfg.cmd);
+    if (!pick) return null;
+    const r = await runCmd(pick.cmd, pick.why);
+    if (pick.cmd === 'sethome' && !r?.error) { I.homeSyncedAt = Date.now(); I.homeSyncedFor = `${h.center.x},${h.center.z}`; }
+    return { did: 'command' };
+  }
+
   // ---- 家的范围随基地长大
   let builtIds = null;
   const homeTimer = setInterval(() => {
@@ -1333,6 +1451,9 @@ function install (bot, state, deps) {
             bot.pathfinder.setGoal(new goals.GoalInvert(new goals.GoalFollow(ent, plan.keep || 16)), true);
             if (plan.mode === 'retreat' && lastMode !== 'retreat') event('combat_retreat', `血只剩 ${bot.health}，先从 ${ent.name} 身边跑开`);
           }
+          I.combat.retreating = plan.mode === 'retreat';
+          // 跑着还在掉血、血到底了：服务器给了 /home 或 /spawn 就传走（指令本能）
+          if (plan.mode === 'retreat' && typeof tryCommand === 'function') { const c = await tryCommand(false); if (c?.did) { aborted = true; break; } }
         } else {
           if (modeKey !== `${lastMode}:${lastTargetId}`) bot.pathfinder.setGoal(new goals.GoalFollow(ent, 2), true);
           const dist = ent.position.distanceTo(bot.entity.position);
@@ -1400,6 +1521,10 @@ function install (bot, state, deps) {
     const danger = threatened();
     if (danger) { I.last = { t: Date.now(), skip: danger }; return; }
 
+    // ⓪' 死后回去捡东西（掉落物 5 分钟就没了，比什么都急）
+    const rc = await tryRecover();
+    if (rc?.did) { I.last = { t: Date.now(), recover: '做了' }; return; }
+
     const followName = /^following (.+)$/.exec(state.currentAction || '')?.[1] || null;
     const followEnt = followName ? bot.players[followName]?.entity : null;
     let nightOut = false;
@@ -1431,6 +1556,9 @@ function install (bot, state, deps) {
     const sl = await trySleep();
     if (sl?.did) { I.last = { t: now, ...last, sleep: '做了' }; return; }
     if (sl?.skip) last.sleep = sl.skip;
+    // ②' 需要的时候用命令（设 /sethome、夜里离家太远 /home）
+    const cm = await tryCommand(nightOut);
+    if (cm?.did) { I.last = { t: now, ...last, command: '做了' }; return; }
     // ③ 回家整理（背包快满 / 缺吃的缺镐子而家里有）—— 夜里家近也回
     const td = await tryTidy(nightOut);
     if (td?.did) { I.last = { t: now, ...last, tidy: '做了' }; return; }
@@ -1580,6 +1708,24 @@ function selftest () {
   check('身上满了、背包也满 → 不去', pickLoot({ chests: 2, free: 1, packFree: 1, self: me }).mode, undefined);
   check('身上满了但背包还空 → 去', pickLoot({ chests: 2, free: 1, packFree: 20, self: me }).mode, 'open');
   check('夜里在露天 → 不去', pickLoot({ chests: 2, nightOut: true, self: me }).mode, undefined);
+
+  // ---- 指令本能 ----
+  const P3 = (x, y, z) => ({ x, y, z });
+  const death = { pos: { x: 100, y: 64, z: 0 }, dim: 'overworld', lava: false };
+  check('★ 有 /back → 用 /back', pickRecovery({ death, here: P3(0, 64, 0), dim: 'overworld', hasBack: true }).how, 'back');
+  check('★ 没有 /back、100 格 → 走回去', pickRecovery({ death, here: P3(0, 64, 0), dim: 'overworld' }).how, 'walk');
+  check('★ 死在岩浆里 → 不白跑', pickRecovery({ death: { ...death, lava: true }, here: P3(0, 64, 0), dim: 'overworld', hasBack: true }).how, undefined);
+  check('太远 → 不走', pickRecovery({ death: { ...death, pos: { x: 2000, y: 64, z: 0 } }, here: P3(0, 64, 0), dim: 'overworld' }).how, undefined);
+  check('死在下界、现在在主世界、没有 /back → 走不回去', pickRecovery({ death: { ...death, dim: 'the_nether' }, here: P3(0, 64, 0), dim: 'overworld' }).how, undefined);
+  check('快 5 分钟了 → 东西多半没了', pickRecovery({ death, here: P3(0, 64, 0), dim: 'overworld', sinceMs: 290000 }).how, undefined);
+  const C = (o) => pickCommand({ cmds: new Set(['home', 'sethome', 'spawn']), ...o });
+  check('★ 在家、还没同步 → /sethome', C({ atHome: true })?.cmd, 'sethome');
+  check('★ 夜里在野外、离家 500 格 → /home', C({ nightOut: true, homeDist: 500, homeSynced: true })?.cmd, 'home');
+  check('夜里离家 80 格 → 走回去（不用命令）', C({ nightOut: true, homeDist: 80, homeSynced: true }), null);
+  check('没设过 /sethome 就不 /home（会传到别处）', C({ nightOut: true, homeDist: 500, homeSynced: false }), null);
+  check('★ 血 3、正在逃 → /home', C({ hp: 3, fleeing: true })?.cmd, 'home');
+  check('服务器没给这些命令 → 什么都不用', pickCommand({ cmds: new Set(), hp: 3, fleeing: true, atHome: true }), null);
+  check('刚用过命令 → 等等', C({ atHome: true, sinceLast: 1000 }), null);
 
   // ---- 家的范围 ----
   check('房子都在半径里 → 不变', homeFootprint([3, 8, 15, 20], 24), 24);
@@ -1739,7 +1885,7 @@ function selftest () {
   });
 }
 
-module.exports = { CFG, homeFootprint, mlgStep, pickCaveStep, STRUCTURE_SIGNS, recognizeStructures, pickLoot, pickTidy, mobKind, attackCooldownMs, combatPlan, COMBAT_YIELD, TIER, pickaxeTier, needTier, pickOre, pickHarvest, hazardUnder, pickStepOff, armorRank, pickArmor, toolWorn, pickGaze, whoThrew, pickPickup, bodyBusy, install, yieldBody, PASSIVE_POSTS, selftest };
+module.exports = { CFG, pickRecovery, pickCommand, homeFootprint, mlgStep, pickCaveStep, STRUCTURE_SIGNS, recognizeStructures, pickLoot, pickTidy, mobKind, attackCooldownMs, combatPlan, COMBAT_YIELD, TIER, pickaxeTier, needTier, pickOre, pickHarvest, hazardUnder, pickStepOff, armorRank, pickArmor, toolWorn, pickGaze, whoThrew, pickPickup, bodyBusy, install, yieldBody, PASSIVE_POSTS, selftest };
 
 if (require.main === module && process.argv.includes('--selftest')) {
   selftest().then(code => process.exit(code));
