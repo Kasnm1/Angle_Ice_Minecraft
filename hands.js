@@ -2622,20 +2622,68 @@ function markSeen (state, key) {
 }
 const inHomeArea = (home, p) => !!home && Math.hypot(p.x - home.center.x, p.z - home.center.z) <= home.radius && Math.abs(p.y - home.center.y) <= 16;
 
-/** 视野里没打开过的箱子/木桶（radius 内、眼睛看得见的），最近的在前 */
-function unseenChests (bot, state, radius = 24) {
+/**
+ * 视野里没打开过的箱子/木桶（radius 内、眼睛看得见的），最近的在前。
+ * near：{x,y,z,r} —— 已经走进一座建筑（开宝箱本能认出来的）时，它附近 r 格内的也算，看不看得见都算
+ *       （像玩家进了地牢/神殿会一间间屋子看；只在"认出是自然建筑"之后才放宽，平时不透视）。
+ */
+function unseenChests (bot, state, radius = 24, near = null) {
   const seen = seenKeys(state);
+  const inNear = (p) => near && Math.hypot(p.x - near.x, p.y - near.y, p.z - near.z) <= near.r;
   return findStorage(bot, radius)
     .filter(b => /chest|barrel/.test(b.name) && !/ender_chest/.test(b.name))
     .filter(b => !seen.has(storageKey(bot, b)) && !state.seenContainers?.has(storageKey(bot, b)))
-    .filter(b => bot.canSeeBlock(b))
+    .filter(b => inNear(b.position) || bot.canSeeBlock(b))
     .sort((a, b) => bot.entity.position.distanceTo(a.position) - bot.entity.position.distanceTo(b.position));
 }
 
-/** 走过去打开视野里没看过的箱子：家外的把东西拿走（奖励箱），家里的只看看记住放了什么 */
-async function checkChests (bot, state, { radius = 24, home = null, max = 4 } = {}) {
+/** 附近没开过的运输矿车箱子（废弃矿井的宝箱在矿车里）。按取整坐标记"开过" */
+const cartKey = (e) => `cart@${Math.floor(e.position.x)},${Math.floor(e.position.y)},${Math.floor(e.position.z)}`;
+function unseenCarts (bot, state, radius = 16) {
+  const seen = seenKeys(state);
+  return Object.values(bot.entities)
+    .filter(e => e?.position && /chest_minecart/.test(e.name || '') && e.position.distanceTo(bot.entity.position) <= radius)
+    .filter(e => !seen.has(cartKey(e)))
+    .sort((a, b) => a.position.distanceTo(bot.entity.position) - b.position.distanceTo(bot.entity.position));
+}
+
+/** 打开矿车箱子，能拿的都拿（身上留 1 格余量） */
+async function lootCart (bot, state, e) {
+  const key = cartKey(e);
+  markSeen(state, key);
+  if (e.position.distanceTo(bot.entity.position) > 3) {
+    const err = await pathTo(bot, e.position.floored(), 2, 30000);
+    if (err && e.position.distanceTo(bot.entity.position) > 4) return { at: key, name: 'chest_minecart', error: `走不过去：${err}` };
+  }
+  if (bot.currentWindow) { bot.closeWindow(bot.currentWindow); await sleep(300); }
+  await bot.lookAt(e.position.offset(0, 0.5, 0), true);
+  bot.activateEntity(e);
+  let w = null;
+  for (let k = 0; k < 30 && !w; k++) { await sleep(100); w = bot.currentWindow; }
+  if (!w) return { at: key, name: 'chest_minecart', error: '右键了矿车，没打开' };
+  const took = {};
+  try {
+    for (let i = 0; i < w.inventoryStart; i++) {
+      const it = w.slots[i];
+      if (!it) continue;
+      if (bot.inventory.emptySlotCount() <= 1) break;
+      took[fullId(it.name)] = (took[fullId(it.name)] || 0) + it.count;
+      await click(bot, i, 0, 1);
+    }
+    await sleep(300);
+  } finally { if (bot.currentWindow?.id === w.id) bot.closeWindow(w); }
+  return { at: key, name: 'chest_minecart', looted: took };
+}
+
+/**
+ * 走过去打开视野里没看过的箱子：家外的把东西拿走（奖励箱），家里的只看看记住放了什么。
+ * 也开运输矿车箱子（废弃矿井）。near / abort 给开宝箱本能用（见 instinct.js）。
+ */
+async function checkChests (bot, state, { radius = 24, home = null, max = 4, near = null, abort = null } = {}) {
   const out = [];
-  for (const b of unseenChests(bot, state, radius).slice(0, max)) {
+  const stop = () => typeof abort === 'function' && abort();
+  for (const b of unseenChests(bot, state, radius, near).slice(0, max)) {
+    if (stop()) break;
     const key = storageKey(bot, b);
     markSeen(state, key);                     // 先记下：打不开/走不到也别来回折腾
     if (eyeDist(bot, b) > REACH) {
@@ -2657,6 +2705,10 @@ async function checkChests (bot, state, { radius = 24, home = null, max = 4 } = 
         if (r.backpackFull) break;
       } catch (e) { out.push({ at: key, name: b.name, error: e.message }); }
     }
+  }
+  for (const e of unseenCarts(bot, state, Math.min(radius, 16)).slice(0, Math.max(0, max - out.length))) {
+    if (stop() || bot.inventory.emptySlotCount() <= 1) break;
+    try { out.push(await lootCart(bot, state, e)); } catch (err) { out.push({ at: cartKey(e), name: 'chest_minecart', error: err.message }); }
   }
   return out;
 }
@@ -3877,4 +3929,4 @@ if (require.main === module && process.argv.includes('--selftest')) {
   })();
 }
 
-module.exports = { install, routes, slotByName, foodScore, fullId, botName, startFollow, farm, kitShortfall, kitAvailable, defaultLoadout, wearingBackpack, backpackTidy };   // farm：收获本能直接调（instinct.js）
+module.exports = { install, routes, slotByName, foodScore, fullId, botName, startFollow, farm, kitShortfall, kitAvailable, defaultLoadout, wearingBackpack, backpackTidy, unseenChests, unseenCarts, inHomeArea };   // farm：收获本能直接调（instinct.js）
