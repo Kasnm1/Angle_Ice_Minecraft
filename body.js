@@ -42,6 +42,11 @@ const CFG = {
   // 备用线路：主线路（比如 Gemini 免费额度）被限流/过载时，换到另一家（比如中转站）
   fallbackBaseUrl: (process.env.LLM_FALLBACK_BASE_URL || '').replace(/\/+$/, ''),
   fallbackApiKey: process.env.LLM_FALLBACK_API_KEY || '',
+  // 第三层兜底（主人 2026-09-27）：susu 整条线路不通（主、备都 502）时，按顺序试 teamorouter 上的模型。
+  // ⚠️ teamorouter 国内直连不通（实测 ECONNRESET），要代理：Node 24 设 NODE_USE_ENV_PROXY=1 + HTTPS_PROXY 就行
+  backupBaseUrl: (process.env.LLM_BACKUP_BASE_URL || '').replace(/\/+$/, ''),
+  backupApiKey: process.env.LLM_BACKUP_API_KEY || '',
+  backupModels: (process.env.LLM_BACKUP_MODELS || 'deepseek-flash-free,deepseek-flash,gemini-3.8-flash').split(',').map(s => s.trim()).filter(Boolean),
   llmRetries: 2,
   actionTimeoutMs: 60000,
 };
@@ -139,8 +144,8 @@ const noTemp = new Set();   // 不接受 temperature 参数的模型（报过 40
 const usage = { calls: 0, inTok: 0, outTok: 0, since: Date.now(), byModel: {} };
 
 async function callLLM ({ model, messages, tools, timeoutMs, signal, maxTokens = 1200, route = 'main' }) {
-  const baseUrl = route === 'fallback' ? CFG.fallbackBaseUrl : CFG.baseUrl;
-  const apiKey = route === 'fallback' ? CFG.fallbackApiKey : CFG.apiKey;
+  const baseUrl = route === 'backup' ? CFG.backupBaseUrl : route === 'fallback' ? CFG.fallbackBaseUrl : CFG.baseUrl;
+  const apiKey = route === 'backup' ? CFG.backupApiKey : route === 'fallback' ? CFG.fallbackApiKey : CFG.apiKey;
   if (!baseUrl || !apiKey) throw new Error('没配 LLM_BASE_URL / LLM_API_KEY');
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), timeoutMs);
@@ -228,6 +233,15 @@ let llm = async function (opts) {
       if (m === model && F) breaker.set(model, Date.now() + BREAKER_MS);
       if (Date.now() - t0 > 40000) break;   // 别让她为一句话等太久
       await new Promise(r => setTimeout(r, 300 * (i + 1)));
+    }
+  }
+  // susu 整条线路都不通：换 teamorouter，按顺序每个模型试一次（deepseek-flash-free → deepseek-flash → gemini-3.8-flash）
+  if (last?.message !== 'aborted' && last?.retryable !== false && CFG.backupBaseUrl && CFG.backupApiKey) {
+    for (const m of CFG.backupModels) {
+      try { return await callLLM({ ...opts, model: m, route: 'backup' }); } catch (e) {
+        if (e.message === 'aborted') throw e;
+        last = new Error(`${last.message}；teamorouter ${m} 也没成：${e.message}`); last.retryable = true;
+      }
     }
   }
   // susu 整条线路都不通（两个模型都在它上面）：按顺序找本机的命令行兜底（另一家后端，慢，10–20 秒）
