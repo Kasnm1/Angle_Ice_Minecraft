@@ -33,6 +33,8 @@ const mem = require('./memory-store');
 const knowledge = require('./knowledge');
 const ambition = require('./ambition');
 const review = require('./self-review');
+const ledgerLib = require('./inventory-ledger');
+const night = require('./night');   // 天黑本能：天色变化的事件 + 今晚怎么安排（见 night.js）   // 只用它的 render（账在 bridge 记，见 inventory-ledger.js）
 const { TOOLS, bridge, parseArgs, normalizeArgs, toolSpec, summarize } = body;
 
 const CFG = {
@@ -70,6 +72,8 @@ const W = {
   state: null,               // 最近一次看到的世界
   seenChat: new Set(),
   lastInv: null,
+  ledgerSeq: null,    // 物品账读到哪了（bridge 的 /inventory/ledger）；null = 还没读过（第一次不翻旧账）
+  ledgerNew: null,    // 这一眼新看到的账
   lastHp: null,
   players: new Set(),
   log: [],
@@ -125,7 +129,9 @@ function humanState (s) {
   const hp = s.health; const food = s.food;
   const hpWord = hp == null ? '?' : hp >= 18 ? '很好' : hp >= 12 ? '还行' : hp >= 6 ? '受伤了' : '快不行了';
   const foodWord = food == null ? '?' : food >= 17 ? '饱' : food >= 11 ? '不饿' : food >= 7 ? '有点饿' : '很饿';
-  return `血 ${hp}/20（${hpWord}）、饥饿 ${food}/20（${foodWord}）、${s.isDay ? '白天' : '夜晚'}、在 (${s.pos?.x},${s.pos?.y},${s.pos?.z})`;
+  const when = s.phase ? { day: '白天', dusk: '黄昏（快天黑了）', night: '夜晚', dawn: '快天亮了' }[s.phase] : (s.isDay ? '白天' : '夜晚');
+  const where = { open: '露天', partial: '露天', sheltered: '有顶的地方', underground: '地下' }[s.exposure] || '';
+  return `血 ${hp}/20（${hpWord}）、饥饿 ${food}/20（${foodWord}）、${when}${s.time != null ? `（时刻 ${s.time}）` : ''}、在 (${s.pos?.x},${s.pos?.y},${s.pos?.z})${where ? `，${where}` : ''}`;
 }
 
 /**
@@ -133,6 +139,22 @@ function humanState (s) {
  * 主人 2026-09-26 定的方向：没家先安家（FTB 新手小屋）、夜里躲危险/睡觉/在家干活、家附近插火把、背包快满先进精妙背包再回家整理。
  * 依据：modpack-study/survival/report.md（本包没有普通玩家的传送命令；火把地面每 12 格一个；背包剩 ≤8 格就回家整理）。
  */
+/** 今晚怎么安排（白天为 null）。天色事件和"眼下最该操心的"共用这一处。 */
+function tonight (s) {
+  if (!s || !s.pos) return null;
+  const home = mem.getHome();
+  const sf = W.sleepFail && Date.now() - W.sleepFail.t < 3 * 60 * 1000 ? W.sleepFail : null;
+  return night.nightPlan({
+    phase: s.phase || (s.isDay === false ? 'night' : null),   // 老 bridge 只有 isDay
+    exposure: s.exposure || 'unknown',
+    atHome: !!(home && mem.inHome(s.pos)),
+    hasHome: !!home,
+    homeDist: home ? Math.hypot(s.pos.x - home.center.x, s.pos.z - home.center.z) : null,
+    following: s.following || null,
+    sleepFail: sf ? sf.why : null,
+  });
+}
+
 function survivalFocus (s) {
   if (!s || !s.pos) return [];
   const out = [];
@@ -145,6 +167,9 @@ function survivalFocus (s) {
   if ((s.health != null && s.health <= 8) || hostiles.length) {
     out.push(`保命：${s.health <= 8 ? `血只有 ${s.health}` : ''}${hostiles.length ? `${s.health <= 8 ? '，' : ''}身边 ${hostiles.length} 只怪（最近 ${hostiles[0].distance} 格）` : ''} —— 打得过就打，打不过就躲进屋/挖个洞堵上，血少先吃东西`);
   }
+  // 天黑（主人 2026-09-27）：保命之后第一件，不能被别的挤出前两条
+  const plan = tonight(s);
+  if (plan) out.push(plan);
   // 暗处（主人：像玩家一样别往暗处去；真要去就带火把点亮）
   const fuel = has(/(^|:)(coal|charcoal)$/);
   if (s.dark && !atHome) {
@@ -164,15 +189,9 @@ function survivalFocus (s) {
     out.push(has(/structure_spawner/)
       ? '还没有家，身上有结构生成器（新手小屋）：挑块平地 place_structure 放下，进屋后 set_home'
       : '还没有家：先安家 —— FTB 任务书「新手小屋」点对号就送（quest_submit 新手小屋 → quest_claim 新手小屋 choice=0 森林小屋 → place_structure → set_home）；拿不到就挖进山里 1×2×2、堵住身后、插火把过夜');
-  } else if (!s.isDay && !atHome) {
-    out.push('天黑了还在外面：回家（go_home）；离家太远就就地垫方块把自己围起来躲一夜（self_rescue mode=enclose），别在野外乱跑');
-  } else if (!s.isDay && atHome) {
-    // 刚睡失败过（附近有怪 / 别人没睡…）：别反复上床（实测：睡不了就一直 上床→失败→转身→再上床，看着像原地转圈）
-    const sf = W.sleepFail && Date.now() - W.sleepFail.t < 3 * 60 * 1000 ? W.sleepFail : null;
-    out.push(sf
-      ? `刚才睡不了（${sf.why}）：别反复上床。先关好门、屋里暗的地方插火把，然后在屋里干活（整理箱子、做菜），过几分钟再试`
-      : '夜里在家：有床就睡（sleep_in_bed）；睡不了就在家里干活 —— 整理箱子、做菜、挖家里的矿');
   }
+  // 夜里的安排（回家 / 睡觉 / 在矿洞接着挖 / 就地躲）在上面 tonight() 里 —— 按她在野外、屋里还是地下分开说。
+  // "刚睡不了别反复上床"也搬过去了（实测：睡不了就一直 上床→失败→转身→再上床，看着像原地转圈）。
   if (free <= 8) {
     const packWorn = (s.curios || []).some(x => /backpack/.test(x));
     out.push(packWorn && (s.backpack ? s.backpack.used < s.backpack.slots - 4 : true)
@@ -219,6 +238,14 @@ async function look () {
     safe('/status'), safe('/inventory'), safe('/nearby?radius=16'), safe('/players'), safe('/chatlog?limit=30'), safe('/doors?radius=6'), safe('/equipment'),
     safe(`/containers/seen?since=${W.seenSince || 0}`), safe('/chests/unseen?radius=24'), safe('/light'),
   ]);
+  // 物品账：背包每次进出的原因（捡的 / 放进哪个箱子 / 吃掉 / 用坏…）。bridge 旧版本没有这个端点 → null，走老的前后对比
+  const led = await safe(`/inventory/ledger?since=${W.ledgerSeq ?? 0}`);
+  if (led && Array.isArray(led.entries)) {
+    if (W.ledgerSeq == null) W.ledgerSeq = led.seq;              // 刚醒：之前的账不翻
+    else if (led.seq < W.ledgerSeq) W.ledgerSeq = 0;             // bridge 重启过，账从头记了：下一眼从 0 读
+    else { W.ledgerNew = led.entries; W.ledgerSeq = led.seq; }
+    W.ledgerOk = true;
+  } else W.ledgerOk = false;
   // 打开过的箱子：是家里的，就记住里面有什么、各有几个（像人一样，看过就大概记得）
   for (const c of seen?.seen || []) {
     W.seenSince = Math.max(W.seenSince || 0, c.at);
@@ -233,6 +260,8 @@ async function look () {
   if (!st) { W.state = null; return; }
   W.state = {
     connected: !!st.connected, health: st.health, food: st.food, isDay: st.isDay,
+    phase: st.phase || null, time: st.gameTime ?? null, exposure: st.exposure?.kind || null,
+    following: /^following (.+)$/.exec(st.currentAction || '')?.[1] || null,
     pos: st.position ? { x: Math.round(st.position.x), y: Math.round(st.position.y), z: Math.round(st.position.z) } : null,
     items: inv?.items || [],
     nearby: (near?.entities || []).slice(0, 12),
@@ -244,6 +273,13 @@ async function look () {
     unseenChests: boxes?.chests || [],
     light: lit?.light || null, dark: !!lit?.dark, torches: lit?.torches ?? null, lastBright: lit?.lastBright || null,
   };
+  // 天色变了（太阳下山 / 天黑 / 天亮）：说一声，连同今晚的安排。边沿触发，一晚只说一次
+  const pev = night.phaseEvent(W.phase, W.state.phase);
+  if (pev) {
+    const plan = tonight(W.state);
+    emit(`${pev.icon} ${pev.text}（时刻 ${W.state.time}）${plan ? `：${plan}` : ''}`, { cue: 'night 天黑 夜里 回家 睡觉', urgent: pev.urgent });
+  }
+  if (W.state.phase) W.phase = W.state.phase;
   // 视线里冒出没开过的箱子/木桶：马上告诉她（主人：优先级高，看见就过去）
   for (const c of W.state.unseenChests) {
     const k = `chest@${c.at}`;
@@ -292,7 +328,17 @@ async function look () {
   // ---- 背包变化（得到/失去了什么）
   const inv2 = new Map();
   for (const i of W.state.items) inv2.set(i.name, (inv2.get(i.name) || 0) + i.count);
-  if (W.lastInv && !W.job) {   // 干活时的变化由动作结果报告，不重复
+  const lab = (k) => knowledge.label(k.includes(':') ? k : `minecraft:${k}`);
+  if (W.ledgerOk) {
+    // 带原因的账：闲着时直接说；干活时攒到这件事的结果里一起说（不刷屏，也不丢）
+    for (const e of W.ledgerNew || []) {
+      const line = ledgerLib.render(e, lab);
+      if (!line) continue;
+      if (W.job) (W.job.inv ||= []).push(line);
+      else emit(`🎒 ${line}`, { cue: e.parts.flatMap(p => Object.keys(p.items)).join(' ') });
+    }
+    W.ledgerNew = null;
+  } else if (W.lastInv && !W.job) {   // 老 bridge：只能前后对比。干活时的变化由动作结果报告，不重复
     const gained = []; const lost = [];
     for (const k of new Set([...W.lastInv.keys(), ...inv2.keys()])) {
       const d = (inv2.get(k) || 0) - (W.lastInv.get(k) || 0);
@@ -300,8 +346,10 @@ async function look () {
       if (d > 0) gained.push(`${nm}×${d}`); else if (d < 0) lost.push(`${nm}×${-d}`);
     }
     if (gained.length) emit(`🎒 背包里多了：${gained.join('、')}`, { cue: gained.join(' ') });
-    for (const k of inv2.keys()) if ((inv2.get(k) || 0) > (W.lastInv.get(k) || 0)) ambition.noteGained(k.includes(':') ? k : `minecraft:${k}`, 'collected');
     if (lost.length) emit(`🎒 背包里少了：${lost.join('、')}`, { cue: lost.join(' ') });
+  }
+  if (W.lastInv && !W.job) {
+    for (const k of inv2.keys()) if ((inv2.get(k) || 0) > (W.lastInv.get(k) || 0)) ambition.noteGained(k.includes(':') ? k : `minecraft:${k}`, 'collected');
   }
   W.lastInv = inv2;
 
@@ -320,7 +368,8 @@ async function look () {
   W.players = now;
 
   // ---- 天黑了：每晚提醒一次（闲着、没人正在跟她说话的时候），睡不睡由她
-  if (st.isDay === false && !W.nightNoticed && !W.job && Date.now() - (W.lastHeardAt || 0) > 60000 && !st.isSleeping) {
+  // 只给老 bridge（没有 phase）兜底 —— 新的走上面的天色事件（night.js，分野外/屋里/矿洞，不等闲着）
+  if (st.phase == null && st.isDay === false && !W.nightNoticed && !W.job && Date.now() - (W.lastHeardAt || 0) > 60000 && !st.isSleeping) {
     W.nightNoticed = true;
     emit('🌙 天黑了。今天手上的事忙得差不多的话，该回家睡觉了', { cue: 'bed 床 睡觉 home' });
   }
@@ -382,7 +431,10 @@ async function startJob (steps, why, { skillId = null } = {}) {
   const token = ++W.token;
   if (W.job) { await bridge.post('/stop').catch(() => {}); }
   const started = Date.now();
-  W.job = { token, steps, i: 0, why, started, skillId };
+  W.job = { token, steps, i: 0, why, started, skillId, inv: [] };
+  const job = W.job;
+  // 这件事做的过程中背包的进出（物品账），结果出来时一起说："放进箱子@… 铁锭×8；捡到 圆石×3"
+  const invNote = () => (job.inv.length ? `（这期间背包：${job.inv.splice(0).join('；')}）` : '');
   const results = [];
   // 被新的动作顶掉：告诉她做到哪了（不然她不知道东西到底给出去没有，只能瞎编 —— 实测她把护甲递出去了，
   // 被"放回箱子"打断后，以为护甲还在、说"我把它们放回去"）
@@ -394,7 +446,7 @@ async function startJob (steps, why, { skillId = null } = {}) {
     if (ranMs < 3000 && !steps.every(s => ['look_at', 'stop'].includes(s.tool))) {
       review.record({ kind: 'preempted', tool: steps[results.length]?.tool || steps[steps.length - 1]?.tool, why, at: results.length + 1, of: steps.length, ranMs, ...scene(3) });
     }
-    W.pending.push({ t: Date.now(), text: `⏹ 刚才在做的事（${why || steps.map(s => s.tool).join('→')}）被新的动作打断了。${done.length ? `已经做完：${done.join('；')}。` : '一步都还没做完。'}${left.length ? `没做的：${left.join('、')}` : ''}`, cue: steps.map(s => JSON.stringify(s.args)).join(' '), names: [] });
+    W.pending.push({ t: Date.now(), text: `⏹ 刚才在做的事（${why || steps.map(s => s.tool).join('→')}）被新的动作打断了。${done.length ? `已经做完：${done.join('；')}。` : '一步都还没做完。'}${left.length ? `没做的：${left.join('、')}` : ''}${invNote()}`, cue: steps.map(s => JSON.stringify(s.args)).join(' '), names: [] });
   };
   for (let i = 0; i < steps.length; i++) {
     if (token !== W.token) { preempted(); return; }   // 被新的动作顶掉了
@@ -412,13 +464,13 @@ async function startJob (steps, why, { skillId = null } = {}) {
       if (skillId) mem.skillResult(skillId, false, `${tool} → ${r.error}`);
       const focus = ambition.state().focus;
       if (focus && ['craft', 'smelt', 'container_put', 'container_take'].includes(tool)) ambition.noteTry(focus, false, `${tool} → ${r.error}`);
-      emit(`❌ ${skillId ? `照着技能 ${skillId} 做，` : ''}${tool}${fmtArgs(args)} 没做成：${r.error}${results.length > 1 ? `（前面做完了：${results.slice(0, -1).map(x => x.tool).join('、')}）` : ''}`, { cue: `${tool} ${JSON.stringify(args)}` });
+      emit(`❌ ${skillId ? `照着技能 ${skillId} 做，` : ''}${tool}${fmtArgs(args)} 没做成：${r.error}${results.length > 1 ? `（前面做完了：${results.slice(0, -1).map(x => x.tool).join('、')}）` : ''}${invNote()}`, { cue: `${tool} ${JSON.stringify(args)}` });
       return;
     }
     learnFromDoing(tool, args, r);
     if (TOOLS[tool]?.continuous && i === steps.length - 1) {
       W.job = { ...W.job, holding: true };
-      emit(`✅ ${results.map(x => `${x.tool}${fmtArgs(x.args)}`).join(' → ')}（${why || ''}，一直在跟着）`);
+      emit(`✅ ${results.map(x => `${x.tool}${fmtArgs(x.args)}`).join(' → ')}（${why || ''}，一直在跟着）${invNote()}`);
       return;
     }
   }
@@ -436,7 +488,8 @@ async function startJob (steps, why, { skillId = null } = {}) {
     results.push({ tool: 'skill', args: {}, r: k });
   }
   const quiet = steps.every(s => ['look_at', 'stop'].includes(s.tool));
-  if (!quiet) emit(`✅ 做完了：${results.map(x => `${x.tool}${fmtArgs(x.args)} → ${summarize(x.r)}`).join('；')}`, { cue: steps.map(s => JSON.stringify(s.args)).join(' ') });
+  if (!quiet) emit(`✅ 做完了：${results.map(x => `${x.tool}${fmtArgs(x.args)} → ${summarize(x.r)}`).join('；')}${invNote()}`, { cue: steps.map(s => JSON.stringify(s.args)).join(' ') });
+  else if (job.inv.length) emit(`🎒 ${job.inv.splice(0).join('；')}`);
 }
 
 function fmtArgs (a) {
@@ -1318,6 +1371,15 @@ async function selftest () {
     mem.getHome = home0; mem.inHome = inH; W.sleepFail = null;
     check('刚睡失败过：别反复上床', nightHome.some(x => /别反复上床/.test(x)), nightHome);
     check('地上有掉落物：提醒捡', logs.some(x => /掉落物/.test(x) && /pickup/.test(x)), logs);
+    // 天黑：野外 / 矿洞分开；排在前两条里
+    mem.getHome = () => ({ center: { x: 0, y: 64, z: 0 }, radius: 24 }); mem.inHome = () => false;
+    const out = survivalFocus({ pos: { x: 40, y: 64, z: 0 }, health: 20, phase: 'night', exposure: 'open', items: [], nearby: [{ isDrop: true, distance: 3, item: { name: 'oak_log', count: 3 } }] });
+    const cave = survivalFocus({ pos: { x: 40, y: 12, z: 0 }, health: 20, phase: 'night', exposure: 'underground', items: [], nearby: [] });
+    const dusk = survivalFocus({ pos: { x: 40, y: 64, z: 0 }, health: 20, phase: 'dusk', exposure: 'open', items: [], nearby: [] });
+    mem.getHome = home0; mem.inHome = inH;
+    check('★ 夜里在野外、家不远：回家排在前面', /go_home/.test(out[0] || ''), out);
+    check('★ 夜里在矿洞：接着挖，不叫回家', cave.some(x => /接着挖/.test(x)) && !cave.some(x => /go_home/.test(x)), cave);
+    check('★ 黄昏：提前收尾往家走', dusk.some(x => /收个尾/.test(x)), dusk);
   }
 
   console.log('\n他说了话、她只在正文里回：提醒一次（不替她说）');
@@ -1418,6 +1480,51 @@ async function selftest () {
   check('退出 → 立即还身体、打开应答', sent[0][1].ms === 0 && sent[1][1].answerChat === true, sent);
   autopilot.post = async () => { throw new Error('ECONNREFUSED'); };
   check('脑干没起 → 不抛错', await holdBody(true) === false);
+
+  console.log('\n物品账：她知道东西是怎么进出的');
+  {
+    let ledger = { seq: 5, entries: [] };
+    const base = mockBridge();
+    body._setBridge({ ...base, get: async (p) => (p.startsWith('/inventory/ledger') ? ledger : base.get(p)) });
+    const job0 = W.job; W.job = null; W.ledgerSeq = null;
+    await look();
+    check('刚醒：旧账不翻（只记住读到哪）', W.ledgerSeq === 5, W.ledgerSeq);
+    ledger = { seq: 6, entries: [{ seq: 6, t: Date.now(), parts: [{ sign: '-', verb: 'stored', where: '箱子@1,64,2', items: { iron_ingot: 8 } }] }] };
+    const n0 = W.pending.length;
+    await look();
+    const said = W.pending.slice(n0).map(x => x.text).join('\n');
+    check('★ 闲着时：说得出放进了哪个箱子', /放进 箱子@1,64,2：.*×8/.test(said), said);
+    W.job = { token: -1, steps: [], inv: [] };
+    ledger = { seq: 7, entries: [{ seq: 7, t: Date.now(), parts: [{ sign: '+', verb: 'picked', items: { cobblestone: 3 } }] }] };
+    const n1 = W.pending.length;
+    await look();
+    check('★ 干活时：攒进这件事的结果里，不单独刷', W.job.inv.length === 1 && W.pending.length === n1, { inv: W.job.inv, pending: W.pending.slice(n1) });
+    ledger = { seq: 2, entries: [] };
+    await look();
+    check('bridge 重启（seq 倒回）→ 下一眼从 0 读', W.ledgerSeq === 0, W.ledgerSeq);
+    W.job = job0;
+    body._setBridge(base);
+  }
+
+  console.log('\n天黑本能：天色一变就知道');
+  {
+    let phase = 'day'; let time = 11000;
+    const base = mockBridge();
+    body._setBridge({ ...base, get: async (p) => (p.startsWith('/status') ? { ...(await base.get(p)), isDay: phase === 'day', phase, gameTime: time, exposure: { kind: 'open' } } : base.get(p)) });
+    W.phase = null;
+    await look();
+    const n0 = W.pending.length;
+    phase = 'night'; time = 14000;
+    await look();
+    const said = W.pending.slice(n0);
+    check('★ 白天→夜里：马上有一件"天黑了"的事（要紧）', said.some(x => /🌙 天黑了（时刻 14000）/.test(x.text)), said.map(x => x.text));
+    check('★ 不再和老的"该回家睡觉了"重复说', said.filter(x => /天黑了/.test(x.text)).length === 1, said.map(x => x.text));
+    const n1 = W.pending.length;
+    await look();
+    check('同一个晚上不重复说', W.pending.slice(n1).every(x => !/天黑了/.test(x.text)), W.pending.slice(n1).map(x => x.text));
+    body._setBridge(base);
+    W.phase = null;
+  }
 
   console.log(`\n  ${pass}/${total} 通过`);
   process.exit(pass === total ? 0 : 1);

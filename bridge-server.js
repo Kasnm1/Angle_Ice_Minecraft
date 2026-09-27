@@ -47,6 +47,15 @@ const paletteRegistry = require('./palette-registry.js');
 const itemRegistry = require('./item-registry.js');
 // 她的手：吃 / 右键 / 穿戴 / 按整合包配方合成 / 熔炉 / 任意界面（见 hands.js 开头）
 const hands = require('./hands.js');
+// 实体：给 mineflayer 认不出的模组生物补上服务端的真名 + 记下"谁打了她 / 打了玩家"（仇恨）。
+// 见 entity-registry.js 顶部（为什么是事后补名、为什么敌意只认证据）。
+const entityRegistry = require('./entity-registry.js');
+// 本能：不过大脑、身体自己做的事（先有拾取；战斗本能也放这里）。身体归属规矩见 instinct.js 顶部。
+const instinct = require('./instinct.js');
+// 物品账：背包每次进出记下"变了什么、为什么"（捡的 / 放进哪个箱子 / 吃掉 / 用坏…），mind 读它。见 inventory-ledger.js。
+const inventoryLedger = require('./inventory-ledger.js');
+// 天色与遮蔽：/status 给 phase（day/dusk/night/dawn）和 exposure（头顶有没有东西挡着），mind 据此安排夜里做什么。见 night.js。
+const night = require('./night.js');
 let mineflayer, pathfinderPlugin, Movements, goals, Vec3;
 // 三个「身体反射」插件。它们把"吃 / 换工具 / 采整片矿脉"从"要过一遍大脑"
 // 降级成"库自己会做"—— 这是本轮对标 HiyoriAI 与 Mindcraft 后最重要的一条：
@@ -295,7 +304,7 @@ const MAX_SCAN_BLOCK_POSITIONS = 6000;
 //          服务端更新窗口）。抄 HiyoriAI 的 assessExcavationFluidRisk，是溺水事故的正面防御。
 //          同时给 collectblock 自己那份 movements 套上同一套策略 ——
 //          它**不复用** pathfinder 的 setMovements，是个独立的口子。
-const BRIDGE_VERSION = '1.11.0';
+const BRIDGE_VERSION = '1.12.0';
 
 function loadFileConfig () {
   const cfgPath = path.join(__dirname, 'config.json');
@@ -409,6 +418,18 @@ if (cfg('MC_FORGE', '0') === '1') {
               fs.writeFileSync(path.join(REGISTRY_DIR, 'minecraft-menu.json'),
                 JSON.stringify({ capturedAt: new Date().toISOString(), registry: name, entries }, null, 1));
             } catch (_) {}
+            return;
+          }
+          // 实体类型表：模组生物的名字全靠它（mineflayer 自己只认 124 个原版）。
+          // 以前这份被丢掉了 —— 于是模组怪一律 name='unknown'、type='other'。
+          if (name === 'minecraft:entity_type') {
+            const snap = { capturedAt: new Date().toISOString(), registry: name, entryCount: entries.length, entries };
+            state.entitySnapshot = snap;   // 就地换掉：下一只刷出来的怪就用新表（索引按快照对象懒重建）
+            try {
+              fs.mkdirSync(REGISTRY_DIR, { recursive: true });
+              fs.writeFileSync(entityRegistry.DEFAULT_SNAPSHOT, JSON.stringify(snap, null, 1));
+              console.log(`[registry] ${name}：${entries.length} 条 → ${entityRegistry.DEFAULT_SNAPSHOT}`);
+            } catch (e) { console.warn(`[registry] ${name} 落盘失败：${e.message}`); }
             return;
           }
           if (name !== 'minecraft:block' && name !== 'minecraft:item') return;
@@ -1056,6 +1077,130 @@ function installItemPlugin (bot) {
     + `断点 ${report.gaps} 处）`);
 }
 
+/**
+ * 实体感知：补名 + 仇恨。挂在 bot 事件上，不走 HTTP。
+ *
+ *   entitySpawn —— mineflayer 的 setEntityData 已经跑完（认不出的落成 'unknown'），这时补真名
+ *   entityHurt  —— 1.20 damage_event 带攻击者：她或玩家挨打，攻击者记成仇
+ *   entityGone  —— 忘掉
+ *
+ * 索引按 `state.entitySnapshot` 对象懒建：握手时换了新快照，下一次用到就重建（要 bot.registry 做原版核对）。
+ * 原版 id 对不上时 buildIndex 拒绝 —— 那种情况下补名只会帮倒忙，只报一次，不补。
+ */
+function entityIndex (bot) {
+  const snap = state.entitySnapshot;
+  if (!snap || !bot.registry) return null;
+  if (state.entityIndex?.snap !== snap) {
+    const idx = entityRegistry.buildIndex(snap, bot.registry);
+    state.entityIndex = { snap, idx, named: 0 };
+    if (idx.ok) console.log(`[entities] 实体表就绪：${idx.modded} 个模组实体（原版核对 ${idx.vanillaChecked}/${idx.vanillaCount}）`);
+    else console.error(`[entities] 实体表不可用：${idx.reason}`);
+  }
+  return state.entityIndex.idx;
+}
+
+function installEntitySense (bot) {
+  state.aggro = entityRegistry.createAggroTracker();
+  bot.on('entitySpawn', (e) => {
+    try {
+      if (e?.name !== 'unknown') return;
+      if (entityRegistry.patchEntity(e, entityIndex(bot))) state.entityIndex.named++;
+    } catch (_) {}
+  });
+  bot.on('entityHurt', (victim, source) => {
+    try {
+      const on = state.aggro.noteHurt(victim, source, bot.entity?.id);
+      if (on) state.lastAggro = { t: Date.now(), on, by: source.name || 'unknown', id: source.id };
+    } catch (_) {}
+  });
+  bot.on('entityGone', (e) => { try { state.aggro.forget(e); } catch (_) {} });
+}
+
+/**
+ * 物品账的挂钩（纯逻辑在 inventory-ledger.js）。
+ *
+ *   背包格子变了 / 关了界面 → 400ms 没再变就结一笔账（开着界面不结：mineflayer 关窗才同步背包）
+ *   关界面                → 登记"开过哪个界面"：箱子带坐标，精妙背包记成"背包"
+ *   entity_status 47–52   → 服务端的"物品碎了"：主手的算进下一笔；副手/盔甲不在 items() 里，直接记一笔
+ *   death                 → 下一笔的"少了"是死亡掉落
+ *   命令 / 本能           → 由路由和 instinct.js 调 state.ledger.begin()，见那两处
+ *
+ * 账本跨重连保留（mind 按 seq 往后读，重建会让 seq 倒回去）；新连接只 rebase。
+ */
+function installLedger (bot) {
+  const L = state.ledger = state.ledger || inventoryLedger.createLedger();
+  L.rebase();
+  let timer = null;
+  const flush = () => {
+    timer = null;
+    if (!bot.inventory || bot.currentWindow) return;   // 开着界面：等关窗那次再结
+    try {
+      L.commit(bot.inventory.items().map(i => ({ name: i.name, count: i.count })), { food: bot.food });
+    } catch (_) {}
+  };
+  const schedule = () => { clearTimeout(timer); timer = setTimeout(flush, 400); };
+  state.ledgerKick = schedule;
+
+  const describeWindow = (w) => {
+    if (!w) return null;
+    if (w.__sophisticated || w.id === state.backpackWindowId) return { kind: 'backpack', where: '背包' };
+    const menu = String(w.__menu || state.lastWindowInfo?.menu || w.type || '');
+    if (/crafting/.test(menu)) return { kind: 'crafting' };
+    if (/furnace|smoker|blast/.test(menu)) return { kind: 'furnace' };
+    const p = state.openContainerPos;
+    const b = p ? bot.blockAt(p) : null;
+    return { kind: 'container', where: p ? `${b?.name || menu || '箱子'}@${p.x},${p.y},${p.z}` : (menu || '某个界面') };
+  };
+
+  // bot.inventory 是 inventory 插件在 inject_allowed 时才建的 —— 建 bot 时还没有
+  bot.once('spawn', () => {
+    bot.inventory.on('updateSlot', schedule);
+    schedule();   // 定起点
+  });
+  bot.on('windowClose', (w) => { try { L.note({ window: describeWindow(w) }); } catch (_) {} schedule(); });
+  bot.on('death', () => L.note({ route: 'death' }));
+  bot._client.on('entity_status', (p) => {
+    try {
+      if (p.entityId !== bot.entity?.id || p.entityStatus < 47 || p.entityStatus > 52) return;
+      // 包到的时候格子里还是那件（服务端先广播碎裂、tick 末尾才同步格子）
+      const slot = { 47: bot.inventory.hotbarStart + bot.quickBarSlot, 48: 45, 49: 5, 50: 6, 51: 7, 52: 8 }[p.entityStatus];
+      const it = bot.inventory.slots[slot];
+      if (!it) return;
+      if (p.entityStatus === 47) L.note({ broke: it.name });
+      else L.record([{ sign: '-', verb: 'broke', items: { [it.name]: 1 } }]);
+    } catch (_) {}
+  });
+}
+
+/**
+ * 她头顶有没有遮挡（night.js 的 exposureKind 用）。只报证据：
+ *   skyLight 头部那格的天空光；roofAt 往上第几格是实心；solidAbove 往上 32 格内实心的个数。
+ * 区块没加载到头顶那么高时 blockAt 返回 null —— 那就停在那，不把"读不到"当成"空"。
+ */
+function exposureOf (bot) {
+  if (!bot?.entity) return null;
+  const head = bot.entity.position.offset(0, 1.62, 0).floored();
+  const b = bot.blockAt(head);
+  let roofAt = null; let solidAbove = 0; let readable = 0;
+  for (let dy = 1; dy <= 32; dy++) {
+    const a = bot.blockAt(head.offset(0, dy, 0));
+    if (!a) break;
+    readable++;
+    if (a.boundingBox === 'block') { solidAbove++; if (roofAt == null) roofAt = dy; }
+  }
+  const e = { skyLight: b?.skyLight ?? null, roofAt, solidAbove, noData: !b && !readable };
+  return { ...e, kind: night.exposureKind(e) };
+}
+
+/** 这个实体对她 / 对玩家有没有仇恨（见 entity-registry.js ②）。/nearby 与战斗本能共用这一处。 */
+function aggroOf (e) {
+  const bot = state.bot;
+  if (!state.aggro || !bot?.entity) return null;
+  const players = Object.values(bot.players || {})
+    .map(p => p.entity).filter(p => p && p !== bot.entity);
+  return state.aggro.assess(e, { self: bot.entity, players });
+}
+
 function createBot() {
   if (state.bot) {
     try { state.bot.end(); } catch (_) {}
@@ -1085,6 +1230,9 @@ function createBot() {
   state.bot.loadPlugin(pathfinderPlugin);
   // 模组界面补丁：必须在 mineflayer 的 open_window 处理之前装上（prependListener）
   hands.install(state.bot, state);
+  installEntitySense(state.bot);
+  installLedger(state.bot);
+  instinct.install(state.bot, state, { handlers, hands, isDropEntity, droppedItemOf, aggroOf, exposureOf, night });
 
   // ---- 身体反射插件 ----------------------------------------------------------
   // 加载顺序有讲究（两边项目都是 pathfinder 打头）：
@@ -2629,6 +2777,9 @@ const handlers = {
     oxygen: state.bot?.oxygenLevel ?? null,
     gameTime: state.bot?.time?.timeOfDay ?? null,
     isDay: (state.bot?.time?.timeOfDay ?? 0) < 13000,
+    // 天色（day / dusk 12000 / night 13000 / dawn 23000）与头顶遮挡 —— 夜里在野外、在屋里、在矿洞是三回事（见 night.js）
+    phase: night.phaseOf(state.bot?.time?.timeOfDay),
+    exposure: (() => { try { return exposureOf(state.bot); } catch (_) { return null; } })(),
     isSleeping: !!state.bot?.isSleeping,
     inventoryCount: state.bot?.inventory?.items()?.length ?? 0,
     currentAction: state.currentAction,
@@ -2912,9 +3063,14 @@ const handlers = {
     const entities = Object.values(state.bot.entities)
       .filter(e => e !== self && e.position)
       .filter(e => e.position.distanceTo(self.position) <= radius)
+      // ⚠️ 先按距离排再截 20 个：原来是先截后排 —— 挖完矿身边十几件掉落物时，
+      //    贴脸的僵尸可能根本进不了这 20 个（实体表的遍历顺序与距离无关）。
+      .sort((a, b) => a.position.distanceTo(self.position) - b.position.distanceTo(self.position))
       .slice(0, 20)
       .map(e => {
         const drop = isDropEntity(e);
+        // 仇恨：它打过她/玩家，或者正举着手盯着她/玩家（见 entity-registry.js ②）。
+        const aggro = drop ? null : aggroOf(e);
         return {
           name: e.name || e.username || 'unknown',
           type: e.type,
@@ -2942,11 +3098,15 @@ const handlers = {
           //   现在按 prismarine-entity 的完整 \`type\` 取值分类：
           //     'hostile' → 敌对生物   'animal'/'water_creature' → 被动生物
           //     'mob' → 兜底的生物类（部分版本用这个）
+          //
+          //   2026-09-27：**有仇恨证据的也算 hostile**。模组怪补上名字后 type 仍是 'other'
+          //   （快照不带类别），不这样的话一只模组怪追着她打，上层照样数出 0 个威胁。
+          //   `aggro` 字段单独透出证据：kind 说"是不是威胁"，aggro 说"凭什么、冲谁来的"。
           kind: drop
             ? 'drop'
             : (e.type === 'player'
               ? 'player'
-              : (e.type === 'hostile'
+              : (e.type === 'hostile' || aggro
                 ? 'hostile'
                 : (e.type === 'mob' || e.type === 'animal' || e.type === 'water_creature'
                   ? 'mob'
@@ -2954,6 +3114,10 @@ const handlers = {
           // `type` **原样透出** —— 让消费者能自己判（而不是只能依赖我们分的 kind），
           // 也方便下次再遇到"分类漏了哪一类"时一眼看出来。
           entityType: e.type ?? null,
+          // { on: 'me' | 玩家名, evidence: 'hurt' | 'aggressive' } 或 null（没有证据 ≠ 友好，只是没看到它找麻烦）
+          aggro,
+          // 名字是不是我们按服务端实体表补的（模组生物）
+          named: e.angelNamed || undefined,
           distance: Math.round(e.position.distanceTo(self.position) * 10) / 10,
           position: { x: Math.round(e.position.x), y: Math.round(e.position.y), z: Math.round(e.position.z) },
         };
@@ -3497,7 +3661,9 @@ const handlers = {
   // HiyoriAI 有独立的 `pickup_drops` 动作（默认 radius 8）；
   // Mindcraft 的 `item_collecting` 模式有**防抖 bug**（`entity !== prev_item`
   // 比对的是每 tick 重建的实体对象，恒真，`wait:2` 形同虚设），**我们没有抄它**。
-  'POST /pickup': async ({ radius = 8, count = 4, timeoutMs = 8000 } = {}) => {
+  // ids：只捡这几个实体（拾取本能先挑好再来，见 instinct.js）；不给就是"最近的 count 个"。
+  // abort：只有进程内调用能传（JSON 传不了函数）—— 本能被命令打断时，每堆之间问一次。
+  'POST /pickup': async ({ radius = 8, count = 4, timeoutMs = 8000, ids, abort } = {}) => {
     radius = Math.min(Math.max(1, +radius), 32);
     count = Math.min(Math.max(1, +count), 32);
 
@@ -3514,6 +3680,7 @@ const handlers = {
     const drops = Object.values(state.bot.entities)
       .filter(e => e && e !== self && e.position && e.isValid !== false)
       .filter(isDropEntity)
+      .filter(e => !Array.isArray(ids) || ids.includes(e.id))
       .filter(e => e.position.distanceTo(self.position) <= radius)
       .sort((a, b) => a.position.distanceTo(self.position) - b.position.distanceTo(self.position))
       .slice(0, count);
@@ -3541,11 +3708,13 @@ const handlers = {
     //    不能只有"我发了请求 / 我走到了"。所以这里记背包快照，循环后对比。
     const snapBefore = inventoryFingerprint();
 
-    state.currentAction = `picking up ${drops.length} drops`;
+    const myTag = `picking up ${drops.length} drops`;
+    state.currentAction = myTag;
     let walkedTo = 0;
     const failed = [];
     try {
       for (const d of drops) {
+        if (typeof abort === 'function' && abort()) break;
         if (!d.isValid || !d.position) continue;
         // ⚠️⚠️⚠️ 2026-09-25 实战（P25）：这个循环里踩了**三层**坑，
         //     全部围绕"`goto()` 的 promise 什么时候算结束"。写清楚，别再犯：
@@ -3715,7 +3884,8 @@ const handlers = {
     } finally {
       // 循环彻底结束，**此时没有任何 goto 在等** —— 这是唯一安全的清理位置。
       pathing.clearPathfinderGoal(state.bot.pathfinder);
-      state.currentAction = null;
+      // 只清自己的标记：被打断时新命令可能已经写上了它的（见 instinct.yieldBody）
+      if (state.currentAction === myTag) state.currentAction = null;
     }
 
     // ⚠️ P32：用**背包前后差**给出"真的捡到了几个"。这是这个端点的**唯一可信答案**。
@@ -3848,6 +4018,13 @@ const handlers = {
       registryEntityCount: (() => {
         try { return Object.keys(state.bot.registry.entities || {}).length; } catch (_) { return null; }
       })(),
+      // 实体表（模组生物补名）与仇恨：实机核对用。snapshot=null 是"没收到表"，named=0 是"收到了但还没刷出模组怪"
+      entitySense: {
+        snapshot: state.entitySnapshot ? { entries: state.entitySnapshot.entryCount, capturedAt: state.entitySnapshot.capturedAt } : null,
+        index: state.entityIndex ? { ok: state.entityIndex.idx.ok, reason: state.entityIndex.idx.reason, modded: state.entityIndex.idx.modded } : null,
+        named: state.entityIndex?.named ?? 0,
+        lastAggro: state.lastAggro || null,
+      },
       rows,
     };
   },
@@ -5857,6 +6034,38 @@ const handlers = {
     };
   },
 
+  // 物品账：背包每次进出（变了什么、为什么）。mind 按 seq 往后读：?since=<上次的 seq>
+  'GET /inventory/ledger': async ({ since = 0 } = {}) => {
+    if (!state.ledger) return { seq: 0, entries: [] };
+    const r = state.ledger.since(+since || 0);
+    return { ...r, lines: r.entries.map(e => inventoryLedger.render(e)) };
+  },
+
+  // 本能的开关与现状：她为什么捡 / 为什么没捡，最近做了什么
+  'GET /instinct': async () => {
+    const I = state.instinct;
+    if (!I) return { installed: false };
+    return {
+      installed: true,
+      pickup: I.cfg.pickup,
+      running: I.running ? I.running.kind : null,
+      inflight: I.inflight,
+      quietForMs: Math.max(0, I.quietUntil - Date.now()),
+      last: I.last,
+      log: I.log.slice(-10),
+    };
+  },
+  // { pickup: true|false, radius?, followRadius? }
+  'POST /instinct': async ({ pickup, radius, followRadius } = {}) => {
+    const I = state.instinct;
+    if (!I) throw new Error('本能还没装上（bot 还没建好）');
+    if (typeof pickup === 'boolean') I.cfg.pickup.enabled = pickup;
+    if (radius !== undefined && Number.isFinite(+radius)) I.cfg.pickup.radius = Math.min(Math.max(1, +radius), 16);
+    if (followRadius !== undefined && Number.isFinite(+followRadius)) I.cfg.pickup.followRadius = Math.min(Math.max(1, +followRadius), 12);
+    if (pickup === false && I.running) I.running.abort();
+    return { pickup: I.cfg.pickup };
+  },
+
   'POST /stop': async () => {
     state.bot.pathfinder.setGoal(null);
     // ⚠️ 控制位也必须清 —— 否则"急停"停不住一个按住的 W。
@@ -5969,7 +6178,22 @@ const server = http.createServer((req, res) => {
       //    治标是改那 4 个端点，治本是这里合并 —— 两种写法都对，以后不会再有人踩。
       //    第二个参数仍然是 query 对象（老写法 `(_, q)` 不受影响）。
       const args = req.method === 'GET' ? { ...qs, ...parsed } : parsed;
-      const result = await handler(args, qs);
+      // 会动身体的命令：先让本能让出身体（打断 + 等它收拾干净），执行期间本能不出手。
+      // 见 instinct.js 顶部「身体归属」。GET 只看不动，不拦。
+      const bodyCmd = req.method === 'POST' && !instinct.PASSIVE_POSTS.has(key) && state.instinct;
+      let result;
+      if (bodyCmd) {
+        await instinct.yieldBody(state, key, args);
+        state.instinct.inflight++;
+        // 物品账：这个命令执行期间（+ 结束后一小会儿）背包的进出都算它的
+        const endLedger = state.ledger ? state.ledger.begin({ route: key }) : null;
+        try { result = await handler(args, qs); } finally {
+          state.instinct.inflight--;
+          if (endLedger) { endLedger(); state.ledgerKick?.(); }
+        }
+      } else {
+        result = await handler(args, qs);
+      }
 
       // ⚠️⚠️⚠️ 2026-09-25 修复（P44 的**架构级根因**，见 field-log）：
       //
@@ -6027,6 +6251,10 @@ server.listen(CFG.bridge.port, '127.0.0.1', () => {
   // 物品注册表快照：同样是"有就载入、没有就如实说没有"。
   // 必须在 createBot 之前读，因为注入要发生在本次连接的 inject_allowed 阶段。
   loadItemSnapshot();
+  state.entitySnapshot = entityRegistry.loadSnapshot();
+  console.log(state.entitySnapshot
+    ? `[entities] 实体快照已载入：${state.entitySnapshot.entryCount} 条（抓取于 ${state.entitySnapshot.capturedAt}）`
+    : '[entities] 还没有实体快照 —— 这次登录握手时会收到并落盘，之后刷出的模组生物就有名字了');
   createBot();
 
   // 每 30 秒把"当前状态"落盘一次，这样即使进程被强杀，state.json 也是新的。

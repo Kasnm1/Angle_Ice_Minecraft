@@ -26,6 +26,7 @@ Minecraft 陪伴型 AI。游戏内 ID 固定 **`Angle_ICE`**，跑在 Forge 1.20
 - **必须先起 `bridge-server.js`**，它持有游戏连接；上层都通过 3001 驱动它。
 - **身体归谁**：`mind.js` 醒着就一直持有身体 —— 每 8s 续一次 `POST /autopilot/yield`（20s），并关掉脑干的罐头应答；
   脑干此时只跑反射（吃、浮），不做决策。`mind.js` 正常退出立即归还；崩了脑干 20s 后自动接回。脑干没起 `mind.js` 也能单独跑。
+- **本能**（`instinct.js`，bridge 进程内，不走 HTTP）谁持有身体都在：身体空着时自己捡东西；任何会动身体的 POST 一到就让出（路由里的 `yieldBody`）。
 - `mind.js` 与 `brain.js` 共用 3003，只能起一个。
 
 ---
@@ -37,19 +38,20 @@ Minecraft 陪伴型 AI。游戏内 ID 固定 **`Angle_ICE`**，跑在 Forge 1.20
 
 | 分区 | 文件 | 相关目录 | Subagent |
 |---|---|---|---|
-| **① 桥 / 协议 / 注册表**（手+眼） | `bridge-server.js` `hands.js` `fml-handshake.js` `registry-probe.js` `block-palette.js` `palette-registry.js` `item-registry.js` `reconnect.js` | [`registry/`](registry/) [`references/`](references/) | `mc-bridge` |
+| **① 桥 / 协议 / 注册表**（手+眼） | `bridge-server.js` `hands.js` `fml-handshake.js` `registry-probe.js` `block-palette.js` `palette-registry.js` `item-registry.js` `entity-registry.js` `instinct.js` `inventory-ledger.js` `reconnect.js` | [`registry/`](registry/) [`references/`](references/) | `mc-bridge` |
 | **② 寻路 / 放置 / 站位**（几何） | `pathing.js` `place.js` | — | `mc-pathing` |
 | **③ 脑干**（规则自主循环） | `autopilot.js` `decision.js` `reflex.js` `events.js` `journal.js` | — | `mc-autopilot` |
-| **④ 意识 / 人格**（LLM 层） | `mind.js` `body.js` `memory-store.js` `speech.js` `ambition.js` `self-review.js` `llm-codex.js` `llm-workbuddy.js` `brain.js`(旧) `PERSONA.md` | [`memory/`](memory/) | `mc-mind` |
+| **④ 意识 / 人格**（LLM 层） | `mind.js` `body.js` `memory-store.js` `speech.js` `ambition.js` `self-review.js` `llm-codex.js` `llm-workbuddy.js` `night.js` `brain.js`(旧) `PERSONA.md` | [`memory/`](memory/) | `mc-mind` |
 | **⑤ 知识库**（整合包真值） | `knowledge.js` | [`knowledge/`](knowledge/) | `mc-knowledge` |
 | **⑥ 运维 / 诊断 / 台账** | `scripts/start.sh` `stop.sh` `probe-*.js` | [`scripts/`](scripts/) `logs/` [`memory/field-log.md`](memory/field-log.md) | 主会话自己做 |
 
 依赖方向（改动时注意下游）：
 ```
 bridge-server ← hands, pathing, place, decision, fml-handshake, registry-probe,
-                block-palette, palette-registry, item-registry
+                block-palette, palette-registry, item-registry, entity-registry,
+                instinct, inventory-ledger, night
 autopilot     ← decision, reflex, events
-mind          ← body, memory-store, knowledge, ambition      body ← knowledge, speech, memory-store
+mind          ← body, memory-store, knowledge, ambition, night, inventory-ledger(只用 render)      body ← knowledge, speech, memory-store
 hands / ambition ← knowledge, memory-store
 ```
 ⚠️ `decision.js` 同时被 `bridge-server` 和 `autopilot` 引用 —— 改它要两边都测。
@@ -83,6 +85,8 @@ NODE=/Users/starwish/.workbuddy-ai/binaries/node/versions/22.22.2-2/bin/node
 ```bash
 # ① 桥
 $NODE item-registry.js --selftest;  $NODE block-palette.js --selftest
+$NODE entity-registry.js --selftest                         # 模组生物补名 + 仇恨判据
+$NODE instinct.js --selftest; $NODE inventory-ledger.js --selftest   # 本能（拾取 / 让出身体）；物品账
 $NODE palette-registry.js --selftest; $NODE reconnect.js --selftest
 $NODE scripts/fml-snapshot-test.js; $NODE scripts/palette-guard-test.js
 $NODE scripts/angelpal-to-palette.js --selftest
@@ -96,7 +100,7 @@ $NODE autopilot.js --selftest; $NODE decision.js --selftest; $NODE reflex.js --s
 $NODE events.js --selftest; $NODE journal.js --selftest; $NODE scripts/jev-contract-test.js
 # ④ 意识
 $NODE mind.js --selftest; $NODE brain.js --selftest; $NODE memory-store.js --selftest
-$NODE speech.js --selftest; $NODE ambition.js --selftest; $NODE self-review.js --selftest; $NODE --check body.js
+$NODE night.js --selftest; $NODE speech.js --selftest; $NODE ambition.js --selftest; $NODE self-review.js --selftest; $NODE --check body.js
 $NODE llm-codex.js --selftest; $NODE llm-workbuddy.js --selftest   # --live 会真调一次（花额度）
 # ⑤ 知识
 $NODE knowledge.js --selftest
@@ -132,11 +136,12 @@ $NODE knowledge.js --selftest
 
 ---
 
-## 七、现状与待办（截至 2026-09-25）
+## 七、现状与待办（截至 2026-09-27）
 
 | 项 | 状态 |
 |---|---|
 | **P48** 不会持续发育（缺工具链目标：采木→木镐→石→石镐/剑→打猎） | 方案 C 已批准，**未实现**（③ 区 `decision.js`） |
+| **战斗本能第二步** | 认怪 / 仇恨已完成（`entity-registry.js`）；追击锚点 + 近战 / 躲苦力怕 / 举盾**未做**，等主人定锚点方案（2026-09-27） |
 | **P50** `place.js` 的 `AIRY` 不含植物，站在草上被判"不在地面" | **未修**（② 区；先查清 `grass` 身份与 `lava` 在 AIRY 里的疑点）。判据已收拢到 `place.js` 一处，改那里即全局生效 |
 | `README.md` / `SKILL.md` / `HANDOVER.md` | 滞后于代码（不含 ④ 区的 mind 体系） |
 

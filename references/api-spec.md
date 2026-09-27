@@ -428,6 +428,49 @@ Example:
 }
 ```
 
+实际每条还带（2026-09-27 起）：
+
+- `kind`：`hostile` / `mob` / `player` / `drop` / `other`。`hostile` = 原版敌对类别，**或者有仇恨证据**（模组怪没有类别，只能靠这个）。
+- `aggro`：`null`，或 `{ "on": "me" | "<玩家名>", "evidence": "hurt" | "aggressive" }`。
+  `hurt` = 30 秒内打过她 / 玩家（`damage_event` 的攻击者）；`aggressive` = `mob_flags` 攻击位亮着且脸朝着她 / 玩家。
+  `null` 只说明"没看到它找麻烦"，不等于友好。
+- `named: true`：名字是按服务端 `minecraft:entity_type` 快照补的（模组生物）。补不上的仍是 `unknown`。
+- 列表按距离**先排序再截 20 条**。
+
+---
+
+## GET /status —— 天色与遮挡（2026-09-27 起）
+
+- `phase`：`day` / `dusk`（12000 起）/ `night`（13000 起）/ `dawn`（23000 起）；读不到时间为 `null`。
+- `exposure`：`{ skyLight, roofAt, solidAbove, noData, kind }`，`kind` = `open` / `partial` / `sheltered` / `underground` / `unknown`（见 `night.js`）。
+
+---
+
+## GET /inventory/ledger?since=<seq>
+
+物品账：背包每次进出、以及原因（见 `inventory-ledger.js`）。按 `seq` 往后读。
+
+```json
+{ "seq": 42, "entries": [ { "seq": 42, "t": 1790000000000,
+    "parts": [ { "sign": "-", "verb": "stored", "where": "chest@12,64,-3", "items": { "iron_ingot": 8 } } ] } ],
+  "lines": [ "放进 chest@12,64,-3：iron_ingot×8" ] }
+```
+
+`verb`：`picked` `got` `mined` `harvested` `crafted` `smelted` `took` `took_off` `reward` `received` /
+`stored` `used` `furnace` `ate` `placed` `planted` `gave` `dropped` `wore` `submitted` `broke` `died` `lost`（不知道怎么没的）。
+
+---
+
+## GET /instinct · POST /instinct
+
+本能层现状与开关（见 `instinct.js`）。`GET` 给配置、正在做什么、最近一次判断（`last.skip` 写明为什么没捡）、最近 10 条记录。
+`POST { "pickup": false }` 关掉拾取本能（可带 `radius` / `followRadius`）。
+
+会动身体的 POST（除 `/chat` `/instinct` `/look` `/memory` 等只读或不动身体的）执行前都会先让本能让出身体。
+`POST /stop { "hold": true }` = 站住，之后 20 秒本能也不动；不带 `hold` 的 `/stop` 只是"停下换件事"。
+
+`POST /pickup` 新增 `ids`（只捡这几个实体 id）。
+
 ---
 
 ## GET /block

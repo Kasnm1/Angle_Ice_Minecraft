@@ -37,6 +37,7 @@ knowledge/_raw/
 # 入库等于把「脱敏」变成一次性动作。它们是机器生成产物，登录时自动重建。
 registry/minecraft-block.json
 registry/minecraft-item.json
+registry/minecraft-entity_type.json
 
 # ── 临时调试产物（2026-09-25 首次提交前清理时补上）────────
 #

@@ -615,9 +615,16 @@ const TOOLS = {
 
   stop: {
     kind: 'action',
-    desc: '停下手上的一切动作。',
+    desc: '停下手上的一切动作，站着别动（之后 20 秒连地上的东西也不会自己去捡）。',
     params: {}, required: [],
-    run: async () => bridge.post('/stop'),
+    // hold：告诉身体这是"站住"，不是"换件事做"—— 本能也跟着歇一会儿（见 instinct.js）
+    run: async () => bridge.post('/stop', { hold: true }),
+  },
+  instinct: {
+    kind: 'action',
+    desc: '开关身体的本能。pickup = 空闲时自己去捡附近地上的东西（默认开；别人说"别捡了""那些不要"就关掉）。',
+    params: { pickup: { type: 'boolean' } }, required: ['pickup'],
+    run: async ({ pickup }) => bridge.post('/instinct', { pickup: !!pickup }),
   },
   follow: {
     kind: 'action', continuous: true,
