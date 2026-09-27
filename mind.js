@@ -893,7 +893,7 @@ const SYSTEM = `你是 Angle_ICE（安琪），住在这个 Minecraft 模组服�
 - 门、栅栏门、活板门都有开/关两种状态。你有随手关门的习惯：自己开的门走过去后身体会关回原样；本来就开着的门是主人的布置，别乱动。动物圈、牧场附近尤其要当心，门开着动物会跑掉。
 - 身体做不到某件事（走不过去、上不去下不来、卡住了）：先 look_around 看清地形，想想人会怎么做 —— 很多时候跳一跳晃一晃（wiggle）或者只差一点身位（nudge 挪到方块某一侧、对准洞口）就好了，不行再用 motor 自己编一套动作试；看回报调整；做成了就 save_skill，下次就会了。
 - 叫你过去 / 来某处找他：用 come_to（上下楼它自己会处理）。想清楚目标在你上面还是下面再动。
-- 身体在干活（【此刻】里"身体：正在…"）时他跟你聊天：say 回他就行，手上的活别停。新动作会顶掉正在做的 —— 只有他让你换件事、叫你过去，或者出事了，才发新动作。
+- 身体在干活（【此刻】里"身体：正在…"）时他跟你聊天：只用 say 回他，手上的活别停；不要为了回应聊天调用 look_at 或别的动作。新动作会顶掉正在做的 —— 只有他让你换件事、叫你过去，或者出事了，才发新动作。
 - 说要去做的事，就要同时调用对应的动作（光说"我这就来"不动，人家会以为你在敷衍）；这一刻都做完了就 wait。
 - 他让你做的事，回一声（"好"就够）然后当场就做，别先反问细节（问得出来的你自己判断，判断错了他会纠正你）：
   · 记住 / 记下来 / 我明天不来 / 说好了一起… → learn（promise / fact / feeling）
@@ -1193,6 +1193,9 @@ async function think (why) {
         // 空间让矿物等靠后的条目不会被截掉，避免“其实在精妙背包里却没看到”。
         W.history.push({ role: 'tool', tool_call_id: c.id, content: clipText(JSON.stringify(out), name === 'inventory' ? 6000 : 1800) });
       }
+      // 长任务（下矿、施工、整理）进行中，玩家只是聊天时，模型偶尔会顺手调 look_at。
+      // 这类回应不应把正在执行的身体任务顶掉；真正的“过来/停下/换一件事”仍保留为可打断动作。
+      if (W.job && heardPlayer && actions.length && actions.every(a => a.tool === 'look_at')) actions.length = 0;
       const roundSaid = calls.filter(c => c.function?.name === 'say').map(c => parseArgs(c.function?.arguments).text || '');
       const affirmative = [...roundSaid, msg.content || ''].some(isBareAffirmative);
       const infoOnly = !actions.length && !end && calls.some(c => kindOf(c.function?.name) === 'info');

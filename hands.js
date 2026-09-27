@@ -3079,6 +3079,7 @@ async function checkChests (bot, state, { radius = 24, home = null, max = 4, nea
 }
 
 const ORE_RE = /(_ore|ancient_debris)$/;
+let oreIdsCache = null; let oreIdsRegistry = null;
 // 1.20 原版矿石数量最多的高度（分布峰值）；模组矿、没写目标就按铁
 const ORE_Y = { coal: 48, copper: 48, iron: 16, lapis: 0, gold: -16, redstone: -58, diamond: -58, emerald: 100 };
 const HOSTILE_RE = /zombie|skeleton|creeper|spider|witch|slime|drowned|husk|stray|enderman|silverfish|pillager|vindicator|zoglin|piglin_brute|blaze|wither/;
@@ -3140,9 +3141,13 @@ async function stepTo (bot, dest) {
 
 /** 视野里的矿（想要的在前，其次近的） */
 function visibleOres (bot, want, radius, skip) {
-  const ids = Object.values(bot.registry.blocksByName).filter(b => ORE_RE.test(b.name)).map(b => b.id);
+  if (oreIdsRegistry !== bot.registry) {
+    oreIdsRegistry = bot.registry;
+    oreIdsCache = Object.values(bot.registry.blocksByName).filter(b => ORE_RE.test(b.name)).map(b => b.id);
+  }
+  const ids = oreIdsCache;
   const me = bot.entity.position;
-  return bot.findBlocks({ matching: ids, maxDistance: radius, count: 48 })
+  return bot.findBlocks({ matching: ids, maxDistance: radius, count: 128 })
     .filter(p => !skip.has(doorKey(p)))
     .map(p => bot.blockAt(p)).filter(b => b && bot.canSeeBlock(b))
     .sort((a, b) => ((want && b.name.includes(want)) - (want && a.name.includes(want))) || me.distanceTo(a.position) - me.distanceTo(b.position));
@@ -3160,9 +3165,13 @@ function saveMines (state) {
 
 /** y<0 感知：附近的矿（不要求看得见），想要的在前、近的在前 */
 function sensedOres (bot, want, radius, skip) {
-  const ids = Object.values(bot.registry.blocksByName).filter(b => ORE_RE.test(b.name)).map(b => b.id);
+  if (oreIdsRegistry !== bot.registry) {
+    oreIdsRegistry = bot.registry;
+    oreIdsCache = Object.values(bot.registry.blocksByName).filter(b => ORE_RE.test(b.name)).map(b => b.id);
+  }
+  const ids = oreIdsCache;
   const me = bot.entity.position;
-  return bot.findBlocks({ matching: ids, maxDistance: radius, count: 48 })
+  return bot.findBlocks({ matching: ids, maxDistance: radius, count: 128 })
     .filter(p => !skip.has(doorKey(p))).map(p => bot.blockAt(p)).filter(Boolean)
     .sort((a, b) => ((want && b.name.includes(want)) - (want && a.name.includes(want))) || me.distanceTo(a.position) - me.distanceTo(b.position));
 }
@@ -3258,7 +3267,7 @@ async function delve (bot, state, { target = null, targetY = null, maxMs = 12000
   const prep = await makeTorches(bot, 16);
   if (!prep.torches) throw new Error(`没带火把，不下去（${prep.note || '做不出来'}）—— 先弄点煤/木炭做火把（煤/木炭 + 木棍 → 4 个火把）`);
   const invBefore = invCounts(bot);
-  const oreSkip = new Set(); const chests = []; const log = []; let reason = null; let turns = 0; let caveMoves = 0; let dug = 0;
+  const oreSkip = new Set(); const oreAttempts = new Map(); const chests = []; const log = []; let reason = null; let turns = 0; let caveMoves = 0; let dug = 0;
   const y0 = bot.entity.position.y;
 
   while (Date.now() - t0 < maxMs) {
@@ -3273,16 +3282,21 @@ async function delve (bot, state, { target = null, targetY = null, maxMs = 12000
 
     // 2. 视野里的矿；y<0 的深层还能感知附近 12 格内看不见的矿（主人 2026-09-27 允许），挖通道过去
     const deep = bot.entity.position.y < 0;
-    const ore = visibleOres(bot, want, 10, oreSkip)[0] || (deep ? sensedOres(bot, want, 12, oreSkip)[0] : null);
+    const ore = visibleOres(bot, want, 16, oreSkip)[0] || (deep ? sensedOres(bot, want, 16, oreSkip)[0] : null);
     if (ore) {
-      oreSkip.add(doorKey(ore.position));
+      const oreKey = doorKey(ore.position);
       if (eyeDist(bot, ore) > REACH) await pathTo(bot, ore.position, 3, 15000, { retry: false });
       if (eyeDist(bot, ore) > REACH && deep) { const t = await tunnelTo(bot, ore.position); log.push(t.ok ? `挖了 ${t.steps} 步通道到 ${ore.name}` : `挖不到 ${ore.name}：${t.why}`); if (t.stop) { reason = t.why; break; } }
       if (eyeDist(bot, ore) <= REACH + 0.3) {
         const wet = N6.map(([dx, dy, dz]) => bot.blockAt(ore.position.offset(dx, dy, dz))).find(isLiquid);
-        if (wet) { log.push(`${ore.name} 旁边有${/lava/.test(wet.name) ? '岩浆' : '水'}，没挖`); continue; }
+        if (wet) { log.push(`${ore.name} 旁边有${/lava/.test(wet.name) ? '岩浆' : '水'}，没挖`); oreSkip.add(oreKey); continue; }
         const r = await digBlock(bot, ore).catch(e => ({ ok: false, why: e.message }));
-        if (r.ok) { dug++; await collectDrops(bot, 5); if (/coal/.test(ore.name) && torchCount(bot) < 16) await makeTorches(bot, 16); } else { log.push(r.why); if (r.needTool) { reason = r.why; break; } }
+        if (r.ok) { dug++; oreAttempts.delete(oreKey); await collectDrops(bot, 5); if (/coal/.test(ore.name) && torchCount(bot) < 16) await makeTorches(bot, 16); }
+        else { log.push(r.why); const tries = (oreAttempts.get(oreKey) || 0) + 1; oreAttempts.set(oreKey, tries); if (tries >= 2) oreSkip.add(oreKey); if (r.needTool) { reason = r.why; break; } }
+      } else {
+        const tries = (oreAttempts.get(oreKey) || 0) + 1;
+        oreAttempts.set(oreKey, tries);
+        if (tries >= 2) oreSkip.add(oreKey);
       }
       continue;
     }
@@ -4315,8 +4329,8 @@ function routes ({ state, withTimeout }) {
     'POST /project/work': async (b = {}) => projectWork(bot(), state, b),
     'POST /project/cancel': async (b = {}) => { const P = projects(state); if (!P[b.id]) throw new Error(`没有工程 ${b.id}`); P[b.id].status = 'cancelled'; saveProjects(state); return { cancelled: b.id }; },
     'GET /light': async () => ({ light: lightAt(bot()), dark: isDark(lightAt(bot())) && !nearestLight(bot(), 7), nearestLight: nearestLight(bot(), 7), torches: torchCount(bot()), lastBright: state.lastBright ? { x: state.lastBright.x, y: state.lastBright.y, z: state.lastBright.z } : null }),
-    // 点亮只需“手上有一根就能插”；不要每次都为了凑到 4 根而触发完整合成流程。
-    'POST /light_up': async (b = {}) => { const m = await makeTorches(bot(), 1); const r = await lightUp(bot(), { max: Math.min(+b.max || 3, 8), force: !!b.force }); return { ...r, made: m.made || 0, ...(m.note ? { makeNote: m.note } : {}) }; },
+    // 手上有火把就直接插；真的用完时一次补够 16 根，避免每隔一根就重新打开合成流程。
+    'POST /light_up': async (b = {}) => { const have = torchCount(bot()); const m = have > 0 ? { torches: have } : await makeTorches(bot(), 16); const r = await lightUp(bot(), { max: Math.min(+b.max || 3, 8), force: !!b.force }); return { ...r, made: m.made || 0, ...(m.note ? { makeNote: m.note } : {}) }; },
     'POST /make_torches': async (b = {}) => makeTorches(bot(), Math.min(+b.count || 16, 64)),
     'POST /self_rescue': async (b = {}) => selfRescue(bot(), state, b),
     'GET /chests/unseen': async (_, q) => ({ chests: unseenChests(bot(), state, +q?.radius || 24).slice(0, 6).map(b => ({ at: storageKey(bot(), b), name: b.name, x: b.position.x, y: b.position.y, z: b.position.z, distance: +bot().entity.position.distanceTo(b.position).toFixed(1) })) }),
