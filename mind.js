@@ -44,6 +44,7 @@ const CFG = {
   port: parseInt(process.env.MIND_PORT || process.env.BRAIN_PORT || '3003'),
   pollMs: 1000,              // 看一眼世界（本机 HTTP，便宜）
   debounceMs: 400,           // 事件攒一小会儿再想
+  slowLookMs: parseInt(process.env.MIND_SLOW_LOOK_MS || '5000'),   // 门、装备、没开过的箱子、亮度：多久看一次
   // 玩家说话：马上开始想，但**先别开口**，等他说完。真人常把一句话拆成几条发（"那个" / "箱子里" / "有铁吗"）。
   // 他最后一条之后 4 秒内又来一条 → 还没说出口的这一轮作废，带上新的一起重想（见 chatGate / emit）；
   // 说出口或动了手之后就不作废了，新来的下一轮再接。一直在打也最多压 12 秒。
@@ -296,10 +297,16 @@ function invText (items) {
 
 async function look () {
   const safe = p => bridge.get(p, 2000).catch(() => null);
-  const [st, inv, near, pl, chat, doors, eq, seen, boxes, lit] = await Promise.all([
-    safe('/status'), safe('/inventory'), safe('/nearby?radius=16'), safe('/players'), safe('/chatlog?limit=30'), safe('/doors?radius=6'), safe('/equipment'),
-    safe(`/containers/seen?since=${W.seenSince || 0}`), safe('/chests/unseen?radius=24'), safe('/light'),
+  // 分两档（WorkBuddy 建议 32，Claude 核实：原来每秒 12 个请求打到 bridge，和本能、物理抢同一个事件循环）：
+  // 快的每一眼都看（状态、背包、附近、玩家、聊天、增量的箱子记录）；慢的（门、装备、没开过的箱子、亮度）slowLookMs 看一次，中间用上次的
+  const slowDue = Date.now() - (W.slowLook?.at || 0) >= CFG.slowLookMs;
+  const [st, inv, near, pl, chat, seen, slow] = await Promise.all([
+    safe('/status'), safe('/inventory'), safe('/nearby?radius=16'), safe('/players'), safe('/chatlog?limit=30'),
+    safe(`/containers/seen?since=${W.seenSince || 0}`),
+    slowDue ? Promise.all([safe('/doors?radius=6'), safe('/equipment'), safe('/chests/unseen?radius=24'), safe('/light')]) : null,
   ]);
+  if (slow) W.slowLook = { at: Date.now(), v: slow };
+  const [doors, eq, boxes, lit] = W.slowLook?.v || [null, null, null, null];
   // 本能（身体闲着时自己做的事）：做成了什么、看见什么没做成 —— 她得知道是自己干的
   const ins = await safe(`/instinct/events?since=${W.instinctSeq ?? 0}`);
   if (ins && Array.isArray(ins.events)) {

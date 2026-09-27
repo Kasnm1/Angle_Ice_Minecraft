@@ -1110,6 +1110,7 @@ function entityIndex (bot) {
 
 function installEntitySense (bot) {
   state.aggro = entityRegistry.createAggroTracker();
+  state.aggroOf = aggroOf;   // hands.js 下矿、施工时认威胁用（同一判据）
   bot.on('entitySpawn', (e) => {
     try {
       if (e?.name !== 'unknown') return;
@@ -2800,6 +2801,9 @@ const handlers = {
     //    这不是 bug —— "不在水里就没有氧气概念"，反射层也按这个语义处理
     //    （`oxygen == null` 时直接不触发）。
     oxygen: state.bot?.oxygenLevel ?? null,
+    // 身上的效果（中毒/凋零等；null = 读不到，不是"没有"）与天气 —— 本能层 instinct.js 在用，这里给 mind 和实机核对
+    effects: state.instinct?.effectNames?.() ?? null,
+    weather: state.bot ? { rain: !!state.bot.isRaining, thunder: !!state.bot.isRaining && (state.bot.thunderState ?? 0) > 0 } : null,
     gameTime: state.bot?.time?.timeOfDay ?? null,
     isDay: (state.bot?.time?.timeOfDay ?? 0) < 13000,
     // 天色（day / dusk 12000 / night 13000 / dawn 23000）与头顶遮挡 —— 夜里在野外、在屋里、在矿洞是三回事（见 night.js）

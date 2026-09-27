@@ -236,6 +236,16 @@ const CFG = {
     nightFarHome: 160,      // 夜里离家超过这么远才用 /home（近的走回去）
     panicHp: 4,
   },
+  // 吃（主人 2026-09-27：饥饿条掉 2 格就吃 = 饥饿值 ≤16）。身体空着才吃；饿到 urgentAt 以下有命令在跑也吃
+  eat: { enabled: process.env.MC_INSTINCT_EAT !== 'false', at: 16, urgentAt: 6, checkMs: 2000, failCooldownMs: 60000 },
+  // 憋气：头在水里、氧气 ≤ at（满 20）→ 叫停命令、一直跳上去换气
+  breathe: { enabled: process.env.MC_INSTINCT_BREATHE !== 'false', at: 8, checkMs: 500, jumpMs: 6000 },
+  // 中毒 / 凋零：告诉 mind；有牛奶且（凋零 或 血 ≤ milkHp）就喝；打架时按"少了几滴血"算，更早撤
+  effects: { enabled: process.env.MC_INSTINCT_EFFECTS !== 'false', milkHp: 10, poisonHpCost: 4, witherHpCost: 6, checkMs: 1000 },
+  // 天气：下雨 / 打雷 / 雨停告诉 mind；打雷在露天当夜里（白天也刷怪），打雷时在家可以睡
+  weather: { enabled: process.env.MC_INSTINCT_WEATHER !== 'false' },
+  // 玩家挨打：告诉 mind（同一个人 20 秒内只说一次）
+  playerHurt: { enabled: process.env.MC_INSTINCT_PLAYER_HURT !== 'false', radius: 48, quietMs: 20000 },
   minFreeSlots: 2,          // 收获、采矿至少留几个空格
   yieldWaitMs: 1500,        // 让出身体时最多等本能收拾多久
 };
@@ -678,6 +688,54 @@ function pickTidy (c, cfg = CFG.tidy) {
 }
 
 /**
+ * 该不该吃。主人 2026-09-27：饥饿条掉 2 格（饥饿值 ≤16）就吃。
+ * 身体被命令占着时不抢（换到手上的东西会打断挖掘、放置），除非饿到 urgentAt 以下（再不吃就不回血、跑不动）。
+ * @returns null（不饿）| { eat: true, urgent } | { skip }
+ */
+function pickEat ({ food = null, busy = null, fighting = false, windowOpen = false, eating = false, hasFood = true, now = Date.now(), failUntil = 0 } = {}, cfg = CFG.eat) {
+  if (food == null) return { skip: '读不到饥饿值' };
+  if (food > cfg.at) return null;
+  if (eating) return { skip: '正在吃' };
+  if (fighting) return { skip: '在打架' };
+  if (windowOpen) return { skip: '开着界面' };
+  if (!hasFood) return { skip: '身上没有吃的' };
+  if (now < failUntil) return { skip: '刚才没吃成，等一会儿再试' };
+  const urgent = food <= cfg.urgentAt;
+  if (busy && !urgent) return { skip: `在忙（${busy}），还不太饿，忙完再吃` };
+  return { eat: true, urgent };
+}
+
+/** 该不该上浮换气。oxygen：0–20（null = 读不到 → 不猜）；头不在水里或有水下呼吸就不用 */
+function needBreath ({ oxygen = null, headInWater = false, waterBreathing = false } = {}, cfg = CFG.breathe) {
+  if (oxygen == null || !Number.isFinite(oxygen)) return false;
+  if (!headInWater || waterBreathing) return false;
+  return oxygen <= cfg.at;
+}
+
+/**
+ * 中毒 / 凋零怎么办。effects：身上的效果名（minecraft-data 的写法：'Poison' 'Wither'）；null = 读不到 → 不猜。
+ * @returns null | { bad:[...], milk:boolean, hpCost }
+ */
+function effectPlan ({ effects = null, hp = 20, hasMilk = false } = {}, cfg = CFG.effects) {
+  if (!Array.isArray(effects)) return null;
+  const bad = ['Poison', 'Wither'].filter(n => effects.includes(n));
+  if (!bad.length) return null;
+  const wither = bad.includes('Wither');
+  const hpCost = (bad.includes('Poison') ? cfg.poisonHpCost : 0) + (wither ? cfg.witherHpCost : 0);
+  return { bad, milk: hasMilk && (wither || hp <= cfg.milkHp), hpCost };
+}
+
+/** 天气变了说什么。prev / now：{ rain, thunder }（布尔）。没变 → null */
+function weatherChange (prev, now) {
+  if (!prev || !now) return null;
+  if (now.thunder && !prev.thunder) return { kind: 'thunder', text: '打雷了：天暗下来，白天也会刷怪；别站在高处、水里' };
+  if (now.rain && !prev.rain) return { kind: 'rain', text: '下雨了' };
+  if (!now.rain && prev.rain) return { kind: 'clear', text: '雨停了' };
+  if (!now.thunder && prev.thunder) return { kind: 'thunder_end', text: '雷停了（还在下雨）' };
+  return null;
+}
+
+/**
  * 身体空不空。返回 null = 空着；否则是一句"为什么不空"。
  * following 的时候算空（本能会打断跟随，干完再接上）。
  */
@@ -931,7 +989,7 @@ function install (bot, state, deps) {
   async function trySleep () {
     const S = I.cfg.sleep;
     if (!S.enabled || bot.isSleeping || Date.now() < (I.sleepRetryAt || 0)) return null;
-    if (deps.night?.phaseOf(bot.time?.timeOfDay) !== 'night') return null;
+    if (deps.night?.phaseOf(bot.time?.timeOfDay) !== 'night' && !I.weather?.thunder) return null;   // 打雷时白天也能睡
     if (inHome(bot.entity.position) !== true) return { skip: '不在家（或不知道家在哪）' };
     const { r } = await runJob('sleep', null, () => deps.handlers['POST /sleep']({ home: I.home }));
     if (r?.sleeping || r?.already) event('sleep', '天黑了，在家上床睡了');
@@ -1127,7 +1185,9 @@ function install (bot, state, deps) {
   bot.on('death', () => {
     try {
       const p = bot.entity.position.floored();
-      const lava = [[0, 0, 0], [0, -1, 0], [0, 1, 0]].some(([dx, dy, dz]) => /lava/.test(bot.blockAt(p.offset(dx, dy, dz))?.name || ''));
+      // 身边 3×3×3 有岩浆就算"死在岩浆里"：掉的东西多半烧了，/back 回去也是站进岩浆边（以前只看脚、头、脚下 3 格会漏）
+      let lava = false;
+      for (let dx = -1; dx <= 1 && !lava; dx++) for (let dy = -1; dy <= 1 && !lava; dy++) for (let dz = -1; dz <= 1 && !lava; dz++) lava = /lava/.test(bot.blockAt(p.offset(dx, dy, dz))?.name || '');
       I.death = { pos: { x: p.x, y: p.y, z: p.z }, dim: dimNow(), at: Date.now(), lava, recovered: false };
       if (I.running) I.running.abort();
     } catch (_) {}
@@ -1522,7 +1582,7 @@ function install (bot, state, deps) {
       while (!aborted && Date.now() - I.combat.started < C.maxMs) {
         const targets = hostileTargets();
         const a = anchorAt();
-        const plan = combatPlan({ targets, hp: bot.health ?? 20, hasShield, anchor: a ? { x: a.x, y: a.y, z: a.z } : null }, C);
+        const plan = combatPlan({ targets, hp: (bot.health ?? 20) - (I.effectHpCost || 0), hasShield, anchor: a ? { x: a.x, y: a.y, z: a.z } : null }, C);
         if (!plan) {
           shield(false);
           if (Date.now() - lastSeen > C.loseMs) break;
@@ -1586,12 +1646,114 @@ function install (bot, state, deps) {
     try {
       const targets = hostileTargets();
       if (!targets.length) return;
-      const plan = combatPlan({ targets, hp: bot.health ?? 20, hasShield: /shield/.test(bot.inventory.slots[45]?.name || '') || bot.inventory.items().some(i => /shield/.test(i.name)), anchor: null }, I.cfg.combat);
+      const plan = combatPlan({ targets, hp: (bot.health ?? 20) - (I.effectHpCost || 0), hasShield: /shield/.test(bot.inventory.slots[45]?.name || '') || bot.inventory.items().some(i => /shield/.test(i.name)), anchor: null }, I.cfg.combat);
       if (!plan) return;
       fighting = true;
       await fight(plan.target);
     } catch (e) { I.last = { t: Date.now(), error: `combat: ${e.message}` }; } finally { fighting = false; }
   }, CFG.combat.scanMs);
+
+  // ---- 身上的效果（读不到 = null，不猜）：minecraft-data 的名字 'Poison' 'Wither' …
+  const effectNames = () => {
+    const eff = bot.entity?.effects;
+    if (!eff || typeof eff !== 'object') return null;
+    return Object.values(eff).map(e => bot.registry.effects?.[e.id]?.name).filter(Boolean);
+  };
+  I.effectNames = effectNames;
+
+  // ---- 吃（主人 2026-09-27：饥饿条掉 2 格就吃）
+  let eating = false;
+  const eatTimer = setInterval(async () => {
+    if (!I.cfg.eat.enabled || eating || !bot.entity || bot.isSleeping) return;
+    const hasFood = bot.inventory.items().some(i => deps.hands.foodScore(i) > 0);
+    const busy = bodyBusy({ inflight: I.inflight, currentAction: state.currentAction, windowOpen: false, quietUntil: 0 }) || (I.running && I.running.kind !== 'combat' ? `本能在做 ${I.running.kind}` : null);
+    const pick = pickEat({ food: bot.food, busy, fighting, windowOpen: !!bot.currentWindow, eating, hasFood, failUntil: I.eatFailUntil || 0 }, I.cfg.eat);
+    if (!pick?.eat) {
+      if (pick?.skip === '身上没有吃的' && bot.food <= I.cfg.eat.urgentAt && Date.now() - (I.hungryToldAt || 0) > 600000) {
+        I.hungryToldAt = Date.now();
+        event('hungry', `饿了（饥饿 ${bot.food}/20），身上没有吃的`);
+      }
+      return;
+    }
+    eating = true;
+    try {
+      const r = await deps.handlers['POST /eat']({});
+      if (r?.ate) note({ kind: 'eat', item: r.item, from: r.foodBefore, to: r.foodAfter, urgent: pick.urgent || undefined });
+      else I.eatFailUntil = Date.now() + I.cfg.eat.failCooldownMs;
+    } catch (e) {
+      I.eatFailUntil = Date.now() + I.cfg.eat.failCooldownMs;
+      event('eat_failed', `想吃东西没吃成：${String(e.message).slice(0, 80)}`);
+    } finally { eating = false; }
+  }, CFG.eat.checkMs);
+
+  // ---- 憋气：头在水里、氧气快没了 → 叫停命令，一直跳上去（寻路算不出水下的路，跳最快）
+  let breathing = false;
+  const breathTimer = setInterval(async () => {
+    if (!I.cfg.breathe.enabled || breathing || !bot.entity || fighting) return;
+    const head = bot.blockAt(bot.entity.position.offset(0, 1.62, 0));
+    const headInWater = !!head && (/water|bubble_column/.test(head.name) || head.getProperties?.().waterlogged === true);
+    const eff = effectNames();
+    if (!needBreath({ oxygen: bot.oxygenLevel ?? null, headInWater, waterBreathing: !!eff?.includes('WaterBreathing') }, I.cfg.breathe)) return;
+    breathing = true;
+    try {
+      if (I.running && I.running.kind !== 'combat') I.running.abort();
+      deps.cancelCommands?.('憋不住气了，先上去换气');
+      event('breathe', `在水里憋不住气了（氧气 ${bot.oxygenLevel}/20），先游上去换气`);
+      const r = await deps.handlers['POST /jump']({ durationMs: I.cfg.breathe.jumpMs, stopAtOxygen: 18 });
+      note({ kind: 'breathe', oxygen: r?.oxygen, jumped: r?.jumped });
+    } catch (e) { I.last = { t: Date.now(), error: `breathe: ${e.message}` }; } finally { breathing = false; }
+  }, CFG.breathe.checkMs);
+
+  // ---- 中毒 / 凋零
+  let drinking = false;
+  const effectTimer = setInterval(async () => {
+    if (!I.cfg.effects.enabled || drinking || !bot.entity) return;
+    const eff = effectNames();
+    const hasMilk = bot.inventory.items().some(i => i.name === 'milk_bucket');
+    const plan = effectPlan({ effects: eff, hp: bot.health ?? 20, hasMilk }, I.cfg.effects);
+    I.effectHpCost = plan?.hpCost || 0;
+    const key = plan ? plan.bad.join('+') : '';
+    if (key && key !== I.effectTold) event('effect', `中了${plan.bad.map(b => ({ Poison: '毒', Wither: '凋零' }[b])).join('和')}（血 ${Math.round(bot.health ?? 0)}）${hasMilk ? '' : '，身上没有牛奶'}`, { effects: plan.bad });
+    I.effectTold = key;
+    if (!plan?.milk || bot.currentWindow || fighting) return;
+    drinking = true;
+    try {
+      const milk = bot.inventory.items().find(i => i.name === 'milk_bucket');
+      await bot.equip(milk, 'hand');
+      await bot.consume();
+      await new Promise(res => setTimeout(res, 300));
+      const left = effectNames() || [];
+      const cleared = !plan.bad.some(b => left.includes(b));
+      event('effect_milk', cleared ? '喝了牛奶，毒解了' : '喝了牛奶，但效果还在（可能读不准）');
+    } catch (e) { event('effect_milk', `想喝牛奶解毒没成：${String(e.message).slice(0, 60)}`); } finally { drinking = false; }
+  }, CFG.effects.checkMs);
+
+  // ---- 天气
+  I.weather = { rain: !!bot.isRaining, thunder: !!bot.isRaining && (bot.thunderState ?? 0) > 0 };
+  const onWeather = () => {
+    if (!I.cfg.weather.enabled) return;
+    const now = { rain: !!bot.isRaining, thunder: !!bot.isRaining && (bot.thunderState ?? 0) > 0 };
+    const ch = weatherChange(I.weather, now);
+    I.weather = now;
+    if (ch) event('weather', ch.text, { weather: ch.kind });
+  };
+  bot.on('rain', onWeather);
+  bot.on('weatherUpdate', onWeather);
+
+  // ---- 玩家挨打：告诉 mind（打人的怪战斗本能本来就会打，这里只是让她"知道"）
+  const hurtTold = new Map();
+  bot.on('entityHurt', (victim, source) => {
+    try {
+      const H = I.cfg.playerHurt;
+      if (!H.enabled || victim?.type !== 'player' || victim === bot.entity || !victim.username) return;
+      if (source?.type === 'player') return;   // 玩家之间闹着玩不归本能管
+      if (!bot.entity || victim.position.distanceTo(bot.entity.position) > H.radius) return;
+      if (Date.now() - (hurtTold.get(victim.username) || 0) < H.quietMs) return;
+      hurtTold.set(victim.username, Date.now());
+      const dist = Math.round(victim.position.distanceTo(bot.entity.position));
+      event('player_hurt', `${victim.username} 挨打了${source?.name ? `（${source.name}）` : '（摔的、烧的或者看不见的东西）'}，离她 ${dist} 格`, { player: victim.username, by: source?.name || null });
+    } catch (_) {}
+  });
 
   async function tick () {
     if (I.running || !bot.entity || bot.isSleeping || fighting) return;
@@ -1606,6 +1768,9 @@ function install (bot, state, deps) {
       windowOpen: !!bot.currentWindow, quietUntil: I.quietUntil,
     });
     if (busy) { I.last = { t: Date.now(), skip: busy }; return; }
+    // 换护甲放在"有怪盯着"和"血少"之前：被盯上时正是该穿好的时候（WorkBuddy 建议 17，Claude 核实）
+    const ar = await tryArmor();
+    if (ar?.did) { I.last = { t: Date.now(), armor: '做了' }; return; }
     if ((bot.health ?? 20) < P.minHealth) { I.last = { t: Date.now(), skip: `血 ${bot.health}，不弯腰` }; return; }
     const danger = threatened();
     if (danger) { I.last = { t: Date.now(), skip: danger }; return; }
@@ -1619,7 +1784,7 @@ function install (bot, state, deps) {
     let nightOut = false;
     try {
       const ph = deps.night?.phaseOf(bot.time?.timeOfDay);
-      nightOut = (ph === 'night' || ph === 'dusk') && deps.night.isOut(deps.exposureOf(bot)?.kind);
+      nightOut = (ph === 'night' || ph === 'dusk' || !!I.weather?.thunder) && deps.night.isOut(deps.exposureOf(bot)?.kind);   // 打雷时白天也刷怪
     } catch (_) {}
     const now = Date.now();
     const last = {};
@@ -1656,7 +1821,7 @@ function install (bot, state, deps) {
 
     // ④ 收获  ⑤ 开宝箱 / 进建筑  ⑥ 采矿  ⑦ 换护甲
     // ⑧ 洞穴探险（最后：先把看得见的矿挖了、箱子开了，再往里走）
-    for (const [k, f] of [['harvest', tryHarvest], ['loot', () => tryLoot(nightOut)], ['mine', tryMine], ['armor', tryArmor], ['cave', tryCave]]) {
+    for (const [k, f] of [['harvest', tryHarvest], ['loot', () => tryLoot(nightOut)], ['mine', tryMine], ['cave', tryCave]]) {
       const r = await f();
       if (!r) continue;
       if (r.did) { I.last = { t: now, ...last, [k]: '做了' }; return; }
@@ -1671,7 +1836,7 @@ function install (bot, state, deps) {
     ticking = true;
     try { await tick(); } catch (e) { I.last = { t: Date.now(), error: e.message }; } finally { ticking = false; }
   }, CFG.pickup.tickMs);
-  bot.once('end', () => { clearInterval(timer); clearInterval(gazeTimer); clearInterval(toolTimer); clearInterval(combatTimer); clearInterval(kitTimer); clearInterval(oreWatch); clearInterval(policyTimer); clearInterval(homeTimer); });
+  bot.once('end', () => { clearInterval(timer); clearInterval(gazeTimer); clearInterval(toolTimer); clearInterval(combatTimer); clearInterval(kitTimer); clearInterval(oreWatch); clearInterval(policyTimer); clearInterval(homeTimer); clearInterval(eatTimer); clearInterval(breathTimer); clearInterval(effectTimer); });
 }
 
 /**
@@ -1834,6 +1999,28 @@ function selftest () {
   check('★ 远处孤零零一个（隔了一大段）→ 不算（不把邻居家当自己家）', homeFootprint([5, 12, 20, 60], 24), 24);
   check('只扩不缩', homeFootprint([2, 3], 40), 40);
   check('封顶 128', homeFootprint(Array.from({ length: 40 }, (_, i) => i * 5), 24), 128);
+  // ---- 吃 / 憋气 / 中毒 / 天气
+  check('★ 饥饿 16（掉了 2 格）、身体空着 → 吃', pickEat({ food: 16 })?.eat, true);
+  check('饥饿 17 → 不饿', pickEat({ food: 17 }), null);
+  check('饥饿 12、在忙 → 等忙完', typeof pickEat({ food: 12, busy: '在挖矿' })?.skip, 'string');
+  check('★ 饥饿 5、在忙 → 也吃（急）', pickEat({ food: 5, busy: '在挖矿' })?.urgent, true);
+  check('在打架不吃', typeof pickEat({ food: 3, fighting: true })?.skip, 'string');
+  check('身上没吃的 → 如实说', pickEat({ food: 10, hasFood: false })?.skip, '身上没有吃的');
+  check('读不到饥饿值 → 不猜', pickEat({ food: null })?.skip, '读不到饥饿值');
+  check('★ 头在水里、氧气 6 → 上浮', needBreath({ oxygen: 6, headInWater: true }), true);
+  check('氧气 6 但头在水外 → 不用', needBreath({ oxygen: 6, headInWater: false }), false);
+  check('有水下呼吸 → 不用', needBreath({ oxygen: 2, headInWater: true, waterBreathing: true }), false);
+  check('读不到氧气 → 不猜', needBreath({ oxygen: null, headInWater: true }), false);
+  check('★ 凋零 + 有牛奶 → 喝', effectPlan({ effects: ['Wither'], hp: 18, hasMilk: true })?.milk, true);
+  check('中毒、血还多 → 不喝（毒不致死）', effectPlan({ effects: ['Poison'], hp: 18, hasMilk: true })?.milk, false);
+  check('中毒、血 8 → 喝', effectPlan({ effects: ['Poison'], hp: 8, hasMilk: true })?.milk, true);
+  check('中毒打架按少 4 滴血算', effectPlan({ effects: ['Poison'], hp: 20 })?.hpCost, 4);
+  check('没中毒 → 无事', effectPlan({ effects: ['Speed'] }), null);
+  check('读不到效果 → 不猜', effectPlan({ effects: null }), null);
+  check('开始下雨', weatherChange({ rain: false, thunder: false }, { rain: true, thunder: false })?.kind, 'rain');
+  check('★ 打雷', weatherChange({ rain: true, thunder: false }, { rain: true, thunder: true })?.kind, 'thunder');
+  check('雨停', weatherChange({ rain: true, thunder: true }, { rain: false, thunder: false })?.kind, 'clear');
+  check('没变 → 不说', weatherChange({ rain: true, thunder: false }, { rain: true, thunder: false }), null);
   check('★ 暗处：光源读得到、3 格全黑 → 报', darkReport({ sourceLights: [14], cells: [{ pos: 1, light: 0 }, { pos: 2, light: 0 }, { pos: 3, light: 0 }, { pos: 4, light: 9 }] }).count, 3);
   check('★ 暗处：有光源却都读成 0 → 读不到，不报暗', darkReport({ sourceLights: [0, undefined], cells: [{ pos: 1, light: 0 }, { pos: 2, light: 0 }, { pos: 3, light: 0 }] }).kind, 'unreadable');
   check('暗处：只有 2 格黑 → 不吵', darkReport({ sourceLights: [14], cells: [{ pos: 1, light: 0 }, { pos: 2, light: 0 }] }), null);
@@ -1991,7 +2178,7 @@ function selftest () {
   });
 }
 
-module.exports = { CFG, pickRecovery, pickCommand, homeFootprint, darkReport, mlgStep, pickCaveStep, STRUCTURE_SIGNS, recognizeStructures, pickLoot, pickTidy, mobKind, attackCooldownMs, combatPlan, COMBAT_YIELD, TIER, pickaxeTier, needTier, pickOre, pickHarvest, hazardUnder, pickStepOff, armorRank, pickArmor, toolWorn, pickGaze, whoThrew, pickPickup, bodyBusy, install, yieldBody, PASSIVE_POSTS, selftest };
+module.exports = { CFG, pickEat, needBreath, effectPlan, weatherChange, pickRecovery, pickCommand, homeFootprint, darkReport, mlgStep, pickCaveStep, STRUCTURE_SIGNS, recognizeStructures, pickLoot, pickTidy, mobKind, attackCooldownMs, combatPlan, COMBAT_YIELD, TIER, pickaxeTier, needTier, pickOre, pickHarvest, hazardUnder, pickStepOff, armorRank, pickArmor, toolWorn, pickGaze, whoThrew, pickPickup, bodyBusy, install, yieldBody, PASSIVE_POSTS, selftest };
 
 if (require.main === module && process.argv.includes('--selftest')) {
   selftest().then(code => process.exit(code));

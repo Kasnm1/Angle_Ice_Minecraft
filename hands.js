@@ -2742,6 +2742,14 @@ const ORE_RE = /(_ore|ancient_debris)$/;
 // 1.20 原版矿石数量最多的高度（分布峰值）；模组矿、没写目标就按铁
 const ORE_Y = { coal: 48, copper: 48, iron: 16, lapis: 0, gold: -16, redstone: -58, diamond: -58, emerald: 100 };
 const HOSTILE_RE = /zombie|skeleton|creeper|spider|witch|slime|drowned|husk|stray|enderman|silverfish|pillager|vindicator|zoglin|piglin_brute|blaze|wither/;
+/**
+ * 8 格内有没有威胁：原版敌对怪按名字（上面的正则），**加上**有仇恨证据的（打过她/玩家、或攻击位亮着脸朝她，
+ * bridge 的 aggroOf，战斗本能同一份）—— 模组怪名字认不全，靠证据兜住（WorkBuddy 建议 28，Claude 核实）。
+ */
+function threatNear (bot, state, pos, r = 8) {
+  return Object.values(bot.entities).find(e => e !== bot.entity && e.type !== 'player' && e.position && e.position.distanceTo(pos) < r
+    && (HOSTILE_RE.test(e.name || '') || !!state?.aggroOf?.(e))) || null;
+}
 const isLiquid = (b) => !!b && /water|lava|bubble_column/.test(b.name);
 const airish = (b) => !b || (b.boundingBox === 'empty' && !isLiquid(b));
 // 人造方块：挖到这些说明走到别人/自己的建筑里了，不挖（和 bridge 的 isPlayerBuilt 同义的粗判）
@@ -2916,7 +2924,7 @@ async function delve (bot, state, { target = null, targetY = null, maxMs = 12000
   while (Date.now() - t0 < maxMs) {
     D.last = bot.entity.position.clone(); D.deepest = Math.min(D.deepest ?? 999, Math.floor(D.last.y));
     if (bot.health < 8) { reason = `血只剩 ${Math.round(bot.health)}`; break; }
-    const mob = Object.values(bot.entities).find(e => e !== bot.entity && HOSTILE_RE.test(e.name || '') && e.position.distanceTo(bot.entity.position) < 8);
+    const mob = threatNear(bot, state, bot.entity.position);
     if (mob) { reason = `${mob.name} 在 ${mob.position.distanceTo(bot.entity.position).toFixed(0)} 格外`; break; }
     if (bot.inventory.emptySlotCount() <= 1) { reason = '背包快满了'; break; }
 
@@ -3432,7 +3440,7 @@ async function projectWork (bot, state, { id, maxMs = 90000, maxOps = 60 } = {})
   const goNear = async (pos) => { if (reachOK(pos) && !onMe(pos)) return true; await pathTo(bot, pos, 3, 15000, { retry: false }); return reachOK(pos) && !onMe(pos); };
   while (Date.now() - t0 < maxMs && ops < maxOps) {
     if (bot.health < 8) { reason = `血只剩 ${Math.round(bot.health)}`; break; }
-    const mob = Object.values(bot.entities).find(e => e !== bot.entity && HOSTILE_RE.test(e.name || '') && e.position.distanceTo(me()) < 8);
+    const mob = threatNear(bot, state, me());
     if (mob) { reason = `${mob.name} 靠近了`; break; }
     const d = projectDiff(bot, p);
     if (!d.dig.length && !d.place.length) { if (!d.unknown) { p.status = 'done'; p.doneAt = Date.now(); saveProjects(state); reason = '完工了'; } else reason = `还有 ${d.unknown} 格没加载，走近点再看`; break; }
@@ -4206,6 +4214,19 @@ if (require.main === module && process.argv.includes('--selftest')) {
       check('耕地、小路不算', [sc.includes('regions_unexplored:peat_farmland'), sc.includes('regions_unexplored:peat_dirt_path')], [false, false]);
       check('磨制石头不算（值钱）', sc.includes('minecraft:polished_andesite'), false);
       check('垫脚也认草方块', isFiller('grass_block'), true);
+    }
+    console.log('\n下矿 / 施工认威胁');
+    {
+      const V = (x) => ({ distanceTo: (p) => Math.abs(p.x - x) , x });
+      const me = { position: V(0) };
+      const mk = (name, x, extra = {}) => ({ name, position: V(x), type: 'mob', ...extra });
+      const fb = (ents) => ({ entity: me, entities: Object.fromEntries(ents.map((e, i) => [i, e])) });
+      const st = { aggroOf: (e) => (e.hate ? { on: 'me' } : null) };
+      check('原版僵尸 → 威胁', !!threatNear(fb([mk('zombie', 3)]), st, { x: 0 }), true);
+      check('★ 模组怪有仇恨证据 → 威胁（以前名单里没有）', !!threatNear(fb([mk('cataclysm:ignis', 3, { hate: true })]), st, { x: 0 }), true);
+      check('模组怪没仇恨 → 不算', !!threatNear(fb([mk('cataclysm:ignis', 3)]), st, { x: 0 }), false);
+      check('太远 → 不算', !!threatNear(fb([mk('zombie', 20)]), st, { x: 0 }), false);
+      check('没有 aggroOf（旧状态）→ 照旧按名字', !!threatNear(fb([mk('skeleton', 2)]), {}, { x: 0 }), true);
     }
 
     console.log(`\n  ${pass}/${total} 通过`);
