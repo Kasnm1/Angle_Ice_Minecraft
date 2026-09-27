@@ -279,6 +279,42 @@ function pickaxeTier (itemNames = []) {
 const needTier = (tier) => (tier && TIER[tier] != null ? TIER[tier] : TIER.iron);
 const TIER_NAME = ['木镐', '石镐', '铁镐', '钻石镐', '下界合金镐'];
 
+/**
+ * 身上的 + 精妙背包里的物品名清单（主人 2026-09-28，codex 审计 P-4 / N-9）。
+ *
+ * 以前 `pickaxeTier(bot.inventory.items()…)` 只看普通物品栏 —— 镐子放在精妙背包（108 格）里时
+ * 判"镐子不够"，看见矿也不挖。这里把 `state.backpackSeen` 里的也并进来。
+ *
+ * ⚠️ 只是**算上背包里的**，不真的把镐子拿出来 —— 判据用；真要取工具是 hands 的活。
+ * 读不到背包时（没背 / 从没打开过）返回 `readable:false`，调用方要按原逻辑算，并且**不能说"没有"**。
+ *
+ * @returns {{ names:string[], source:'carried'|'carried+backpack', readable:boolean }}
+ */
+// instinct 里的裸名（去 minecraft: 前缀）—— 和 loadTables 的 bareName 同一规则
+const bareNameOf = (n) => String(n).replace(/^minecraft:/, '');
+
+function carriedNames (bot, state) {
+  const names = bot.inventory.items().map(i => i.name);
+  const seen = state?.backpackSeen;
+  if (!seen || !seen.items) return { names, source: 'carried', readable: false };
+  // 判据只关心"有没有这一种"，不需要真的按数量铺开（pickaxeTier / have 只看名字）
+  for (const name of Object.keys(seen.items)) names.push(name);
+  return { names, source: 'carried+backpack', readable: true };
+}
+
+/**
+ * 名字 → 数量（身上的 + 背包记录里的）。背包读不到时 readable:false，只算身上的，
+ * 调用方据此判断要不要在 skip 原因里写「背包读不到」。
+ */
+function carriedTally (bot, state) {
+  const have = {};
+  for (const it of bot.inventory.items()) have[bareNameOf(it.name)] = (have[bareNameOf(it.name)] || 0) + it.count;
+  const seen = state?.backpackSeen;
+  if (!seen || !seen.items) return { have, readable: false };
+  for (const [name, count] of Object.entries(seen.items)) have[bareNameOf(name)] = (have[bareNameOf(name)] || 0) + count;
+  return { have, readable: true };
+}
+
 // ------------------------------------------------------------------ 纯判据（可自测）
 
 const hdist = (a, b) => Math.hypot(a.x - b.x, a.z - b.z);
@@ -1096,17 +1132,24 @@ function install (bot, state, deps) {
       const row = T.ores.get(b.type);
       return { name: row.name, pos: p, value: row.value, tier: row.tier, notPickaxe: !!row.notPickaxe, drops: (row.drops || []).map(bareName), visible: bot.canSeeBlock(b), hazard: hazardAround(p) };
     }).filter(Boolean);
-    const have = {};
-    for (const it of bot.inventory.items()) have[bareName(it.name)] = (have[bareName(it.name)] || 0) + it.count;
-    const pick = pickOre({ ores, self: bot.entity.position, pick: pickaxeTier(bot.inventory.items().map(i => i.name)), have, fails: mineFails });
+    // 镐子和"缺不缺这种矿"都要算上精妙背包里的（N-9：镐子在背包里时以前判"镐子不够"不挖）。
+    // 背包读不到就按老逻辑（只看身上），并在 skip 原因里写清"背包读不到"——不能说"没有"。
+    const carry = carriedNames(bot, state);
+    const tally = carriedTally(bot, state);
+    const have = tally.have;
+    const pick = pickOre({ ores, self: bot.entity.position, pick: pickaxeTier(carry.names), have, fails: mineFails });
     // 看得见、值钱、但镐子不够：告诉 mind（一个位置只说一次）
     for (const l of pick.lacking || []) {
       const k = `${l.pos.x},${l.pos.y},${l.pos.z}`;
       if (I.told.has(k)) continue;
       I.told.add(k);
-      event('ore_lacking_tool', `看见 ${l.name}（${k}），但要${TIER_NAME[l.need] || '更好的镐子'}才挖得出东西`, { ore: l.name, pos: l.pos });
+      event('ore_lacking_tool', `看见 ${l.name}（${k}），但要${TIER_NAME[l.need] || '更好的镐子'}才挖得出东西${carry.readable ? '' : '（背包读不到，只算了身上的）'}`, { ore: l.name, pos: l.pos, backpackReadable: carry.readable });
     }
-    if (!pick.target) return pick;
+    if (!pick.target) {
+      // 背包读不到时补一句，免得把"读不到"当成"真的没有"
+      if (!carry.readable && pick.skip) return { ...pick, skip: `${pick.skip}；背包读不到（只算了身上的）` };
+      return pick;
+    }
     I.lastMineAt = Date.now();
     const { r, aborted } = await runJob('mine', { route: 'POST /mine' }, (abort) => deps.handlers['POST /mine']({
       blockName: pick.target.name, count: pick.count, maxRadius: M.radius, abort,
@@ -1581,7 +1624,7 @@ function install (bot, state, deps) {
       if (!(I.inflight > 0 || (state.currentAction && !/^following /.test(state.currentAction)))) return;   // 闲着时采矿本能自己会去
       const T = loadTables();
       if (!T.ores.size) return;
-      const pick = pickaxeTier(bot.inventory.items().map(i => i.name));
+      const pick = pickaxeTier(carriedNames(bot, state).names);   // 算上精妙背包里的镐子（N-9）
       for (const p of bot.findBlocks({ matching: [...T.ores.keys()], maxDistance: 12, count: 16 })) {
         const b = bot.blockAt(p); if (!b || !bot.canSeeBlock(b)) continue;
         const row = T.ores.get(b.type);
@@ -1597,7 +1640,10 @@ function install (bot, state, deps) {
 
   // ---- 随身物品：缺什么（告诉 mind）/ 回家整理
   const kitNow = () => {
-    const items = bot.inventory.items().map(i => ({ name: i.name, count: i.count }));
+    // 精妙背包里的也算"随身"（N-9）：镐子/吃的/火把在背包里时，不该报"身上没带够"。
+    // 背包读不到就只算身上的（下面的 pack.free/has 本来就会说明"读不到"）。
+    const tally = carriedTally(bot, state);
+    const items = Object.entries(tally.have).map(([name, count]) => ({ name, count }));
     const short = deps.hands.kitShortfall(bot, items).filter(x => x.essential).map(x => x.label);
     // 家里箱子里记得有什么（开过的箱子，hands.noteSeen 记的）
     const homeItems = [];
@@ -1612,7 +1658,7 @@ function install (bot, state, deps) {
     if (deps.hands.wearingBackpack?.(bot, state)) {
       const bp = state.backpackSeen;
       const packItems = Object.entries(bp?.items || {}).map(([name, count]) => ({ name, count }));
-      pack = { free: bp ? bp.slots - bp.used : null, has: short.length ? deps.hands.kitAvailable(bot, packItems, short) : [] };
+      pack = { free: bp ? bp.slots - bp.used : null, readable: tally.readable, has: short.length ? deps.hands.kitAvailable(bot, packItems, short) : [] };
     }
     return { short, atHomeHas, homeKnown: homeItems.length > 0, pack };
   };
@@ -1624,7 +1670,8 @@ function install (bot, state, deps) {
       if (sig === (I.kitSig ?? '')) return;
       I.kitSig = sig;
       if (!k.short.length) return;
-      const have = [k.pack?.has?.length ? `背包里有：${k.pack.has.join('、')}` : null,
+      const have = [k.pack && !k.pack.readable ? '背包读不到（只算了身上的）' : null,
+        k.pack?.has?.length ? `背包里有：${k.pack.has.join('、')}` : null,
         k.atHomeHas.length ? `家里箱子里有：${k.atHomeHas.join('、')}` : (k.homeKnown ? '家里的箱子里也没看到' : null)].filter(Boolean).join('；');
       event('kit_short', `身上没带够：${k.short.join('、')}${have ? `（${have}）` : ''}`, { short: k.short });
     } catch (_) {}
@@ -2238,6 +2285,16 @@ function selftest () {
   check('模组镐认不出材质 → 按石镐（宁可少挖）', pickaxeTier(['somemod:crystal_pickaxe']), 1);
   check('★ 矿表没查到等级 → 保守按铁镐', needTier(null), TIER.iron);
 
+  // ---- 随身物品：精妙背包里的也要算（P-4 / N-9）
+  const cbot = (carried) => ({ inventory: { items: () => carried.map(c => ({ name: c.name, count: c.count })) } });
+  check('★ 镐子在精妙背包里 → 算得上（以前只看身上，判成"没镐子"）',
+    pickaxeTier(carriedNames(cbot([]), { backpackSeen: { items: { 'minecraft:iron_pickaxe': 1 } } }).names), 2);
+  check('背包读不到 → readable:false（调用方不能说"没有"）', carriedNames(cbot([{ name: 'torch', count: 1 }]), {}).readable, false);
+  check('★ 背包读得到 → readable:true', carriedNames(cbot([]), { backpackSeen: { items: { 'minecraft:torch': 1 } } }).readable, true);
+  check('身上 + 背包同名 → 合并计数', carriedTally(cbot([{ name: 'torch', count: 4 }]), { backpackSeen: { items: { 'minecraft:torch': 10 } } }).have.torch, 14);
+  check('背包读不到时只算身上的', carriedTally(cbot([{ name: 'torch', count: 4 }]), {}).have.torch, 4);
+  check('背包里的原铁算了（"缺不缺这种矿"用它判断）', carriedTally(cbot([]), { backpackSeen: { items: { 'minecraft:raw_iron': 9 } } }).have.raw_iron, 9);
+
   // ---- 挖哪条矿 ----
   const ore = (name, x, z, extra = {}) => ({ name, pos: { x, y: 64, z }, value: 'mid', tier: 'stone', drops: ['raw_iron'], visible: true, hazard: false, ...extra });
   const O = (ores, extra = {}) => pickOre({ ores, self: me, pick: 2, ...extra });
@@ -2532,7 +2589,7 @@ function selftest () {
 
 // isHostileEntity 是**转导出**（上面从 entity-registry 拿的），不是本能层自己实现的 ——
 // 保留在导出里是为了不破坏既有引用（hands.js / 自测）。
-module.exports = { caveBoundary, settleJob, syncSleepState, createCheck, CFG, fillCfg, pickEat, pickShore, shoreRingOffsets, needBreath, effectPlan, weatherChange, pickRecovery, pickCommand, homeFootprint, darkReport, mlgStep, pickCaveStep, STRUCTURE_SIGNS, recognizeStructures, pickLoot, pickTidy, isHostileEntity, mobKind, attackCooldownMs, combatPlan, COMBAT_YIELD, TIER, pickaxeTier, needTier, pickOre, pickHarvest, hazardUnder, pickStepOff, armorRank, pickArmor, toolWorn, pickGaze, whoThrew, pickPickup, bodyBusy, install, yieldBody, PASSIVE_POSTS, selftest };
+module.exports = { caveBoundary, settleJob, syncSleepState, createCheck, CFG, fillCfg, pickEat, pickShore, shoreRingOffsets, needBreath, effectPlan, weatherChange, pickRecovery, pickCommand, homeFootprint, darkReport, mlgStep, pickCaveStep, STRUCTURE_SIGNS, recognizeStructures, pickLoot, pickTidy, isHostileEntity, mobKind, attackCooldownMs, combatPlan, COMBAT_YIELD, TIER, pickaxeTier, carriedNames, carriedTally, needTier, pickOre, pickHarvest, hazardUnder, pickStepOff, armorRank, pickArmor, toolWorn, pickGaze, whoThrew, pickPickup, bodyBusy, install, yieldBody, PASSIVE_POSTS, selftest };
 
 if (require.main === module && process.argv.includes('--selftest')) {
   selftest().then(code => process.exit(code));

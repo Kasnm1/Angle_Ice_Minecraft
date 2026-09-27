@@ -4336,6 +4336,12 @@ const handlers = {
       };
     }
     if (!itemName) throw new Error('itemName required（或传 auto: true）');
+    // 精妙背包里的东西也算"随身"（N-9）：手上没有先从背包拿上来，再判"没有"。
+    // 拿不到时 hands.ensureCarried 会区分「背包里也没有」与「背包读不到」—— 后者不能说成 Not carrying。
+    if (!state.bot.inventory.items().some(i => sameItem(i.name, itemName))) {
+      const got = await hands.ensureCarried(state.bot, state, itemName, 1);
+      if (got.source === 'unknown') throw new Error(`拿不到 ${itemName}：${got.why}`);
+    }
     const item = state.bot.inventory.items().find(i => sameItem(i.name, itemName));
     if (!item) throw new Error(`Not carrying ${itemName}`);
     await state.bot.equip(item, destination);
@@ -4402,6 +4408,11 @@ const handlers = {
     await sleepMs(150);   // 给服务端一两个 tick 收下"我停下来了"
 
     // 手里要放的方块：指定 itemName，或默认用当前手持
+    // 精妙背包里的也算"随身"（N-9 的 `Not carrying minecraft:crafting_table` ×4）—— 先拿上来再判没有
+    if (itemName && !bot.inventory.items().some(i => sameItem(i.name, itemName))) {
+      const got = await hands.ensureCarried(bot, state, itemName, 1);
+      if (got.source === 'unknown') throw new Error(`拿不到 ${itemName}：${got.why}`);
+    }
     const item = itemName
       ? bot.inventory.items().find(i => sameItem(i.name, itemName))
       : bot.heldItem;
@@ -4564,6 +4575,11 @@ const handlers = {
     if (!ep) throw new Error('bot 没有位置（未连接？）');
 
     // 要放的方块
+    // 精妙背包里的也算"随身"（N-9）—— 先拿上来再判"没有"
+    if (itemName && !bot.inventory.items().some(i => sameItem(i.name, itemName))) {
+      const got = await hands.ensureCarried(bot, state, itemName, 1);
+      if (got.source === 'unknown') throw new Error(`拿不到 ${itemName}：${got.why}`);
+    }
     const item = itemName
       ? bot.inventory.items().find(i => sameItem(i.name, itemName))
       : bot.heldItem;
