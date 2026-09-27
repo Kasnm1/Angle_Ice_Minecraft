@@ -3316,7 +3316,7 @@ function projectSave (bot, state, bp = {}) {
   if (bp.layers.length > 16) throw new Error('太高了：最多 16 层');
   const id = bp.id || `p${Date.now().toString(36)}`;
   const P = projects(state);
-  P[id] = { ...bp, id, origin: { x: Math.floor(bp.origin.x), y: Math.floor(bp.origin.y), z: Math.floor(bp.origin.z) }, created: P[id]?.created || Date.now(), updated: Date.now(), status: 'active' };
+  P[id] = { ...bp, id, asked: !!bp.asked, origin: { x: Math.floor(bp.origin.x), y: Math.floor(bp.origin.y), z: Math.floor(bp.origin.z) }, created: P[id]?.created || Date.now(), updated: Date.now(), status: 'active' };
   saveProjects(state);
   return { id, name: bp.name, cells, materials: mats };
 }
@@ -3384,9 +3384,22 @@ async function placeAt (bot, pos, id, mount) {
   return { ok: false, why: '找不到能贴的面或放不上' };
 }
 
+const START_COVER = 0.7;   // 材料够七成才开工（主人 2026-09-27：工程也要现用现定，不先挖坑等材料）
 async function projectWork (bot, state, { id, maxMs = 90000, maxOps = 60 } = {}) {
   const P = projects(state); const p = id ? P[id] : Object.values(P).find(x => x.status === 'active');
   if (!p) throw new Error(id ? `没有工程 ${id}` : '没有进行中的工程（先 design_build）');
+  // 还没动过工：不是主人要的、材料又不到七成 → 先不开工（开了只会留一排坑等材料）。已经开工的照常接着做
+  if (!p.started && !p.asked) {
+    const d0 = projectDiff(bot, p);
+    const need = {}; for (const c of [...d0.place, ...d0.dig.filter(x => x.thenPlace)]) need[c.want] = (need[c.want] || 0) + 1;
+    const total = Object.values(need).reduce((a, n) => a + n, 0);
+    const have = Object.entries(need).reduce((a, [k, n]) => a + Math.min(n, invCount(bot, k)), 0);
+    if (total && have / total < START_COVER) {
+      const miss = Object.entries(need).filter(([k, n]) => invCount(bot, k) < n).map(([k, n]) => `${k}×${n - invCount(bot, k)}`);
+      return { ok: false, notStarted: true, cover: Math.round(have * 100 / total), error: `材料只够 ${Math.round(have * 100 / total)}%（要七成才开工，不先挖坑等材料）；还缺 ${miss.slice(0, 6).join('、')}。主人要你马上盖的话，design_build 时写 asked:true` };
+    }
+  }
+  p.started ||= Date.now();
   const t0 = Date.now(); const skip = new Set(); const placed = {}; let dug = 0; let ops = 0; const missing = {}; let reason = null; const protectedCells = [];
   const key = (v) => `${v.x},${v.y},${v.z}`;
   const me = () => bot.entity.position;
@@ -3441,7 +3454,7 @@ async function projectWork (bot, state, { id, maxMs = 90000, maxOps = 60 } = {})
 // 规划（分区 + 格子：放什么、在哪、挂墙/放地、为什么）存盘；status 对照世界看哪些摆好了、还缺什么；
 // furnish 把手上有的东西摆到它规划好的格子（不用再想一次）。
 
-const LAYOUT_FILE = require('path').join(__dirname, 'memory', 'layouts.json');
+const LAYOUT_FILE = process.env.MC_LAYOUT_FILE || require('path').join(__dirname, 'memory', 'layouts.json');   // MC_LAYOUT_FILE：测试用，别写进真的规划
 function layouts (state) {
   if (!state.__layouts) { try { state.__layouts = JSON.parse(require('fs').readFileSync(LAYOUT_FILE, 'utf8')); } catch (_) { state.__layouts = {}; } }
   return state.__layouts;
@@ -3450,6 +3463,61 @@ function saveLayouts (state) {
   try { const fs = require('fs'); const tmp = LAYOUT_FILE + '.tmp'; fs.writeFileSync(tmp, JSON.stringify(state.__layouts || {}, null, 1)); fs.renameSync(tmp, LAYOUT_FILE); } catch (_) {}
 }
 const allSlots = (L) => (L.zones || []).flatMap(z => (z.slots || []).map(sl => ({ ...sl, zone: z.name })));
+
+// ------------------------------------------------------------------ 分区（现用现定，主人 2026-09-27）
+//
+// 以前的规划给"以后才会有的东西"先定好精确到格子的位置 —— 赶不上变化：主人改了墙、她想法变了，格子还占着。
+// 现在规划只记**分区**：{ name, purpose, wants:{物品:数量}, area:{x,y,z,r} }。东西真到手了，
+// place_nicely 才在这个区里看布局、当场挑格子（body.js）。区里放不下了 / 被改建了 → stale（"要重新想"），下次需要时再划。
+// 旧的带格子的规划照样能读：格子只用来推出分区的范围和想要的东西，不再按格子摆。
+function zoneArea (z) {
+  if (z.area && Number.isFinite(+z.area.x)) return { x: +z.area.x, y: +z.area.y, z: +z.area.z, r: Math.min(8, Math.max(2, +z.area.r || 3)) };
+  const sl = z.slots || [];
+  if (!sl.length) return null;
+  const c = sl.reduce((a, q) => ({ x: a.x + q.x / sl.length, y: a.y + q.y / sl.length, z: a.z + q.z / sl.length }), { x: 0, y: 0, z: 0 });
+  const r = Math.max(...sl.map(q => Math.hypot(q.x - c.x, q.z - c.z))) + 1;
+  return { x: Math.round(c.x), y: Math.round(c.y), z: Math.round(c.z), r: Math.min(8, Math.max(2, Math.ceil(r))) };
+}
+function zoneWants (z) {
+  if (z.wants && typeof z.wants === 'object') return Object.fromEntries(Object.entries(z.wants).map(([k, n]) => [bareId(k), Math.max(1, +n || 1)]));
+  const w = {}; for (const sl of z.slots || []) w[bareId(sl.item)] = (w[bareId(sl.item)] || 0) + 1;
+  return w;
+}
+/** 区里现在已经有了多少（按方块名数，area 圆柱内上下 2 格） */
+function zonePresent (bot, z, wants = zoneWants(z)) {
+  const a = zoneArea(z); const out = {};
+  if (!a) return out;
+  const ids = Object.keys(wants).map(k => bot.registry.blocksByName[k]?.id).filter(v => v != null);
+  if (!ids.length) return out;
+  for (const p of bot.findBlocks({ point: new Vec3(a.x, a.y, a.z), matching: ids, maxDistance: a.r + 2, count: 200 })) {
+    if (Math.abs(p.y - a.y) > 2 || Math.hypot(p.x - a.x, p.z - a.z) > a.r + 0.5) continue;
+    const n = bareId(bot.blockAt(p)?.name); out[n] = (out[n] || 0) + 1;
+  }
+  return out;
+}
+/** 区里还有几格能放东西的地面（下面实心、脚和头是空的） */
+function zoneFreeFloor (bot, z) {
+  const a = zoneArea(z); if (!a) return 0;
+  let n = 0;
+  for (let dx = -a.r; dx <= a.r; dx++) for (let dz = -a.r; dz <= a.r; dz++) {
+    if (Math.hypot(dx, dz) > a.r) continue;
+    for (const dy of [0, -1, 1]) {
+      const p = new Vec3(a.x + dx, a.y + dy, a.z + dz);
+      const b = bot.blockAt(p); const up = bot.blockAt(p.offset(0, 1, 0)); const dn = bot.blockAt(p.offset(0, -1, 0));
+      if (b && up && dn && airish(b) && airish(up) && dn.boundingBox === 'block') { n++; break; }
+    }
+  }
+  return n;
+}
+function zoneMark (state, { id, zone, stale = true, why = '' } = {}) {
+  const LS = layouts(state); const L = id ? LS[id] : Object.values(LS).sort((a, b) => b.updated - a.updated)[0];
+  if (!L) throw new Error('没有布置规划');
+  const z = (L.zones || []).find(q => q.name === zone);
+  if (!z) throw new Error(`规划里没有「${zone}」这个区`);
+  if (stale) z.stale = { why: String(why).slice(0, 80), at: Date.now() }; else delete z.stale;
+  L.updated = Date.now(); saveLayouts(state);
+  return { id: L.id, zone: z.name, stale: !!z.stale };
+}
 
 /** 格子现在什么样：done 摆好了 / empty 空着能放 / taken 被别的东西占了 / unknown 没加载 */
 function slotState (bot, sl) {
@@ -3462,7 +3530,25 @@ function slotState (bot, sl) {
 
 /** 存规划：逐格核对 —— 方块存在、格子空着、不在路上、下面/旁边有能附着的；不合格的格子退回并说明原因 */
 function layoutSave (bot, state, L = {}) {
-  if (!L.name || !Array.isArray(L.zones) || !L.zones.length) throw new Error('规划要有 name 和 zones[{name,purpose,slots:[{item,x,y,z,mount,why}]}]');
+  if (!L.name || !Array.isArray(L.zones) || !L.zones.length) throw new Error('规划要有 name 和 zones[{name,purpose,wants:{物品:数量},area:{x,y,z,r}}]');
+  // 新格式（现用现定）：只有分区、没有格子 —— 核对：想要的东西是真方块、范围里有能放东西的地面
+  if (L.zones.every(z => !Array.isArray(z.slots) || !z.slots.length)) {
+    const rejected = [];
+    L.zones = L.zones.filter(z => {
+      const bad = Object.keys(zoneWants(z)).filter(k => !bot.registry.blocksByName[k]);
+      if (bad.length) { rejected.push(`${z.name}：没有这些方块 ${bad.join(' ')}`); return false; }
+      if (!zoneArea(z)) { rejected.push(`${z.name}：没写范围 area`); return false; }
+      if (!zoneFreeFloor(bot, z)) { rejected.push(`${z.name}：范围里没有能放东西的空地`); return false; }
+      delete z.stale;
+      return true;
+    });
+    if (!L.zones.length) throw new Error(`一个区都不合格：${rejected.join('；')}`);
+    const id = L.id || `L${Date.now().toString(36)}`;
+    const LS = layouts(state);
+    LS[id] = { ...L, id, created: LS[id]?.created || Date.now(), updated: Date.now() };
+    saveLayouts(state);
+    return { id, name: L.name, zones: L.zones.length, rejected: rejected.length ? rejected : undefined };
+  }
   const cx = L.area || allSlots(L)[0];
   const sv = survey(bot, { x: cx.x, y: cx.y, z: cx.z, r: Math.min(12, L.area?.r || 10) });
   const clear = new Set(sv.keepClear || []);
@@ -3497,6 +3583,31 @@ function layoutStatus (bot, state, { id, full } = {}) {
   const LS = layouts(state);
   if (id && full && LS[id]) return { full: LS[id] };
   const list = id ? [LS[id]].filter(Boolean) : Object.values(LS);
+  return {
+    layouts: list.map(L => {
+      // 按分区算（现用现定）：想要什么、已经有了多少、手上能摆什么、还剩几格空地、要不要重新想
+      const zones = (L.zones || []).map(z => {
+        const wants = zoneWants(z); const present = zonePresent(bot, z, wants);
+        const still = {}; for (const [k, n] of Object.entries(wants)) if ((present[k] || 0) < n) still[k] = n - (present[k] || 0);
+        const free = zoneFreeFloor(bot, z);
+        const stale = z.stale ? z.stale.why || '标过要重新想' : (Object.keys(still).length && !free ? '区里没地方了' : null);
+        return { name: z.name, purpose: z.purpose || '', area: zoneArea(z), wants, present, stillWant: still, canPlaceNow: Object.keys(still).filter(k => invCount(bot, k) > 0), freeFloor: free, stale };
+      });
+      const tot = (o) => Object.values(o).reduce((a, n) => a + n, 0);
+      const stillAll = {}; for (const z of zones) for (const [k, n] of Object.entries(z.stillWant)) stillAll[k] = (stillAll[k] || 0) + n;
+      return {
+        id: L.id, name: L.name,
+        zones: zones.map(z => `${z.name}（${z.purpose}）：${tot(z.wants) - tot(z.stillWant)}/${tot(z.wants)}${z.stale ? `，要重新想：${z.stale}` : ''}`),
+        zoneDetail: zones,
+        done: zones.reduce((a, z) => a + tot(z.wants) - tot(z.stillWant), 0), total: zones.reduce((a, z) => a + tot(z.wants), 0),
+        stillWant: stillAll, canPlaceNow: [...new Set(zones.flatMap(z => z.canPlaceNow))], stale: zones.filter(z => z.stale).map(z => z.name),
+      };
+    }),
+  };
+}
+
+/** 旧的按格子算（格子规划时代，2026-09-27 改成现用现定后不再被调用；留着给翻老规划时对照） */
+function layoutStatusSlots (bot, state, list) {
   return {
     layouts: list.map(L => {
       const slots = allSlots(L).map(sl => ({ ...sl, state: slotState(bot, sl) }));
@@ -3813,6 +3924,7 @@ function routes ({ state, withTimeout }) {
     'POST /layout/save': async (b = {}) => layoutSave(bot(), state, b),
     'GET /layout/status': async (b = {}) => layoutStatus(bot(), state, b),
     'POST /layout/furnish': async (b = {}) => furnish(bot(), state, b),
+    'POST /layout/zone': async (b = {}) => zoneMark(state, b),   // 标一个区"要重新想"（place_nicely 放不下时）/ 取消
     'POST /layout/cancel': async (b = {}) => { const LS = layouts(state); if (!LS[b.id]) throw new Error(`没有规划 ${b.id}`); delete LS[b.id]; saveLayouts(state); return { removed: b.id }; },
     'POST /project/save': async (b = {}) => projectSave(bot(), state, b),
     'GET /project/status': async (b = {}) => projectStatus(bot(), state, b),
@@ -4065,4 +4177,4 @@ if (require.main === module && process.argv.includes('--selftest')) {
   })();
 }
 
-module.exports = { install, routes, slotByName, foodScore, fullId, botName, startFollow, farm, kitShortfall, kitAvailable, defaultLoadout, wearingBackpack, backpackTidy, unseenChests, unseenCarts, inHomeArea, inCave, SCAFFOLD_IDS };   // farm：收获本能直接调（instinct.js）
+module.exports = { zoneArea, zoneWants, install, routes, slotByName, foodScore, fullId, botName, startFollow, farm, kitShortfall, kitAvailable, defaultLoadout, wearingBackpack, backpackTidy, unseenChests, unseenCarts, inHomeArea, inCave, SCAFFOLD_IDS };   // farm：收获本能直接调（instinct.js）
