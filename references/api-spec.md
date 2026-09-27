@@ -461,10 +461,19 @@ Example:
 
 ---
 
-## GET /instinct · POST /instinct
+## GET /instinct · POST /instinct · GET /instinct/events
 
-本能层现状与开关（见 `instinct.js`）。`GET` 给配置、正在做什么、最近一次判断（`last.skip` 写明为什么没捡）、最近 10 条记录。
-`POST { "pickup": false }` 关掉拾取本能（可带 `radius` / `followRadius`）。
+本能层现状与开关（见 `instinct.js`）。`GET /instinct` 给各本能配置、`home`、正在做什么（`running`、`combatNow`）、
+最近一次判断（`last` 里每个本能为什么做 / 为什么没做）、最近 10 条记录、`lastCancel`（战斗本能上次叫停了什么命令）。
+
+`POST /instinct`：`{ pickup?, harvest?, mine?, sleep?, armor?, gaze?, combat?: true|false, radius?, followRadius?, home?: {center:{x,y,z}, radius} | null }`。
+关掉正在做的那个会立刻打断它。`home` 由 mind 每分钟告诉一次（收获只收家里的地、睡觉只在家里睡）。
+
+`GET /instinct/events?since=<seq>` → `{ seq, events:[{ seq, t, kind, text, ... }] }`：本能做成了什么、看见什么没做成
+（`harvest` `mine` `ore_lacking_tool` `sleep` `sleep_failed` `armor` `tool_worn` `combat` `combat_retreat` `hazard_stuck`）。mind 读成"🫳 …"。
+
+**战斗时**：除 `/flee` `/follow` `/go` `/move` `/self_rescue` 和 `/stop {hold:true}` 外，会动身体的命令直接回 `{ ok:false, error:'在打架…' }`。
+战斗本能开打时会叫停正在跑的命令（路由给每个命令注入了 `abort()`）。
 
 会动身体的 POST（除 `/chat` `/instinct` `/look` `/memory` 等只读或不动身体的）执行前都会先让本能让出身体。
 `POST /stop { "hold": true }` = 站住，之后 20 秒本能也不动；不带 `hold` 的 `/stop` 只是"停下换件事"。

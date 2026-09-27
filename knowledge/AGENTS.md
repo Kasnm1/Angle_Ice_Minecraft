@@ -18,8 +18,16 @@
 | `generated/kubejs.json` | `$NODE _tools/kubejs_emulate.js [整合包目录]`：模拟环境里跑 `server_scripts`，记下删 / 换 / 加 | ❌ 忽略 |
 | `quests.json` `item-names.json` `chapters.md` `main-quest.md` `mods.md` `tooltips.md` `pack-overview.md` | `_tools/extract_{quests,lang,mods,tooltips}.py` → `_raw/` → `_tools/build_kb.py` 组装 | ✅ |
 | `_raw/` | 中间产物，与顶层重复 | ❌ 忽略 |
+| `ores.json` `crops.json` | `$NODE _tools/import_instinct_tables.js`：从 `modpack-study/instincts/`（WorkBuddy 查 jar 里的 needs_*_tool 标签 / loot table，2026-09-27）精简；字段不全就拒绝写 | ✅ |
 
 整合包目录默认 `~/Library/Application Support/minecraft`。整合包更新后按 `README.md` 末尾「重建知识库」执行。
+
+## 矿表 / 作物表（本能用，`instinct.js` 直接读）
+
+- `ores.json`：`{ name, tier, value, drops, notPickaxe? }`。`tier` = 最低镐等级（wood…netherite），`null` = 没查到 → 采矿本能**按铁镐**处理（保守）；
+  `notPickaxe` = 不是镐子挖的（化石矿要铲子），采矿本能跳过。`value` high/mid 看见就挖，low 只在缺的时候挖。
+- `crops.json`：只收 **loot table 证明"age 到最大值时打掉 = 标准收获"** 的作物（`{ name, ageProp, maxAge, harvest:'break', seed, soil }`）。
+  瓜茎、竹子、甘蔗、仙人掌、浆果丛、藤蔓这类打掉就毁了 / age 不是成熟度的，导入脚本会拒绝。
 
 ## 改 `knowledge.js` 时
 

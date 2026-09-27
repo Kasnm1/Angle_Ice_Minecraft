@@ -226,13 +226,14 @@ function pickOre (ctx, cfg = CFG.mine) {
   if (!self) return { skip: '没有位置' };
   const key = (p) => `${p.x},${p.y},${p.z}`;
   const lacking = [];
-  const why = { far: 0, hidden: 0, hazard: 0, failed: 0, cheap: 0, tool: 0 };
+  const why = { far: 0, hidden: 0, hazard: 0, failed: 0, cheap: 0, tool: 0, shovel: 0 };
   const ok = [];
   for (const o of ores) {
     if (!o?.pos) continue;
     if (hdist(o.pos, self) > cfg.radius || Math.abs(o.pos.y - self.y) > cfg.maxDy) { why.far++; continue; }
     if (!o.visible) { why.hidden++; continue; }
     if (o.hazard) { why.hazard++; continue; }
+    if (o.notPickaxe) { why.shovel++; continue; }   // 不是镐子挖的（化石矿要铲子）—— 矿表里标出来的
     const f = fails.get(key(o.pos));
     if (f && now < f) { why.failed++; continue; }
     if (o.value === 'low') {
@@ -587,7 +588,7 @@ function install (bot, state, deps) {
     const ores = pts.map(p => {
       const b = bot.blockAt(p); if (!b) return null;
       const row = T.ores.get(b.type);
-      return { name: row.name, pos: p, value: row.value, tier: row.tier, drops: (row.drops || []).map(bareName), visible: bot.canSeeBlock(b), hazard: hazardAround(p) };
+      return { name: row.name, pos: p, value: row.value, tier: row.tier, notPickaxe: !!row.notPickaxe, drops: (row.drops || []).map(bareName), visible: bot.canSeeBlock(b), hazard: hazardAround(p) };
     }).filter(Boolean);
     const have = {};
     for (const it of bot.inventory.items()) have[bareName(it.name)] = (have[bareName(it.name)] || 0) + it.count;
@@ -1008,6 +1009,7 @@ function selftest () {
   check('煤不够（缺火把）→ 挖', coal(3).target?.name, 'coal_ore');
   check('★ 煤够多了 → 不为煤停下', coal(40).target, undefined);
   check('一条矿脉一起挖（同名的数）', O([ore('iron_ore', 3, 0), ore('iron_ore', 3, 1), ore('iron_ore', 4, 1)]).count, 3);
+  check('要铲子的矿（化石矿）→ 不用镐去敲', O([ore('fossil_ore', 3, 0, { notPickaxe: true })]).target, undefined);
   check('失败过的格子冷却中 → 不挖', O([ore('iron_ore', 3, 0)], { fails: new Map([['3,64,0', 1e15]]), now: 0 }).target, undefined);
 
   // ---- 收哪些庄稼 ----

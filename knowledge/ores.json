@@ -1,0 +1,1332 @@
+[
+ {
+  "name": "deeperdarker:gloomslate_diamond_ore",
+  "tier": "iron",
+  "value": "high",
+  "drops": [
+   "deeperdarker:gloomslate_diamond_ore",
+   "minecraft:diamond"
+  ]
+ },
+ {
+  "name": "deeperdarker:gloomslate_emerald_ore",
+  "tier": "iron",
+  "value": "high",
+  "drops": [
+   "deeperdarker:gloomslate_emerald_ore",
+   "minecraft:emerald"
+  ]
+ },
+ {
+  "name": "deeperdarker:sculk_stone_diamond_ore",
+  "tier": "iron",
+  "value": "high",
+  "drops": [
+   "deeperdarker:sculk_stone_diamond_ore",
+   "minecraft:diamond"
+  ]
+ },
+ {
+  "name": "deeperdarker:sculk_stone_emerald_ore",
+  "tier": "iron",
+  "value": "high",
+  "drops": [
+   "deeperdarker:sculk_stone_emerald_ore",
+   "minecraft:emerald"
+  ]
+ },
+ {
+  "name": "enlightened_end:bismuth_ore",
+  "tier": "iron",
+  "value": "high",
+  "drops": [
+   "enlightened_end:bismuth_ore",
+   "enlightened_end:raw_bismuth"
+  ]
+ },
+ {
+  "name": "enlightened_end:irradium_ore",
+  "tier": "wood",
+  "value": "high",
+  "drops": [
+   "enlightened_end:irradium_ore",
+   "enlightened_end:raw_irradium"
+  ]
+ },
+ {
+  "name": "enlightened_end:malachite_ore",
+  "tier": "stone",
+  "value": "high",
+  "drops": [
+   "enlightened_end:malachite_ore",
+   "enlightened_end:malachite"
+  ]
+ },
+ {
+  "name": "etcetera:nether_bismuth_ore",
+  "tier": "stone",
+  "value": "high",
+  "drops": [
+   "etcetera:nether_bismuth_ore",
+   "etcetera:raw_bismuth"
+  ]
+ },
+ {
+  "name": "meadow:alpine_diamond_ore",
+  "tier": "iron",
+  "value": "high",
+  "drops": [
+   "meadow:alpine_diamond_ore",
+   "minecraft:diamond"
+  ]
+ },
+ {
+  "name": "meadow:alpine_emerald_ore",
+  "tier": "iron",
+  "value": "high",
+  "drops": [
+   "meadow:alpine_emerald_ore",
+   "minecraft:emerald"
+  ]
+ },
+ {
+  "name": "minecraft:deepslate_diamond_ore",
+  "tier": "iron",
+  "value": "high",
+  "drops": [
+   "minecraft:diamond"
+  ]
+ },
+ {
+  "name": "minecraft:deepslate_emerald_ore",
+  "tier": "iron",
+  "value": "high",
+  "drops": [
+   "minecraft:emerald"
+  ]
+ },
+ {
+  "name": "minecraft:diamond_ore",
+  "tier": "iron",
+  "value": "high",
+  "drops": [
+   "minecraft:diamond"
+  ]
+ },
+ {
+  "name": "minecraft:emerald_ore",
+  "tier": "iron",
+  "value": "high",
+  "drops": [
+   "minecraft:emerald"
+  ]
+ },
+ {
+  "name": "natures_spirit:chert_diamond_ore",
+  "tier": "iron",
+  "value": "high",
+  "drops": [
+   "natures_spirit:chert_diamond_ore",
+   "minecraft:diamond"
+  ]
+ },
+ {
+  "name": "natures_spirit:chert_emerald_ore",
+  "tier": "iron",
+  "value": "high",
+  "drops": [
+   "natures_spirit:chert_emerald_ore",
+   "minecraft:emerald"
+  ]
+ },
+ {
+  "name": "netherexp:soul_ruby_ore",
+  "tier": "iron",
+  "value": "high",
+  "drops": []
+ },
+ {
+  "name": "terramity:bedrock_black_matter_ore",
+  "tier": "diamond",
+  "value": "high",
+  "drops": [
+   "terramity:black_matter"
+  ]
+ },
+ {
+  "name": "terramity:cosmic_ore",
+  "tier": "netherite",
+  "value": "high",
+  "drops": []
+ },
+ {
+  "name": "terramity:daemonium_ore",
+  "tier": "netherite",
+  "value": "high",
+  "drops": [
+   "terramity:daemonium_chunk",
+   "terramity:daemonium_ore"
+  ]
+ },
+ {
+  "name": "terramity:decayed_black_matter_ore",
+  "tier": "diamond",
+  "value": "high",
+  "drops": [
+   "terramity:decayed_black_matter_ore",
+   "terramity:black_matter"
+  ]
+ },
+ {
+  "name": "terramity:deepslate_dimlite_ore",
+  "tier": "netherite",
+  "value": "high",
+  "drops": [
+   "terramity:untapped_dimlite",
+   "terramity:deepslate_dimlite_ore"
+  ]
+ },
+ {
+  "name": "terramity:deepslate_iridium_ore",
+  "tier": "diamond",
+  "value": "high",
+  "drops": [
+   "terramity:iridium_chunk",
+   "terramity:deepslate_iridium_ore"
+  ]
+ },
+ {
+  "name": "terramity:end_iridium_ore",
+  "tier": "diamond",
+  "value": "high",
+  "drops": [
+   "terramity:iridium_chunk",
+   "terramity:end_iridium_ore"
+  ]
+ },
+ {
+  "name": "terramity:end_onyx_ore",
+  "tier": "iron",
+  "value": "high",
+  "drops": [
+   "terramity:onyx",
+   "terramity:end_onyx_ore"
+  ]
+ },
+ {
+  "name": "terramity:gaianite_cluster_ore",
+  "tier": "netherite",
+  "value": "high",
+  "drops": [
+   "terramity:gaianite_cluster",
+   "terramity:gaianite_cluster_ore"
+  ]
+ },
+ {
+  "name": "terramity:nether_iridium_ore",
+  "tier": "diamond",
+  "value": "high",
+  "drops": [
+   "terramity:iridium_chunk",
+   "terramity:nether_iridium_ore"
+  ]
+ },
+ {
+  "name": "terramity:profaned_ore",
+  "tier": "diamond",
+  "value": "high",
+  "drops": [
+   "terramity:raw_profanum",
+   "terramity:profaned_ore"
+  ]
+ },
+ {
+  "name": "undergarden:depthrock_diamond_ore",
+  "tier": "iron",
+  "value": "high",
+  "drops": [
+   "undergarden:depthrock_diamond_ore",
+   "minecraft:diamond"
+  ]
+ },
+ {
+  "name": "undergarden:depthrock_regalium_ore",
+  "tier": "iron",
+  "value": "high",
+  "drops": [
+   "undergarden:depthrock_regalium_ore",
+   "undergarden:regalium_crystal"
+  ]
+ },
+ {
+  "name": "undergarden:depthrock_utherium_ore",
+  "tier": "iron",
+  "value": "high",
+  "drops": [
+   "undergarden:depthrock_utherium_ore",
+   "undergarden:utherium_crystal"
+  ]
+ },
+ {
+  "name": "undergarden:shiverstone_diamond_ore",
+  "tier": "iron",
+  "value": "high",
+  "drops": [
+   "undergarden:shiverstone_diamond_ore",
+   "minecraft:diamond"
+  ]
+ },
+ {
+  "name": "undergarden:shiverstone_regalium_ore",
+  "tier": "iron",
+  "value": "high",
+  "drops": [
+   "undergarden:shiverstone_regalium_ore",
+   "undergarden:regalium_crystal"
+  ]
+ },
+ {
+  "name": "undergarden:shiverstone_utherium_ore",
+  "tier": "iron",
+  "value": "high",
+  "drops": [
+   "undergarden:shiverstone_utherium_ore",
+   "undergarden:utherium_crystal"
+  ]
+ },
+ {
+  "name": "undergarden:tremblecrust_utherium_ore",
+  "tier": "iron",
+  "value": "high",
+  "drops": [
+   "undergarden:tremblecrust_utherium_ore",
+   "undergarden:utherium_crystal"
+  ]
+ },
+ {
+  "name": "alexscaves:galena_iron_ore",
+  "tier": "stone",
+  "value": "mid",
+  "drops": [
+   "alexscaves:galena_iron_ore",
+   "minecraft:raw_iron"
+  ]
+ },
+ {
+  "name": "alexscaves:guanostone_redstone_ore",
+  "tier": "iron",
+  "value": "mid",
+  "drops": [
+   "alexscaves:guanostone_redstone_ore",
+   "minecraft:redstone"
+  ]
+ },
+ {
+  "name": "alexscaves:radrock_uranium_ore",
+  "tier": "iron",
+  "value": "mid",
+  "drops": [
+   "alexscaves:radrock_uranium_ore",
+   "alexscaves:uranium"
+  ]
+ },
+ {
+  "name": "armamentarium:deepslate_greatalloy_ore",
+  "tier": "iron",
+  "value": "mid",
+  "drops": [
+   "armamentarium:greatalloy_nugget"
+  ]
+ },
+ {
+  "name": "armamentarium:greatalloy_ore",
+  "tier": "iron",
+  "value": "mid",
+  "drops": [
+   "armamentarium:greatalloy_nugget"
+  ]
+ },
+ {
+  "name": "create:deepslate_zinc_ore",
+  "tier": "iron",
+  "value": "mid",
+  "drops": []
+ },
+ {
+  "name": "create:zinc_ore",
+  "tier": "iron",
+  "value": "mid",
+  "drops": []
+ },
+ {
+  "name": "create_new_age:thorium_ore",
+  "tier": "iron",
+  "value": "mid",
+  "drops": [
+   "create_new_age:thorium_ore",
+   "create_new_age:thorium"
+  ]
+ },
+ {
+  "name": "deeperdarker:gloomslate_gold_ore",
+  "tier": "iron",
+  "value": "mid",
+  "drops": [
+   "deeperdarker:gloomslate_gold_ore",
+   "minecraft:raw_gold"
+  ]
+ },
+ {
+  "name": "deeperdarker:gloomslate_iron_ore",
+  "tier": "stone",
+  "value": "mid",
+  "drops": [
+   "deeperdarker:gloomslate_iron_ore",
+   "minecraft:raw_iron"
+  ]
+ },
+ {
+  "name": "deeperdarker:gloomslate_lapis_ore",
+  "tier": "stone",
+  "value": "mid",
+  "drops": [
+   "deeperdarker:gloomslate_lapis_ore",
+   "minecraft:lapis_lazuli"
+  ]
+ },
+ {
+  "name": "deeperdarker:gloomslate_redstone_ore",
+  "tier": "iron",
+  "value": "mid",
+  "drops": [
+   "deeperdarker:gloomslate_redstone_ore",
+   "minecraft:redstone"
+  ]
+ },
+ {
+  "name": "deeperdarker:sculk_stone_gold_ore",
+  "tier": "iron",
+  "value": "mid",
+  "drops": [
+   "deeperdarker:sculk_stone_gold_ore",
+   "minecraft:raw_gold"
+  ]
+ },
+ {
+  "name": "deeperdarker:sculk_stone_iron_ore",
+  "tier": "stone",
+  "value": "mid",
+  "drops": [
+   "deeperdarker:sculk_stone_iron_ore",
+   "minecraft:raw_iron"
+  ]
+ },
+ {
+  "name": "deeperdarker:sculk_stone_lapis_ore",
+  "tier": "stone",
+  "value": "mid",
+  "drops": [
+   "deeperdarker:sculk_stone_lapis_ore",
+   "minecraft:lapis_lazuli"
+  ]
+ },
+ {
+  "name": "deeperdarker:sculk_stone_redstone_ore",
+  "tier": "iron",
+  "value": "mid",
+  "drops": [
+   "deeperdarker:sculk_stone_redstone_ore",
+   "minecraft:redstone"
+  ]
+ },
+ {
+  "name": "eeeabsmobs:darkened_iron_ore",
+  "tier": "wood",
+  "value": "mid",
+  "drops": [
+   "eeeabsmobs:darkened_iron_ore",
+   "minecraft:raw_iron"
+  ]
+ },
+ {
+  "name": "enigmaticdelicacy:etherium_ore",
+  "tier": "diamond",
+  "value": "mid",
+  "drops": [
+   "enigmaticdelicacy:etherium_ore",
+   "enigmaticlegacy:etherium_ore"
+  ]
+ },
+ {
+  "name": "galosphere:deepslate_silver_ore",
+  "tier": "stone",
+  "value": "mid",
+  "drops": [
+   "galosphere:deepslate_silver_ore",
+   "galosphere:raw_silver"
+  ]
+ },
+ {
+  "name": "galosphere:silver_ore",
+  "tier": "stone",
+  "value": "mid",
+  "drops": [
+   "galosphere:silver_ore",
+   "galosphere:raw_silver"
+  ]
+ },
+ {
+  "name": "legendary_monsters:enderitium_ore",
+  "tier": "diamond",
+  "value": "mid",
+  "drops": [
+   "legendary_monsters:enderitium_ore",
+   "legendary_monsters:enderitium_gem"
+  ]
+ },
+ {
+  "name": "lethality:nihilite_ore",
+  "tier": "diamond",
+  "value": "mid",
+  "drops": [
+   "lethality:raw_nihilite",
+   "lethality:nihilite_ore"
+  ]
+ },
+ {
+  "name": "ltc2:deepslate_underground_oil_ore",
+  "tier": "stone",
+  "value": "mid",
+  "drops": [
+   "ltc2:deepslate_underground_oil_ore",
+   "ltc2:solid_underground_oil"
+  ]
+ },
+ {
+  "name": "ltc2:underground_oil_ore",
+  "tier": "stone",
+  "value": "mid",
+  "drops": [
+   "ltc2:underground_oil_ore",
+   "ltc2:solid_underground_oil"
+  ]
+ },
+ {
+  "name": "makit_better:blackblood_ore",
+  "tier": "iron",
+  "value": "mid",
+  "drops": [
+   "makit_better:blackblood_ore",
+   "makit_better:blackblood_clot"
+  ]
+ },
+ {
+  "name": "makit_better:deepslate_titanium_ore",
+  "tier": "iron",
+  "value": "mid",
+  "drops": [
+   "makit_better:deepslate_titanium_ore",
+   "makit_better:raw_titanium"
+  ]
+ },
+ {
+  "name": "meadow:alpine_gold_ore",
+  "tier": "iron",
+  "value": "mid",
+  "drops": [
+   "meadow:alpine_gold_ore",
+   "minecraft:raw_gold"
+  ]
+ },
+ {
+  "name": "meadow:alpine_iron_ore",
+  "tier": "stone",
+  "value": "mid",
+  "drops": [
+   "meadow:alpine_iron_ore",
+   "minecraft:raw_iron"
+  ]
+ },
+ {
+  "name": "meadow:alpine_lapis_ore",
+  "tier": "stone",
+  "value": "mid",
+  "drops": [
+   "meadow:alpine_lapis_ore",
+   "minecraft:lapis_lazuli"
+  ]
+ },
+ {
+  "name": "meadow:alpine_redstone_ore",
+  "tier": "iron",
+  "value": "mid",
+  "drops": [
+   "meadow:alpine_redstone_ore",
+   "minecraft:redstone"
+  ]
+ },
+ {
+  "name": "minecraft:deepslate_gold_ore",
+  "tier": "iron",
+  "value": "mid",
+  "drops": [
+   "minecraft:raw_gold"
+  ]
+ },
+ {
+  "name": "minecraft:deepslate_iron_ore",
+  "tier": "stone",
+  "value": "mid",
+  "drops": [
+   "minecraft:raw_iron"
+  ]
+ },
+ {
+  "name": "minecraft:deepslate_lapis_ore",
+  "tier": "stone",
+  "value": "mid",
+  "drops": [
+   "minecraft:lapis_lazuli"
+  ]
+ },
+ {
+  "name": "minecraft:deepslate_redstone_ore",
+  "tier": "iron",
+  "value": "mid",
+  "drops": [
+   "minecraft:redstone"
+  ]
+ },
+ {
+  "name": "minecraft:gold_ore",
+  "tier": "iron",
+  "value": "mid",
+  "drops": [
+   "minecraft:raw_gold"
+  ]
+ },
+ {
+  "name": "minecraft:iron_ore",
+  "tier": "stone",
+  "value": "mid",
+  "drops": [
+   "minecraft:raw_iron"
+  ]
+ },
+ {
+  "name": "minecraft:lapis_ore",
+  "tier": "stone",
+  "value": "mid",
+  "drops": [
+   "minecraft:lapis_lazuli"
+  ]
+ },
+ {
+  "name": "minecraft:nether_gold_ore",
+  "tier": "wood",
+  "value": "mid",
+  "drops": [
+   "minecraft:gold_nugget"
+  ]
+ },
+ {
+  "name": "minecraft:nether_quartz_ore",
+  "tier": "wood",
+  "value": "mid",
+  "drops": [
+   "minecraft:quartz"
+  ]
+ },
+ {
+  "name": "minecraft:redstone_ore",
+  "tier": "iron",
+  "value": "mid",
+  "drops": [
+   "minecraft:redstone"
+  ]
+ },
+ {
+  "name": "natures_spirit:chert_gold_ore",
+  "tier": "iron",
+  "value": "mid",
+  "drops": [
+   "natures_spirit:chert_gold_ore",
+   "minecraft:raw_gold"
+  ]
+ },
+ {
+  "name": "natures_spirit:chert_iron_ore",
+  "tier": "stone",
+  "value": "mid",
+  "drops": [
+   "natures_spirit:chert_iron_ore",
+   "minecraft:raw_iron"
+  ]
+ },
+ {
+  "name": "natures_spirit:chert_lapis_ore",
+  "tier": "stone",
+  "value": "mid",
+  "drops": [
+   "natures_spirit:chert_lapis_ore",
+   "minecraft:lapis_lazuli"
+  ]
+ },
+ {
+  "name": "natures_spirit:chert_redstone_ore",
+  "tier": "iron",
+  "value": "mid",
+  "drops": [
+   "natures_spirit:chert_redstone_ore",
+   "minecraft:redstone"
+  ]
+ },
+ {
+  "name": "pasterdream:amber_candy_ore",
+  "tier": "wood",
+  "value": "mid",
+  "drops": [
+   "pasterdream:amber_candy",
+   "pasterdream:amber_candy_ore"
+  ]
+ },
+ {
+  "name": "pasterdream:congeal_wind_ore",
+  "tier": null,
+  "value": "mid",
+  "drops": [
+   "pasterdream:congeal_wind",
+   "pasterdream:congeal_wind_ore"
+  ]
+ },
+ {
+  "name": "pasterdream:deepslate_titanium_ore",
+  "tier": "diamond",
+  "value": "mid",
+  "drops": [
+   "pasterdream:raw_titanium",
+   "pasterdream:deepslate_titanium_ore"
+  ]
+ },
+ {
+  "name": "pasterdream:dyedreamdust_ore",
+  "tier": "iron",
+  "value": "mid",
+  "drops": [
+   "pasterdream:dyedream_dust_piece",
+   "pasterdream:dyedreamdust_ore"
+  ]
+ },
+ {
+  "name": "pasterdream:dyedreamquartz_ore",
+  "tier": "wood",
+  "value": "mid",
+  "drops": [
+   "pasterdream:dyedreamquartz",
+   "pasterdream:dyedreamquartz_ore"
+  ]
+ },
+ {
+  "name": "pasterdream:moltengold_ore",
+  "tier": "iron",
+  "value": "mid",
+  "drops": [
+   "pasterdream:raw_moltengold",
+   "pasterdream:moltengold_ore"
+  ]
+ },
+ {
+  "name": "pasterdream:soul_ore",
+  "tier": "stone",
+  "value": "mid",
+  "drops": [
+   "pasterdream:soul_ore",
+   "pasterdream:soul_dust"
+  ]
+ },
+ {
+  "name": "pasterdream:titanium_ore",
+  "tier": "diamond",
+  "value": "mid",
+  "drops": [
+   "pasterdream:raw_titanium",
+   "pasterdream:titanium_ore"
+  ]
+ },
+ {
+  "name": "pasterdream:windrunner_crystal_ore",
+  "tier": "diamond",
+  "value": "mid",
+  "drops": [
+   "pasterdream:windrunner_crystal",
+   "pasterdream:windrunner_crystal_ore"
+  ]
+ },
+ {
+  "name": "rustic_engineer:solarite_ore_deep_slate",
+  "tier": "diamond",
+  "value": "mid",
+  "drops": [
+   "rustic_engineer:raw_solarite_ore"
+  ]
+ },
+ {
+  "name": "rustic_engineer:solarite_ore_stone",
+  "tier": "diamond",
+  "value": "mid",
+  "drops": [
+   "rustic_engineer:raw_solarite_ore"
+  ]
+ },
+ {
+  "name": "smc:blue_ice_frostium_ore",
+  "tier": "iron",
+  "value": "mid",
+  "drops": [
+   "smc:blue_ice_frostium_ore",
+   "smc:raw_frostium"
+  ]
+ },
+ {
+  "name": "smc:deepslate_perkin_ore",
+  "tier": "iron",
+  "value": "mid",
+  "drops": [
+   "smc:deepslate_perkin_ore",
+   "smc:raw_perkin"
+  ]
+ },
+ {
+  "name": "smc:end_zinc_ore",
+  "tier": "iron",
+  "value": "mid",
+  "drops": [
+   "smc:end_zinc_ore",
+   "smc:raw_zinc"
+  ]
+ },
+ {
+  "name": "smc:frostium_ore",
+  "tier": "iron",
+  "value": "mid",
+  "drops": [
+   "smc:frostium_ore",
+   "smc:raw_frostium"
+  ]
+ },
+ {
+  "name": "smc:perkin_ore",
+  "tier": "iron",
+  "value": "mid",
+  "drops": [
+   "smc:perkin_ore",
+   "smc:raw_perkin"
+  ]
+ },
+ {
+  "name": "smc:tuff_zinc_ore",
+  "tier": "iron",
+  "value": "mid",
+  "drops": [
+   "smc:tuff_zinc_ore",
+   "smc:raw_zinc"
+  ]
+ },
+ {
+  "name": "smc:zinc_ore",
+  "tier": "iron",
+  "value": "mid",
+  "drops": [
+   "smc:zinc_ore",
+   "smc:raw_zinc"
+  ]
+ },
+ {
+  "name": "terramity:deepslate_iridescent_ore",
+  "tier": "iron",
+  "value": "mid",
+  "drops": [
+   "terramity:iridescent_shard",
+   "terramity:deepslate_iridescent_ore"
+  ]
+ },
+ {
+  "name": "terramity:deepslate_sapphire_ore",
+  "tier": "iron",
+  "value": "mid",
+  "drops": [
+   "terramity:sapphire",
+   "terramity:deepslate_sapphire_ore"
+  ]
+ },
+ {
+  "name": "terramity:deepslate_topaz_ore",
+  "tier": "iron",
+  "value": "mid",
+  "drops": [
+   "terramity:topaz",
+   "terramity:deepslate_topaz_ore"
+  ]
+ },
+ {
+  "name": "terramity:igneo_ruby_ore",
+  "tier": "iron",
+  "value": "mid",
+  "drops": [
+   "terramity:ruby",
+   "terramity:igneo_ruby_ore"
+  ]
+ },
+ {
+  "name": "terramity:nether_ruby_ore",
+  "tier": "iron",
+  "value": "mid",
+  "drops": [
+   "terramity:ruby",
+   "terramity:nether_ruby_ore"
+  ]
+ },
+ {
+  "name": "terramity:sapphire_ore",
+  "tier": "iron",
+  "value": "mid",
+  "drops": [
+   "terramity:sapphire",
+   "terramity:sapphire_ore"
+  ]
+ },
+ {
+  "name": "terramity:topaz_ore",
+  "tier": "iron",
+  "value": "mid",
+  "drops": [
+   "terramity:topaz",
+   "terramity:topaz_ore"
+  ]
+ },
+ {
+  "name": "ultramarine:deepslate_hematite_ore",
+  "tier": "stone",
+  "value": "mid",
+  "drops": [
+   "ultramarine:deepslate_hematite_ore",
+   "ultramarine:raw_hematite"
+  ]
+ },
+ {
+  "name": "ultramarine:deepslate_jade_ore",
+  "tier": "iron",
+  "value": "mid",
+  "drops": [
+   "ultramarine:deepslate_jade_ore",
+   "ultramarine:jade"
+  ]
+ },
+ {
+  "name": "ultramarine:deepslate_magnesite_ore",
+  "tier": "stone",
+  "value": "mid",
+  "drops": [
+   "ultramarine:deepslate_magnesite_ore",
+   "ultramarine:magnesite"
+  ]
+ },
+ {
+  "name": "ultramarine:hematite_ore",
+  "tier": "stone",
+  "value": "mid",
+  "drops": [
+   "ultramarine:hematite_ore",
+   "ultramarine:raw_hematite"
+  ]
+ },
+ {
+  "name": "ultramarine:jade_ore",
+  "tier": "iron",
+  "value": "mid",
+  "drops": [
+   "ultramarine:jade_ore",
+   "ultramarine:jade"
+  ]
+ },
+ {
+  "name": "ultramarine:magnesite_ore",
+  "tier": "stone",
+  "value": "mid",
+  "drops": [
+   "ultramarine:magnesite_ore",
+   "ultramarine:magnesite"
+  ]
+ },
+ {
+  "name": "ultramarine:nether_cobalt_ore",
+  "tier": "iron",
+  "value": "mid",
+  "drops": [
+   "ultramarine:nether_cobalt_ore",
+   "ultramarine:raw_cobalt"
+  ]
+ },
+ {
+  "name": "undergarden:depthrock_cloggrum_ore",
+  "tier": "stone",
+  "value": "mid",
+  "drops": [
+   "undergarden:depthrock_cloggrum_ore",
+   "undergarden:raw_cloggrum"
+  ]
+ },
+ {
+  "name": "undergarden:depthrock_gold_ore",
+  "tier": "iron",
+  "value": "mid",
+  "drops": [
+   "undergarden:depthrock_gold_ore",
+   "minecraft:gold_nugget"
+  ]
+ },
+ {
+  "name": "undergarden:depthrock_iron_ore",
+  "tier": "stone",
+  "value": "mid",
+  "drops": [
+   "undergarden:depthrock_iron_ore",
+   "minecraft:iron_nugget"
+  ]
+ },
+ {
+  "name": "undergarden:shiverstone_cloggrum_ore",
+  "tier": "stone",
+  "value": "mid",
+  "drops": [
+   "undergarden:shiverstone_cloggrum_ore",
+   "undergarden:raw_cloggrum"
+  ]
+ },
+ {
+  "name": "undergarden:shiverstone_froststeel_ore",
+  "tier": "iron",
+  "value": "mid",
+  "drops": [
+   "undergarden:shiverstone_froststeel_ore",
+   "undergarden:raw_froststeel"
+  ]
+ },
+ {
+  "name": "undergarden:shiverstone_iron_ore",
+  "tier": "stone",
+  "value": "mid",
+  "drops": [
+   "undergarden:shiverstone_iron_ore",
+   "minecraft:iron_nugget"
+  ]
+ },
+ {
+  "name": "alexscaves:coprolith_coal_ore",
+  "tier": "wood",
+  "value": "low",
+  "drops": [
+   "alexscaves:coprolith_coal_ore",
+   "minecraft:coal"
+  ]
+ },
+ {
+  "name": "deeperdarker:gloomslate_coal_ore",
+  "tier": "wood",
+  "value": "low",
+  "drops": [
+   "deeperdarker:gloomslate_coal_ore",
+   "minecraft:coal"
+  ]
+ },
+ {
+  "name": "deeperdarker:gloomslate_copper_ore",
+  "tier": "stone",
+  "value": "low",
+  "drops": [
+   "deeperdarker:gloomslate_copper_ore",
+   "minecraft:raw_copper"
+  ]
+ },
+ {
+  "name": "deeperdarker:sculk_stone_coal_ore",
+  "tier": "wood",
+  "value": "low",
+  "drops": [
+   "deeperdarker:sculk_stone_coal_ore",
+   "minecraft:coal"
+  ]
+ },
+ {
+  "name": "deeperdarker:sculk_stone_copper_ore",
+  "tier": "stone",
+  "value": "low",
+  "drops": [
+   "deeperdarker:sculk_stone_copper_ore",
+   "minecraft:raw_copper"
+  ]
+ },
+ {
+  "name": "eeeabsmobs:darkened_coal_ore",
+  "tier": "wood",
+  "value": "low",
+  "drops": [
+   "eeeabsmobs:darkened_coal_ore",
+   "minecraft:coal"
+  ]
+ },
+ {
+  "name": "ltc2:deepslate_salt_ore",
+  "tier": "wood",
+  "value": "low",
+  "drops": [
+   "ltc2:deepslate_salt_ore",
+   "ltc2:salt"
+  ]
+ },
+ {
+  "name": "ltc2:salt_ore",
+  "tier": "wood",
+  "value": "low",
+  "drops": [
+   "ltc2:salt_ore",
+   "ltc2:salt"
+  ]
+ },
+ {
+  "name": "meadow:alpine_coal_ore",
+  "tier": "wood",
+  "value": "low",
+  "drops": [
+   "meadow:alpine_coal_ore",
+   "minecraft:coal"
+  ]
+ },
+ {
+  "name": "meadow:alpine_copper_ore",
+  "tier": "stone",
+  "value": "low",
+  "drops": [
+   "meadow:alpine_copper_ore",
+   "minecraft:raw_copper"
+  ]
+ },
+ {
+  "name": "meadow:alpine_salt_ore",
+  "tier": "wood",
+  "value": "low",
+  "drops": [
+   "meadow:alpine_salt_ore",
+   "meadow:alpine_salt"
+  ]
+ },
+ {
+  "name": "minecraft:coal_ore",
+  "tier": "wood",
+  "value": "low",
+  "drops": [
+   "minecraft:coal"
+  ]
+ },
+ {
+  "name": "minecraft:copper_ore",
+  "tier": "stone",
+  "value": "low",
+  "drops": [
+   "minecraft:raw_copper"
+  ]
+ },
+ {
+  "name": "minecraft:deepslate_coal_ore",
+  "tier": "wood",
+  "value": "low",
+  "drops": [
+   "minecraft:coal"
+  ]
+ },
+ {
+  "name": "minecraft:deepslate_copper_ore",
+  "tier": "stone",
+  "value": "low",
+  "drops": [
+   "minecraft:raw_copper"
+  ]
+ },
+ {
+  "name": "natures_spirit:chert_coal_ore",
+  "tier": "wood",
+  "value": "low",
+  "drops": [
+   "natures_spirit:chert_coal_ore",
+   "minecraft:coal"
+  ]
+ },
+ {
+  "name": "natures_spirit:chert_copper_ore",
+  "tier": "stone",
+  "value": "low",
+  "drops": [
+   "natures_spirit:chert_copper_ore",
+   "minecraft:raw_copper"
+  ]
+ },
+ {
+  "name": "netherexp:fossil_fuel_ore",
+  "tier": null,
+  "value": "low",
+  "drops": [
+   "netherexp:fossil_fuel_ore",
+   "netherexp:fossil_fuel"
+  ],
+  "notPickaxe": true
+ },
+ {
+  "name": "netherexp:fossil_ore",
+  "tier": null,
+  "value": "low",
+  "drops": [
+   "netherexp:fossil_ore",
+   "minecraft:bone"
+  ],
+  "notPickaxe": true
+ },
+ {
+  "name": "undergarden:depthrock_coal_ore",
+  "tier": "wood",
+  "value": "low",
+  "drops": [
+   "undergarden:depthrock_coal_ore",
+   "minecraft:coal"
+  ]
+ },
+ {
+  "name": "undergarden:shiverstone_coal_ore",
+  "tier": "wood",
+  "value": "low",
+  "drops": [
+   "undergarden:shiverstone_coal_ore",
+   "minecraft:coal"
+  ]
+ },
+ {
+  "name": "minecraft:ancient_debris",
+  "tier": "diamond",
+  "value": "high",
+  "drops": [
+   "minecraft:ancient_debris"
+  ]
+ },
+ {
+  "name": "minecraft:amethyst_cluster",
+  "tier": "wood",
+  "value": "mid",
+  "drops": [
+   "minecraft:amethyst_shard",
+   "minecraft:amethyst_cluster"
+  ]
+ },
+ {
+  "name": "galosphere:allurite_cluster",
+  "tier": "wood",
+  "value": "mid",
+  "drops": [
+   "galosphere:allurite_shard",
+   "galosphere:allurite_cluster",
+   "galosphere:glinted_allurite_cluster"
+  ]
+ },
+ {
+  "name": "galosphere:lumiere_cluster",
+  "tier": "wood",
+  "value": "mid",
+  "drops": [
+   "galosphere:lumiere_shard",
+   "galosphere:lumiere_cluster",
+   "galosphere:glinted_lumiere_cluster"
+  ]
+ },
+ {
+  "name": "galosphere:glinted_amethyst_cluster",
+  "tier": "wood",
+  "value": "mid",
+  "drops": [
+   "minecraft:amethyst_shard",
+   "galosphere:glinted_amethyst_cluster"
+  ]
+ },
+ {
+  "name": "galosphere:pink_salt_cluster",
+  "tier": "wood",
+  "value": "low",
+  "drops": [
+   "galosphere:pink_salt_shard",
+   "galosphere:pink_salt_cluster"
+  ]
+ },
+ {
+  "name": "regions_unexplored:prismarite_cluster",
+  "tier": "wood",
+  "value": "mid",
+  "drops": [
+   "regions_unexplored:prismarite_cluster"
+  ]
+ },
+ {
+  "name": "regions_unexplored:large_prismarite_cluster",
+  "tier": "wood",
+  "value": "mid",
+  "drops": [
+   "regions_unexplored:large_prismarite_cluster"
+  ]
+ },
+ {
+  "name": "regions_unexplored:hanging_prismarite",
+  "tier": "wood",
+  "value": "low",
+  "drops": [
+   "regions_unexplored:hanging_prismarite"
+  ]
+ },
+ {
+  "name": "regions_unexplored:blackstone_cluster",
+  "tier": "wood",
+  "value": "low",
+  "drops": [
+   "regions_unexplored:blackstone_cluster"
+  ]
+ },
+ {
+  "name": "netherexp:quartz_crystal",
+  "tier": "wood",
+  "value": "mid",
+  "drops": [
+   "netherexp:quartz_crystal",
+   "minecraft:quartz"
+  ]
+ },
+ {
+  "name": "the_bumblezone:honey_crystal",
+  "tier": null,
+  "value": "mid",
+  "drops": [
+   "the_bumblezone:honey_crystal",
+   "the_bumblezone:honey_crystal_shards"
+  ]
+ },
+ {
+  "name": "quark:red_corundum_cluster",
+  "tier": "wood",
+  "value": "low",
+  "drops": [
+   "quark:red_corundum_cluster"
+  ]
+ },
+ {
+  "name": "quark:myalite_crystal",
+  "tier": "diamond",
+  "value": "mid",
+  "drops": [
+   "quark:myalite_crystal"
+  ]
+ }
+]
