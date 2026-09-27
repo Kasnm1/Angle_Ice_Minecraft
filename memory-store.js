@@ -44,6 +44,13 @@ const KINDS = ['lesson', 'promise', 'intention', 'fact', 'relation', 'feeling'];
 const SOURCE_WEIGHT = { experience: 1.0, told: 0.8, read: 0.6, guess: 0.4 };
 const HALF_LIFE_DAYS = 14;   // 不用的记忆，两周后"想起来的概率"减半
 
+// 备份节流：`.bak` 只在距上次备份超过 10 分钟时复制一次。
+// 原实现每次 save 都 copyFileSync，而 mind.js 有改动时每 10 秒 save 一次 ——
+// 于是一份 966KB 的记忆每 10 秒被复制一次（约 2MB/次的写盘）。
+// 现在最坏每 10 分钟才复制一次，且只在真的变了的时候（save 只在 dirty 时才跑）。
+const BACKUP_INTERVAL_MS = 10 * 60 * 1000;
+let lastBackupAt = 0;
+
 let S = null;
 let dirty = false;
 
@@ -61,8 +68,17 @@ function load (file = FILE()) {
 function save (file = FILE()) {
   if (!S || !dirty) return;
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  try { if (fs.existsSync(file)) fs.copyFileSync(file, file + '.bak'); } catch (_) {}
-  fs.writeFileSync(file, JSON.stringify(S, null, 1));
+  // 先写 .tmp 再 rename：rename 在同一文件系统上是原子的，断电 / 被 kill 时
+  // 要么是旧的完整文件、要么是新的完整文件，**不会**留下半截 JSON。
+  // 原来的 writeFileSync(file) 是先截断再写 —— 写一半断电，记忆就整份没了。
+  const tmp = file + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify(S, null, 1));
+  fs.renameSync(tmp, file);
+  // .bak 节流：距上次备份超过 10 分钟才复制一次（见 BACKUP_INTERVAL_MS）
+  const now = Date.now();
+  if (now - lastBackupAt >= BACKUP_INTERVAL_MS) {
+    try { fs.copyFileSync(file, file + '.bak'); lastBackupAt = now; } catch (_) {}
+  }
   dirty = false;
 }
 
@@ -288,7 +304,7 @@ function stats () {
   return { people: Object.keys(S.people).length, memories: S.memories.length, episodes: S.episodes.length, skills: S.skills.length, byKind: by, journal: S.journal.length };
 }
 
-function _reset () { S = empty(); dirty = false; }
+function _reset () { S = empty(); dirty = false; lastBackupAt = 0; }
 
 // ------------------------------------------------------------------ 自测
 
@@ -383,6 +399,42 @@ function selftest () {
   check('同一个矿洞合并成一条、远处另记', pls.length === 2, pls.length);
   check('合并后：最深取更深、矿累加、停在最新处', pls[0].deepest === 12 && pls[0].ores['minecraft:coal'] === 5 && pls[0].last.x === 120 && pls[0].visits === 2, pls[0]);
   check('渲染出来带入口和最深', /入口\(100,70,100\).*最深 y=12/.test(renderPlaces()), renderPlaces());
+
+  // 存盘：原子写（先 .tmp 再 rename）+ 备份节流（10 分钟内只备份一次）。
+  // 这两条以前一条断言都没有 —— 每 10 秒整份重写 + 每次 copyFile，全靠人盯。
+  console.log('\n存盘');
+  {
+    const os = require('os');
+    const fsp = require('fs');
+    const f = path.join(os.tmpdir(), `mind-save-selftest-${process.pid}.json`);
+    for (const p of [f, f + '.bak', f + '.tmp']) { try { fsp.unlinkSync(p); } catch (_) {} }
+    _reset();
+    load(f);
+    learn({ kind: 'fact', text: '原子写测试用的第一条' });
+
+    save(f);
+    check('save() 后主文件存在', fsp.existsSync(f));
+    check('save() 后 .tmp 已被 rename 掉（不留半截文件）', !fsp.existsSync(f + '.tmp'));
+    check('第一次 save 顺带备份出 .bak', fsp.existsSync(f + '.bak'));
+    const bak1 = fsp.readFileSync(f + '.bak', 'utf8');
+
+    // 第二次：改一点内容再 save —— 应写新文件，但不该再动 .bak（未满 10 分钟）
+    learn({ kind: 'fact', text: '原子写测试用的第二条' });
+    save(f);
+    check('连续 save 不重复备份 .bak（10 分钟内只备份一次）', fsp.readFileSync(f + '.bak', 'utf8') === bak1);
+    check('第二次 save 的 .tmp 也没留下', !fsp.existsSync(f + '.tmp'));
+    check('主文件确实写进了新内容', /第二条/.test(fsp.readFileSync(f, 'utf8')));
+    check('.bak 里是没有第二条的旧内容', !/第二条/.test(bak1));
+
+    // 距上次备份超过 10 分钟 → 再 save 会备份一次新的
+    lastBackupAt = Date.now() - BACKUP_INTERVAL_MS - 1000;
+    learn({ kind: 'fact', text: '原子写测试用的第三条' });
+    save(f);
+    check('超过 10 分钟后再 save 会刷新 .bak', /第二条/.test(fsp.readFileSync(f + '.bak', 'utf8')));
+
+    for (const p of [f, f + '.bak', f + '.tmp']) { try { fsp.unlinkSync(p); } catch (_) {} }
+    _reset();
+  }
 
   console.log(`\n  ${pass}/${total} 通过`);
   process.exit(pass === total ? 0 : 1);

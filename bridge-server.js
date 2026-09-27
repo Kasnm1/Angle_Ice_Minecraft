@@ -22,6 +22,9 @@
 'use strict';
 
 const http = require('http');
+// 每行输出带墙钟时间（HH:MM:SS.mmm）。日志是 `>> logs\bridge.log` 追加的，console 本身不带时间，
+// 不装的话那份 2.2MB 日志里没有一行能回答"这次卡了多久"。见 log-stamp.js 顶部。
+require('./log-stamp');
 // 放置的几何判定（四个硬条件）住在 place.js 里 —— 它是纯函数、可离线穷举，
 // 见 `node place.js --selftest`。这里只负责"选好面 → 看过去 → 放 → 等确认"。
 const placeLogic = require('./place');
@@ -1653,6 +1656,8 @@ function createBot() {
     state.connected = false;
     state.currentAction = null;
     lastHealth = null;
+    // FML：这次连接收了多少个配置文件，在丢掉这具身体之前打一行汇总（默认逐行不打，见 fml-handshake.js）
+    if (state.__fml) { try { state.__fml.finish(); } catch (_) {} }
     journal('disconnect', `我掉线了（${reason}）`);
     saveState();
     console.log(`[bridge] Bot disconnected (${reason}), retrying in ${CFG.bridge.reconnectMs / 1000}s...`);

@@ -262,8 +262,16 @@ function createHandshake (log = () => {}, onSnapshot = null) {
     itemRegistry: null,
     acked: 0,
     done: false,
-    mismatch: null
+    mismatch: null,
+    // S2CConfigData 的累计值。服务端每连一次会推**约 200 个** .toml 配置文件，
+    // 逐行打印能让 2.2MB 的 bridge.log 里 24% 都是这一句（实测 9060/37000 行）。
+    // 默认只累计，连接结束时由 finish() 打一行汇总；要逐行看设 MC_FML_VERBOSE=1。
+    configData: { files: 0, bytes: 0 },
+    configSummaryLogged: false,
   }
+
+  // 逐行打印的开关。`=1` 才开；`=0` / 空 / 没设都算关。
+  const VERBOSE = () => process.env.MC_FML_VERBOSE === '1'
 
   /**
    * 处理一个内层包，返回要发回的内层字节（null = 不回）。
@@ -354,7 +362,11 @@ function createHandshake (log = () => {}, onSnapshot = null) {
         const n = r.varint()
         r.bytes(n)
         state.acked++
-        log(`[fml] S2CConfigData: ${fileName} (${n} bytes)`)
+        state.configData.files++
+        state.configData.bytes += n
+        // 默认不逐行打：每连一次约 200 行，全是"某个 .toml 多少字节"，
+        // 对判断"握手成不成"没有增量信息。汇总在 finish() 里出一行。
+        if (VERBOSE()) log(`[fml] S2CConfigData: ${fileName} (${n} bytes)`)
         return wU8(ID.C2S_ACKNOWLEDGE)
       }
 
@@ -381,7 +393,19 @@ function createHandshake (log = () => {}, onSnapshot = null) {
     }
   }
 
-  return { state, handle }
+  /**
+   * 连接结束（或握手消息处理完）时打一行 S2CConfigData 汇总。
+   *
+   * 只打一次：connection 断开在 reconnect.js 里会走多次（'end' / 'close' 都可能
+   * 触发），没有这个旗标同一行汇总会印两遍。
+   */
+  function finish () {
+    if (state.configSummaryLogged || state.configData.files === 0) return
+    state.configSummaryLogged = true
+    log(`[fml] 收到 ${state.configData.files} 个配置文件，共 ${(state.configData.bytes / 1024).toFixed(1)} KB`)
+  }
+
+  return { state, handle, finish }
 }
 
 // ---------------------------------------------------------------- 挂到 nmp 客户端
@@ -397,6 +421,11 @@ function attach (client, { log = console.log, onSnapshot = null } = {}) {
   // nmp 的 src/client/pluginChannels.js 会先注册一个自动回空响应的监听，
   // 那个响应会让 Forge 服务端认为客户端不懂 FML，握手卡死 → 先摘掉它。
   client.removeAllListeners('login_plugin_request')
+
+  // 连接结束时补一行 S2CConfigData 汇总（见 finish()）。
+  // 挂两个事件是因为 nmp / reconnect 两条路径上不一定哪个先来；finish() 自己幂等。
+  client.once('end', () => hs.finish())
+  client.once('close', () => hs.finish())
 
   client.on('login_plugin_request', (packet) => {
     // 不是 Forge 的包装通道 → 按原版行为回“没看懂”

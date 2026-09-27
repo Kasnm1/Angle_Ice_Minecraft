@@ -25,6 +25,27 @@ function Procs($w) {
   $script = if ($w -eq 'bridge') { 'bridge-server.js' } else { 'mind.js' }
   Get-CimInstance Win32_Process -Filter "Name='node.exe'" | Where-Object { $_.CommandLine -match [regex]::Escape($script) -and $_.CommandLine -notmatch 'selftest' }
 }
+# 日志轮替：启动前，日志超过 20MB 就 bridge.log.1（已有 .1 就挪成 .2，最多留 3 份）再开新的。
+# 为什么是"启动时轮替"而不是"跑到一半"：这个脚本管的就是启动，日志由 `>> $w.log` 追加
+# （句柄在跑着的 node 手里），运行中改名/删除会让 Windows 上的追加句柄指向文件已消失 —— 日志丢。
+# 启动前动手，此刻没有任何进程持有它，改名最安全。
+# 为什么 20MB：bridge.log 实测 2.2MB / 几天，20MB 约等于两周到一个月一份，够回溯又不占盘。
+$LogRotateBytes = 20MB
+$LogKeep = 3   # 留 bridge.log.1 .2 .3，加上当前的 bridge.log 共 4 份；超过 3 份的最老的先删
+function Rotate-Log($path) {
+  if (-not (Test-Path $path)) { return }
+  $len = (Get-Item $path).Length
+  if ($len -lt $LogRotateBytes) { return }
+  # 从最老的一份开始往回挪：先删掉 .3（滚出去的那份），再把 .2 → .3、.1 → .2，最后当前 → .1
+  $oldest = "$path.$LogKeep"
+  if (Test-Path $oldest) { Remove-Item $oldest -Force }
+  for ($i = $LogKeep - 1; $i -ge 1; $i--) {
+    $src = "$path.$i"
+    if (Test-Path $src) { Move-Item $src "$path.$($i + 1)" -Force }
+  }
+  Move-Item $path "$path.1" -Force
+  "日志轮替：$([math]::Round($len / 1MB, 1)) MB 超 $([math]::Round($LogRotateBytes / 1MB, 0)) MB，已挪成 $(Split-Path $path -Leaf).1（最多留 $LogKeep 份）"
+}
 function Api($port, $path) {
   try { Invoke-RestMethod -Uri "http://127.0.0.1:$port$path" -TimeoutSec 3 } catch { $null }
 }
@@ -74,6 +95,8 @@ switch ($cmd) {
     $list = if ($what -eq 'all') { @('bridge', 'mind') } else { @($what) }
     foreach ($w in $list) {
       if (Procs $w) { "$w 已经在跑"; continue }
+      # 启动前轮替（见上面 Rotate-Log 的注释：运行中不能动日志文件）
+      Rotate-Log (Join-Path $Logs "$w.log")
       schtasks /Run /TN (TaskName $w) | Out-Null
       if ($w -eq 'bridge') {
         # 等 bridge 连上服务器再起 mind（mind 醒来第一件事就要看世界）

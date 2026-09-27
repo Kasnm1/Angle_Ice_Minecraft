@@ -28,6 +28,9 @@
  */
 
 const http = require('http');
+// 每行输出带墙钟时间。她的 log() 已经自带 `[HH:MM:SS]`（下面那个），
+// log-stamp 认得这种行、不会重复加；装它是为了让 body / plan 等直接 console 的输出也有时间。
+require('./log-stamp');
 const body = require('./body');
 const speech = require('./speech');
 const mem = require('./memory-store');
@@ -1816,7 +1819,10 @@ async function main () {
     const idleMs = plan.current() && Date.now() - (W.lastHeardAt || 0) > 180000 ? Math.min(CFG.idleThinkMs, 30000) : CFG.idleThinkMs;
     if (!W.thinking && !W.pending.length && Date.now() - Math.max(W.lastEventAt, W.lastThinkAt) > idleMs && !(W.job && !W.job.holding)) think('idle');
   }, 5000);
-  setInterval(() => mem.save(), 10000);
+  // 记忆落盘：60 秒一次。原来 10 秒 —— 有改动时每 10 秒整份重写 966KB 的 mind.json，
+  // 而她的经历/回想本来就是一分钟级的变化，10 秒省不下任何东西。
+  // 进程退出、睡觉整理等**显式**的 mem.save() 另算，不受这里影响。
+  setInterval(() => mem.save(), 60000);
   await holdBody(true);
   setInterval(() => holdBody(true), CFG.heartbeatMs);
   const bye = async () => { log('睡着了（进程退出）'); mem.save(); await holdBody(false); process.exit(0); };
