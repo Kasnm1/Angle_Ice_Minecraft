@@ -155,14 +155,15 @@ const CFG = {
     nightOutRadius: 4,      // 夜里在露天：只捡脚边的，不往黑处跑（night.js）
     settleMs: 1000,         // 落地多久后才捡
     thrownSettleMs: 2500,   // 别的玩家扔的：多等一会儿（原版拾取延迟 40 tick + 反悔时间）
-    batch: 4,               // 一次最多走几堆
+    batch: 8,               // 一次最多走几堆（有 budgetMs 兜底，多给几堆不会卡太久）
     maxFails: 2,            // 同一堆失败几次就先放下
     failCooldownMs: 60000,
     quietAfterStopMs: 20000,   // /stop 之后多久不动
     minHealth: 7,
     threatRadius: 12,       // 这么近有冲她来的怪就不捡
     thrownRadius: 0.6,      // 刷出点离某个玩家的"出手点"这么近 = 被他扔出来的
-    timeoutMs: 6000,        // 每堆的寻路超时（/pickup 的 timeoutMs）
+    timeoutMs: 4000,        // 每堆的寻路超时（/pickup 的 timeoutMs）
+    budgetMs: 8000,         // 一次 /pickup 总共最多花多久（超了剩下的下一拍再捡）
   },
   harvest: {
     enabled: process.env.MC_INSTINCT_HARVEST !== 'false',
@@ -703,6 +704,16 @@ function pickTidy (c, cfg = CFG.tidy) {
 }
 
 /**
+ * 一次拾取之后，哪些掉落物算"她没捡到"（要记失败、累计到 maxFails 就先放下）。
+ * 被打断（aborted / r.stopped）的一律不算；只算"试过"的（r.tried，旧版 bridge 没有这个字段就退回全部 ids）、还在地上的。
+ */
+function pickupFailIds ({ ids = [], r = null, aborted = false, exists = () => true } = {}) {
+  if (aborted || r?.stopped === 'aborted') return [];
+  const tried = Array.isArray(r?.tried) ? new Set(r.tried) : null;
+  return ids.filter(id => (!tried || tried.has(id)) && exists(id));
+}
+
+/**
  * 该不该吃。主人 2026-09-27：饥饿条掉 2 格（饥饿值 ≤16）就吃。
  * 身体被命令占着时不抢（换到手上的东西会打断挖掘、放置），除非饿到 urgentAt 以下（再不吃就不回血、跑不动）。
  * @returns null（不饿）| { eat: true, urgent } | { skip }
@@ -801,7 +812,7 @@ function caveBoundary (self, home) {
  * 来源：mineflayer/lib/plugins/entities.js 只在姿态 2 时 emit entitySleep，
  * 恢复清醒却依赖另一个 animation 包；若未收到该包，会一直拦住本能。
  */
-function syncSleepState (bot, sleepAnchor = null) {
+function syncSleepState (bot, sleepAnchor = null, { sleptAt = 0, staleMs = 480000, now = Date.now() } = {}) {
   const keys = bot.registry?.entitiesByName?.player?.metadataKeys;
   const index = keys?.indexOf('pose') ?? -1;
   const pose = index >= 0 ? bot.entity?.metadata?.[index] : undefined;
@@ -809,8 +820,14 @@ function syncSleepState (bot, sleepAnchor = null) {
     // 某些登录/重连包没有 pose，但身体已经走离当时睡觉的位置：这比旧缓存可靠。
     const moved = !!(bot.isSleeping && sleepAnchor && bot.entity?.position
       && bot.entity.position.distanceTo(sleepAnchor) > 1.5);
-    if (moved) { bot.isSleeping = false; bot.emit('wake'); }
-    return { pose: null, sleeping: !!bot.isSleeping, corrected: moved, reason: moved ? '已走离睡觉位置' : '姿态未读到' };
+    // 2026-09-28 审计：卡住时恰恰不会动 → 永远"在睡" → 本能主循环永远早退。再加两条证据：
+    //   天亮了（0–12000 是白天，床睡不了）、或者"睡着"已经超过 staleMs（原版一觉最多几秒就跳夜）
+    const t = bot.time?.timeOfDay;
+    const day = Number.isFinite(t) && t >= 0 && t < 12000 && !(bot.isRaining && (bot.thunderState ?? 0) > 0);
+    const stale = !!(bot.isSleeping && sleptAt && now - sleptAt > staleMs);
+    const wake = moved || (bot.isSleeping && (day || stale));
+    if (wake) { bot.isSleeping = false; bot.emit('wake'); }
+    return { pose: null, sleeping: !!bot.isSleeping, corrected: wake, reason: moved ? '已走离睡觉位置' : wake ? (day ? '天亮了' : '"睡着"太久了') : '姿态未读到' };
   }
   const sleeping = pose === 2;
   const corrected = !!bot.isSleeping !== sleeping;
@@ -865,11 +882,11 @@ function install (bot, state, deps) {
   I.diagnostics = {};
   I.urgent = null;
   let ended = false;
-  let sleepAnchor = null;
+  let sleepAnchor = null; let sleptAt = 0;
   const sleeping = () => {
-    if (bot.isSleeping && !sleepAnchor && bot.entity?.position) sleepAnchor = bot.entity.position.clone();
-    const result = syncSleepState(bot, sleepAnchor);
-    if (!result.sleeping) sleepAnchor = null;
+    if (bot.isSleeping && !sleepAnchor && bot.entity?.position) { sleepAnchor = bot.entity.position.clone(); sleptAt = Date.now(); }
+    const result = syncSleepState(bot, sleepAnchor, { sleptAt });
+    if (!result.sleeping) { sleepAnchor = null; sleptAt = 0; }
     const bedKey = bot.registry?.entitiesByName?.player?.metadataKeys?.indexOf('sleeping_pos') ?? -1;
     I.sleepState = { ...result, bedPosition: bedKey >= 0 ? bot.entity?.metadata?.[bedKey] ?? null : null, at: Date.now() };
     if (result.corrected) I.sleepCorrections = (I.sleepCorrections || 0) + 1;
@@ -957,16 +974,15 @@ function install (bot, state, deps) {
 
   async function runPickup (ids, followName) {
     const { r, aborted } = await runJob('pickup', { instinct: 'pickup' }, (abort) => deps.handlers['POST /pickup']({
-      ids, count: ids.length, radius: I.cfg.pickup.radius + 2, timeoutMs: I.cfg.pickup.timeoutMs, abort,
+      ids, count: ids.length, radius: I.cfg.pickup.radius + 2, timeoutMs: I.cfg.pickup.timeoutMs, budgetMs: I.cfg.pickup.budgetMs, abort,
     }));
-    // 还在地上的 = 没捡到（被别人捡走/消失的会先触发 entityGone，不算她失败）
-    for (const id of ids) {
-      if (!bot.entities[id]) continue;
+    // 只有"真的试过、还在地上"的才记失败；被打断、没轮到（预算用完）的不算（2026-09-28 审计：以前一律记，打怪时捡两次就拉黑一分钟）
+    for (const id of pickupFailIds({ ids, r, aborted, exists: (i) => !!bot.entities[i] })) {
       const f = fails.get(id) || { n: 0, until: 0 };
       f.n++; f.until = Date.now() + I.cfg.pickup.failCooldownMs;
       fails.set(id, f);
     }
-    note({ kind: 'pickup', aborted: aborted || undefined, ids: ids.length, picked: r?.picked ?? 0, error: r?.error });
+    note({ kind: 'pickup', aborted: aborted || undefined, ids: ids.length, picked: r?.picked ?? 0, ms: r?.ms, stopped: r?.stopped, error: r?.error });
     // 本来在跟人：接着跟（被命令打断的不接 —— 命令说了算）
     if (followName && !aborted && !state.currentAction && bot.players[followName]?.entity) {
       try { deps.hands.startFollow(bot, state, followName, 2); } catch (_) {}
@@ -1750,11 +1766,12 @@ function install (bot, state, deps) {
         await sleepMs(C.loopMs);
       }
     })();
-    I.running = { kind: 'combat', abort: () => { aborted = true; try { bot.pathfinder.setGoal(null); } catch (_) {} }, done: job };
+    const mine = { kind: 'combat', abort: () => { aborted = true; try { bot.pathfinder.setGoal(null); } catch (_) {} }, done: job };
+    I.running = mine;
     try { await job; } catch (_) {} finally {
       shield(false);
       try { bot.pathfinder.setGoal(null); } catch (_) {}
-      I.running = null;
+      if (I.running === mine) I.running = null;   // 只清自己的（打断后新任务可能已经占上了）
     }
     const cb = I.combat;
     const names = [...new Set(cb.killed)];
@@ -1839,11 +1856,14 @@ function install (bot, state, deps) {
     try {
       if (I.running) I.running.abort();
       deps.cancelCommands?.('憋不住气了，先上去换气');
-      event('breathe', `在水里憋不住气了（氧气 ${bot.oxygenLevel}/20），先游上去换气`);
+      if (Date.now() - (I.breathToldAt || 0) > 20000) { I.breathToldAt = Date.now(); event('breathe', `在水里憋不住气了（氧气 ${bot.oxygenLevel}/20），先游上去换气`); }
       const old = I.running;
-      if (!await settleJob(old)) { d.skip = '等待旧本能收尾'; return; }
+      // 保命不能等：旧动作 800ms 内没收尾也照样往上跳（它已经被 abort、寻路目标也清了；以前这里 return，下一拍再等，会一直等到淹死）
+      const settled = await settleJob(old);
       if (ended || I.urgent !== 'breathe') return;
-      const { r } = await runJob('breathe', null, (abort) => deps.handlers['POST /jump']({ durationMs: I.cfg.breathe.jumpMs, stopAtOxygen: 18, abort }));
+      const jump = (abort) => deps.handlers['POST /jump']({ durationMs: I.cfg.breathe.jumpMs, stopAtOxygen: 18, abort });
+      const { r } = settled ? await runJob('breathe', null, jump) : { r: await jump(() => ended) };
+      if (!settled) d.forced = true;
       note({ kind: 'breathe', oxygen: r?.oxygen, jumped: r?.jumped });
       I.breathedAt = Date.now();
     } catch (e) { I.last = { t: Date.now(), error: `breathe: ${e.message}` }; } finally { breathing = false; if (I.urgent === 'breathe') I.urgent = null; }
@@ -2134,8 +2154,8 @@ function selftest () {
   check('冷却过了 → 再试', pickPickup({ self: me, drops: [d(1, 3, 0)], fails, now: 2e12 }).ids?.[0], 1);
   check('只失败一次 → 还试', pickPickup({ self: me, drops: [d(1, 3, 0)], fails: new Map([[1, { n: 1, until: 1e12 }]]), now: 0 }).ids?.[0], 1);
   const many = [d(1, 7, 0), d(2, 1, 0), d(3, 4, 0), d(4, 2, 0), d(5, 3, 0), d(6, 5, 0)];
-  const r = pickPickup({ self: me, drops: many });
-  check('一次最多 batch 堆', r.ids.length, P.batch);
+  const r = pickPickup({ self: me, drops: many }, { ...P, batch: 4 });   // 测"截到 batch"这件事，batch 固定成 4（默认值会调）
+  check('一次最多 batch 堆', r.ids.length, 4);
   check('从近到远', r.ids.join(','), '2,4,5,3');
   check('跳过的原因写得出来', /mine=1/.test(pickPickup({ self: me, drops: [d(1, 3, 0, { thrower: 'self' })] }).skip), true);
   check('没有掉落物 → 如实说没有', pickPickup({ self: me, drops: [] }).skip, '附近没有掉落物');
@@ -2236,6 +2256,16 @@ function selftest () {
     check('★ 配置补全：每个本能段都有（实机崩过：I.cfg.breathe 缺）', ['eat', 'breathe', 'effects', 'weather', 'playerHurt', 'combat', 'home'].every(n => c[n] && typeof c[n] === 'object'), true);
     check('配置补全：已有的改动保留', c.pickup.radius, 3); }
   // ---- 吃 / 憋气 / 中毒 / 天气
+  { const E = require('events');
+    const mk = (t, extra = {}) => Object.assign(new E(), { isSleeping: true, time: { timeOfDay: t }, entity: { metadata: {}, position: { distanceTo: () => 0 } }, registry: { entitiesByName: { player: { metadataKeys: ['pose'] } } } }, extra);
+    check('★ 睡眠：读不到姿态、天亮了 → 不再当成在睡', syncSleepState(mk(2000), null).sleeping, false);
+    check('睡眠：读不到姿态、夜里、刚躺下 → 还在睡', syncSleepState(mk(15000), null, { sleptAt: 1000, now: 5000 }).sleeping, true);
+    check('★ 睡眠：夜里"睡着"超过 8 分钟 → 醒', syncSleepState(mk(15000), null, { sleptAt: 1, now: 600000 }).sleeping, false);
+    check('睡眠：打雷的白天能睡 → 不强醒', syncSleepState(mk(2000, { isRaining: true, thunderState: 1 }), null, { sleptAt: 1000, now: 5000 }).sleeping, true); }
+  check('★ 拾取被打断 → 一个都不记失败', pickupFailIds({ ids: [1, 2], aborted: true }).length, 0);
+  check('★ 预算用完没轮到的 → 不记', pickupFailIds({ ids: [1, 2, 3], r: { tried: [1], stopped: 'budget' } }).join(), '1');
+  check('试过、还在地上 → 记', pickupFailIds({ ids: [1, 2], r: { tried: [1, 2] }, exists: (i) => i === 2 }).join(), '2');
+  check('旧版 bridge 没有 tried → 按全部', pickupFailIds({ ids: [1, 2], r: {} }).length, 2);
   check('★ 饥饿 16（掉了 2 格）、身体空着 → 吃', pickEat({ food: 16 })?.eat, true);
   check('饥饿 17 → 不饿', pickEat({ food: 17 }), null);
   check('饥饿 12、在忙 → 等忙完', typeof pickEat({ food: 12, busy: '在挖矿' })?.skip, 'string');

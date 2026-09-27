@@ -3726,7 +3726,9 @@ const handlers = {
   // 比对的是每 tick 重建的实体对象，恒真，`wait:2` 形同虚设），**我们没有抄它**。
   // ids：只捡这几个实体（拾取本能先挑好再来，见 instinct.js）；不给就是"最近的 count 个"。
   // abort：只有进程内调用能传（JSON 传不了函数）—— 本能被命令打断时，每堆之间问一次。
-  'POST /pickup': async ({ radius = 8, count = 4, timeoutMs = 8000, ids, abort } = {}) => {
+  // budgetMs：整次调用的时间预算（2026-09-28 审计：4 堆 × 每堆 6s 没有总上限，最坏卡 24s，本能主循环全停）。
+  //   超了就停，剩下的留给下一次；返回 tried / reached 让调用方分清"真的够不着"和"没轮到 / 被打断"。
+  'POST /pickup': async ({ radius = 8, count = 4, timeoutMs = 8000, budgetMs = 15000, ids, abort } = {}) => {
     radius = Math.min(Math.max(1, +radius), 32);
     count = Math.min(Math.max(1, +count), 32);
 
@@ -3775,9 +3777,13 @@ const handlers = {
     state.currentAction = myTag;
     let walkedTo = 0;
     const failed = [];
+    const tried = []; const reached = []; let stopped = null;
+    const t0 = Date.now();
     try {
       for (const d of drops) {
-        if (typeof abort === 'function' && abort()) break;
+        if (typeof abort === 'function' && abort()) { stopped = 'aborted'; break; }
+        if (Date.now() - t0 > budgetMs) { stopped = 'budget'; break; }
+        tried.push(d.id);
         if (!d.isValid || !d.position) continue;
         // ⚠️⚠️⚠️ 2026-09-25 实战（P25）：这个循环里踩了**三层**坑，
         //     全部围绕"`goto()` 的 promise 什么时候算结束"。写清楚，别再犯：
@@ -3927,8 +3933,9 @@ const handlers = {
             ? new goals.GoalBlock(p.x, wantY, p.z)     // ★ "走到/下到那一格去"
             : new goals.GoalNear(p.x, targetY, p.z, reachRadius);
 
-          const r = await withTimeout(state.bot.pathfinder.goto(goal), timeoutMs);
+          const r = await withTimeout(state.bot.pathfinder.goto(goal), Math.min(timeoutMs, Math.max(1000, budgetMs - (Date.now() - t0))));
           walkedTo++;
+          reached.push(d.id);
           // 挖到/走到之后**立刻试着真正拾取一次**：有些情况下服务端要等到
           // 下一次实体 tick 才结算，`goto` 返回时她其实已经在范围内了。
           // 这一步是"顺手一捞"，失败不影响主流程（真正的判据在循环末尾的背包对比）。
@@ -3966,6 +3973,7 @@ const handlers = {
       // 判据：走到了、但背包没变 → **明确报失败**，让上层能退避。
       // 只"走到"不算数 —— 这正是 P32 要修的那个谎。
       ok: picked > 0,
+      tried, reached, stopped: stopped || undefined, ms: Date.now() - t0,
       failed: failed.length ? failed : undefined,
       note: picked > 0
         ? undefined
