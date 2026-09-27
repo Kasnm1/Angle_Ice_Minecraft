@@ -4177,7 +4177,8 @@ const handlers = {
   // ①③④ 是纯几何，住在 place.js 里并已离线穷举（node place.js --selftest）；
   // ② 需要射线检测，只能在这里用 lookAt 的结果兜底。
   // 满足之后还要**等世界真的更新**才算成功（客户端预测会造假）。
-  'POST /place': async ({ itemName, x, y, z, confirmMs, mount }) => {
+  // chest：放箱子时 'merge'（默认，和旁边的单箱子合成大箱子）/ 'single'（不合）—— 见下面"箱子合并"
+  'POST /place': async ({ itemName, x, y, z, confirmMs, mount, chest = 'merge' }) => {
     if (x === undefined || y === undefined || z === undefined) {
       throw new Error('x, y and z required');
     }
@@ -4243,6 +4244,49 @@ const handlers = {
       const want = (pl) => (mount === 'floor' ? pl.label === 'below' : mount === 'ceiling' ? pl.label === 'above' : pl.label !== 'below' && pl.label !== 'above');
       plans.sort((a, b) => want(b) - want(a));
     }
+    // ---- 箱子合并（常识 cs-02，原版 ChestBlock#getStateForPlacement）：
+    //   玩家的做法（主人 2026-09-27）：站在旧箱子正面那一侧、面向旁边的空地放下去 → 新箱子朝向和旧的一样，自动合成大箱子（不潜行）
+    //   站不到那一侧 / 空地下面不实心：退回"潜行 + 点旧箱子的侧面"（一定合，朝向跟它走）
+    //   不想合（chest:'single'）：潜行 + 点地面 → 一定不合
+    //   合并条件：同一种箱子、它是单箱子、新箱子在它的左右（不是前后）
+    const isChest = /(^|:)(trapped_)?chest$/.test(item.name) && !/ender_chest/.test(item.name);
+    let mergeWith = null; let chestSneak = isChest && chest === 'single';
+    if (isChest) {
+      if (chest !== 'single') {
+        for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          const nPos = target.offset(dx, 0, dz);
+          const nb = bot.blockAt(nPos);
+          if (!nb || nb.name !== item.name) continue;
+          const pr = nb.getProperties?.() || {};
+          if (String(pr.type || 'single').toLowerCase() !== 'single') continue;
+          const f = String(pr.facing || '').toLowerCase();
+          const axisOfDir = dx !== 0 ? 'x' : 'z';
+          const axisOfFacing = /east|west/.test(f) ? 'x' : /north|south/.test(f) ? 'z' : null;
+          if (!axisOfFacing || axisOfFacing === axisOfDir) continue;   // 在它前后，不在左右 → 合不了
+          mergeWith = nPos;
+          // ① 玩家的做法：走到新格子正前方（旧箱子朝向那一侧）两格，面向空地点地面放
+          const fv = { north: [0, -1], south: [0, 1], east: [1, 0], west: [-1, 0] }[f];
+          const stand = target.offset(fv[0] * 2, 0, fv[1] * 2);
+          try { await withTimeout(bot.pathfinder.goto(new goals.GoalBlock(stand.x, stand.y, stand.z)), 8000); } catch (_) {}
+          try { bot.pathfinder.setGoal(null); } catch (_) {}
+          const me = bot.entity.position;
+          const inFront = Math.abs(me.x - (stand.x + 0.5)) < 0.8 && Math.abs(me.z - (stand.z + 0.5)) < 0.8;
+          const floorPlan = plans.find(pl => pl.label === 'below');
+          if (inFront && floorPlan) {
+            plans.splice(plans.indexOf(floorPlan), 1); plans.unshift(floorPlan);   // 面向空地、点地面，不潜行
+          } else {
+            // ② 站不到正面 / 空地下面不实心：潜行 + 点旧箱子朝向新格子的那个侧面
+            chestSneak = true;
+            plans.unshift({ label: 'merge', refPos: { x: nPos.x, y: nPos.y, z: nPos.z }, face: { x: -dx, y: 0, z: -dz }, contact: { x: nPos.x + 0.5 - dx * 0.5, y: nPos.y + 0.5, z: nPos.z + 0.5 - dz * 0.5 }, distance: null });
+          }
+          break;
+        }
+      } else {
+        plans.sort((a, b) => (b.label === 'below') - (a.label === 'below'));   // 不合：点地面
+      }
+    }
+    // 依附的方块能右键打开（箱子、木桶、熔炉、工作台…）→ 不潜行的话右键是"打开它"，不是放方块
+    const INTERACTIVE = /chest|barrel|furnace|smoker|crafting_table|table|anvil|door|gate|trapdoor|lever|button|bed|shulker|hopper|dispenser|dropper|cabinet|stove|pot|fridge|counter/;
     for (const p of plans) {
       const ref = bot.blockAt(new Vec3(p.refPos.x, p.refPos.y, p.refPos.z));
       if (!ref) { lastErr = new Error(`reference block vanished at ${p.refPos.x},${p.refPos.y},${p.refPos.z}`); continue; }
@@ -4259,8 +4303,11 @@ const handlers = {
       }
 
       state.currentAction = `placing ${item.name} @ ${target.x},${target.y},${target.z}`;
+      // 只在放这一下潜行（约 0.1 秒），放完就松开：箱子退回侧面点法 / 不想合，或者依附的方块一右键就会被打开
+      const sneak = chestSneak || INTERACTIVE.test(ref.name);
       try {
         attempted++;
+        if (sneak) { bot.setControlState('sneak', true); await sleepMs(120); }
         await withTimeout(bot.placeBlock(ref, faceVec));
         // 等世界真的更新 —— placeBlock 返回 ≠ 服务端接受了
         const confirmed = await waitForBlock(bot, target, Math.min(Math.max(+confirmMs || 1500, 200), 5000));
@@ -4273,10 +4320,16 @@ const handlers = {
           // 可能是服务端延迟，也可能是幽灵方块 —— 调用方可用 GET /inventory 复核。
           confirmed,
           facesTried: attempted,
+          // 箱子：核对到底合没合（type 不是 single = 成了大箱子的一半）
+          ...(isChest ? (() => {
+            const t = String(bot.blockAt(target)?.getProperties?.().type || 'single').toLowerCase();
+            return { chest: t === 'single' ? 'single' : 'double', ...(mergeWith && t === 'single' ? { mergeNote: '想和旁边的箱子合，但没合上' } : {}) };
+          })() : {}),
         };
       } catch (e) {
         lastErr = e;
       } finally {
+        if (sneak) bot.setControlState('sneak', false);
         state.currentAction = null;
       }
     }
