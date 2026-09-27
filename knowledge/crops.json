@@ -1,0 +1,618 @@
+[
+ {
+  "name": "adorablehamsterpets:cucumber_crop",
+  "ageProp": "age",
+  "maxAge": 3,
+  "harvest": "break",
+  "seed": "adorablehamsterpets:cucumber_seeds",
+  "soil": null
+ },
+ {
+  "name": "adorablehamsterpets:green_beans_crop",
+  "ageProp": "age",
+  "maxAge": 3,
+  "harvest": "break",
+  "seed": "adorablehamsterpets:green_bean_seeds",
+  "soil": null
+ },
+ {
+  "name": "atmospheric:aloe_vera",
+  "ageProp": "age",
+  "maxAge": 5,
+  "harvest": "break",
+  "seed": null,
+  "soil": null
+ },
+ {
+  "name": "biomeswevegone:apple_fruit",
+  "ageProp": "age",
+  "maxAge": 3,
+  "harvest": "break",
+  "seed": null,
+  "soil": null
+ },
+ {
+  "name": "biomeswevegone:baobab_fruit",
+  "ageProp": "age",
+  "maxAge": 3,
+  "harvest": "break",
+  "seed": null,
+  "soil": null
+ },
+ {
+  "name": "biomeswevegone:green_apple_fruit",
+  "ageProp": "age",
+  "maxAge": 3,
+  "harvest": "break",
+  "seed": null,
+  "soil": null
+ },
+ {
+  "name": "biomeswevegone:yucca_fruit",
+  "ageProp": "age",
+  "maxAge": 3,
+  "harvest": "break",
+  "seed": null,
+  "soil": null
+ },
+ {
+  "name": "bosses_delight:crystal_fruit",
+  "ageProp": "age",
+  "maxAge": 3,
+  "harvest": "break",
+  "seed": "bosses_delight:crystal_fruit_seeds",
+  "soil": null
+ },
+ {
+  "name": "bountifulfares:hanging_apple",
+  "ageProp": "age",
+  "maxAge": 4,
+  "harvest": "break",
+  "seed": null,
+  "soil": null
+ },
+ {
+  "name": "bountifulfares:hanging_hoary_apple",
+  "ageProp": "age",
+  "maxAge": 4,
+  "harvest": "break",
+  "seed": null,
+  "soil": null
+ },
+ {
+  "name": "bountifulfares:hanging_lemon",
+  "ageProp": "age",
+  "maxAge": 4,
+  "harvest": "break",
+  "seed": null,
+  "soil": null
+ },
+ {
+  "name": "bountifulfares:hanging_orange",
+  "ageProp": "age",
+  "maxAge": 4,
+  "harvest": "break",
+  "seed": null,
+  "soil": null
+ },
+ {
+  "name": "bountifulfares:hanging_plum",
+  "ageProp": "age",
+  "maxAge": 4,
+  "harvest": "break",
+  "seed": null,
+  "soil": null
+ },
+ {
+  "name": "bountifulfares:leeks",
+  "ageProp": "age",
+  "maxAge": 7,
+  "harvest": "break",
+  "seed": "bountifulfares:leek_seeds",
+  "soil": null
+ },
+ {
+  "name": "brewery:hops_crop",
+  "ageProp": "age",
+  "maxAge": 3,
+  "harvest": "break",
+  "seed": "brewery:hops_seeds",
+  "soil": null
+ },
+ {
+  "name": "crockpot:asparaguses",
+  "ageProp": "age",
+  "maxAge": 7,
+  "harvest": "break",
+  "seed": "crockpot:asparagus_seeds",
+  "soil": null
+ },
+ {
+  "name": "crockpot:eggplants",
+  "ageProp": "age",
+  "maxAge": 7,
+  "harvest": "break",
+  "seed": "crockpot:eggplant_seeds",
+  "soil": null
+ },
+ {
+  "name": "crockpot:garlics",
+  "ageProp": "age",
+  "maxAge": 7,
+  "harvest": "break",
+  "seed": "crockpot:garlic_seeds",
+  "soil": null
+ },
+ {
+  "name": "crockpot:onions",
+  "ageProp": "age",
+  "maxAge": 7,
+  "harvest": "break",
+  "seed": "crockpot:onion_seeds",
+  "soil": null
+ },
+ {
+  "name": "crockpot:peppers",
+  "ageProp": "age",
+  "maxAge": 7,
+  "harvest": "break",
+  "seed": "crockpot:pepper_seeds",
+  "soil": null
+ },
+ {
+  "name": "crockpot:tomatoes",
+  "ageProp": "age",
+  "maxAge": 7,
+  "harvest": "break",
+  "seed": "crockpot:tomato_seeds",
+  "soil": null
+ },
+ {
+  "name": "culturaldelights:cucumbers",
+  "ageProp": "age",
+  "maxAge": 7,
+  "harvest": "break",
+  "seed": "culturaldelights:cucumber_seeds",
+  "soil": null
+ },
+ {
+  "name": "culturaldelights:eggplants",
+  "ageProp": "age",
+  "maxAge": 7,
+  "harvest": "break",
+  "seed": "culturaldelights:eggplant_seeds",
+  "soil": null
+ },
+ {
+  "name": "delightful:cantaloupe_plant",
+  "ageProp": "age",
+  "maxAge": 3,
+  "harvest": "break",
+  "seed": "delightful:cantaloupe_seeds",
+  "soil": null
+ },
+ {
+  "name": "delighto_flight:cloud_berry_bush",
+  "ageProp": "age",
+  "maxAge": 3,
+  "harvest": "break",
+  "seed": null,
+  "soil": null
+ },
+ {
+  "name": "dumplings_delight:chinese_cabbages",
+  "ageProp": "age",
+  "maxAge": 7,
+  "harvest": "break",
+  "seed": "dumplings_delight:chinese_cabbage_seeds",
+  "soil": null
+ },
+ {
+  "name": "dumplings_delight:eggplant",
+  "ageProp": "age",
+  "maxAge": 7,
+  "harvest": "break",
+  "seed": "dumplings_delight:eggplant_seeds",
+  "soil": null
+ },
+ {
+  "name": "dumplings_delight:fennel",
+  "ageProp": "age",
+  "maxAge": 7,
+  "harvest": "break",
+  "seed": "dumplings_delight:fennel_seeds",
+  "soil": null
+ },
+ {
+  "name": "ecologics:hanging_coconut",
+  "ageProp": "age",
+  "maxAge": 2,
+  "harvest": "break",
+  "seed": null,
+  "soil": null
+ },
+ {
+  "name": "enigmaticdelicacy:astral_fruit",
+  "ageProp": "age",
+  "maxAge": 7,
+  "harvest": "break",
+  "seed": null,
+  "soil": null
+ },
+ {
+  "name": "enigmaticdelicacy:enigmatic_bush",
+  "ageProp": "age",
+  "maxAge": 7,
+  "harvest": "break",
+  "seed": "enigmaticdelicacy:enigmatic_seed",
+  "soil": null
+ },
+ {
+  "name": "etcetera:cotton",
+  "ageProp": "age",
+  "maxAge": 3,
+  "harvest": "break",
+  "seed": "etcetera:cotton_seeds",
+  "soil": null
+ },
+ {
+  "name": "farm_and_charm:barley_crop",
+  "ageProp": "age",
+  "maxAge": 4,
+  "harvest": "break",
+  "seed": "farm_and_charm:barley_seeds",
+  "soil": null
+ },
+ {
+  "name": "farm_and_charm:lettuce_crop",
+  "ageProp": "age",
+  "maxAge": 3,
+  "harvest": "break",
+  "seed": "farm_and_charm:lettuce_seeds",
+  "soil": null
+ },
+ {
+  "name": "farm_and_charm:oat_crop",
+  "ageProp": "age",
+  "maxAge": 5,
+  "harvest": "break",
+  "seed": "farm_and_charm:oat_seeds",
+  "soil": null
+ },
+ {
+  "name": "farm_and_charm:strawberry_crop",
+  "ageProp": "age",
+  "maxAge": 5,
+  "harvest": "break",
+  "seed": "farm_and_charm:strawberry_seeds",
+  "soil": null
+ },
+ {
+  "name": "farm_and_charm:tomato_crop",
+  "ageProp": "age",
+  "maxAge": 4,
+  "harvest": "break",
+  "seed": "farm_and_charm:tomato_seeds",
+  "soil": null
+ },
+ {
+  "name": "farmersdelight:cabbages",
+  "ageProp": "age",
+  "maxAge": 7,
+  "harvest": "break",
+  "seed": "farmersdelight:cabbage_seeds",
+  "soil": null
+ },
+ {
+  "name": "farmersdelight:rice_panicles",
+  "ageProp": "age",
+  "maxAge": 3,
+  "harvest": "break",
+  "seed": null,
+  "soil": null
+ },
+ {
+  "name": "fruitsdelight:blueberry_bush",
+  "ageProp": "age",
+  "maxAge": 4,
+  "harvest": "break",
+  "seed": null,
+  "soil": null
+ },
+ {
+  "name": "fruitsdelight:cranberry_bush",
+  "ageProp": "age",
+  "maxAge": 4,
+  "harvest": "break",
+  "seed": null,
+  "soil": null
+ },
+ {
+  "name": "fruitsdelight:pineapple",
+  "ageProp": "age",
+  "maxAge": 4,
+  "harvest": "break",
+  "seed": null,
+  "soil": null
+ },
+ {
+  "name": "habitat:kabloom_bush",
+  "ageProp": "age",
+  "maxAge": 7,
+  "harvest": "break",
+  "seed": null,
+  "soil": null
+ },
+ {
+  "name": "immortalers_delight:alfalfa",
+  "ageProp": "age",
+  "maxAge": 7,
+  "harvest": "break",
+  "seed": "immortalers_delight:alfalfa_seeds",
+  "soil": null
+ },
+ {
+  "name": "jellyfishing:pineapple_plant",
+  "ageProp": "age",
+  "maxAge": 3,
+  "harvest": "break",
+  "seed": "jellyfishing:pineapple_seeds",
+  "soil": null
+ },
+ {
+  "name": "kaleidoscope_cookery:chili_crop",
+  "ageProp": "age",
+  "maxAge": 7,
+  "harvest": "break",
+  "seed": "kaleidoscope_cookery:chili_seed",
+  "soil": null
+ },
+ {
+  "name": "kaleidoscope_cookery:lettuce_crop",
+  "ageProp": "age",
+  "maxAge": 7,
+  "harvest": "break",
+  "seed": "kaleidoscope_cookery:lettuce_seed",
+  "soil": null
+ },
+ {
+  "name": "kaleidoscope_cookery:tomato_crop",
+  "ageProp": "age",
+  "maxAge": 7,
+  "harvest": "break",
+  "seed": "kaleidoscope_cookery:tomato_seed",
+  "soil": null
+ },
+ {
+  "name": "kaleidoscope_nether:soul_pepper",
+  "ageProp": "age",
+  "maxAge": 7,
+  "harvest": "break",
+  "seed": "kaleidoscope_cookery:chili_seed",
+  "soil": null
+ },
+ {
+  "name": "makit_better:soul_berry_bush",
+  "ageProp": "age",
+  "maxAge": 7,
+  "harvest": "break",
+  "seed": null,
+  "soil": null
+ },
+ {
+  "name": "midashunger:golden_beetroots",
+  "ageProp": "age",
+  "maxAge": 3,
+  "harvest": "break",
+  "seed": "midashunger:golden_beetroot_seeds",
+  "soil": null
+ },
+ {
+  "name": "minecraft:beetroots",
+  "ageProp": "age",
+  "maxAge": 3,
+  "harvest": "break",
+  "seed": "minecraft:beetroot_seeds",
+  "soil": null
+ },
+ {
+  "name": "minecraft:nether_wart",
+  "ageProp": "age",
+  "maxAge": 3,
+  "harvest": "break",
+  "seed": null,
+  "soil": null
+ },
+ {
+  "name": "minecraft:wheat",
+  "ageProp": "age",
+  "maxAge": 7,
+  "harvest": "break",
+  "seed": "minecraft:wheat_seeds",
+  "soil": null
+ },
+ {
+  "name": "muffins_thaidelight:lime_bush",
+  "ageProp": "age",
+  "maxAge": 2,
+  "harvest": "break",
+  "seed": null,
+  "soil": null
+ },
+ {
+  "name": "pineapple_delight:pineapple_crop",
+  "ageProp": "age",
+  "maxAge": 7,
+  "harvest": "break",
+  "seed": null,
+  "soil": null
+ },
+ {
+  "name": "ramadandelight:parsley_crop",
+  "ageProp": "age",
+  "maxAge": 3,
+  "harvest": "break",
+  "seed": "ramadandelight:parsley_seeds",
+  "soil": null
+ },
+ {
+  "name": "regions_unexplored:duskmelon",
+  "ageProp": "age",
+  "maxAge": 2,
+  "harvest": "break",
+  "seed": null,
+  "soil": null
+ },
+ {
+  "name": "rusticdelight:bell_peppers",
+  "ageProp": "age",
+  "maxAge": 7,
+  "harvest": "break",
+  "seed": "rusticdelight:bell_pepper_seeds",
+  "soil": null
+ },
+ {
+  "name": "rusticdelight:cotton",
+  "ageProp": "age",
+  "maxAge": 3,
+  "harvest": "break",
+  "seed": "rusticdelight:cotton_seeds",
+  "soil": null
+ },
+ {
+  "name": "smc:broccoli_plant_block",
+  "ageProp": "age",
+  "maxAge": 7,
+  "harvest": "break",
+  "seed": "smc:broccoli_seeds",
+  "soil": null
+ },
+ {
+  "name": "smc:frost_berry_bush",
+  "ageProp": "age",
+  "maxAge": 3,
+  "harvest": "break",
+  "seed": null,
+  "soil": null
+ },
+ {
+  "name": "ubesdelight:lemongrass_leaf_crop",
+  "ageProp": "age",
+  "maxAge": 3,
+  "harvest": "break",
+  "seed": null,
+  "soil": null
+ },
+ {
+  "name": "undergarden:ditchbulb_plant",
+  "ageProp": "age",
+  "maxAge": 1,
+  "harvest": "break",
+  "seed": null,
+  "soil": null
+ },
+ {
+  "name": "unusualend:gloopilon_bulb",
+  "ageProp": "age",
+  "maxAge": 2,
+  "harvest": "break",
+  "seed": null,
+  "soil": null
+ },
+ {
+  "name": "veggiesdelight:bellpepper_crop",
+  "ageProp": "age",
+  "maxAge": 7,
+  "harvest": "break",
+  "seed": "veggiesdelight:bellpepper_seeds",
+  "soil": null
+ },
+ {
+  "name": "veggiesdelight:broccoli_crop",
+  "ageProp": "age",
+  "maxAge": 5,
+  "harvest": "break",
+  "seed": "veggiesdelight:broccoli_seeds",
+  "soil": null
+ },
+ {
+  "name": "veggiesdelight:cauliflower_crop",
+  "ageProp": "age",
+  "maxAge": 7,
+  "harvest": "break",
+  "seed": "veggiesdelight:cauliflower_seeds",
+  "soil": null
+ },
+ {
+  "name": "veggiesdelight:garlic_crop",
+  "ageProp": "age",
+  "maxAge": 5,
+  "harvest": "break",
+  "seed": null,
+  "soil": null
+ },
+ {
+  "name": "veggiesdelight:turnip_crop",
+  "ageProp": "age",
+  "maxAge": 5,
+  "harvest": "break",
+  "seed": "veggiesdelight:turnip_seeds",
+  "soil": null
+ },
+ {
+  "name": "veggiesdelight:zucchini_crop",
+  "ageProp": "age",
+  "maxAge": 7,
+  "harvest": "break",
+  "seed": "veggiesdelight:zucchini_seeds",
+  "soil": null
+ },
+ {
+  "name": "vintagedelight:oat_crop",
+  "ageProp": "age",
+  "maxAge": 7,
+  "harvest": "break",
+  "seed": null,
+  "soil": null
+ },
+ {
+  "name": "youkaishomecoming:soybean",
+  "ageProp": "age",
+  "maxAge": 7,
+  "harvest": "break",
+  "seed": null,
+  "soil": null
+ },
+ {
+  "name": "youkaishomecoming:udumbara",
+  "ageProp": "age",
+  "maxAge": 7,
+  "harvest": "break",
+  "seed": "youkaishomecoming:udumbara_seeds",
+  "soil": null
+ },
+ {
+  "name": "minecraft:carrots",
+  "ageProp": "age",
+  "maxAge": 7,
+  "harvest": "break",
+  "seed": "minecraft:carrot",
+  "soil": "farmland"
+ },
+ {
+  "name": "minecraft:potatoes",
+  "ageProp": "age",
+  "maxAge": 7,
+  "harvest": "break",
+  "seed": "minecraft:potato",
+  "soil": "farmland"
+ },
+ {
+  "name": "farmersdelight:onions",
+  "ageProp": "age",
+  "maxAge": 7,
+  "harvest": "break",
+  "seed": "farmersdelight:onion",
+  "soil": "farmland"
+ }
+]

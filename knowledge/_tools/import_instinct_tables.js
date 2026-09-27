@@ -46,9 +46,17 @@ function importOres () {
   console.log(`ores.json：${out.length} 条  value ${JSON.stringify(by('value'))}  tier ${JSON.stringify(by('tier'))}`);
 }
 
+// crops-safe 的口径把"没熟打掉也掉同样产物"的（胡萝卜 / 土豆型）排除了 —— 可这正是它们的正常收法（打掉收，拿产物本身补种）。
+// 那一类 44 种里有灌木（茶树、咖啡…可能是右键摘的），没有逐个证据，所以只补回确定的这三种（2026-09-27 Claude 看过）。
+const EXTRA_CROPS = [
+  { name: 'minecraft:carrots', ageProp: 'age', maxAge: 7, harvest: 'break', seed: 'minecraft:carrot', soil: 'farmland', evidence: '原版：打掉收获，胡萝卜本身补种（crops-safe 口径排除，手动补回）' },
+  { name: 'minecraft:potatoes', ageProp: 'age', maxAge: 7, harvest: 'break', seed: 'minecraft:potato', soil: 'farmland', evidence: '原版：打掉收获，土豆本身补种（同上）' },
+  { name: 'farmersdelight:onions', ageProp: 'age', maxAge: 7, harvest: 'break', seed: 'farmersdelight:onion', soil: 'farmland', evidence: '农夫乐事：和胡萝卜同型，打掉收获、洋葱本身补种（同上）' },
+];
+
 function importCrops () {
   if (!fs.existsSync(cropsIn)) { console.log(`（没有 ${cropsIn}，作物表不动）`); return; }
-  const src = JSON.parse(fs.readFileSync(cropsIn, 'utf8'));
+  const src = [...JSON.parse(fs.readFileSync(cropsIn, 'utf8')), ...EXTRA_CROPS];
   const bad = [];
   const out = src.map(c => {
     const row = { name: c.name, ageProp: c.ageProp || 'age', maxAge: c.maxAge, harvest: c.harvest || 'break', seed: c.seed || null, soil: c.soil || null };
