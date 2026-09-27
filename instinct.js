@@ -501,6 +501,18 @@ const STRUCTURE_SIGNS = [
   { label: '下界要塞', re: /(^|:)(nether_bricks|nether_brick_fence)$/, min: 12 },
   { label: '堡垒遗迹', re: /(^|:)(gilded_blackstone|polished_blackstone_bricks|cracked_polished_blackstone_bricks)$/, min: 8 },
   { label: '末地城', re: /(^|:)(purpur_block|purpur_pillar|end_stone_bricks)$/, min: 12 },
+  // 模组建筑（WorkBuddy 2026-09-27 从 jar 里的建筑模板查：有带 LootTable 的箱子 + 标志方块是模组特有的；modpack-study/instincts/structures.md）
+  // 没收的：染梦系 / 蜂巢维度蜜脾 / 枯萎黑石 —— 那是整片维度 / 群系的地形，不是建筑标志
+  { label: '幽灵船', re: /^more_critters:(ghostly_planks|ghostly_log|ghostly_wood|stripped_ghostly_log)$/, min: 10 },
+  { label: '灵魂板岩圣所', re: /^netherexp:(soul_slate_bricks|soul_slate_tiles|chiseled_soul_slate_tiles)$/, min: 8 },
+  { label: '粉盐神殿', re: /^galosphere:(pink_salt_bricks|polished_pink_salt|pink_salt_straw)$/, min: 6 },
+  { label: '深园地下墓穴', re: /^undergarden:(depthrock_bricks|depthrock_brick_stairs|depthrock_brick_slab|shiverstone_bricks)$/, min: 6 },
+  { label: '野林兽巢', re: /^ars_nouveau:(stripped_green_archwood_log|archwood_chest)$/, min: 3 },
+  // 灾变（Cataclysm）的遗迹里有 boss（伊格尼斯、下界合金巨兽…）：只认出来、告诉 mind，不自己闯（danger）
+  { label: '灾变·冰霜监狱 / 深红废墟（有 boss）', re: /^cataclysm:(frosted_stone_bricks|stone_tiles|stone_pillar)$/, min: 5, danger: true },
+  { label: '灾变·沉没之城（有 boss）', re: /^cataclysm:(azure_seastone|azure_seastone_bricks|chiseled_azure_seastone_pillar_wall)$/, min: 6, danger: true },
+  { label: '灾变·诅咒金字塔（有 boss）', re: /^cataclysm:(polished_sandstone|sandstone_falling_trap|sandstone_ignite_trap)$/, min: 5, danger: true },
+  { label: '灾变·黑曜石堡垒（有 boss）', re: /^cataclysm:(obsidian_bricks|obsidian_brick_slab|obsidian_brick_stairs)$/, min: 5, danger: true },
 ];
 /** blocks：[{ name, pos }]（看得见的）→ 认出的建筑 [{ label, anchor, count, key }]（anchor = 这类方块的中心） */
 function recognizeStructures (blocks = []) {
@@ -510,7 +522,7 @@ function recognizeStructures (blocks = []) {
     if (hit.length < S.min) continue;
     const c = hit.reduce((a, b) => ({ x: a.x + b.pos.x / hit.length, y: a.y + b.pos.y / hit.length, z: a.z + b.pos.z / hit.length }), { x: 0, y: 0, z: 0 });
     const anchor = { x: Math.round(c.x), y: Math.round(c.y), z: Math.round(c.z) };
-    out.push({ label: S.label, anchor, count: hit.length, key: `${S.label}@${Math.floor(anchor.x / 16)},${Math.floor(anchor.y / 16)},${Math.floor(anchor.z / 16)}` });
+    out.push({ label: S.label, danger: !!S.danger, anchor, count: hit.length, key: `${S.label}@${Math.floor(anchor.x / 16)},${Math.floor(anchor.y / 16)},${Math.floor(anchor.z / 16)}` });
   }
   return out;
 }
@@ -524,7 +536,7 @@ function pickLoot (c, cfg = CFG.loot) {
   if (free < cfg.minFree && !(packFree != null && packFree >= 4)) return { skip: '身上和背包都没地方装了' };
   if (nightOut) return { skip: '夜里在露天，不去闯' };
   if (chests > 0) return { mode: 'open' };
-  const todo = structures.filter(s => !visited.has(s.key))
+  const todo = structures.filter(s => !visited.has(s.key) && !s.danger)   // 有 boss 的不自己闯（tryLoot 告诉 mind）
     .map(s => ({ ...s, dist: self ? Math.hypot(s.anchor.x - self.x, s.anchor.z - self.z) : 0 }))
     .filter(s => s.dist <= cfg.structRadius)
     .sort((a, b) => a.dist - b.dist);
@@ -963,6 +975,14 @@ function install (bot, state, deps) {
       packFree: deps.hands.wearingBackpack?.(bot, state) && bp ? bp.slots - bp.used : null,
       nightOut, visited: I.visitedStructures, self,
     }, L);
+    // 认出有 boss 的遗迹：只告诉 mind（一座一次），去不去她定
+    if (!chests) {
+      for (const S of recognizeStructures(structureBlocks(L.structRadius)).filter(x => x.danger)) {
+        if (I.told.has(`danger:${S.key}`)) continue;
+        I.told.add(`danger:${S.key}`);
+        event('structure_danger', `认出附近是${S.label}（${S.anchor.x},${S.anchor.y},${S.anchor.z}），里面有好东西但很危险，没自己进去`, { structure: S.label, pos: S.anchor });
+      }
+    }
     if (!pick.mode) return pick;
     I.lastLootAt = Date.now();
     if (pick.mode === 'open') {
@@ -1722,6 +1742,10 @@ function selftest () {
   check('身上满了、背包也满 → 不去', pickLoot({ chests: 2, free: 1, packFree: 1, self: me }).mode, undefined);
   check('身上满了但背包还空 → 去', pickLoot({ chests: 2, free: 1, packFree: 20, self: me }).mode, 'open');
   check('夜里在露天 → 不去', pickLoot({ chests: 2, nightOut: true, self: me }).mode, undefined);
+  check('模组建筑：幽灵船认得出', recognizeStructures(blk('more_critters:ghostly_planks', 5, 12))[0]?.label, '幽灵船');
+  const boss = recognizeStructures(blk('cataclysm:obsidian_bricks', 5, 8));
+  check('★ 灾变遗迹认得出、标了危险', boss[0]?.danger, true);
+  check('★ 有 boss 的遗迹 → 不自己闯', pickLoot({ structures: boss, self: me }).mode, undefined);
 
   // ---- 指令本能 ----
   const P3 = (x, y, z) => ({ x, y, z });
