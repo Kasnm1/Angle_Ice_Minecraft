@@ -151,6 +151,7 @@ $NODE knowledge.js --selftest
 
 | 想知道 | 读 |
 |---|---|
+| **本能层 / 长期计划 / 物品账 / 天黑 的交接（2026-09-27），以及接下来的路线** | [`HANDOFF-20260927.md`](HANDOFF-20260927.md) |
 | 现状一页纸 | `STATUS.md` |
 | 架构 / 本轮修复 / 环境坑 | `HANDOVER.md` |
 | 某个具体问题的证据与根因（P1–P50） | `memory/field-log.md` |
