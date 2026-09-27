@@ -445,6 +445,54 @@ async function placeNicely ({ itemName, purpose = '', x, y, z, r = 7 }) {
   throw new Error(`挑的几个位置都没放上：${tried.join('；')}（这片的看法：${plan.view || '-'}）`);
 }
 
+
+// ------------------------------------------------------------------ 设计一个工程（蓝图），之后 build_work 一点点施工
+//
+// 主人 2026-09-27：先对周围环境概念建模，再逐步增量填充或者挖多余方块；不一定要材料够了才开始。
+// 风格参考：knowledge/style-guide.md（WorkBuddy 整理的本包审美规则 + 配色方案，全是真实 id）
+
+let STYLE = null;
+function styleGuide () {
+  if (STYLE == null) { try { STYLE = require('fs').readFileSync(path.join(__dirname, 'knowledge', 'style-guide.md'), 'utf8').slice(0, 6000); } catch (_) { STYLE = ''; } }
+  return STYLE;
+}
+const DESIGN_SYS = `你是 Angle_ICE 自己的建筑眼光。看懂给你的这片地方（逐层俯视图、材质图例），按用途设计一个工程，输出蓝图。
+要求：
+- 和周围协调：沿用附近已有的材质配色（图例里有的优先），或者从风格指南的配色方案里挑一套；主色/辅色/点缀 6:3:1
+- 先想清楚放在哪：不挡已有的门和路，贴着地形，地基落在实心地面上；要挖掉的地方用 "air"
+- 规模现实：一般 5×5～11×11，高不超过 7 层；越小越容易做完
+- 结构：原木或去皮原木做柱和框，木板填墙，楼梯/台阶做屋顶檐口，留门洞（两格高的 air）和窗（玻璃板）
+蓝图格式（只输出 JSON）：
+{"name":"短名字","purpose":"用途","view":"一句话说这片现在什么样、你打算怎么改","origin":{"x":西北角x,"y":最底层y,"z":西北角z},
+ "legend":{"P":"minecraft:oak_planks","L":"minecraft:oak_log",".":"air"},
+ "layers":[{"dy":0,"rows":["LPPPL","P...P","LPPPL"]},{"dy":1,"rows":[...]}]}
+rows 从北到南（z 增大），每行字符从西到东（x 增大）；每层 rows 数量和每行长度要一致；图例里没有的字符（比如 "-"）= 这格不管、保持原样。
+legend 的值必须是真实注册名（带命名空间），"air" 表示这格要挖空。不要画门、床、箱子这类会被放歪的东西（之后用 place_nicely 摆）。`;
+
+async function designBuild ({ purpose, x, y, z, r = 8 }) {
+  if (!purpose) throw new Error('purpose 写要盖/改什么（比如：家门口一个 5×5 的小仓库、河边一段木栈道、围一圈农田）');
+  const q = x != null && y != null && z != null ? `x=${x}&y=${y}&z=${z}&r=${r}` : `r=${r}`;
+  const sv = await bridge.get(`/survey?${q}`, 8000);
+  const user = [
+    `用途：${purpose}`, `中心 ${sv.center.x},${sv.center.y},${sv.center.z}；${sv.orientation}`,
+    `固定符号：${sv.fixed}`, `材质图例：${sv.legend}`, `门：${sv.doors.join(' ') || '无'}`, `家具：${sv.furniture.slice(0, 12).join(' ') || '无'}`,
+    '', sv.layers, '', '——风格指南（节选）——', styleGuide(),
+  ].join('\n');
+  const messages = [{ role: 'system', content: DESIGN_SYS }, { role: 'user', content: user }];
+  let lastErr = '';
+  for (let attempt = 0; attempt < 2; attempt++) {
+    if (lastErr) messages.push({ role: 'user', content: `上一版蓝图不行：${lastErr}。改好再给一次，只输出 JSON。` });
+    const msg = await llm({ messages, timeoutMs: 60000, maxTokens: 3000 });
+    const bp = parseJsonLoose(msg?.content);
+    if (!bp) { lastErr = '不是 JSON'; messages.push({ role: 'assistant', content: String(msg?.content || '').slice(0, 2000) }); continue; }
+    try {
+      const saved = await bridge.post('/project/save', { ...bp, purpose: bp.purpose || purpose }, 10000);
+      return { ...saved, view: bp.view, origin: bp.origin, layers: bp.layers.length, next: '用 build_work 开始施工；缺的材料边做边弄' };
+    } catch (e) { lastErr = e.message; messages.push({ role: 'assistant', content: JSON.stringify(bp).slice(0, 2000) }); }
+  }
+  throw new Error(`设计没成：${lastErr}`);
+}
+
 async function upstairsFirst (targetY) {
   const me = await bridge.get('/position').catch(() => null);
   const y = me?.exact?.y ?? me?.y;
@@ -903,6 +951,30 @@ const TOOLS = {
     desc: '放东西（火把、灯、箱子、床、工作台、熔炉、家具、装饰）都用这个：先看这一片布局，想 2–3 个位置挑最好看又顺手的放下（不挡门和路、靠墙成组、对称、跟周围搭）。purpose 写用途（照亮门口 / 厨房里 / 床边…），x/y/z 写大概在哪一片（默认你身边）。',
     params: { itemName: { type: 'string' }, purpose: { type: 'string' }, x: { type: 'number' }, y: { type: 'number' }, z: { type: 'number' } }, required: ['itemName'],
     run: async (a) => placeNicely(a),
+  },
+  design_build: {
+    kind: 'action',
+    desc: '想盖点什么、改造一片地方（小仓库、围墙、农田围栏、路、扩建一间屋、挖平一块地）时先设计：看清这片、按你的审美出一张蓝图存下来。之后用 build_work 一点点施工。purpose 写用途和大概规模，x/y/z 写在哪一片（默认你身边）。',
+    params: { purpose: { type: 'string' }, x: { type: 'number' }, y: { type: 'number' }, z: { type: 'number' } }, required: ['purpose'],
+    run: async (a) => designBuild(a),
+  },
+  build_work: {
+    kind: 'action',
+    desc: '照蓝图施工一段（默认约 90 秒）：多余的方块挖掉、缺的方块用手上有的材料补上。不用等材料齐 —— 缺什么会告诉你（missing），去弄来再接着 build_work。天黑、有怪、有人叫你就先停，回头接着做。',
+    params: { id: { type: 'string' }, seconds: { type: 'number' } }, required: [],
+    run: async ({ id, seconds }) => { const ms = Math.min(Math.max(20, seconds || 90), 240) * 1000; return bridge.post('/project/work', { id, maxMs: ms }, ms + 60000); },
+  },
+  build_status: {
+    kind: 'info',
+    desc: '看进行中的工程：完成多少、还要挖/放几格、需要什么材料、缺什么。',
+    params: { id: { type: 'string' } }, required: [],
+    run: async ({ id }) => bridge.get(`/project/status${id ? `?id=${id}` : ''}`, 10000),
+  },
+  build_cancel: {
+    kind: 'action',
+    desc: '放弃一个工程（设计不好、不想要了）。',
+    params: { id: { type: 'string' } }, required: ['id'],
+    run: async ({ id }) => bridge.post('/project/cancel', { id }),
   },
   place: {
     kind: 'action',

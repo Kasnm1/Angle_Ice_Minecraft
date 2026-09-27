@@ -229,6 +229,7 @@ async function look () {
     const c = await safe('/commands');
     if (c) W.commands = { ...c, at: Date.now(), admin: (c.all || []).filter(x => ['give', 'tp', 'teleport', 'gamemode', 'time', 'weather', 'effect', 'summon', 'kill', 'clear', 'enchant', 'xp'].includes(x)) };
   }
+  if (!W.projAt || Date.now() - W.projAt > 60000) { W.projAt = Date.now(); const pj = await safe('/project/status'); W.projects = pj?.projects || []; }
   if (!st) { W.state = null; return; }
   W.state = {
     connected: !!st.connected, health: st.health, food: st.food, isDay: st.isDay,
@@ -676,6 +677,7 @@ const SYSTEM = `你是 Angle_ICE（安琪），住在这个 Minecraft 模组服�
   · 命令：服务器给你开了哪些，看【你能用的命令】（run_command 执行）。回家、传送这类自己判断着用；管理员命令（give/tp/gamemode/time/weather…）只在玩家明确要你用时才用，because 写他的原话。传送石碑（waystones）也能远距离移动
   · 怪只在全黑的地方刷：家周围地面大约每 12 格插一个火把就不刷了
   · 你有自己的审美：布置、装修、插火把、摆箱子家具前先看布局（look_area），放东西用 place_nicely（它会挑不挡路、靠墙成组、对称、和周围搭的位置）
+  · 盖东西、改造一片地方：先 design_build 出蓝图，再 build_work 一段一段做；不用等材料齐，手上有什么先做什么，缺的（missing）去弄来接着做
   · 像玩家一样避开暗处：没火把别进洞、别往黑的地方走；要下矿、进矿洞，先带够火把（make_torches），走到哪亮到哪（light_up）
   · 家外遇险（怪围上来、掉进坑里出不来、夜里在野外）：垫方块自救 —— 往上垫（self_rescue pillar）或把自己围住（self_rescue enclose）；身上常备一组圆石/泥土
   · 睡不了（服务器可能要多人一起睡）也别在外面过夜：待在屋里干活
@@ -778,6 +780,7 @@ function buildNow (why) {
     (() => { const open = (s?.doors || []).filter(d => d.open); return open.length ? `身边开着的门：${open.slice(0, 5).map(d => `${d.kind}(${d.x},${d.y},${d.z})`).join('、')}` : ''; })(),
     bodyNow(),
     (() => { const f = survivalFocus(s); return f.length ? `\n【眼下最该操心的】\n${f.map(x => `· ${x}`).join('\n')}` : ''; })(),
+    W.projects?.length ? `\n【进行中的工程】${W.projects.map(p => `${p.name}(${p.id}) 完成 ${p.done}，还要挖 ${p.toDig}、放 ${p.toPlace}${Object.keys(p.missing || {}).length ? `，缺 ${Object.entries(p.missing).slice(0, 4).map(([k, n]) => `${knowledge.label(k.includes(':') ? k : 'minecraft:' + k).replace(/\(.*\)$/, '')}×${n}`).join('、')}` : ''}`).join('；')} —— 没别的事就 build_work 接着做` : '',
     W.commands?.known ? `\n【你能用的命令】传送/回家类：${W.commands.teleport.length ? W.commands.teleport.map(c => '/' + c).join(' ') : '没有'}${W.commands.admin?.length ? `；管理员（玩家明确要求才用）：${W.commands.admin.map(c => '/' + c).join(' ')}` : ''}` : '',
     happened,
     saidLine,

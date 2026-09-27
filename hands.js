@@ -3006,6 +3006,148 @@ function survey (bot, { x, y, z, r = 7, below = 2, above = 5 } = {}) {
   };
 }
 
+// ------------------------------------------------------------------ 工程：按蓝图一点点盖 / 挖（不必等材料齐）
+//
+// 主人 2026-09-27：「自己对周围环境概念建模之后，慢慢逐步增量填充或者挖多余方块。并且不一定要材料够了才开始行动」
+// 蓝图（她自己设计的）存盘；每次 work：对照蓝图和世界 → 多余的从上往下挖、缺的从下往上补（有支撑的先放），
+// 手上有什么先放什么，缺的报回去让她去弄；一次只干一小段，随时能被打断，下次接着来。
+//
+// 蓝图格式：{ id, name, purpose, origin:{x,y,z}, legend:{ 字符: 方块id | "air" }, layers:[{ dy, rows:[ "..." ] }] }
+//   rows 从北到南（z 增），每行从西到东（x 增）；图例里没有的字符（空格、-）= 这格不管。
+// 限制：楼梯/门这类有朝向的方块，放下来的朝向由她当时的站位决定，不一定和设计一致。
+
+const PROJ_FILE = require('path').join(__dirname, 'memory', 'projects.json');
+function projects (state) {
+  if (!state.__projects) { try { state.__projects = JSON.parse(require('fs').readFileSync(PROJ_FILE, 'utf8')); } catch (_) { state.__projects = {}; } }
+  return state.__projects;
+}
+function saveProjects (state) {
+  try { const fs = require('fs'); const tmp = PROJ_FILE + '.tmp'; fs.writeFileSync(tmp, JSON.stringify(state.__projects || {}, null, 1)); fs.renameSync(tmp, PROJ_FILE); } catch (_) {}
+}
+const bareId = (id) => String(id || '').replace(/^minecraft:/, '');
+
+/** 检查蓝图、存下来。返回格数和材料清单；图例里的方块不存在就报错（让她改） */
+function projectSave (bot, state, bp = {}) {
+  if (!bp.name || !bp.origin || !bp.legend || !Array.isArray(bp.layers)) throw new Error('蓝图要有 name、origin{x,y,z}、legend、layers[{dy,rows}]');
+  const bad = Object.entries(bp.legend).filter(([, id]) => id !== 'air' && !bot.registry.blocksByName[bareId(id)] && !bot.registry.blocksByName[id]).map(([ch, id]) => `${ch}=${id}`);
+  if (bad.length) throw new Error(`图例里这些方块不存在：${bad.join(' ')}（用真实注册名）`);
+  let cells = 0; const mats = {};
+  for (const L of bp.layers) {
+    if (!Array.isArray(L.rows)) throw new Error('每层要有 rows');
+    if (L.rows.length > 24 || L.rows.some(r => String(r).length > 24)) throw new Error('太大了：一层最多 24×24');
+    for (const row of L.rows) for (const ch of String(row)) { const id = bp.legend[ch]; if (!id) continue; cells++; if (id !== 'air') mats[bareId(id)] = (mats[bareId(id)] || 0) + 1; }
+  }
+  if (bp.layers.length > 16) throw new Error('太高了：最多 16 层');
+  const id = bp.id || `p${Date.now().toString(36)}`;
+  const P = projects(state);
+  P[id] = { ...bp, id, origin: { x: Math.floor(bp.origin.x), y: Math.floor(bp.origin.y), z: Math.floor(bp.origin.z) }, created: P[id]?.created || Date.now(), updated: Date.now(), status: 'active' };
+  saveProjects(state);
+  return { id, name: bp.name, cells, materials: mats };
+}
+
+function projectCells (p) {
+  const out = [];
+  for (const L of p.layers) {
+    L.rows.forEach((row, dz) => [...String(row)].forEach((ch, dx) => {
+      const want = p.legend[ch]; if (!want) return;
+      out.push({ pos: new Vec3(p.origin.x + dx, p.origin.y + (+L.dy || 0), p.origin.z + dz), want: want === 'air' ? 'air' : bareId(want) });
+    }));
+  }
+  return out;
+}
+
+/** 对照蓝图和世界：要挖的、要放的、已经对的、没加载的 */
+function projectDiff (bot, p) {
+  const dig = []; const place = []; let ok = 0; let unknown = 0;
+  for (const c of projectCells(p)) {
+    const b = bot.blockAt(c.pos);
+    if (!b) { unknown++; continue; }
+    const here = bareId(b.name);
+    if (c.want === 'air') {
+      if (b.boundingBox === 'empty' && !isLiquid(b)) ok++; else dig.push(c);
+    } else if (here === c.want) ok++;
+    else if (airish(b) || /^(short_grass|grass|tall_grass|fern|large_fern|snow|dead_bush|vine)$/.test(here)) place.push(c);
+    else { dig.push({ ...c, thenPlace: true }); }
+  }
+  const total = ok + dig.length + place.length;
+  return { dig, place, ok, unknown, total, pct: total ? Math.round(ok * 100 / total) : 0 };
+}
+
+function invCount (bot, id) { return bot.inventory.items().filter(i => bareId(i.name) === id).reduce((a, i) => a + i.count, 0); }
+
+function projectStatus (bot, state, { id } = {}) {
+  const P = projects(state);
+  const list = id ? [P[id]].filter(Boolean) : Object.values(P).filter(p => p.status === 'active');
+  if (id && !list.length) throw new Error(`没有工程 ${id}`);
+  return {
+    projects: list.map(p => {
+      const d = projectDiff(bot, p);
+      const need = {}; for (const c of [...d.place, ...d.dig.filter(x => x.thenPlace)]) need[c.want] = (need[c.want] || 0) + 1;
+      const missing = {}; for (const [k, n] of Object.entries(need)) { const h = invCount(bot, k); if (h < n) missing[k] = n - h; }
+      return { id: p.id, name: p.name, purpose: p.purpose, origin: p.origin, done: `${d.pct}%`, toDig: d.dig.length, toPlace: d.place.length + d.dig.filter(x => x.thenPlace).length, notLoaded: d.unknown, need, missing };
+    }),
+  };
+}
+
+/** 把手上的某种方块放到 pos（找一个实心邻面贴上去），核对放上了 */
+async function placeAt (bot, pos, id) {
+  const it = bot.inventory.items().find(i => bareId(i.name) === id);
+  if (!it) return { ok: false, missing: true };
+  if (bot.heldItem?.type !== it.type) await bot.equip(it, 'hand');
+  for (const [dx, dy, dz] of [[0, -1, 0], [1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1], [0, 1, 0]]) {
+    const ref = bot.blockAt(pos.offset(dx, dy, dz));
+    if (!ref || ref.boundingBox !== 'block') continue;
+    try { await plainTimeout(bot.placeBlock(ref, new Vec3(-dx, -dy, -dz)), 5000); } catch (_) { await sleep(150); }
+    const b = bot.blockAt(pos);
+    if (b && bareId(b.name) === id) return { ok: true };
+  }
+  return { ok: false, why: '找不到能贴的面或放不上' };
+}
+
+async function projectWork (bot, state, { id, maxMs = 90000, maxOps = 60 } = {}) {
+  const P = projects(state); const p = id ? P[id] : Object.values(P).find(x => x.status === 'active');
+  if (!p) throw new Error(id ? `没有工程 ${id}` : '没有进行中的工程（先 design_build）');
+  const t0 = Date.now(); const skip = new Set(); const placed = {}; let dug = 0; let ops = 0; const missing = {}; let reason = null;
+  const key = (v) => `${v.x},${v.y},${v.z}`;
+  const me = () => bot.entity.position;
+  const reachOK = (pos) => me().offset(0, 1.62, 0).distanceTo(pos.offset(0.5, 0.5, 0.5)) <= 4.3;
+  const onMe = (pos) => { const f = me().floored(); return pos.x === f.x && pos.z === f.z && (pos.y === f.y || pos.y === f.y + 1); };
+  const goNear = async (pos) => { if (reachOK(pos) && !onMe(pos)) return true; await pathTo(bot, pos, 3, 15000, { retry: false }); return reachOK(pos) && !onMe(pos); };
+  while (Date.now() - t0 < maxMs && ops < maxOps) {
+    if (bot.health < 8) { reason = `血只剩 ${Math.round(bot.health)}`; break; }
+    const mob = Object.values(bot.entities).find(e => e !== bot.entity && HOSTILE_RE.test(e.name || '') && e.position.distanceTo(me()) < 8);
+    if (mob) { reason = `${mob.name} 靠近了`; break; }
+    const d = projectDiff(bot, p);
+    if (!d.dig.length && !d.place.length) { if (!d.unknown) { p.status = 'done'; p.doneAt = Date.now(); saveProjects(state); reason = '完工了'; } else reason = `还有 ${d.unknown} 格没加载，走近点再看`; break; }
+    // ① 先挖（从上往下，近的先）
+    const dig = d.dig.filter(c => !skip.has(key(c.pos))).sort((a, b) => (b.pos.y - a.pos.y) || (a.pos.distanceTo(me()) - b.pos.distanceTo(me())))[0];
+    if (dig) {
+      if (!await goNear(dig.pos)) { skip.add(key(dig.pos)); continue; }
+      const b = bot.blockAt(dig.pos);
+      const wet = N6.map(([dx, dy, dz]) => bot.blockAt(dig.pos.offset(dx, dy, dz))).find(isLiquid);
+      if (wet) { skip.add(key(dig.pos)); continue; }
+      if (b && !b.diggable) { skip.add(key(dig.pos)); continue; }
+      const tool = bot.pathfinder?.bestHarvestTool?.(b); if (tool) await bot.equip(tool, 'hand').catch(() => {});
+      try { await bot.lookAt(dig.pos.offset(0.5, 0.5, 0.5), true); await plainTimeout(bot.dig(b, true), 15000); dug++; ops++; } catch (_) { skip.add(key(dig.pos)); }
+      continue;
+    }
+    // ② 再放（从下往上，有支撑的先，近的先；身上没有的记进 missing）
+    const cand = d.place.filter(c => !skip.has(key(c.pos)))
+      .filter(c => N6.some(([dx, dy, dz]) => { const n = bot.blockAt(c.pos.offset(dx, dy, dz)); return n && n.boundingBox === 'block'; }))
+      .sort((a, b) => (a.pos.y - b.pos.y) || (a.pos.distanceTo(me()) - b.pos.distanceTo(me())));
+    const next = cand.find(c => invCount(bot, c.want) > 0);
+    for (const c of cand) if (!invCount(bot, c.want)) missing[c.want] = (missing[c.want] || 0) + 1;
+    if (!next) { reason = Object.keys(missing).length ? '手上的材料用完了（缺的见 missing）' : '剩下的格子暂时够不着/没支撑'; break; }
+    if (!await goNear(next.pos)) { skip.add(key(next.pos)); continue; }
+    const r = await placeAt(bot, next.pos, next.want);
+    if (r.ok) { placed[next.want] = (placed[next.want] || 0) + 1; ops++; } else skip.add(key(next.pos));
+  }
+  if (!reason) reason = ops >= maxOps ? '这一段干完了，接着调就继续' : '时间到，接着调就继续';
+  p.updated = Date.now(); saveProjects(state);
+  const after = projectDiff(bot, p);
+  return { id: p.id, name: p.name, done: `${after.pct}%`, placed, dug, missing: Object.keys(missing).length ? missing : undefined, skipped: skip.size || undefined, reason };
+}
+
 // ------------------------------------------------------------------ 睡觉
 
 async function sleepInBed (bot, state, { home = null } = {}) {
@@ -3259,6 +3401,10 @@ function routes ({ state, withTimeout }) {
     },
     'POST /cmd': async (b = {}) => runCommand(bot(), state, b),
     'GET /survey': async (b = {}) => survey(bot(), b),
+    'POST /project/save': async (b = {}) => projectSave(bot(), state, b),
+    'GET /project/status': async (b = {}) => projectStatus(bot(), state, b),
+    'POST /project/work': async (b = {}) => projectWork(bot(), state, b),
+    'POST /project/cancel': async (b = {}) => { const P = projects(state); if (!P[b.id]) throw new Error(`没有工程 ${b.id}`); P[b.id].status = 'cancelled'; saveProjects(state); return { cancelled: b.id }; },
     'GET /light': async () => ({ light: lightAt(bot()), dark: isDark(lightAt(bot())), torches: torchCount(bot()), lastBright: state.lastBright ? { x: state.lastBright.x, y: state.lastBright.y, z: state.lastBright.z } : null }),
     'POST /light_up': async (b = {}) => { const m = await makeTorches(bot(), 4); const r = await lightUp(bot(), { max: Math.min(+b.max || 3, 8), force: !!b.force }); return { ...r, made: m.made || 0, note: m.note }; },
     'POST /make_torches': async (b = {}) => makeTorches(bot(), Math.min(+b.count || 16, 64)),
@@ -3481,6 +3627,24 @@ if (require.main === module && process.argv.includes('--selftest')) {
       try { await go(bot, {}, { player: 'Ann', range: 1.8, maxMs: 1, abort: () => false }); } catch (e) { err = e; }
       check('走不通就如实报走不通（不是 aborted）',
         !!(err && !err.aborted && /走不到/.test(err.message)), true);
+    }
+
+    console.log('\n[9] 工程：蓝图校验、对照差异（假世界）');
+    {
+      const world = new Map([['0,0,0', 'stone'], ['1,0,0', 'oak_planks'], ['0,1,0', 'dirt']]);
+      const mkB = (name, pos) => ({ name, position: pos, boundingBox: name === 'air' ? 'empty' : 'block', diggable: true });
+      const fbot = { registry: { blocksByName: { stone: {}, oak_planks: {}, dirt: {}, air: {} } }, blockAt: (p) => mkB(world.get(`${p.x},${p.y},${p.z}`) || 'air', p) };
+      const st = { __projects: {} };
+      let err = null; try { projectSave(fbot, st, { name: 'x', origin: { x: 0, y: 0, z: 0 }, legend: { Q: 'nope:block' }, layers: [{ dy: 0, rows: ['Q'] }] }); } catch (e) { err = e.message; }
+      check('图例里不存在的方块会被拒', /不存在/.test(err || ''), true);
+      const saved = projectSave(fbot, st, { id: 't1', name: '小墙', origin: { x: 0, y: 0, z: 0 }, legend: { P: 'minecraft:oak_planks', '.': 'air' }, layers: [{ dy: 0, rows: ['PPP'] }, { dy: 1, rows: ['.-P'] }] });
+      check('存下来、材料清单对', JSON.stringify(saved.materials), JSON.stringify({ oak_planks: 4 }));
+      const d = projectDiff(fbot, st.__projects.t1);
+      // (0,0,0) stone→要先挖再放；(1,0,0) 已对；(2,0,0) 空→放；(0,1,0) dirt 要挖成空；(1,1,0) '-' 不管；(2,1,0) 空→放
+      check('要挖 2 格（石头要换、泥土要清）', d.dig.length, 2);
+      check('其中石头那格挖完还要放', d.dig.filter(c => c.thenPlace).length, 1);
+      check('要放 2 格', d.place.length, 2);
+      check('已经对 1 格，完成 20%', `${d.ok}/${d.pct}`, '1/20');
     }
 
     console.log(`\n  ${pass}/${total} 通过`);
