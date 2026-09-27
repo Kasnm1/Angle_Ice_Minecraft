@@ -3982,7 +3982,7 @@ const handlers = {
   // ①③④ 是纯几何，住在 place.js 里并已离线穷举（node place.js --selftest）；
   // ② 需要射线检测，只能在这里用 lookAt 的结果兜底。
   // 满足之后还要**等世界真的更新**才算成功（客户端预测会造假）。
-  'POST /place': async ({ itemName, x, y, z, confirmMs }) => {
+  'POST /place': async ({ itemName, x, y, z, confirmMs, mount }) => {
     if (x === undefined || y === undefined || z === undefined) {
       throw new Error('x, y and z required');
     }
@@ -4042,7 +4042,13 @@ const handlers = {
     //      也可能服务端在这一瞬间拒绝。第一个失败不该整体失败。
     let lastErr = null;
     let attempted = 0;
-    for (const p of verdict.plans) {
+    // mount：挂墙 / 放地 / 吊顶。火把、灯贴哪一面决定它是壁挂还是插地上（她想挂墙，结果插在了地上）
+    const plans = [...verdict.plans];
+    if (mount === 'wall' || mount === 'floor' || mount === 'ceiling') {
+      const want = (pl) => (mount === 'floor' ? pl.label === 'below' : mount === 'ceiling' ? pl.label === 'above' : pl.label !== 'below' && pl.label !== 'above');
+      plans.sort((a, b) => want(b) - want(a));
+    }
+    for (const p of plans) {
       const ref = bot.blockAt(new Vec3(p.refPos.x, p.refPos.y, p.refPos.z));
       if (!ref) { lastErr = new Error(`reference block vanished at ${p.refPos.x},${p.refPos.y},${p.refPos.z}`); continue; }
 

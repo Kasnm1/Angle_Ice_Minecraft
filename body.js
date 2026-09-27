@@ -394,7 +394,7 @@ const AESTHETIC_SYS = `你是 Angle_ICE 在 Minecraft 里摆东西时自己的�
 - 室外：沿路边、围栏边、屋角，间隔均匀；别在别人的建筑上乱放
 - 和周围材质、风格搭（木屋配木质家具、暖色灯）
 坐标必须是图上 '.'（空气）的格子（'@' 是你自己站的格子，不能选），旁边或下面有能附着的实心块；放地上的东西下面必须是实心块。
-只输出 JSON：{"view":"一句话说这片是什么样、缺什么","candidates":[{"x":0,"y":0,"z":0,"why":"一句话"}],"best":0}，candidates 2–3 个，best 是最好的那个的下标。`;
+只输出 JSON：{"view":"一句话说这片是什么样、缺什么","candidates":[{"x":0,"y":0,"z":0,"mount":"wall|floor|ceiling","why":"一句话"}],"best":0}（mount：挂墙/放地上/吊顶，火把灯笼要写），candidates 2–3 个，best 是最好的那个的下标。`;
 
 function parseJsonLoose (text) {
   const t = String(text || '');
@@ -433,7 +433,12 @@ async function placeNicely ({ itemName, purpose = '', x, y, z, r = 7 }) {
     const c = plan.candidates[i];
     try {
       await bridge.post('/go', { x: c.x, y: c.y, z: c.z, range: 3 }, 60000).catch(() => null);
-      const r2 = await bridge.post('/place', { itemName, x: c.x, y: c.y, z: c.z }, 20000);
+      let r2;
+      try { r2 = await bridge.post('/place', { itemName, x: c.x, y: c.y, z: c.z, mount: c.mount }, 20000); } catch (e) {
+        if (!/holding|Not carrying/i.test(e.message)) throw e;
+        await new Promise(res => setTimeout(res, 800));      // 刚做出来/刚换手还没同步：同一位置再试一次
+        r2 = await bridge.post('/place', { itemName, x: c.x, y: c.y, z: c.z, mount: c.mount }, 20000);
+      }
       return { placed: itemName, at: { x: c.x, y: c.y, z: c.z }, why: c.why, view: plan.view, alternatives: plan.candidates.filter((_, j) => j !== i).map(a => `(${a.x},${a.y},${a.z}) ${a.why}`), tried, result: summarize(r2) };
     } catch (e) { tried.push(`(${c.x},${c.y},${c.z})：${e.message.slice(0, 80)}`); }
   }
