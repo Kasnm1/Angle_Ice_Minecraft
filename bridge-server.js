@@ -4546,7 +4546,7 @@ const handlers = {
     const before = origin ? { x: origin.x, y: origin.y, z: origin.z } : null;
     // 记下**放行前**的 canDig —— 恢复时要用原值，不能硬写 false
     //（万一将来全局政策改成 true，这里硬写 false 就把它悄悄改窄了）。
-    const canDigBefore = mv.canDig;
+    const canDigBefore = !(mv.exclusionAreasBreak || []).some(f => f.__leavesOnly) && !!mv.canDig;   // 只拆树叶时 canDig 也是 true，要看有没有 leavesOnly 才知道原来是不是"不拆"
 
     let escaped = false;
     let why = null;
@@ -4585,7 +4585,7 @@ const handlers = {
       moved: moved === null ? null : Math.round(moved * 1000) / 1000,
       from: before && { x: +before.x.toFixed(2), y: +before.y.toFixed(2), z: +before.z.toFixed(2) },
       to: now && { x: +now.x.toFixed(2), y: +now.y.toFixed(2), z: +now.z.toFixed(2) },
-      canDigRestored: mv.canDig === canDigBefore,
+      canDigRestored: (mv.exclusionAreasBreak || []).some(f => f.__leavesOnly) === !canDigBefore,
       reason: reason || null,
       why: escaped ? undefined : (why || '打开了 canDig 也走不动 —— 可能真被封死了'),
       hint: escaped

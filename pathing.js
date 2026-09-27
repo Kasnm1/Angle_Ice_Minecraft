@@ -1075,7 +1075,12 @@ function applyPolicy (mv, blocksByName, opts = {}) {
   mv.canDig = true;
   mv.exclusionAreasBreak = (mv.exclusionAreasBreak || []).filter(f => !f.__leavesOnly);
   if (!allowDig) {
-    const leavesOnly = (block) => (/leaves|vine|cobweb/.test(block.name || '') ? 0 : 100);
+    // 脚下的叶子不拆：站在树冠/悬崖边的树上，拆了脚下就掉下去（2026-09-27 主人："寻路掉悬崖了"）
+    const leavesOnly = (block) => {
+      if (!/leaves|vine|cobweb/.test(block.name || '')) return 100;
+      const feetY = mv.bot?.entity?.position?.y;
+      return feetY != null && block.position && block.position.y < Math.floor(feetY) ? 100 : 0;
+    };
     leavesOnly.__leavesOnly = true;
     mv.exclusionAreasBreak.push(leavesOnly);
   }
@@ -1087,8 +1092,10 @@ function applyPolicy (mv, blocksByName, opts = {}) {
   mv.allow1by1towers = false;
   mv.scafoldingBlocks = [];
 
-  // `allowParkour` 保持原样（默认 true）—— 它不破坏任何东西，但能让她跨过小沟跟上玩家。
-  // 代价是有摔落风险；想绝对保守可以显式关掉，但那属于另一个取舍，不在这里动。
+  // 跑酷跳关掉、一次最多往下跳 3 格（3 格以内不掉血）：2026-09-27 她回家路上在悬崖边连摔两次、血剩 6。
+  // 以前 allowParkour 保持默认 true（能跨小沟跟上玩家），maxDropDown 默认 4（4 格就扣血）—— 安全优先
+  mv.allowParkour = false;
+  mv.maxDropDown = 3;
 
   // ② 硬的一层：建筑材质永不破坏。
   // blocksCantBreak 是 pathfinder 自己的默认集合（含箱子与不可破坏方块），只增不减。
@@ -1760,6 +1767,11 @@ if (require.main === module && process.argv.includes('--selftest')) {
   check('默认 allowDig 关', summary.allowDig, false);
   const brk = (name) => fakeMv.exclusionAreasBreak.reduce((a, f) => a + f({ name }), 0);
   check('树叶能拆（代价 0）', brk('oak_leaves'), 0);
+  fakeMv.bot = { entity: { position: { y: 70.0 } } };
+  const brkAt = (name, y) => fakeMv.exclusionAreasBreak.reduce((a, f) => a + f({ name, position: { y } }), 0);
+  check('脚下的树叶不拆', brkAt('oak_leaves', 69) >= 100, true);
+  check('身体高度的树叶能拆', brkAt('oak_leaves', 70), 0);
+  check('不跑酷、最多往下跳 3 格', fakeMv.allowParkour === false && fakeMv.maxDropDown === 3, true);
   check('石头、原木不能拆（≥100）', brk('stone') >= 100 && brk('oak_log') >= 100, true);
   applyPolicy(fakeMv, fakeReg.blocksByName);
   check('重复 apply 不叠加', fakeMv.exclusionAreasBreak.filter(f => f.__leavesOnly).length, 1);
