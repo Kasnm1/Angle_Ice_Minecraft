@@ -63,15 +63,32 @@ const CFG = {
   gaze: {
     enabled: process.env.MC_INSTINCT_GAZE !== 'false',
     radius: 6,
-    minGapMs: 3000,
-    maxGapMs: 6000,
+    // 主人 2026-09-29 二次反馈："不要總突然看玩家" —— 2026-09-28 那次"只在互动窗口里看"
+    // 没解决问题，因为窗口**几乎一直开着**（她说话频繁 → noteSelfSpoke 每句都开 15 秒），
+    // 而窗口里 `gazeTimer` 每 3–6 秒就转一次头；再加上 `lookAt(..., true)` 是**瞬间**转过去的，
+    // 看着就是"突然"。现在按"看一眼就够"重做（判据在 social.js 的 `pickGaze`）：
+    //   · 一次互动只转**一次**头（`lookPerWindow`）；窗口只剩 `talkMs`/`giftMs` 是为了
+    //     别的判据（比如"她还记着这个人在跟她互动"），不再代表"这 20 秒里可以反复看他"。
+    //   · 她**自己开口**不再看人（`selfTalkMs: 0`）—— 主人原话"不必每句都转头看人"。
+    //     真人说话也不盯着旁边的人；只在"他在跟她说话 / 有礼物往来"时才看。
+    //   · 转头改成**平滑**的（不传 force，见 core.js 的 lookAtPlayer）。
+    //   · 手上在干活 / 走路 / 挖东西时**不看**（`idleEyes`，阈值没动）。
+    minGapMs: 3000,     // 两次"看人"之间至少隔这么久（防连点；现在一次互动只看一眼，这个值是下限保护）
+    maxGapMs: 6000,     // 上界的随机量：`minGapMs + rand()*(max-min)`，让节拍不像机器
     chatRadius: 16,
-    // 主人 2026-09-28："不要总突然看着玩家，只有说话或者互动的时候需要。"
-    // 只在"互动窗口"里看人：刚跟她说话 / 刚有礼物往来 / 她自己刚开口。
-    // 窗口外**不主动转头**（6 格内有近处玩家也不看）。
-    talkMs: 20000,      // 这个玩家刚跟她说话（聊天）→ 之后 20 秒内可以看他
-    giftMs: 15000,      // 他刚扔东西给她 / 她刚捡到他给的 → 15 秒
-    selfTalkMs: 15000,  // 她自己开口说话 → 对 16 格内最近的玩家 15 秒
+    talkMs: 20000,      // 这个玩家刚跟她说话（聊天）→ 之后 20 秒内**可以看他一次**
+    giftMs: 15000,      // 他刚扔东西给她 / 她刚捡到他给的 → 15 秒内**可以看他一次**
+    // 她自己开口说话 → 对 16 格内最近的玩家开窗。**0 = 不开窗**（2026-09-29 主人：
+    // "她自己开口也不必每句都转头看人"）。留着这个开关（而不是删掉字段）是为了
+    // 需要时能一键回到旧行为；写成 >0 的值就会恢复"自己说话也看人"。
+    selfTalkMs: 0,
+    // 每个窗口只允许看几眼。1 = 一次互动只看**一眼**（主人："看他一眼就够"）。
+    // 他再说话会**重新开窗**（`engage` 覆盖 engagedUntil 并清掉已看计数），所以
+    // "他一直说话"仍然每句看他一眼；但"他只说过一次"不会在 20 秒里被反复看。
+    lookPerWindow: 1,
+    // 平滑转头用几次 tick 转过去（值越大越慢、越像"慢慢转过去"）。
+    // 实现见 core.js 的 lookAtPlayer：一次转一点，不是瞬间到位。
+    turnSteps: 6,
   },
   toolWarn: { ratio: 0.1, enchantedRatio: 0.2, everyMs: 10000 },
   combat: {
@@ -284,11 +301,44 @@ const STRUCTURE_SIGNS = [
   { label: '灾变·黑曜石堡垒（有 boss）', re: /^cataclysm:(obsidian_bricks|obsidian_brick_slab|obsidian_brick_stairs)$/, min: 5, danger: true },
 ];
 
+/**
+ * 打架时**允许**打断战斗的命令（会动身体的那几类）。
+ *
+ * 2026-09-29 问题 2：这些命令以前一律放行，于是 mind 自己顺手发一条 `/go`（goto / come_to）
+ * 就把正在打的架叫停了 —— 2026-09-28 13:44 打 `species:cliff_hanger` 那次，
+ * `血 24 → 0，被叫停`，她被打死。
+ *
+ * 现在要区分两种调用：
+ *   · **玩家在聊天里明确喊她跑 / 叫她过来**（mind 转达）→ 照旧能打断；
+ *   · **mind 自己顺手走路** → 打架时拒绝（返回"在打架，打完再去"）。
+ *
+ * 区分办法：调用方给 args 加 `urgent: 'player'` 显式标记（IMPLICIT 里的常量）。
+ * **默认不放行** —— 没带标记就是"mind 自己顺手走路"，一律拒。
+ * 标记从哪来：`src/mind/body.js` 的 goto / come_to / follow / wear 调用参数
+ * （LLM 在玩家明确要求时才会带上）。
+ */
 const COMBAT_YIELD = new Set(['POST /stop', 'POST /flee', 'POST /follow', 'POST /go', 'POST /move', 'POST /self_rescue']);
+
+/**
+ * `urgent` 的合法取值。**只有** `'player'` 一个 —— 表示"这是玩家明确要求、不是 mind 顺手"。
+ * 写成常量而不是到处散字符串，是为了让"谁能放行"只有一处定义（AGENTS.md §5-4）。
+ */
+const URGENT_PLAYER = 'player';
+
+/**
+ * 这条命令是不是"玩家明确要求"的（可以打断战斗）。
+ * 判据只此一处：`yieldBody` 用它决定打架时放不放行。
+ *
+ * 注意 `args.urgent` 可能是**别的值**（历史上有别的地方把 urgent 当布尔用）——
+ * 严格要求 === 'player'，其它一律当"不是玩家要求"。
+ */
+function isPlayerUrgent (args) {
+  return !!args && args.urgent === URGENT_PLAYER;
+}
 
 const PASSIVE_POSTS = new Set([
   'POST /chat', 'POST /instinct', 'POST /knowledge/search', 'POST /registry/import-palette', 'POST /reconnect',
   'POST /look', 'POST /memory', 'POST /project/save', 'POST /doors/forget-left-open',
 ]);
 
-module.exports = { ARMOR_RANK, CFG, COMBAT_YIELD, HURT_BELOW, HURT_FEET, PASSIVE_POSTS, STRUCTURE_SIGNS, TIER, TIER_NAME, bind, fillCfg };
+module.exports = { ARMOR_RANK, CFG, COMBAT_YIELD, HURT_BELOW, HURT_FEET, PASSIVE_POSTS, STRUCTURE_SIGNS, TIER, TIER_NAME, URGENT_PLAYER, bind, fillCfg, isPlayerUrgent };

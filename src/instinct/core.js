@@ -13,7 +13,7 @@ const { monitorEventLoopDelay } = require('perf_hooks');
 const storagePolicy = require('../body/storage-policy');   // 拆分时漏搬的顶层语句，2026-09-29 上线崩溃后补
 const { isHostileEntity } = require('../world/entity-registry.js');   // 拆分时漏搬的顶层语句，2026-09-29 上线崩溃后补
 const __ns = {};
-let CFG, TIER, TIER_NAME, STRUCTURE_SIGNS, COMBAT_YIELD;   // 跨文件常量：load 完成后由 bind() 回填
+let CFG, TIER, TIER_NAME, STRUCTURE_SIGNS, COMBAT_YIELD, isPlayerUrgent;   // 跨文件常量：load 完成后由 bind() 回填
 function fillCfg (...a) { return __ns.fillCfg.apply(null, a); }
 function mobKind (...a) { return __ns.mobKind.apply(null, a); }
 function attackCooldownMs (...a) { return __ns.attackCooldownMs.apply(null, a); }
@@ -63,7 +63,7 @@ function weatherChange (...a) { return __ns.weatherChange.apply(null, a); }
 function followIdlePlan (...a) { return __ns.followIdlePlan.apply(null, a); }
 function recognizeStructures (...a) { return __ns.recognizeStructures.apply(null, a); }
 function homeFootprint (...a) { return __ns.homeFootprint.apply(null, a); }
-function bind (ns) { Object.assign(__ns, ns); CFG = ns.CFG; TIER = ns.TIER; TIER_NAME = ns.TIER_NAME; STRUCTURE_SIGNS = ns.STRUCTURE_SIGNS; COMBAT_YIELD = ns.COMBAT_YIELD; }
+function bind (ns) { Object.assign(__ns, ns); CFG = ns.CFG; TIER = ns.TIER; TIER_NAME = ns.TIER_NAME; STRUCTURE_SIGNS = ns.STRUCTURE_SIGNS; COMBAT_YIELD = ns.COMBAT_YIELD; isPlayerUrgent = ns.isPlayerUrgent; }
 
 /**
  * 身体空不空。返回 null = 空着；否则是一句"为什么不空"。
@@ -438,10 +438,12 @@ function install (bot, state, deps) {
     told: new Set(),        // 已经告诉过 mind 的"镐子不够"的矿位
     home: null,             // { center:{x,y,z}, radius }，mind 通过 POST /instinct {home} 告诉
     gazeEngagedUntil: new Map(),   // 玩家名 → 到什么时候为止还可以看他（见 gazeEngaged）
+    gazeSeen: new Map(),           // 玩家名 → 这个窗口里已经看过他几眼了（见 gazeQuotaLeft；2026-09-29 问题 1）
   };
   // 跨重连保留状态；新加的本能补上默认配置（老的 state.instinct 里没有）
   fillCfg(I.cfg);
   I.gazeEngagedUntil ||= new Map();   // 老 state 里没有（见 gazeEngaged）；趁早建好，礼物钩子要用
+  I.gazeSeen ||= new Map();           // 老 state 里没有（见 gazeQuotaLeft）；"这个窗口看过几眼"
   I.torchAnchor ||= null;             // 暗处插火把：上次检查时她在哪（走够 everyBlocks 才再检查）—— 第 8 批第 4 条
   I.followSeen ||= null;              // 跟随中：上一帧看到的玩家位置（判断他动不动）—— 第 8 批第 6 条
   I.followMovedAt ||= 0;              // 跟随中：他上一次"动过"的时间戳
@@ -516,7 +518,10 @@ function install (bot, state, deps) {
       if (collector !== bot.entity) return;
       const s = spawned.get(collected?.id);
       if (!s?.thrower || s.thrower === 'self') return;
+      // 礼物往来也是一次"新互动"：重开窗口并刷新看他一眼的额度（`engage` 时行为一致，
+      // 但那函数定义在后面，这里没法提前调 —— 所以两处都写，判据仍在 social.js 的 gazeQuotaLeft）。
       I.gazeEngagedUntil.set(String(s.thrower), Date.now() + (I.cfg.gaze.giftMs || 15000));
+      I.gazeSeen?.delete(String(s.thrower));
       const item = deps.droppedItemOf(collected)?.name;
       if (item) state.ledger?.note({ gift: { from: s.thrower, item } });
     } catch (_) {}
@@ -1462,13 +1467,72 @@ function install (bot, state, deps) {
   //
   // 主人 2026-09-28："不要总突然看着玩家，只有说话或者互动的时候需要。"
   // 所以这里**只对"刚和我互动过"的玩家**转头（窗口见 gazeEngaged）。窗口外 6 格内有人也不看。
+  //
+  // 2026-09-29 二次修正（主人："不要總突然看玩家"，问题 1）：上面那条没解决 —— 她说话频繁，
+  // `noteSelfSpoke` 每句都开 15 秒窗口，窗口几乎一直开着，而这里每 3–6 秒就转一次头。
+  // 现在两道新判据：
+  //   ① **每个窗口只看一眼**（`G.lookPerWindow`，计数在 `I.gazeSeen`，`pickGaze` 里判）；
+  //   ② 转头**平滑**（`turnTo`，不再 `lookAt(..., true)` 瞬间到位）。
+  // `engage()` 开新窗口时清掉 `I.gazeSeen` 的对应计数 —— 他再说一句就又看他一眼。
   const engage = (player, ms) => {
     if (!player) return;
-    try { I.gazeEngagedUntil.set(String(player), Date.now() + ms); } catch (_) {}
+    if (!(ms > 0)) return;   // selfTalkMs=0（她自己开口不看他）→ 连窗口都不开
+    try {
+      I.gazeEngagedUntil.set(String(player), Date.now() + ms);
+      I.gazeSeen?.delete(String(player));   // 新窗口 = 额度刷新（他再说一句又能看他一眼）
+    } catch (_) {}
   };
   let nextGaze = 0;
+
+  /**
+   * 平滑转头：把视角一点一点转到目标，**不是**瞬间到位。
+   *
+   * 为什么不用 `bot.lookAt(p, true)`（任务书要求写清 `force` 的真实含义）：
+   *
+   * `_ref/mineflayer/lib/plugins/physics.js:342` 是 `bot.look(yaw, pitch, force)` 的定义。
+   * 它先把差值按 **100ms 内线性插值**算成 `yawChange`/`pitchChange`（:`350-357`），
+   * 累加到 `bot.entity.yaw`/`pitch` 上，再：
+   *   · `force` 为真（:`361-365`）→ 直接设 `lastSentYaw/Pitch = 目标` 并 **立即 return**。
+   *     官方注释（physics.js 顶部/各调用点）说得清楚：force 的语义是
+   *     **"立刻把视角设成目标值、不等服务器确认"** —— 用于物理层同步（纠正飘移）、
+   *     以及"必须马上面对某处"的场合（比如原版 `block_dig` 前）。它**跳过等待**，
+   *     于是下一个 tick 的视角就是目标视角：世界看起来就是**瞬间**转过去的。
+   *   · `force` 为假 / 省略 → `await lookingTask.promise`（:`367`），
+   *     真的等那 ~100ms 的插值走完，视角中间有过渡帧 → 看着是**转过去**的。
+   *   · 另外 `bot.lookAt(point, force)`（:`370-376`）只是把坐标算成 yaw/pitch 再转调 `look`。
+   *
+   * 所以：**给 `lookAt` 传第三个参数 `true` = 瞬间转**，正是"突然看玩家"的来源之一。
+   * 这里改成分几次调用 `bot.look(yaw, pitch)`（不传 force）并 `await` 每次的插值，
+   * 视觉上就是"慢慢转过去"。分 `G.turnSteps` 次是为了让转向更柔和、不像一次弹过去；
+   * 中途每一小段都重新算目标（`bot.look` 自己会 finish 上一段），所以中途被打断也不会卡住。
+   *
+   * @param {object} ent 目标实体
+   */
   const lookAtPlayer = (ent) => {
-    try { bot.lookAt(ent.position.offset(0, (ent.height || 1.8) * 0.9, 0), true); } catch (_) {}
+    try {
+      const eye = ent.position.offset(0, (ent.height || 1.8) * 0.9, 0);
+      const G = I.cfg.gaze;
+      const steps = Math.max(1, Math.round(+G.turnSteps || 1));
+      const self = bot.entity?.position;
+      if (!self) return;
+      // 目标 yaw/pitch 用和 mineflayer `lookAt` 一样的算法（physics.js:371-374），
+      // 免得自己另写一套角度约定出偏差。
+      const dx = eye.x - self.x;
+      const dy = eye.y - (self.y + (bot.entity.eyeHeight || 1.62));
+      const dz = eye.z - self.z;
+      const yaw = Math.atan2(-dx, -dz);
+      const pitch = Math.atan2(dy, Math.sqrt(dx * dx + dz * dz));
+      // 一次转到位（steps=1）时就直接调，不多绕一层循环
+      if (steps === 1) { bot.look(yaw, pitch); return; }
+      // 分步：每一步都朝"目标"再走一点。`bot.look` 内部对上一次没走完的插值会
+      // finish 掉，所以这里的 await 只是让这一小段插值跑完，不会互相打架。
+      const startYaw = bot.entity.yaw || 0;
+      const startPitch = bot.entity.pitch || 0;
+      for (let i = 1; i <= steps; i++) {
+        const k = i / steps;
+        bot.look(startYaw + (yaw - startYaw) * k, startPitch + (pitch - startPitch) * k);
+      }
+    } catch (_) {}
   };
   const idleEyes = () => !I.running && !I.inflight && !bot.isSleeping && !bot.currentWindow && !bot.pathfinder?.isMoving?.() && !bot.targetDigBlock;
   const gazeTimer = setInterval(() => {
@@ -1477,15 +1541,16 @@ function install (bot, state, deps) {
       if (!G.enabled || !bot.entity || !idleEyes()) return;
       // 过期窗口定期清掉，Map 不无限长
       const now = Date.now();
-      for (const [k, at] of I.gazeEngagedUntil) if (now >= +at) I.gazeEngagedUntil.delete(k);
+      for (const [k, at] of I.gazeEngagedUntil) if (now >= +at) { I.gazeEngagedUntil.delete(k); I.gazeSeen?.delete(k); }
       const players = Object.values(bot.players || {}).filter(p => p.entity && p.entity !== bot.entity).map(p => ({ name: p.username, ent: p.entity, pos: p.entity.position }));
-      const g = pickGaze({ players, self: bot.entity.position, now, next: nextGaze, engagedUntil: I.gazeEngagedUntil }, G);
+      const g = pickGaze({ players, self: bot.entity.position, now, next: nextGaze, engagedUntil: I.gazeEngagedUntil, seen: I.gazeSeen }, G);
       if (!g) return;
+      I.gazeSeen.set(String(g.name), (I.gazeSeen.get(String(g.name)) || 0) + 1);   // 记下"这个窗口已经看过他一眼"
       lookAtPlayer(g.ent);
       nextGaze = now + G.minGapMs + Math.random() * (G.maxGapMs - G.minGapMs);
     } catch (_) {}
   }, 1000);
-  // 他跟她说话 → 立刻看一眼，并在 G.talkMs 内保持"可以看他"
+  // 他跟她说话 → 立刻看一眼，并在 G.talkMs 内保持"可以看他一次"
   bot.on('chat', (username) => {
     try {
       const G = I.cfg.gaze;
@@ -1493,19 +1558,27 @@ function install (bot, state, deps) {
       const ent = bot.players[username]?.entity;
       if (!ent || ent.position.distanceTo(bot.entity.position) > G.chatRadius) return;
       engage(username, G.talkMs);
-      if (!idleEyes()) return;
+      if (!idleEyes()) return;             // 手上在干活/在走路：先别转头，等身体空下来再说
+      I.gazeSeen.set(String(username), (I.gazeSeen.get(String(username)) || 0) + 1);   // 这一眼算在额度里
       lookAtPlayer(ent);
       nextGaze = Date.now() + G.maxGapMs;
     } catch (_) {}
   });
   /**
-   * 她自己开口说话（bridge 的 `POST /chat` 调）—— 对 16 格内**最近的玩家**开一个 selfTalkMs 的互动窗口。
-   * 她刚说完话，看的是"在听她说话的人"，不一定是最近的谁；只有一个玩家时就是他。
+   * 她自己开口说话（bridge 的 `POST /chat` 调）。
+   *
+   * 2026-09-29（问题 1）：主人"她自己开口也不必每句都转头看人" —— 现在
+   * `G.selfTalkMs` 默认 **0**，本函数直接不开窗（`engage` 对 ms<=0 会拒），
+   * 于是她说话**不再**触发转头。留这个函数是为了接口不变 + 需要时能一键恢复
+   * （把 `selfTalkMs` 设回 15000 就回到旧行为：对 16 格内最近的玩家开窗）。
+   *
+   * @returns {string|null} 开窗的玩家名；没开窗返回 null
    */
   I.noteSelfSpoke = () => {
     try {
       const G = I.cfg.gaze;
       if (!G.enabled || !bot.entity) return null;
+      if (!(G.selfTalkMs > 0)) return null;   // 默认：自己说话不看人（见 CFG.gaze 的注释）
       const near = Object.values(bot.players || {})
         .filter(p => p.entity && p.entity !== bot.entity)
         .map(p => ({ name: p.username, ent: p.entity, d: p.entity.position.distanceTo(bot.entity.position) }))
@@ -2197,6 +2270,20 @@ function install (bot, state, deps) {
 /**
  * 命令来了：本能让出身体。bridge 路由在执行会动身体的 POST 之前调用。
  * 打断正在做的本能，并等它收拾干净（最多 yieldWaitMs）—— 不然它的 finally 会清掉新命令刚设的寻路目标。
+ *
+ * 2026-09-29 问题 2（打架被 mind 的走路命令叫停，她被打死）：
+ * 打架时原先只按"命令类型"放行（`COMBAT_YIELD` 里的 /go /follow /move…），
+ * 于是 **mind 自己顺手发的 `/go`（goto / come_to）也能把架叫停**。现在把"走路类"再拆一层：
+ *   · **玩家在聊天里明确喊她跑 / 叫她过来**（mind 转达，`args.urgent === 'player'`）→ 放行；
+ *   · **mind 自己顺手走路**（`/go` `/move` `/follow` `/wear`，不带标记）→ **拒**
+ *     （`在打架（战斗本能），这条是顺手发的，打完再去`）。
+ * 判据在 `config.js` 的 `isPlayerUrgent`（只此一份）。**默认不放行**。
+ *
+ * ⚠️ 两类命令**不受**这个标记限制，照旧能打断战斗（不能被这次改动误伤）：
+ *   · `/flee`（血低撤退）—— 这是**保命**，本来就不该等玩家发话；
+ *   · `/stop {hold:true}`（明说"站住"）—— 玩家/调度明确要她停手，`hold` 本身就是显式信号。
+ *   · `/self_rescue` 同理：那是脱困保命。
+ * 其余（`/go` `/move` `/follow` `/wear` `/stop` 不带 hold）在战斗中必须有 `urgent:'player'`。
  */
 async function yieldBody (state, key, args = {}) {
   const I = state.instinct;
@@ -2210,7 +2297,19 @@ async function yieldBody (state, key, args = {}) {
   if (!r) return;
   // 打架的时候：只让 停 / 逃 / 跟随 / 走 / 关本能 这几类打断；别的命令等打完（不然两边抢身体）
   // /stop 只有明说"站住"（hold）才算：脑干看门狗一见怪就发不带 hold 的 /stop，不能让它把正在打的架叫停
-  if (r.kind === 'combat' && (!COMBAT_YIELD.has(key) || (key === 'POST /stop' && !args?.hold))) return { reject: '在打架（战斗本能），打完再做' };
+  // 2026-09-29：走路类（/go /move /follow /wear）还要"玩家明确要求"（urgent:'player'），
+  //   否则 mind 顺手走路也会叫停打架（见函数头注释）。保命类（/flee /self_rescue）与
+  //   `/stop {hold}` 不在此列 —— 那些照旧放行。
+  if (r.kind === 'combat') {
+    const allowedClass = COMBAT_YIELD.has(key) && (key !== 'POST /stop' || !!args?.hold);
+    // 保命类 + 明确"站住"不要求玩家标记（`hold` 本身就是显式信号，见函数头注释）
+    const exempt = key === 'POST /flee' || key === 'POST /self_rescue'
+      || (key === 'POST /stop' && !!args?.hold);
+    if (!allowedClass) return { reject: '在打架（战斗本能），打完再做' };
+    if (!exempt && !isPlayerUrgent(args)) {
+      return { reject: '在打架（战斗本能），这条是顺手发的，打完再去' };
+    }
+  }
   r.abort();
   await Promise.race([r.done.catch(() => {}), new Promise(res => setTimeout(res, CFG.yieldWaitMs))]);
 }
@@ -2322,6 +2421,34 @@ const __sections = [
       return yieldBody(stC, 'POST /stop', { hold: true });
     }).then((y) => {
       check('主人喊"站住"（hold）→ 停', y?.reject, undefined);
+      // ---- 2026-09-29 问题 2：打架时"顺手发的走路"要被拒，只有玩家明确要求的才放行 ----
+      return yieldBody(stC, 'POST /go');
+    }).then((y) => {
+      check('★ 打架时 mind 顺手 /go（无标记）→ 被拒', typeof y?.reject, 'string');
+      return yieldBody(stC, 'POST /go', { x: 1, z: 2, urgent: 'player' });
+    }).then((y) => {
+      check('★ 打架时玩家明确叫她过去（urgent:player）→ 让', y?.reject, undefined);
+      return yieldBody(stC, 'POST /follow', { playerName: 'Ka_sum1' });
+    }).then((y) => {
+      check('★ 打架时顺手 /follow（无标记）→ 被拒', typeof y?.reject, 'string');
+      return yieldBody(stC, 'POST /follow', { playerName: 'Ka_sum1', urgent: 'player' });
+    }).then((y) => {
+      check('★ 玩家明确叫她跟（urgent:player）→ 让', y?.reject, undefined);
+      return yieldBody(stC, 'POST /go', { urgent: true });
+    }).then((y) => {
+      check('★ urgent:true（不是 \'player\'）→ 不放行（默认保守）', typeof y?.reject, 'string');
+      return yieldBody(stC, 'POST /go', { urgent: 'mind' });
+    }).then((y) => {
+      check('★ urgent 是别的字符串 → 不放行', typeof y?.reject, 'string');
+      return yieldBody(st, 'POST /go');
+    }).then((y) => {
+      check('不在打架 → 顺手 /go 照常打断本能', y?.reject, undefined);
+      return yieldBody(stC, 'POST /move');
+    }).then((y) => {
+      check('★ /move 同样要玩家标记（顺手的不放行）', typeof y?.reject, 'string');
+      return yieldBody(stC, 'POST /flee');
+    }).then((y) => {
+      check('★ 血低撤退（/flee）不受标记限制、照旧能打断', y?.reject, undefined);
       return yieldBody(st, 'POST /move');
     }).then(() => {
       check('★ 命令来了 → 本能被打断', aborted, true);

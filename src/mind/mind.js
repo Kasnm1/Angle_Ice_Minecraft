@@ -1508,6 +1508,10 @@ async function think (why) {
       const saying = [];   // 这一轮的 say：等动作先开始再慢慢打字（见下面 startJob 之后）
       for (const c of calls) {
         const name = c.function?.name; const args = parseArgs(c.function?.arguments);
+        // 打架时"玩家叫她过来 / 跟上"要能打断战斗（instinct 的 isPlayerUrgent 认 urgent:'player'）。
+        // 不靠 LLM 记得填 fromPlayer（2026-09-29 Claude 复核：漏填就是"他喊了她不理"）——
+        // 他这一轮刚开口、而且话里在叫她动，走路类工具自动带上。
+        if (PLAYER_MOVE_TOOLS.has(name) && heJustSpoke && PLAYER_MOVE_RE.test(playerSaid) && args && typeof args === 'object') args.fromPlayer = true;
         const k = kindOf(name);
         if (k === 'info') looked = true;
         let out;
@@ -1758,6 +1762,11 @@ function isBareAffirmative (text) {
 const QUIET_MS = 30 * 1000;
 /** "不说没发生的事"看多久以内的工具结果（跨轮）：实机睡觉失败到她说"睡了"隔了 41 秒、一轮 */
 const RECENT_CLAIM_MS = 3 * 60 * 1000;
+/** 走路类工具：打架时要玩家标记才能打断战斗 */
+const PLAYER_MOVE_TOOLS = new Set(['goto', 'come_to', 'follow']);
+/** 他在叫她动：过来 / 跟上 / 快跑 / 回来 / 别打了 / 走了 */
+const PLAYER_MOVE_RE = /(过来|過來|来这|來這|到我这|到我這|跟[我上着著]|快[来來跑走]|跑|回来|回來|别打|別打|走了|走吧|撤|救我|帮我|幫我)/;
+
 /** 他交代事情之后多久以内，"做完了"算回他（不是播报） */
 const TASK_WINDOW_MS = 10 * 60 * 1000;
 /** 他的话像在交代事：帮我 / 你去 / 把… / 给我 / 去… / 整理 / 做个… */
@@ -2478,6 +2487,8 @@ async function selftest () {
     check('sleep ✗ → 拦，并说明原因', !!why && /现在不是晚上/.test(why), why);
     check('身体刚回报失败也算证据', !!unbackedClaim('我睡了', [], liveFails([{ text: '03:51:27.503    ↳ sleep_in_bed() ✗ 睡不了：black_bed(23,128,9)：现在不是晚上，睡不了' }])) , 'live');
     check('工具没记录 → 不冤枉她（不拦）', unbackedClaim('我睡了呀', []) === null);
+    check('★ 打架时他喊"快过来" → 走路工具自动带玩家标记（不靠 LLM 填 fromPlayer）', PLAYER_MOVE_RE.test('快过来') && PLAYER_MOVE_RE.test('跟我走') && PLAYER_MOVE_RE.test('别打了 回来') && PLAYER_MOVE_TOOLS.has('come_to'));
+    check('闲聊不带标记：「好累」「哈哈」', !PLAYER_MOVE_RE.test('好累') && !PLAYER_MOVE_RE.test('哈哈'));
     { const t = Date.now(); const T = (x) => x;
       check('★ 他 2 分钟前交代过、"箱子理好了" → 放行（回他，不是播报）', taskDoneAllowed('箱子理好了', { now: t, lastTaskAskedAt: t - 120000 }) === true);
       check('同一次交代报过了、再说"好了" → 不放行', taskDoneAllowed('好了', { now: t, lastTaskAskedAt: t - 120000, lastTaskDoneSaidAt: t - 60000 }) === false);

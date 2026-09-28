@@ -951,6 +951,36 @@ function createBot() {
 
     // 审计每一次挖方块。寻路器拆方块走的是 bot.dig，所以包一层就能抓到
     // "不是挖掘任务、却把方块拆了"的情况 —— 这正是玩家房子被拆那次没留痕的原因。
+    //
+    // ⚠️⚠️ 2026-09-29 问题 4：这里同时是 **`TimeoutNaNWarning: NaN is not a number`**
+    // 的修复点（日志 `15:44:58.247 (node) TimeoutNaNWarning`，紧跟一次 `[dig] …` 之后）。
+    //
+    // 根因链（每一环都有源码行号，不是猜的）：
+    //   1. `_ref/mineflayer/lib/plugins/digging.js:27` → `const waitTime = bot.digTime(block)`；
+    //      `:136` → `waitTimeout = setTimeout(finishDigging, waitTime)`。
+    //      `waitTime` 是 NaN 时，Node 的 setTimeout 会把时长钳成 1ms 并打这条警告 →
+    //      挖方块的"完成"被提前 1ms 触发（她挥一下空气就以为挖掉了）。
+    //   2. `bot.digTime`（`digging.js:231-259`）转调 `block.digTime(...)`。
+    //   3. `node_modules/prismarine-block/index.js:306,355-379`：`const blockHardness = this.hardness`
+    //      → `blockBreakingDelta = blockBreakingSpeed / blockHardness / matchingToolMultiplier`
+    //      → 若 `hardness` 是 `undefined`：`x / undefined` = **NaN**；接着两个守卫
+    //      `=== 0.0`（:366）和 `>= 1.0`（:371）对 NaN **都为 false**，直接落到
+    //      `Math.ceil(1.0 / NaN) * 50` = **NaN**（只有 Infinity 那条会被 :28-30 拦下，NaN 不会）。
+    //   4. `hardness` 从哪来：**模组方块没有**。`src/world/palette-registry.js:356-371` 的
+    //      `buildRecord` 给注入方块只填了 id/name/states/形状 —— 文件头 :129-133 明说
+    //      "**刻意不做**：不给注入的方块填 `hardness`/`diggable`"（调色板对这两件事不权威）。
+    //      于是任何模组方块（那天是 `galosphere:allurite_cluster` / `natures_spirit:orange_maple_leaves`）
+    //      的 `hardness` 都是 undefined。原版方块有 minecraft-data 的 hardness，所以只有模组方块会中招。
+    //
+    // 修法：在**真正调用**之前，给"没有 hardness"的方块补一个保守的默认值。
+    // 选一个**具体的数**（而不是 Infinity/0）：Infinity 会被 `digging.js:28-30` 抛
+    // "dig time is Infinity"（不挖了）；0 会被 `prismarine-block:307` 之外当成"瞬间挖掉"。
+    // `1.0`（石头在空手时的量级）= "按普通硬方块挖"，宁慢不快 —— 挖得慢只是多挥几下，
+    // 挖得"瞬间"会让服务器判定不同步（她这边以为挖掉了、世界还在）。
+    // 只在**读不到** hardness 时补，读得到就一个字节都不动（不改变原版行为）。
+    // 判据只在这一处（AGENTS.md §5-4），别的调用点（`/mine`、`hands.digBlock`）都经过 `bot.dig`，
+    // 所以在这里补一次就全盖住了。
+    const DEFAULT_HARDNESS = 1.0;
     const _dig = state.bot.dig.bind(state.bot);
     state.bot.dig = async function (block, ...rest) {
       try {
@@ -963,7 +993,14 @@ function createBot() {
             journal('dig', `⚠️ 非挖掘动作中拆掉了 ${name} @ ${posStr}（当前动作：${state.currentAction || '无'}）`);
           }
         }
-      } catch (_) { /* 审计失败不能影响正常挖掘 */ }
+        // hardness 读不到（模组方块；见函数头 1-4 步）→ 补默认值，避免下游 digTime 算出 NaN
+        // 而让 setTimeout 收到 NaN（TimeoutNaNWarning + 挖矿提前"完成"）。
+        if (block && !Number.isFinite(block.hardness)) {
+          try {
+            Object.defineProperty(block, 'hardness', { value: DEFAULT_HARDNESS, writable: true, configurable: true, enumerable: true });
+          } catch (_) { block.hardness = DEFAULT_HARDNESS; }
+        }
+      } catch (_) { /* 审计/补值失败不能影响正常挖掘 */ }
       return _dig(block, ...rest);
     };
 

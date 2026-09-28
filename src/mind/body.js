@@ -139,9 +139,20 @@ async function personalInventory ({ query = '', refreshMs = 30 } = {}) {
   for (const [id, count] of Object.entries(backpack)) combined[id] = (combined[id] || 0) + count;
   // 要断言“现在没有”，精妙背包必须刚看过；旧快照只能证明“上次看时有/没有”。
   const absenceProven = !!q && !main.error && (!worn || (readable && ageSeconds <= refreshMs));
+  // ---- 身上正穿着什么（2026-09-29 问题 3）--------------------------------------
+  // `GET /equipment` 一直有，但 mind 这边以前只在查背包时用到 eq，**没把"穿着什么"回报给模型**。
+  // 于是模型不知道头上已经有头盔了，又发一次 /wear 同一件 —— 穿上后它不在物品栏里，
+  // 旧代码就报"背包里没有"（13:44:17→13:44:25 实机）。这里把穿戴槽原样带出来，
+  // 名字不可读时照旧只说'读不到'，不说成"没穿"（原则 §5-1）。
+  const wornEq = eq?.equipment && typeof eq.equipment === 'object'
+    ? Object.fromEntries(Object.entries(eq.equipment).filter(([, v]) => v != null))
+    : null;
   return {
     scope: '普通物品栏和穿戴的精妙背包都是我的随身物品',
     query: query || null,
+    // 现在穿在身上的（head/torso/legs/feet/off-hand/hand）。要 /wear 或给穿戴建议前先看这里，
+    // 已经穿着的别重复换（换了也不会更好，还会打断本能刚做的换装）。
+    equipped: wornEq,
     ordinaryInventory: { readable: !main.error, items: ordinary, ...(main.error ? { error: main.error } : {}) },
     sophisticatedBackpack: worn
       ? (readable
@@ -899,7 +910,7 @@ const TOOLS = {
 
   inventory: {
     kind: 'info',
-    desc: '查看自己的全部随身物品：普通物品栏 + 穿戴的精妙背包。查某样东西时把名字写进 query。背包内容快照太旧时这个工具会自己开背包刷新一次，你不用先 open_backpack。只有返回 absenceProven=true 才能说"我没有"；背包 readable=false（内容读不到）时不能说没有或掉了。',
+    desc: '查看自己的全部随身物品：普通物品栏 + 穿戴的精妙背包。查某样东西时把名字写进 query。背包内容快照太旧时这个工具会自己开背包刷新一次，你不用先 open_backpack。只有返回 absenceProven=true 才能说"我没有"；背包 readable=false（内容读不到）时不能说没有或掉了。返回里的 equipped 是**现在穿在身上的**（头/身/腿/脚/副手/手上）—— 要 /wear 或建议换装备前先看它，已经穿着同一件的别再换（/wear 会对已穿的直接回 alreadyWorn=true）。',
     params: { query: { type: 'string', description: '要找的物品名，如 铁锭、粗铁；不填则列出全部随身物品' } }, required: [],
     run: personalInventory,
   },
@@ -982,22 +993,26 @@ const TOOLS = {
   },
   follow: {
     kind: 'action', continuous: true,
-    desc: '一直跟着某个玩家，直到被叫停或有新的事。',
-    params: { player: { type: 'string' } }, required: ['player'],
-    run: async ({ player }) => bridge.post('/follow', { playerName: player }),
+    desc: '一直跟着某个玩家，直到被叫停或有新的事。她正在打架时：只有玩家明确叫她跟（fromPlayer=true）才会中断战斗跟上去，否则打完再跟。',
+    params: { player: { type: 'string' }, fromPlayer: { type: 'boolean' } }, required: ['player'],
+    run: async ({ player, fromPlayer }) => bridge.post('/follow', fromPlayer ? { playerName: player, urgent: 'player' } : { playerName: player }),
   },
   come_to: {
     kind: 'action',
-    desc: '走到某个玩家身边（上下楼、开挡路的门都会自己处理；到了就停，不会一直跟）。',
-    params: { player: { type: 'string' } }, required: ['player'],
-    run: async ({ player }) => bridge.post('/go', { player, range: 2 }, 120000),
+    desc: '走到某个玩家身边（上下楼、开挡路的门都会自己处理；到了就停，不会一直跟）。她正在打架时：只有玩家明确叫她过来（fromPlayer=true）才会中断战斗，否则打完再过来。',
+    params: { player: { type: 'string' }, fromPlayer: { type: 'boolean' } }, required: ['player'],
+    run: async ({ player, fromPlayer }) => bridge.post('/go', fromPlayer ? { player, range: 2, urgent: 'player' } : { player, range: 2 }, 120000),
   },
 
   goto: {
     kind: 'action',
-    desc: '走到某个坐标旁边（目标是箱子、炉子这种方块也行，会走到它旁边）。上下楼、开挡路的门都会自己处理；到不了会告诉你还差多远、试过什么。y 可省略。',
-    params: { x: { type: 'number' }, y: { type: 'number' }, z: { type: 'number' } }, required: ['x', 'z'],
-    run: async ({ x, y, z }) => bridge.post('/go', y == null ? { x, z } : { x, y, z }, 120000),
+    desc: '走到某个坐标旁边（目标是箱子、炉子这种方块也行，会走到它旁边）。上下楼、开挡路的门都会自己处理；到不了会告诉你还差多远、试过什么。y 可省略。她正在打架时默认不改道（打完再去）；只有玩家明确叫她过去（fromPlayer=true）才中断战斗。',
+    params: { x: { type: 'number' }, y: { type: 'number' }, z: { type: 'number' }, fromPlayer: { type: 'boolean' } }, required: ['x', 'z'],
+    run: async ({ x, y, z, fromPlayer }) => {
+      const body = y == null ? { x, z } : { x, y, z };
+      if (fromPlayer) body.urgent = 'player';   // 玩家明确要求 → 打架时也能打断（判据在 instinct/config.js 的 isPlayerUrgent）
+      return bridge.post('/go', body, 120000);
+    },
   },
 
   climb: {
@@ -1101,9 +1116,10 @@ const TOOLS = {
   },
   wear: {
     kind: 'action',
-    desc: '穿戴装备：盔甲、模组装备、饰品（戒指、项链；背包会背到背饰格上）。会自己判断该放哪个槽，放不进就试右键穿上。',
-    params: { itemName: { type: 'string' } }, required: ['itemName'],
-    run: async ({ itemName }) => bridge.post('/wear', { itemName }),
+    desc: '穿戴装备：盔甲、模组装备、饰品（戒指、项链；背包会背到背饰格上）。会自己判断该放哪个槽，放不进就试右键穿上。'
+      + '要穿的东西**已经穿在身上**时会直接返回 alreadyWorn=true（不报"没有"）—— 先 GET /equipment 看她现在穿着什么，别重复换同一件。',
+    params: { itemName: { type: 'string' }, fromPlayer: { type: 'boolean' } }, required: ['itemName'],
+    run: async ({ itemName, fromPlayer }) => bridge.post('/wear', fromPlayer ? { itemName, urgent: 'player' } : { itemName }),
   },
   quest_submit: {
     kind: 'action',

@@ -20,7 +20,13 @@ function bind (ns) { Object.assign(__ns, ns); CFG = ns.CFG; }
  * 窗口来源（都由 install 里的钩子写入 engagedUntil）：
  *   · 他刚跟她说话（chat）→ 20 秒
  *   · 他刚扔东西给她 / 她刚捡到他给的（whoThrew / playerCollect 的 gift）→ 15 秒
- *   · 她自己开口说话（bridge 的 POST /chat）→ 对 16 格内最近的玩家 15 秒
+ *   · 她自己开口说话（bridge 的 POST /chat）→ 对 16 格内最近的玩家（`selfTalkMs`，
+ *     2026-09-29 起默认 **0 = 不开窗**，见 CFG.gaze 的注释）
+ *
+ * ⚠️ **2026-09-29：窗口 ≠ "这 20 秒里可以反复看他"。**
+ * 窗口只表示"刚互动过、现在看他不算突兀"；到底还允不允许转这个头，由
+ * `gazeSeen`（本窗口已看过几次）在 `pickGaze` 里判。原因见任务书问题 1：
+ * 她说话频繁 → 窗口几乎一直开着 → 旧写法每 3–6 秒转一次头，主人看到的就是"总突然看玩家"。
  *
  * @param {{player:string, engagedUntil:Object|Map, now:number}} ctx
  *   engagedUntil：玩家名 → 到什么时候为止（毫秒时间戳）；玩家名按原样也不区分大小写地查一次
@@ -33,12 +39,39 @@ function gazeEngaged ({ player, engagedUntil, now = Date.now() } = {}) {
   return now < +at;   // 严格小于：窗口到点就是到点，不再看他
 }
 
-function pickGaze ({ players = [], self, now = Date.now(), next = 0, engagedUntil = null }, cfg = CFG.gaze) {
+/**
+ * 这个窗口里**已经看过他几眼**了（相对 `lookPerWindow` 还允不允许再看）。
+ *
+ * 单独拎出来是为了让 `pickGaze`（纯函数）不依赖 `I`，也方便自测直接测这条判据。
+ * `seen` 是"每玩家已看次数"的表（install 里存 `I.gazeSeen`），
+ * 开新窗口时（`engage`）会把对应项**清掉** —— 于是"他再说一句"就又看他一眼。
+ *
+ * @returns {boolean} true = 这个窗口的"看人额度"还没用完
+ */
+function gazeQuotaLeft ({ player, seen, lookPerWindow = 1 } = {}) {
+  if (!player) return false;
+  if (!(lookPerWindow > 0)) return false;             // 0 / 负数 / NaN → 不看
+  const used = seen && typeof seen.get === 'function' ? (seen.get(String(player)) || 0)
+    : (seen ? (seen[String(player)] || 0) : 0);
+  return used < lookPerWindow;
+}
+
+/**
+ * 挑一个"现在该看一眼"的玩家。
+ *
+ * 与 2026-09-28 版的差别（任务书问题 1）：多了一道 `gazeQuotaLeft` ——
+ * 窗口内**只许看一眼**（`lookPerWindow`）。他再说话会重新开窗、清掉计数，所以
+ * "他一直在说"仍然每句看他一眼；"他只说过一次"不会在剩下的 20 秒里被反复看。
+ *
+ * @returns {{name, ent, pos}|null}
+ */
+function pickGaze ({ players = [], self, now = Date.now(), next = 0, engagedUntil = null, seen = null }, cfg = CFG.gaze) {
   if (!self || now < next) return null;
   const d = (p) => Math.hypot(p.pos.x - self.x, p.pos.y - self.y, p.pos.z - self.z);
   const near = players
     .filter(p => p?.pos && d(p) <= cfg.radius)
     .filter(p => gazeEngaged({ player: p.name, engagedUntil, now }))
+    .filter(p => gazeQuotaLeft({ player: p.name, seen, lookPerWindow: cfg.lookPerWindow }))
     .sort((a, b) => d(a) - d(b));
   return near[0] || null;
 }
@@ -101,7 +134,7 @@ function followIdlePlan ({ now = Date.now(), idleMs = 8000, lastPos = null, pos 
   return { idleMs: idle, since: movedAt };
 }
 
-module.exports = { bind, followIdlePlan, gazeEngaged, pickCommand, pickGaze, weatherChange };
+module.exports = { bind, followIdlePlan, gazeEngaged, gazeQuotaLeft, pickCommand, pickGaze, weatherChange };
 
 // ------------------------------------------------------------------ 自测
 // 第 3 步重构：这几节原本挤在 instinct.js 的自测段里（同一个 function selftest 外套）。
@@ -143,7 +176,7 @@ const __sections = [
   }],
   ['转头看人（任务书 fix7：只在互动窗口里看，窗口外不看）', async (t) => {
     const { check, instinctSrc, ns } = t;
-    const { gazeEngaged, pickGaze } = ns;
+    const { gazeEngaged, gazeQuotaLeft, pickGaze } = ns;
     // ---- 转头看人（任务书 fix7：只在互动窗口里看，窗口外不看）
     const V = (x, y, z) => ({ x, y, z });
     const near3 = { name: 'Ann', pos: V(3, 64, 0) };
@@ -169,6 +202,31 @@ const __sections = [
     })?.name, 'Bob');
     check('窗口里但太远（>radius）→ 不看', pickGaze({ players: [{ name: 'Ann', pos: V(20, 64, 0) }], self: V(0, 64, 0), engagedUntil: new Map([['Ann', 1e15]]) }), null);
     check('刚看过（没到下次）→ 不看', pickGaze({ players: [near3], self: V(0, 64, 0), now: 0, next: 100, engagedUntil: new Map([['Ann', 1e15]]) }), null);
+    // ---- 2026-09-29 问题 1：一次互动只看**一眼** ----
+    check('★ 这个窗口还没看过他 → 看', pickGaze({
+      players: [near3], self: V(0, 64, 0), engagedUntil: new Map([['Ann', 1e15]]),
+      seen: new Map(), lookPerWindow: undefined,
+    })?.name, 'Ann');
+    check('★ 这个窗口已经看过一次 → 不再看（哪怕窗口还开着）', pickGaze({
+      players: [near3], self: V(0, 64, 0), engagedUntil: new Map([['Ann', 1e15]]),
+      seen: new Map([['Ann', 1]]),
+    }, { radius: 6, lookPerWindow: 1 }), null);
+    check('★ 他再说一句（计数被清掉）→ 又能看一眼', pickGaze({
+      players: [near3], self: V(0, 64, 0), engagedUntil: new Map([['Ann', 1e15]]),
+      seen: new Map(),   // engage() 重开窗口时会清掉这一项
+    }, { radius: 6, lookPerWindow: 1 })?.name, 'Ann');
+    check('额度用完 → 换一个人（另一个没看过的）', pickGaze({
+      players: [{ name: 'Ann', pos: V(2, 64, 0) }, { name: 'Bob', pos: V(5, 64, 0) }],
+      self: V(0, 64, 0), engagedUntil: new Map([['Ann', 1e15], ['Bob', 1e15]]),
+      seen: new Map([['Ann', 1]]),
+    }, { radius: 6, lookPerWindow: 1 })?.name, 'Bob');
+    // gazeQuotaLeft：额度判据本身
+    check('没看过 → 有额度', gazeQuotaLeft({ player: 'Ann', seen: new Map(), lookPerWindow: 1 }), true);
+    check('★ 看过一次、额度 1 → 没额度', gazeQuotaLeft({ player: 'Ann', seen: new Map([['Ann', 1]]), lookPerWindow: 1 }), false);
+    check('★ 额度 0（她自己开口不开窗）→ 永远没额度', gazeQuotaLeft({ player: 'Ann', seen: new Map(), lookPerWindow: 0 }), false);
+    check('读不到玩家名 → 不看', gazeQuotaLeft({ player: null, seen: new Map(), lookPerWindow: 1 }), false);
+    check('没有计数表 → 当成没看过', gazeQuotaLeft({ player: 'Ann', seen: null, lookPerWindow: 1 }), true);
+    check('普通对象也能当计数表', gazeQuotaLeft({ player: 'Ann', seen: { Ann: 1 }, lookPerWindow: 1 }), false);
   }],
   ['跟随的玩家站着不动（第 8 批 第 6 条）', async (t) => {
     const { check, instinctSrc, ns } = t;

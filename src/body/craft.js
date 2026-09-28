@@ -917,10 +917,35 @@ async function use (bot, state, { itemName, target = 'air', x, y, z, entity, han
 }
 
 async function wear (bot, state, { itemName } = {}) {
-  const it = findItem(bot, itemName);
-  if (!it) throw new Error(`背包里没有 ${itemName}`);
   const eq0 = equipment(bot); const inv0 = invCounts(bot);
-  const dest = slotByName(it.name);
+  const it = findItem(bot, itemName);
+  // ---- 已经穿在身上了：这是成功，不是"背包里没有"（2026-09-29 问题 3）----
+  //
+  // 实机证据：13:44:17 本能换上 `makit_better:resilient_nature_helmet`，
+  // 13:44:25 mind `/wear` 同一件报"背包里没有" —— 因为**穿在头上就不在 `bot.inventory.items()` 里**，
+  // `findItem` 只看背包，于是"穿上了"被读成"没有"。这违反项目原则 §5-1（"没有"和"读不到"要分开）。
+  //
+  // 判据：先算出"要穿的到底是哪个 id"（不依赖背包 —— 穿在身上时背包里本来就没有），
+  // 再看它是不是已经在它该在的那个槽位上 → 直接返回成功 + `alreadyWorn: true`。
+  // 这里**就返回**、不再往下走 equip/右键/Curios：重复穿同一件没有意义，还会和刚换上的本能打架
+  // （主人 2026-09-29："本能刚换过的装备，mind 短时间内再换同一个槽位要有理由"）。
+  // 谁负责护甲：**本能负责自动换护甲**（`armor.enabled`，判据在 equip-policy.js），
+  // mind 只在玩家明确要求时才 /wear；这条 alreadyWorn 让 mind 不必重复动手。
+  //
+  // ⚠️ `wantId` 的取法必须和 `findItem`（util.js:27-37）一致：先按原样补全命名空间，
+  //    认不出再交给知识库解析一次；两边都认不出才返回 null（那时连"该穿哪件"都不知道）。
+  const wantId = (() => {
+    const direct = fullId(itemName);
+    if (it && fullId(it.name) === direct) return direct;
+    if (it) return fullId(it.name);              // 背包里按模糊名找到的 → 用它的真名
+    const resolved = K().resolve(itemName, 1)[0];
+    return resolved ? fullId(resolved) : null;
+  })();
+  const dest = wantId ? slotByName(wantId) : null;
+  if (dest && wantId && eq0[dest] === wantId) {
+    return { worn: wantId, slot: dest, via: 'already-worn', alreadyWorn: true };
+  }
+  if (!it) throw new Error(`背包里没有 ${itemName}`);
   const tried = [];
   if (dest) {
     try {
@@ -1490,6 +1515,66 @@ const __sections = [
         check('★ smelt 不再直接抛"16 格内没有能烧它的炉子"就完事',
           /if \(!cands\.length\) throw new Error\(`16 格内没有能烧它的炉子/.test(t.handsSrc()), false);
       }
+  }],
+  ['[0f] wear：已经穿在身上 → 成功 + alreadyWorn（2026-09-29 问题 3）', async (t) => {
+    const { check, handsSrc } = t;
+    const { wear } = t.h;
+    const HELM = 'makit_better:resilient_nature_helmet';
+    const item = (name, count = 1) => ({ name, count, type: 1 });
+    // 假 bot：inventory.items() 只返回**背包里**的东西（穿在身上的不在里面，这正是旧 bug 的根因）；
+    // inventory.slots 按 mineflayer 布局给（5=头 6=胸 7=腿 8=脚 45=副手）。
+    // ⚠️ slots 里放的是**物品对象**（要有 .name），不是字符串 —— equipment() 读的是 `s[i].name`。
+    const mkBot = ({ carried = [], worn = {} } = {}) => ({
+      inventory: {
+        slots: Object.assign([], { 5: worn.head || null, 6: worn.torso || null, 7: worn.legs || null, 8: worn.feet || null, 45: worn['off-hand'] || null }),
+        items: () => carried,
+      },
+      heldItem: null,
+      equip: async () => { throw new Error('不该走到 equip：已经穿在身上了'); },
+    });
+
+    // ---- 实机现场：本能刚把头盔换上，mind 又 /wear 同一件 ----
+    {
+      const bot = mkBot({ carried: [item(HELM)], worn: { head: item(HELM) } });
+      const r = await wear(bot, {}, { itemName: HELM });
+      check('★ 已经穿在头上 → 不报"背包里没有"', !!r, true);
+      check('★ alreadyWorn=true', r.alreadyWorn, true);
+      check('★ 报的是哪个槽（head）', r.slot, 'head');
+      check('★ 说明是"本来就在身上"（via=already-worn）', r.via, 'already-worn');
+    }
+    // ---- 穿在身上、背包里**没有**同一件（旧代码直接抛"背包里没有"）----
+    {
+      const bot = mkBot({ carried: [], worn: { head: item(HELM) } });
+      let e = null; let r = null;
+      try { r = await wear(bot, {}, { itemName: HELM }); } catch (err) { e = err; }
+      check('★ 身上穿着、背包里没有 → 不抛错', e, null);
+      check('★ 而且报 alreadyWorn', r?.alreadyWorn, true);
+    }
+    // ---- 别把"没穿"也判成 alreadyWorn：背包里有、身上空 → 走正常穿戴路径 ----
+    {
+      const bot = mkBot({ carried: [item(HELM)], worn: {} });
+      // equip 会抛（假 bot 故意抛），说明确实**没有**走 already-worn 分支
+      let e = null;
+      try { await wear(bot, {}, { itemName: HELM }); } catch (err) { e = err; }
+      check('★ 身上没穿 → 不走 already-worn（会去真穿）', /不该走到 equip/.test(e?.message || ''), true);
+    }
+    // ---- 穿的是**别的**头盔、背包里有要换的那顶 → 也不能误判 alreadyWorn ----
+    {
+      const bot = mkBot({ carried: [item(HELM)], worn: { head: item('minecraft:iron_helmet') } });
+      let e = null;
+      try { await wear(bot, {}, { itemName: HELM }); } catch (err) { e = err; }
+      check('★ 头上是别的头盔 → 不当 alreadyWorn（该换就换）', /不该走到 equip/.test(e?.message || ''), true);
+    }
+    // ---- 背包里也没有、身上也没有 → 照旧报"背包里没有"（"没有"和"读不到"分开）----
+    {
+      const bot = mkBot({ carried: [], worn: {} });
+      let e = null;
+      try { await wear(bot, {}, { itemName: HELM }); } catch (err) { e = err; }
+      check('★ 哪都没有 → 照旧抛"背包里没有"', /背包里没有/.test(e?.message || ''), true);
+    }
+    // ---- 源码形状锁：already-worn 判据在 equip 之前 ----
+    check('★ 判据用 slotByName + equipment 比对，且在 equip 之前',
+      /const wantId = [\s\S]{0,400}if \(dest && wantId && eq0\[dest\] === wantId\) \{[\s\S]{0,120}alreadyWorn: true/.test(handsSrc()), true);
   }],
 ];
 register('craft', __sections);

@@ -11,7 +11,7 @@
 | `index.js` | `hands.js` 的目标：8 个子文件的 `require` + `__ns` 汇总 + `bind()` 回填 + `routes()`（75 条路由）+ 47 个导出。**改路由挂载只动这里** |
 | `util.js` | 分出来 45 项：`Vec3`/注册表小工具、背包计数、可达性（`canUseFrom`/`canUseNow`）、门/梯子判定、NBT/Sophisticated 读写、`inHomeArea`。**共享状态 `knowledge`/`K()` 在这里** |
 | `containers.js` | 53 项：箱子 / 背包 / 饰品栏（curios）/ FTBQ / 结构放置，及排序与身份比对（`stackIdentity`/`sameTotals`）。**`HSTATE` 的 getter 在这里**，`backpackChain` 串行队列。**整理仓库（`organizeStorage`）自己会把精妙背包里的倒出来归位**（2026-09-29 问题 1）：`drainBackpackOnePass` 按快照前后差核对真实变化，`backpack` 分项单独报 `unreadable`/`chestsFull`/`drained`/`empty` —— 读不到 ≠ 里面没有 |
-| `craft.js` | 34 项：合成（手搓 / 配方书）、熔炉、吃 / 用 / 穿 / 给、厨锅。**`HSTATE` 的 getter 在这里**。合成/吃饭都先看精妙背包（`topUpFromBackpack`）；缺工作台/熔炉时**自己放下再用完挖回**（`withPlacedStation`，2026-09-29 问题 2b/3） |
+| `craft.js` | 34 项：合成（手搓 / 配方书）、熔炉、吃 / 用 / 穿 / 给、厨锅。**`HSTATE` 的 getter 在这里**。合成/吃饭都先看精妙背包（`topUpFromBackpack`）；缺工作台/熔炉时**自己放下再用完挖回**（`withPlacedStation`，2026-09-29 问题 2b/3）。`wear`（2026-09-29 问题 3）：要穿的那件**已经在它该在的槽位上** → 直接回 `{worn, slot, alreadyWorn:true, via:'already-worn'}`，不报"背包里没有"（`findItem` 看不见身上穿着的，会误判缺货）。判据要**先于** `findItem` 的 null 抛出，用 `slotByName(wantId)` + `equipment()` 比对 |
 | `movement.js` | 32 项：寻路（`go`/`pathTo`/`followRoute`）、爬梯、开门、跟随（`startFollow`）、`motor`/`nudge`、`/cmd` 白名单、睡觉、自救 |
 | `mining.js` | 24 项：挖矿与下矿（`delve`）、矿脉/亮源注册表缓存、火把、填缝 |
 | `farming.js` | 4 项：作物 / 种子 / 收成 / `farm` |
@@ -26,12 +26,12 @@
 
 ## 自测
 
-拆开后**每个文件能自己跑**，断言总数不变（223 = 21+33+52+31+54+32+21+…，2026-09-29 因问题 1/2/3/5 各自加了断言）：
+拆开后**每个文件能自己跑**，断言总数不变（236 = 21+33+65+31+54+32+21+…，2026-09-29 因问题 1/2/3/5 各自加了断言；问题 3 给 craft.js 加了 13 条）：
 
 ```bash
-$NODE src/body/hands.js --selftest                       # 汇总：把 8 个子文件的自测依次跑一遍（223 条）
+$NODE src/body/hands.js --selftest                       # 汇总：把 8 个子文件的自测依次跑一遍（236 条）
 $NODE src/body/containers.js --selftest                  # 33 条（含"整理时把精妙背包倒进箱子"）
-$NODE src/body/craft.js --selftest                       # 52 条（含"缺料看背包""缺工作台自己放")
+$NODE src/body/craft.js --selftest                       # 65 条（含"缺料看背包""缺工作台自己放"、[0f] wear 已穿→alreadyWorn）
 $NODE src/body/movement.js --selftest                    # 31 条（假 bot 驱动真实的 startFollow / go）
 $NODE src/body/kit.js --selftest                         # 54 条（含铲）
 $NODE src/body/tool-choice.js --selftest                 # 32 条（挖之前挑工具，真 1.20.1 方块）

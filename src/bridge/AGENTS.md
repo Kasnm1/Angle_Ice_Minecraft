@@ -23,7 +23,7 @@
 | `state.js` | ~170 | 全局 `state` 对象（**只有这一份**，别人只 require/引用）、chatlog / `pushChat` / journal / `saveState` |
 | `util.js` | ~560 | 小工具：`botPos` / `json` / `sleep` / `DBG` / `withTimeout` / `requireConnected` / 物品名比对 / 掉落物 / 指纹 / `sweepUpDrops` / `waitForBlock` |
 | `goto.js` | ~230 | 寻路：`gotoWithBudget` / `guardPathfinderCrash` |
-| `connect.js` | ~1160 | 连接与装配：`loadDependencies` / `installForgeHandshake` / 调色板导入 / `install*Plugin` / `fixLadderIdBeforeConnect` / `createBot`（439 行，最重的一块） |
+| `connect.js` | ~1160 | 连接与装配：`loadDependencies` / `installForgeHandshake` / 调色板导入 / `install*Plugin` / `fixLadderIdBeforeConnect` / `createBot`（439 行，最重的一块）。`createBot` 里给 `bot.dig` 包了一层（2026-09-29 问题 4）：进 `_dig` 前若 `block.hardness` **读不到**（模组方块被 `palette-registry` 注入时"刻意不填" hardness，见该文件 129-133 行）就补 `DEFAULT_HARDNESS = 1.0`，否则 `prismarine-block.digTime()` 算成 NaN → `setTimeout(fn, NaN)` → `TimeoutNaNWarning`（详见 `connect.js` 里那段注释链） |
 | `http.js` | ~320 | `fixMojibake` / `http.createServer` 分发 / `main()` |
 
 ### 路由层（`routes/`，每个文件导出普通对象）

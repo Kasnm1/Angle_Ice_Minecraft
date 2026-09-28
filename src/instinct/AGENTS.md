@@ -8,18 +8,26 @@
 | 文件 | 职责 |
 |---|---|
 | `instinct.js` | **汇总**（普通文件，不是符号链接）：把下面 8 个子文件的导出拼回原来那份 `module.exports`（56 个名字、顺序一字不差）。外部 `require('../instinct/instinct.js')` 不用改；`--selftest` 在这里跑**全部**小节 |
-| `config.js` | `CFG` / `fillCfg` / `TIER` / `TIER_NAME` / `ARMOR_RANK` / `HURT_FEET` / `HURT_BELOW` / `STRUCTURE_SIGNS` / `COMBAT_YIELD` / `PASSIVE_POSTS` |
+| `config.js` | `CFG` / `fillCfg` / `TIER` / `TIER_NAME` / `ARMOR_RANK` / `HURT_FEET` / `HURT_BELOW` / `STRUCTURE_SIGNS` / `COMBAT_YIELD` / `PASSIVE_POSTS` / `URGENT_PLAYER` / `isPlayerUrgent`（2026-09-29 问题 2：`args.urgent === 'player'` = "玩家在聊天里明确叫她"的**唯一判据**，`yieldBody` 用它区分"顺手走路"和"玩家叫的"；默认不放行） |
 | `core.js` | `install()`（1630 行闭包，整体搬来，内部计时器没拆）、`bodyBusy` / `createCheck` / `settleJob` / `ownsBodyAtCleanup` / `breatheRefused` / `playerHurtPlan` / `victimHealth` / `syncSleepState` / `caveBoundary` / `scanColumns*` / `yieldBody` |
 | `combat.js` | `mobKind` / `attackCooldownMs` / `combatPlan` / `fightGearFetchPlan` / `armorRank` / `pickArmor` / `toolWorn` / `hazardUnder` / `pickStepOff`。`fightGearFetchPlan`（2026-09-29 问题 2c）：打架前**要不要为武器/盾去翻精妙背包**的纯判据 —— 怪 ≥ `CFG.combat.fightFromBackpackDist`（默认 5 格）才翻，贴脸不翻（开界面会挨打） |
 | `survival.js` | `pickEat` / `needBreath` / `effectPlan` / `shoreRingOffsets` / `pickShore` / `mlgStep` / `pickRecovery`；**水下判据只此一份**（2026-09-29）：`blocksWater` / `headInWater` / `waterBreathing` / `oxygenNum` / `mineShouldStop` / `underwaterKeep` / `columnClear` / `breathPlan` |
 | `mining.js` | `pickaxeTier` / `needTier` / `bareNameOf` / `pickOre` / `pickCaveStep` / `pickTorchStep` / `darkReport` / `noteDelve` / `pickDelveResume` |
 | `pickup.js` | `hdist` / `whoThrew` / `pickPickup` / `pickHarvest` / `pickLoot` / `pickTidy` / `carriedNames` / `carriedTally` / `pickupFailIds` |
-| `social.js` | `gazeEngaged` / `pickGaze` / `pickCommand` / `weatherChange` / `followIdlePlan` |
+| `social.js` | `gazeEngaged` / `gazeQuotaLeft` / `pickGaze` / `pickCommand` / `weatherChange` / `followIdlePlan`。`gazeQuotaLeft`（2026-09-29 问题 1）：**一个互动窗口里只看一眼**的额度判据 —— `pickGaze` 靠它把"他一直在说话 → 每句都看"收成"每次开窗看一眼" |
 | `home.js` | `recognizeStructures` / `homeFootprint` |
 | `testkit.js` | 自测脚手架：`register` / `runSuite` / `bindNs` / `instinctSrc`。**故意不写 `--selftest` 分支**（写了会被 test-all 当成"跑了却零断言"） |
 
 **唯一反过来的是战斗本能**：怪冲她或玩家来时叫停正在跑的命令（`cancelCommands`），
 打的时候大部分命令回"在打架"。
+
+**走路类命令在战斗中要"玩家标记"（2026-09-29 问题 2）**：`/go` `/move` `/follow` `/wear`
+（`/stop` 不带 `hold`）在 `yieldBody` 里除了要进 `COMBAT_YIELD`，还要 `isPlayerUrgent(args)`
+（`args.urgent === 'player'`）才放行 —— 否则回"在打架（战斗本能），这条是顺手发的，打完再去"。
+因为 mind 自己顺手发的 goto/come_to 也会走到这条路上，会把正在打的架叫停（2026-09-28 13:44
+她就是这么被停手打死在 `species:cliff_hanger` 手里的）。
+**保命类不吃这个标记**：`/flee`（血低撤退）、`/self_rescue`、`/stop {hold:true}` 照旧放行
+（`hold` 本身就是显式信号）。低血自动撤退逻辑不受影响。
 
 `install(bot, state, deps)` 给 bot 挂 `bot.on(...)` 监听 + 起内部计时器，按 tick 决策。
 战斗锚点：跟人时 = 人，自己干活时 = 开打位置，leash 12（主人 2026-09-27 确认）。
