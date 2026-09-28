@@ -758,6 +758,16 @@ function obtain (q) {
  * 选配方的原则：能在背包 2×2 / 工作台 / 熔炉做的优先（她做得出来的），原料越少越好，
  * 原料里有背包已有的优先；绕开会成环的配方。没有配方的就是"原材料"，附上怎么弄。
  */
+/** 这一步用哪个动作做：熔炉 / 烟熏炉 / 高炉 / 营火这类烧的，是 smelt（放的是原料）；其余是 craft（报的是成品）。 */
+function howToRun (s) {
+  const bare = (x) => (String(x).split(':')[0] === 'minecraft' ? String(x).split(':')[1] : String(x));
+  if (/smelting|blasting|smoking|campfire/.test(String(s.type || ''))) {
+    const input = s.inputs?.[0]?.item;
+    return `smelt 用 itemName=${input ? bare(input) : '原料'}，count=${s.times}`;
+  }
+  return `craft 用 itemName=${bare(s.item)}，count=${s.times}`;
+}
+
 function materialTree (q, count = 1, inventory = []) {
   const id = resolveOne(q);
   if (!id) return `没找到「${q}」这个物品。`;
@@ -842,10 +852,12 @@ function materialTree (q, count = 1, inventory = []) {
     for (const [k, v] of raw) {
       const d = (K.drops.get(k) || []);
       const self = d.find(x => x.from === 'block' && x.id === k);
-      const blk = self ? k : d.find(x => x.from === 'block')?.id;
+      // 自己不是天然地面、但挖某种天然地面就掉它（圆石 ← 挖石头）：说挖那个，别说"挖圆石"（野外几乎没有圆石方块）
+      const ground = !(self && isGroundBlock(k)) && d.find(x => x.from === 'block' && x.id !== k && !(x.when || []).length && isGroundBlock(x.id) && /^minecraft:/.test(x.id));
+      const blk = ground ? ground.id : self ? k : d.find(x => x.from === 'block')?.id;
       const ht = blk && harvestTool(blk);
       const act = d.find(x => x.from === 'interact');
-      const how = act ? act.how : blk ? `挖${nameOf(blk)}${ht ? `（${ht.text}）` : ''}` : d.find(x => x.from === 'entity') ? `打${nameOf(d.find(x => x.from === 'entity').id)}` : '查 obtain';
+      const how = act ? act.how : blk ? `挖${nameOf(blk)}${blk !== k ? `（掉${nameOf(k)}）` : ''}${ht ? `（${ht.text}）` : ''}` : d.find(x => x.from === 'entity') ? `打${nameOf(d.find(x => x.from === 'entity').id)}` : '查 obtain';
       lines.push(`  · ${label(k)}×${v} ← ${how}`);
     }
   }
@@ -854,7 +866,7 @@ function materialTree (q, count = 1, inventory = []) {
     steps.forEach((s, i) => {
       const where = s.station === 'inventory' ? '背包2×2' : s.station ? `${nameOf(s.station)}${s.guess ? '(推测)' : ''}` : s.type;
       const tools = s.tools.length ? `，工具 ${s.tools.map(fmtSlot).join('、')}` : '';
-      lines.push(`  ${i + 1}. [${where}] ${s.inputs.map(x => `${nameOf(x.item)}×${x.count}`).join(' + ')}${tools} → ${label(s.item)}×${s.makes}（craft 用 itemName=${s.item.split(':')[0] === 'minecraft' ? s.item.split(':')[1] : s.item}，count=${s.times}）`);
+      lines.push(`  ${i + 1}. [${where}] ${s.inputs.map(x => `${nameOf(x.item)}×${x.count}`).join(' + ')}${tools} → ${label(s.item)}×${s.makes}（${howToRun(s)}）`);
     });
   }
   if (!raw.size && !steps.length) lines.push('背包里已经有了。');
@@ -963,6 +975,13 @@ function selftest () {
   check('陶罐（etcetera 塞进 dirt 标签）不算', !isGroundBlock('etcetera:terracotta_vase'));
   check('耕地不算', !isGroundBlock('regions_unexplored:peat_farmland'));
   check('原木不是地面', !isGroundBlock('minecraft:oak_log'));
+
+  console.log('\n材料树说法（石头 / 圆石）');
+  { const t = materialTree('minecraft:stone', 4, []);
+    check('★ 缺圆石时说"挖石头（掉圆石）"，不说"挖圆石"', /挖石头[^\n]*（掉圆石/.test(t) && !/← 挖圆石/.test(t), t);
+    check('★ 熔炉那一步用 smelt、放圆石，不说 craft', /smelt 用 itemName=cobblestone/.test(t) && !/craft 用 itemName=stone/.test(t), t);
+    check('工作台那一步照旧用 craft', /craft 用 itemName=wooden_pickaxe/.test(materialTree('minecraft:wooden_pickaxe', 1, [])), true);
+    check('原木自己就是天然方块：照旧说"挖橡木原木"', /← 挖橡木原木/.test(materialTree('minecraft:wooden_pickaxe', 1, [])), materialTree('minecraft:wooden_pickaxe', 1, [])); }
 
   console.log(`\n  ${pass}/${total} 通过`);
   process.exit(pass === total ? 0 : 1);
