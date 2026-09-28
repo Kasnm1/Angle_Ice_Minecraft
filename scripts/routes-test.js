@@ -128,6 +128,39 @@ ok('路由集合与快照一致（无新增 / 无丢失 / 来源不变）',
 
 ok('快照条数 = 当前条数', snapshot.length === routes.length, `${snapshot.length} vs ${routes.length}`);
 
+// ---- 断言 4：bridge 自有路由的**键序**（第 3 步拆巨石的防线，只加不减）--------
+//
+// 上面第 3 条把 `routes` **按 key 排序**后才比对（第 71 行 `all.sort(…)`），
+// 因此它只保证"集合相同"，**不保证顺序**。而 `Object.keys(handlers)` 的顺序
+// 是被依赖的：`GET /404` 的 `available` 字段直接吐这个数组。
+//
+// 拆巨石后 handlers 是"按 routeFiles 数组顺序逐组 Object.assign"拼回来的，
+// 一旦分组顺序写错，键序就变、但**条数不变** —— 只查集合抓不到。
+// 所以这里额外锚定 bridge 自己那 58 个键的相对次序（hands/commonsense 的键
+// 排在它们之后，不参与比对）。
+//
+// ⚠️ 快照不存在时**跳过而不是失败**：这份文件是第 3 步新增的，
+//    老分支上可能还没有；缺了就少一道防线，不该把测试拉红。
+const orderSnapPath = path.join(ROOT, 'references', 'handlers-order-bridge.json');
+let orderOk = true;
+if (fs.existsSync(orderSnapPath)) {
+  const wantOrder = JSON.parse(fs.readFileSync(orderSnapPath, 'utf8'));
+  const liveKeys = Object.keys(bridge.handlers);
+  const misplaced = [];
+  let prev = -1;
+  for (const k of wantOrder) {
+    const at = liveKeys.indexOf(k);
+    if (at < 0) { misplaced.push(`${k}（没了）`); continue; }
+    if (at < prev) misplaced.push(`${k}（顺序后移）`);
+    prev = at;
+  }
+  orderOk = misplaced.length === 0;
+  ok('bridge 自有路由的键序与快照一致', orderOk,
+    misplaced.length ? misplaced.slice(0, 5).join(', ') : '');
+} else {
+  console.log('  (跳过键序校验：references/handlers-order-bridge.json 不存在)');
+}
+
 console.log(`\n  ${pass}/${pass + fail} 通过（快照 ${snapshot.length} 条 / 当前 ${routes.length} 条）`);
 if (fail) {
   console.log('\n  路由有意增减时：node scripts/routes-test.js --update，然后提交 references/routes.json');
