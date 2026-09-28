@@ -8,8 +8,8 @@
 | 文件 | 职责 |
 |---|---|
 | `instinct.js` | **汇总**（普通文件，不是符号链接）：把下面 8 个子文件的导出拼回原来那份 `module.exports`（56 个名字、顺序一字不差）。外部 `require('../instinct/instinct.js')` 不用改；`--selftest` 在这里跑**全部**小节 |
-| `config.js` | `CFG` / `fillCfg` / `TIER` / `TIER_NAME` / `ARMOR_RANK` / `HURT_FEET` / `HURT_BELOW` / `STRUCTURE_SIGNS` / `COMBAT_YIELD` / `PASSIVE_POSTS` |
-| `core.js` | `install()`（1630 行闭包，整体搬来，内部计时器没拆）、`bodyBusy` / `createCheck` / `settleJob` / `ownsBodyAtCleanup` / `breatheRefused` / `playerHurtPlan` / `victimHealth` / `syncSleepState` / `caveBoundary` / `scanColumns*` / `yieldBody` |
+| `config.js` | `CFG` / `fillCfg` / `TIER` / `TIER_NAME` / `ARMOR_RANK` / `HURT_FEET` / `HURT_BELOW` / `STRUCTURE_SIGNS` / `COMBAT_YIELD` / `PASSIVE_POSTS`。`CFG.loot.radius` 2026-09-29 提到 **32**（跟扫描一致）；新增 `CFG.perception`（`enabled / radius / everyMs / batchColumns / dy / mergeDist / gap / decayAfterMs / decayRate / goneRadius / tellCooldownMs`，每条都写了理由） |
+| `core.js` | `install()`（1630 行闭包，整体搬来，内部计时器没拆）、`bodyBusy` / `createCheck` / `settleJob` / `ownsBodyAtCleanup` / `breatheRefused` / `playerHurtPlan` / `victimHealth` / `syncSleepState` / `caveBoundary` / `scanColumns*` / `yieldBody`。2026-09-29 加了 `perceptionTimer`（她的余光，见下「野外资源感知」） |
 | `combat.js` | `mobKind` / `attackCooldownMs` / `combatPlan` / `fightGearFetchPlan` / `armorRank` / `pickArmor` / `toolWorn` / `hazardUnder` / `pickStepOff`。`fightGearFetchPlan`（2026-09-29 问题 2c）：打架前**要不要为武器/盾去翻精妙背包**的纯判据 —— 怪 ≥ `CFG.combat.fightFromBackpackDist`（默认 5 格）才翻，贴脸不翻（开界面会挨打） |
 | `survival.js` | `pickEat` / `needBreath` / `effectPlan` / `shoreRingOffsets` / `pickShore` / `mlgStep` / `pickRecovery`；**水下判据只此一份**（2026-09-29）：`blocksWater` / `headInWater` / `waterBreathing` / `oxygenNum` / `mineShouldStop` / `underwaterKeep` / `columnClear` / `breathPlan` |
 | `mining.js` | `pickaxeTier` / `needTier` / `bareNameOf` / `pickOre` / `pickCaveStep` / `pickTorchStep` / `darkReport` / `noteDelve` / `pickDelveResume` |
@@ -45,6 +45,40 @@
 - 敌对判据：`../world/entity-registry.js` 的 `isHostileEntity`（战斗本能、`hands.threatNear`、
   bridge `/nearby` 都调它）。
 - 站位/可替换判据：`../world/place.js` 的 `isStandable` / `exposedToOpen`（含草、藤、雪层，P50）。
+
+## 野外资源感知（她的"余光"，2026-09-29）
+
+主人："對野外資源不敏感這個，我實在不知道該怎麼修了"。她以前只有"身边 16 格实体"，
+看不见树/矿/黏土/箱子 —— 结果是走出家门就像瞎了。
+
+**三件事，各有各的负责人**：
+
+1. **扫描**（`core.js` 的 `perceptionTimer`，`setInterval` 每 `CFG.perception.everyMs`，默认 5 秒）：
+   调 `world/perception.js` 的 `scanAround`，**复用 `scanColumnsIn`**（按区块柱分段、每柱之间
+   `yieldFn()` 让出）。**绝不同步扫一大片** —— 2026-09-28 那次 14 秒卡死就是旧的 `homeTimer`
+   同步扫 `home.scanBuilt d=91 13049` 块。每次的单柱最长耗时写进 `I.diagnostics.perception.worstMs`
+   （`GET /instinct` 能看）；自测里断言 **< 200ms**。
+   `perceptionBusy` 防止上一批没跑完又开一批。
+2. **判据**（`world/perception.js`，纯函数）：分类用**真实整合包标签**（`knowledge.js` 的
+   `load().tags`），不是硬编码名单。实的标签名（2026-09-29 从 `knowledge/generated/gamedata.json`
+   1699 个方块标签里查的）：`minecraft:logs` / `minecraft:planks` / `minecraft:leaves` /
+   `minecraft:crops` / `minecraft:flowers` / `minecraft:small_flowers` / `minecraft:sand` /
+   `minecraft:terracotta` / `minecraft:shulker_boxes` / `forge:ores` / `forge:sand` /
+   `forge:gravel` / `forge:chests`（+`forge:chests/wooden|trapped`）/ `forge:barrels` /
+   `c:chests` / `lootr:chests`。**不存在的**：`clay`（0 个）、`pumpkin`、`melon`、
+   `sugar_cane`（只有 `forge:storage_blocks/sugar_cane`，是物品不是作物）、`lava`（没有"这是岩浆"的标签）。
+   → 这几样只能**名字兜底**，兜底规则**只写在 `perception.js` 的 `SPECS` 一处**。
+   末影箱：在 `forge:chests` 里但**不算野外容器**（开了也带不走，专门排除，有断言守）。
+3. **去开**（`core.js` 的 `tryLoot`）：判据在 `perception.containerTargets`（家里 / 开过 / 太远，
+   一份判据不抄第二遍）。**不要求"此刻看得见"** —— 记忆里有、走得到就值得去（人走过箱子、
+   转身看不见了还会回去开）。空闲队列里 `loot` 排在最前（`['loot', 'torch', 'harvest', 'mine', 'delve', 'cave']`）：
+   火把是长期活，箱子是**一次性**的（这个服只有主人和她，没人替你留着）。**保命的活
+   —— 憋气 / 战斗 / 危险 —— 从来不进这个队列**，插队不影响它们。
+   `body/containers.js` 的 `storagePlaces` 把记忆里的位置转成"和 `findStorage` 同形"的候选塞进 `checkChests`。
+
+**"没有"和"读不到"必须分开报**（任务书硬性要求）：记忆文件读不出来 → `containerTargets`
+返回 `[]`、`tryLoot` 只按看得见的算，`GET /surroundings` 返回 `unloaded` 字段说明哪几柱没读到；
+**绝不把"没读到"渲染成"附近没有"**。
 
 ## 玩家受伤：只有真危险才告诉 mind（2026-09-29）
 

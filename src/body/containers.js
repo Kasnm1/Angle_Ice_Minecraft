@@ -1153,9 +1153,17 @@ async function lootCart (bot, state, e) {
 async function checkChests (bot, state, { radius = 24, home = null, max = 4, near = null, abort = null } = {}) {
   const out = [];
   const stop = () => typeof abort === 'function' && abort();
-  for (const b of unseenChests(bot, state, radius, near).slice(0, max)) {
+  // 看得见的排在前面（人也是先开眼前的）；记忆里的（`storagePlaces`）按距离接在后面 —— 区块没加载、
+  // 转身看不见了，只要**记得 + 走得到**就还去开（主人："看到之后高優先級去获取内容"）。
+  const visible = unseenChests(bot, state, radius, near).map(b => ({ ...b, fromMemory: false }));
+  const seenAt = new Set(visible.map(b => storageKey(bot, b)));
+  const remembered = storagePlaces(bot, state, { radius, home, max: Math.max(0, max * 2) })
+    .filter(b => !seenAt.has(b.at))
+    .sort((a, b) => bot.entity.position.distanceTo(a.position) - bot.entity.position.distanceTo(b.position));
+  const candidates = [...visible, ...remembered];
+  for (const b of candidates.slice(0, max)) {
     if (stop()) break;
-    const key = storageKey(bot, b);
+    const key = b.fromMemory ? b.at : storageKey(bot, b);
     markSeen(state, key);                     // 先记下：打不开/走不到也别来回折腾
     if (eyeDist(bot, b) > REACH) {
       const err = await pathTo(bot, b.position, 2, 30000);
@@ -1180,6 +1188,54 @@ async function checkChests (bot, state, { radius = 24, home = null, max = 4, nea
   for (const e of unseenCarts(bot, state, Math.min(radius, 16)).slice(0, Math.max(0, max - out.length))) {
     if (stop() || bot.inventory.emptySlotCount() <= 1) break;
     try { out.push(await lootCart(bot, state, e)); } catch (err) { out.push({ at: cartKey(e), name: 'chest_minecart', error: err.message }); }
+  }
+  return out;
+}
+
+/**
+ * 记忆里的容器位置 → 和 `findStorage` 返回的方块"长得一样"的候选（`{position, name}`）。
+ *
+ * 主人 2026-09-29："野外的箱子，木桶也要作為重點，看到之后高優先級去獲取內容"。
+ * `findStorage` 只找**当前加载的**方块，而她的余光把 32 格里看过的容器记进了
+ * `memory/resources.json` —— 走过一个箱子、转个身区块没加载 / 看不见了，记忆里还在。
+ * 所以把记忆里的位置也当候选塞进来（配合 `near` 一起用：`unseenChests` 对 `near` 里的不要求 canSeeBlock）。
+ *
+ * 只做**形状转换 + 去重 + 距离过滤**，判据（家里的 / 开过的 / 太旧的）全在
+ * `world/perception.js` 的 `containerTargets` 里 —— 一份判据，不抄第二遍。
+ * 读不到记忆就返回 `[]`（= 只按 `findStorage` 算，不猜成"什么都没有"）。
+ */
+function storagePlaces (bot, state, { radius = 32, home = null, dim = null, max = 8, now = Date.now() } = {}) {
+  let P = null;
+  try { P = require('../world/perception'); } catch (_) { return []; }
+  let store = null;
+  try { store = P.load(); } catch (_) { return []; }
+  if (!store || !Array.isArray(store.places)) return [];
+  // 只用 state 里那份（不借 `seenKeys` 转发壳 —— 这个函数要能在独立 require 下跑，见自测）
+  const seen = state?.seenContainers instanceof Set ? state.seenContainers : new Set(state?.seenContainers || []);
+  const targets = P.containerTargets(store.places, {
+    home, seenKeys: seen,
+    // 和 `body/util.js` 的 `inHomeArea` 同一条判据（这里内联：独立 require 下转发壳没接上，
+    // 而且这是本文件自己的职责，不该借别的文件的壳；`util.js` 那份是给别处用的）。
+    isHome: (p) => !!(home && Math.hypot(p.x - home.center.x, p.z - home.center.z) <= home.radius
+      && Math.abs(p.y - home.center.y) <= 16),
+    dim, now,
+  });
+  const self = bot?.entity?.position;
+  const out = [];
+  for (const t of targets) {
+    if (!t.center) continue;
+    if (self && Math.hypot(t.center.x - self.x, t.center.z - self.z) > radius) continue;
+    const key = P.placeKey(t);
+    if (seen.has(key)) continue;                 // 开过了（和 unseenChests 同一份 seenKeys）
+    if (out.some(x => x.at === key)) continue;
+    out.push({
+      at: key,
+      name: t.name || 'chest',
+      // 和 `findStorage` 的元素同形：checkChests / lootNearby 要 .position / .name
+      position: { x: Math.round(t.center.x), y: Math.round(t.center.y), z: Math.round(t.center.z) },
+      fromMemory: true, slots: null, block: null,
+    });
+    if (out.length >= max) break;
   }
   return out;
 }
@@ -1393,7 +1449,7 @@ let backpackChain = Promise.resolve();
 
 const LOOT_ORDER = ['工具装备', '矿物', '食物', '其他', '方块', '木头', '作物种子'];
 
-module.exports = { CAT_ORDER, CURIO_FIRST, LOOT_ORDER, anyOf, auditSortedRange, backpackChain, backpackOpen, backpackTidy, bind, categoryOf, checkChests, compareSortedItems, containerOpen, containerPut, containerTake, countInBackpackSeen, curiosEquip, curiosList, curiosOpen, curiosUnequip, decideCarry, deposit, drainBackpackOnePass, ensureCarried, fetchAnyFromBackpack, fetchFromBackpack, ftbqSend, identityTotals, install, installModProtocols, lookIntoBackpack, lootCart, lootNearby, matcher, noteBackpack, noteCurios, noteSeen, organizeStorage, packedSlots, placeStructure, resolveCarryId, sameTotals, setHandsState, stableValue, stackIdentity, tally, threatNear, unseenCarts, unseenChests, wearingBackpack, withdraw };
+module.exports = { CAT_ORDER, CURIO_FIRST, LOOT_ORDER, anyOf, auditSortedRange, backpackChain, backpackOpen, backpackTidy, bind, categoryOf, checkChests, compareSortedItems, containerOpen, containerPut, containerTake, countInBackpackSeen, curiosEquip, curiosList, curiosOpen, curiosUnequip, decideCarry, deposit, drainBackpackOnePass, ensureCarried, fetchAnyFromBackpack, fetchFromBackpack, ftbqSend, identityTotals, install, installModProtocols, lookIntoBackpack, lootCart, lootNearby, matcher, noteBackpack, noteCurios, noteSeen, organizeStorage, packedSlots, placeStructure, resolveCarryId, sameTotals, setHandsState, stableValue, stackIdentity, storagePlaces, tally, threatNear, unseenCarts, unseenChests, wearingBackpack, withdraw };
 
 // ------------------------------------------------------------------ 自测
 // 第 3 步重构：这几节原本挤在 hands.js 的自测段里（同一个 (async () => {…})() 外套），
@@ -1513,6 +1569,45 @@ const __sections = [
       const inst = fs.readFileSync(path.join(__dirname, '..', 'instinct', 'core.js'), 'utf8');
       check('★ instinct 里旧的"外面套 unpack 两轮"已删', /round < 2 && !abort\(\)/.test(inst), false);
       check('★ instinct 读 r.backpack.status 分开报', /bp\.status === 'unreadable'/.test(inst), true);
+    }
+  }],
+
+  // 记忆里的野外容器 → 候选（主人 2026-09-29："野外的箱子、木桶看到之后高優先級去获取内容"）
+  ['[3] 记忆里的野外容器也进候选（storagePlaces）', async (t) => {
+    const { check } = t;
+    console.log('\n[3] 记忆里的野外容器也进候选（storagePlaces）');
+    const os = require('os'); const path = require('path'); const fs = require('fs');
+    const PER = require('../world/perception');
+    const file = path.join(os.tmpdir(), `mc-res-sp-${process.pid}.json`);
+    const old = process.env.MC_RESOURCES_FILE;
+    process.env.MC_RESOURCES_FILE = file;
+    const now = Date.now();
+    const mk = (x, z, extra = {}) => ({ kind: 'container', name: 'minecraft:chest', center: { x, y: 64, z }, count: 1, dim: 'minecraft:overworld', seenAt: now, confirmedAt: now, ...extra });
+    try {
+      // 记忆：一个野外没开过的（在半径内）、一个开过的、一个家里的
+      PER.save({ ...PER.emptyStore(), places: [
+        mk(20, 20),
+        mk(24, 24),
+        mk(2, 2),
+      ] });
+      const home = { center: { x: 0, y: 64, z: 0 }, radius: 16 };
+      const bot = { entity: { position: { x: 0, y: 64, z: 0 } } };
+      const state = { seenContainers: new Set(['24,64,24']) };
+      const got = storagePlaces(bot, state, { radius: 32, home, dim: 'minecraft:overworld', now });
+      // visible 一个都没有（区块没加载）→ 全靠记忆
+      check('★ 记忆里野外没开过的箱子 → 进候选（区块没加载也算）', got.some(x => x.at === '20,64,20'), true);
+      check('★ 开过的（seenContainers 里）= 不再是候选', got.some(x => x.at === '24,64,24'), false);
+      check('★ 家里的（home 范围里）= 不是"野外箱子"（归 organize_storage）', got.some(x => x.at === '2,64,2'), false);
+      check('★ 候选形状对得上 checkChests（有 position / name）', got.every(x => x.position && typeof x.position.x === 'number' && x.name), true);
+      // 读不到记忆 = []（不猜成"没有"，也不编）
+      fs.writeFileSync(file, '{ 坏的 json', 'utf8');
+      check('★ 记忆读不到 → 返回 []（不抛、不编）', storagePlaces(bot, state, { radius: 32, home, now }), []);
+      // 太远的不算（走不到的当下目标）
+      PER.save({ ...PER.emptyStore(), places: [mk(300, 300)] });
+      check('★ 记忆里 300 格外的不进候选（半径 32）', storagePlaces(bot, state, { radius: 32, home, now }), []);
+    } finally {
+      try { fs.unlinkSync(file); } catch (_) {}
+      if (old == null) delete process.env.MC_RESOURCES_FILE; else process.env.MC_RESOURCES_FILE = old;
     }
   }],
 ];

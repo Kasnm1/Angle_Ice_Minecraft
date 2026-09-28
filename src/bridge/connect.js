@@ -708,7 +708,9 @@ function createBot() {
   installEntitySense(state.bot);
   installLedger(state.bot);
   ftbqSync.install(state.bot, state);
-  instinct.install(state.bot, state, { handlers, hands, pathing, isPlayerBuilt, isDropEntity, droppedItemOf, aggroOf, exposureOf, night, cancelCommands, pickAutoEquip });
+  // 感知那一支要的：`knowledge`（真实标签，分类用）+ `plan`/`ambition`（"她现在缺什么"，排序用）。
+  // 都是**只读查询**，`install` 里对它们全部 `?.` 调用 —— 拿不到就退化成"没有 needs"（不猜）。
+  instinct.install(state.bot, state, { handlers, hands, pathing, isPlayerBuilt, isDropEntity, droppedItemOf, aggroOf, exposureOf, night, cancelCommands, pickAutoEquip, knowledge: require('../knowledge/knowledge.js'), plan: require('../mind/plan.js'), ambition: require('../mind/ambition.js'), perception: require('../world/perception.js') });
 
   // ---- 身体反射插件 ----------------------------------------------------------
   // 加载顺序有讲究（两边项目都是 pathfinder 打头）：

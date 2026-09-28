@@ -21,6 +21,7 @@
   "GET /knowledge/search",
   "POST /knowledge/search",
   "GET /scan",
+  "GET /surroundings",
   "POST /pickup",
   "GET /plugins",
   "GET /entities",
@@ -55,6 +56,7 @@
   "GET /ftbq/completed",
   "GET /instinct",
   "GET /instinct/events",
+  "GET /resources",
   "POST /instinct",
   "POST /stop"
 ]

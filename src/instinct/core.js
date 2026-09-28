@@ -35,6 +35,15 @@ function withTimeout (...a) { return __ns.withTimeout.apply(null, a); }
 // `place.js` 的 DEADLY：只用来判"挖开会不会放危险东西进来"（判据只此一份，不另写）
 const placeLogic = require('../world/place');
 const { Vec3 } = require('vec3');
+
+/**
+ * 感知类别的中文名 —— **给事件文字用**。
+ * 为什么不直接读 `world/perception.js` 的 `KIND[kind].zh`：那个模块是**可选的**
+ * （`require` 失败时 `perception = null`，本能照样跑），这一段是它的文字兜底；
+ * 名字就在一处，改一处即可。缺了也只是事件里少个中文名，不影响判断。
+ */
+const PERCEPTION_ZH = { log: '树', ore: '矿', clay: '黏土', sand: '沙', gravel: '砂砾', crop: '作物', flower: '花', water: '水', container: '箱子', danger: '危险方块', mushroom: '蘑菇', stone: '石头' };
+
 function effectPlan (...a) { return __ns.effectPlan.apply(null, a); }
 function shoreRingOffsets (...a) { return __ns.shoreRingOffsets.apply(null, a); }
 function pickShore (...a) { return __ns.pickShore.apply(null, a); }
@@ -924,7 +933,22 @@ function install (bot, state, deps) {
     const L = I.cfg.loot;
     if (!L.enabled || Date.now() - (I.lastLootAt || 0) < L.cooldownMs) return null;
     const self = bot.entity.position;
-    const chests = deps.hands.unseenChests(bot, state, L.radius).length + deps.hands.unseenCarts(bot, state, 16).length;
+    // 视野里看得见的（原判据，`canSeeBlock`）
+    const visible = deps.hands.unseenChests(bot, state, L.radius).length + deps.hands.unseenCarts(bot, state, 16).length;
+    // ★ 2026-09-29（主人："看到之后高優先級去獲取內容"）：**记忆里记得的**野外没开过的容器也算。
+    //   为什么：`unseenChests` 要求"此刻看得见"（`bot.canSeeBlock`），可她的"余光"是 32 格、
+    //   而且看过就记进了 `memory/resources.json` —— 人走过一个箱子、转个身看不见了，
+    //   依然会去开。只要**记得 + 走得到**就该去。判据在 `perception.containerTargets`（同一份）。
+    let remembered = [];
+    try {
+      const P = require('../world/perception');
+      const store = P.load();
+      const seenKeys = state.seenContainers || null;
+      remembered = P.containerTargets(store.places, { home: I.home, seenKeys, dim: dimNow(), now: Date.now() })
+        // 只算走得到的（太远的记忆不当"现在就去做"的目标 —— 那是长期计划的事）
+        .filter(c => Math.hypot(c.center.x - self.x, c.center.z - self.z) <= L.radius);
+    } catch (_) { remembered = []; }   // 记忆读不到 = 只按看得见的算（不猜成"没有"）
+    const chests = visible + remembered.length;
     const bp = state.backpackSeen;
     // 同一拍里 recognizeStructures 只算一次（以前结构那一支算两遍，等于白扫两趟）
     const structs = chests ? [] : recognizeStructures(structureBlocks(L.structRadius));
@@ -945,9 +969,14 @@ function install (bot, state, deps) {
     if (!pick.mode) return pick;
     I.lastLootAt = Date.now();
     if (pick.mode === 'open') {
-      const { r, aborted } = await runJob('loot', { route: 'POST /chests/check' }, (abort) => deps.handlers['POST /chests/check']({ radius: L.radius, home: I.home, max: 4, abort }));
+      // 记忆里的目标也带上（`near` 让 `unseenChests` 把它们当"确实要开的那几个"：
+      // 该参数本来只给"进了建筑"用，语义就是"看不看得见都算"）。
+      const near = remembered.length
+        ? { ...remembered[0].center, r: L.radius }
+        : null;
+      const { r, aborted } = await runJob('loot', { route: 'POST /chests/check' }, (abort) => deps.handlers['POST /chests/check']({ radius: L.radius, home: I.home, max: 4, near, abort }));
       const sm = summarizeLoot(r?.checked);
-      note({ kind: 'loot', opened: sm.opened, aborted: aborted || undefined, error: r?.error });
+      note({ kind: 'loot', opened: sm.opened, from: remembered.length ? 'memory+visible' : 'visible', aborted: aborted || undefined, error: r?.error });
       if (sm.opened || sm.failed.length) event('loot', `开了 ${sm.opened} 个箱子${sm.top.length ? `，拿到：${sm.top.join('、')}` : ''}${sm.failed.length ? `；没开成：${sm.failed.join('；')}` : ''}`);
       return { did: 'loot' };
     }
@@ -1344,6 +1373,103 @@ function install (bot, state, deps) {
       }
     } catch (_) {}
   });
+
+  // ---- 野外资源感知：她的"余光"（2026-09-29，主人："對野外資源不敏感"）------
+  //
+  // 为什么要有：mind 每一轮看到的只有**实体**（`/nearby`），树 / 黏土 / 沙 / 甘蔗 /
+  //   露出的矿……她完全看不见（唯一的 `oreWatch` 只报值钱的矿、只看 12 格）。
+  //   实机表现：她扫一次没扫到黏土就说"附近沒黏土"。
+  //
+  // 这一段**只做三件事**（判断全在 `world/perception.js` 的纯函数里）：
+  //   ① 扫一圆看得见的方块（分段让出，绝不冻进程）→ 分类 → 聚片；
+  //   ② 并进 `memory/resources.json`（同片合一、久未确认降权、去了没了就删）；
+  //   ③ 新发现的、用得上的（缺的 / 值钱的 / **没开过的野外容器**）告诉 mind，同类冷却。
+  //
+  // ⚠️ 绝不在 `tick()` 里同步扫（`scanColumnsIn` 虽然逐列让出，但仍是个长活）——
+  //    这是独立计时器 + `busy` 防叠，和 `homeTimer` 同一套写法
+  //    （`homeTimer` 以前同步扫 14 秒冻结过一次，见 HANDOFF-20260928.md）。
+  let perception = null;
+  try { perception = require('../world/perception'); } catch (_) { perception = null; }
+  if (!perception) perception = deps.perception || null;   // 注入的优先（测试/装配时给的）
+  let perceptionBusy = false;
+  const perceptionTimer = setInterval(async () => {
+    const PC = I.cfg.perception;
+    if (!PC?.enabled || perceptionBusy || !bot.entity || !I.cfg.loot) return;
+    if (Date.now() - (I.lastPerceptionAt || 0) < PC.everyMs) return;
+    perceptionBusy = true;
+    I.lastPerceptionAt = Date.now();
+    try {
+      // 真实标签 → registry id（整合包真值，不写死名单）
+      const tagIds = (tag) => {
+        try { const s = deps.knowledge?.load?.().tags?.get(`block:${tag}`); return s ? [...s] : []; } catch (_) { return []; }
+      };
+      const tagOf = (name, tag) => {
+        try {
+          const id = name.includes(':') ? name : `minecraft:${name}`;
+          return !!deps.knowledge?.load?.().blockTags?.get(id)?.has(tag);
+        } catch (_) { return false; }
+      };
+      const r = await perception.scanAround({
+        bot, radius: PC.radius, tagIds, tagOf, scanIn: scanColumnsIn, yieldFn: yieldLoop,
+        dy: PC.dy, batchColumns: PC.batchColumns,
+      });
+      const dim = dimNow();
+      const before = perception.load();
+      // ① 并进记忆（同片合一 / 刷新"又看见了"）
+      const m = perception.merge(before, r.items.map(it => ({ ...it, dim })), Date.now(), { dim, mergeDist: PC.mergeDist });
+      // ② 过期：她走过那片（近处）却整类都没再扫到 → 那类删掉；久未确认 → 降权
+      const nearKinds = new Set(r.items.filter(it => Math.hypot(it.center.x - bot.entity.position.x, it.center.z - bot.entity.position.z) <= PC.goneRadius).map(it => it.kind));
+      const f = perception.forget(m.store, {
+        now: Date.now(), near: bot.entity.position, goneRadius: PC.goneRadius,
+        goneKinds: nearKinds.size ? nearKinds : null,
+        decayAfterMs: PC.decayAfterMs, decayRate: PC.decayRate,
+      });
+      // goneKinds 传的是"这一轮在这一带扫到的类别"：只有这一类**在近处出现过**，
+      // 才谈得上"同一个位置的同类没了"。整类都没扫到 ≠ 没了（可能是没加载）—— 不删。
+      perception.save(f.store);
+      // ③ 新发现才说话，而且只说用得上的（缺的 / 值钱的 / 没开过的野外容器）
+      const needs = perception.needsFrom({
+        planStep: deps.plan?.current?.()?.text || '',
+        ambition: deps.ambition?.state?.()?.focus || '',
+      });
+      const ranked = perception.rank(m.added.map(it => ({ ...it, distance: Math.hypot(it.center.x - bot.entity.position.x, it.center.z - bot.entity.position.z) })), needs, { max: 4 });
+      for (const it of ranked) {
+        const key = `res:${it.kind}:${it.center.x},${it.center.z}`;
+        const last = I.resourceTold?.get(key) || 0;
+        if (Date.now() - last < PC.tellCooldownMs) continue;
+        I.resourceTold ||= new Map();
+        I.resourceTold.set(key, Date.now());
+        const why = it.why === 'need' ? '（你现在正缺这个）' : '';
+        const wet = it.underwater && it.kind !== 'water' ? '，在水下' : '';
+        event('resource_seen', `余光扫到：${PERCEPTION_ZH[it.kind] || '资源'}（${it.direction} ${Math.round(it.distance)} 格，${it.center.x},${it.center.y},${it.center.z}）${wet}${why}`, { kind: it.kind, name: it.name, pos: it.center, count: it.count });
+      }
+      // ★ 野外**没开过**的容器：立刻高优先级告诉 mind（主人点名）
+      const seenKeys = state.seenContainers || null;
+      const boxes = perception.containerTargets(f.store.places, {
+        home: I.home, seenKeys, dim: dimNow(), now: Date.now(),
+      });
+      for (const c of boxes.slice(0, 2)) {
+        const key = `chest:${c.center.x},${c.center.y},${c.center.z}`;
+        if (I.visitedStructures?.has(key) || (I.resourceTold?.get(key) || 0) > 0) continue;
+        I.resourceTold ||= new Map();
+        I.resourceTold.set(key, Date.now());
+        const who = /barrel/.test(c.name) ? '木桶' : /shulker/.test(c.name) ? '潜影盒' : '箱子';
+        event('chest_seen', `看见一个没开过的${who}（${c.center.x},${c.center.y},${c.center.z}，${Math.round(Math.hypot(c.center.x - bot.entity.position.x, c.center.z - bot.entity.position.z))} 格）—— 手上没急事就去开`, { name: c.name, pos: c.center, urgent: true });
+      }
+      // 每轮耗时写进诊断（任务书要求能在 GET /instinct 看到）
+      I.diagnostics ||= {};
+      I.diagnostics.perception = {
+        at: Date.now(), radius: PC.radius, ...r.perf,
+        found: r.items.length, added: m.added.length, refreshed: m.refreshed.length,
+        decayed: f.decayed.length, gone: f.gone.length, places: f.store.places.length,
+        containers: boxes.length,
+      };
+      if (r.perf.ms > 500) slow('perception.scanAround', r.perf.ms);
+    } catch (e) {
+      I.diagnostics ||= {};
+      I.diagnostics.perception = { at: Date.now(), error: e.message };
+    } finally { perceptionBusy = false; }
+  }, 2000);
 
   // ---- 赶路 / 干别的时候看见值钱的矿：不打断命令，告诉 mind（一个位置一次）
   const oreWatch = setInterval(() => {
@@ -2121,11 +2247,25 @@ function install (bot, state, deps) {
     if (td?.skip) last.tidy = td.skip;
     if (nightOut) { I.last = { t: now, ...last, other: '夜里在露天，不收不挖' }; return; }
 
-    // ④ 收获  ⑤ 开宝箱 / 进建筑  ⑥ 采矿  ⑦ 换护甲
-    // ⑧ 洞穴探险（最后：先把看得见的矿挖了、箱子开了，再往里走）
-    // ★ 插火把放在最前：地下暗处会刷怪，比收获更该先做（第 8 批第 4 条）。身体空着才轮到它。
-    // ★ delve 续挖排在采矿**之后**：先挖脚边看得见的矿（收获最快），再接着往洞里走。
-    for (const [k, f] of [['torch', tryTorch], ['harvest', tryHarvest], ['loot', () => tryLoot(nightOut)], ['mine', tryMine], ['delve', tryResumeDelve], ['cave', tryCave]]) {
+    // ④ 开宝箱 / 进建筑  ⑤ 插火把  ⑥ 收获  ⑦ 采矿  ⑧ 换护甲
+    // ⑨ 洞穴探险（最后：先把看得见的矿挖了、箱子开了，再往里走）
+    //
+    // ★★ 2026-09-29 调整顺序（主人："野外的箱子，木桶也要作為重點，看到之后高優先級去獲取內容"）：
+    //    `loot` 从第 3 位提到**最前**。
+    //
+    //    【为什么放在插火把之前】安全相关的**永远更前面，而且根本不在这个队列里**：
+    //      憋气（`checkBreath`，氧气事件直接叫停命令）、战斗（`combatTimer`，会 cancelCommands）、
+    //      危险方块退开（`hazardTimer`）—— 它们都在 tick 之前就动手了，不受这里影响。
+    //      剩下的几件里，插火把是"防刷怪"的长线收益，而野外箱子是**一次性的、过期不候**
+    //      （Lootr 箱子被别人开过就没了；主人也点名要高优先级）。她已经在露天走动，
+    //      开完箱子再插火把完全来得及。
+    //
+    //    【为什么不放在收获/采矿之前也一样】收获和采矿是**可持续**的（庄稼会长、矿不会跑），
+    //      晚一拍没损失；箱子晚一拍可能就没了。
+    //
+    //    `pickLoot` 自己的跳过条件（血 < minHp、背包没地方、夜里在露天）**一个字没改** ——
+    //      所以"血低 / 夜里露天"时她照样不去开，只调整了"别的都不冲突时先做哪件"。
+    for (const [k, f] of [['loot', () => tryLoot(nightOut)], ['torch', tryTorch], ['harvest', tryHarvest], ['mine', tryMine], ['delve', tryResumeDelve], ['cave', tryCave]]) {
       const r = await f();
       if (!r) continue;
       if (r.did) { I.last = { t: now, ...last, [k]: '做了' }; return; }
@@ -2191,7 +2331,7 @@ function install (bot, state, deps) {
   bot.on('breath', wakeChecks);
   bot.on('health', wakeChecks);
   bot.on('entityUpdate', onUpdate);
-  bot.once('end', () => { ended = true; bot.removeListener('entityHurt', wakeChecks); bot.removeListener('breath', wakeChecks); bot.removeListener('health', wakeChecks); bot.removeListener('entityUpdate', onUpdate); clearInterval(hazardTimer); clearInterval(timer); clearInterval(gazeTimer); clearInterval(toolTimer); clearInterval(combatTimer); clearInterval(kitTimer); clearInterval(oreWatch); clearInterval(policyTimer); clearInterval(homeTimer); clearInterval(eatTimer); clearInterval(breathTimer); clearInterval(shoreTimer); clearInterval(effectTimer); });
+  bot.once('end', () => { ended = true; bot.removeListener('entityHurt', wakeChecks); bot.removeListener('breath', wakeChecks); bot.removeListener('health', wakeChecks); bot.removeListener('entityUpdate', onUpdate); clearInterval(hazardTimer); clearInterval(timer); clearInterval(gazeTimer); clearInterval(toolTimer); clearInterval(combatTimer); clearInterval(kitTimer); clearInterval(oreWatch); clearInterval(policyTimer); clearInterval(homeTimer); clearInterval(eatTimer); clearInterval(breathTimer); clearInterval(shoreTimer); clearInterval(effectTimer); clearInterval(perceptionTimer); });
 }
 
 /**

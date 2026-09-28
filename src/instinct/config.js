@@ -102,12 +102,47 @@ const CFG = {
   },
   loot: {
     enabled: process.env.MC_INSTINCT_LOOT !== 'false',
-    radius: 24,             // 看得见的箱子多远去开
+    // 2026-09-29（主人："野外的箱子，木桶也要作為重點，看到之后高優先級去獲取內容"）：
+    // 24 → 32，**跟感知扫描（CFG.perception.radius）一致**。
+    // 24 的时候"余光扫到 32 格有箱子、开箱本能却看不见"—— 两个半径不一致，
+    // 出现了"她知道有个箱子，但身体不动"的分裂。统一成 32。
+    radius: 32,             // 看得见的箱子多远去开
     structRadius: 40,       // 认出的建筑多远去
     structNear: 14,         // 进了建筑后，附近多少格的箱子一间间看
     minHp: 14,
     minFree: 3,
     cooldownMs: 15000,
+  },
+  // ---- 野外资源感知（2026-09-29，主人："對野外資源不敏感"）------
+  // 她走动时用"余光"扫一圈看得见的方块，分类聚片记进 `memory/resources.json`。
+  // 扫描本身走 `instinct/core.js` 的 `scanColumnsIn`（逐 chunk 列 + 列间让出），
+  // **绝不**同步扫大范围（2026-09-28 的 `homeTimer` 同步扫描把进程冻了 14 秒）。
+  perception: {
+    enabled: process.env.MC_INSTINCT_PERCEPTION !== 'false',
+    // 32 的理由（写在 world/perception.js 的 scanAround 也有一份）：
+    //   mind 的 /nearby 是 16、/chests/unseen 是 24 —— 32 明显更远，够"余光"；
+    //   32 格 = 2 个区块、25 个 chunk 列，配合每列 yield 单批可控；
+    //   再大（48/64）列数按平方涨，她去那儿也是走过去 —— 不如先看见近的。
+    radius: 32,
+    // 多久扫一轮。扫描本身约 3ms（自测实测 32 格 / 20 柱），所以真正的成本在"读方块 + 聚片"。
+    // 5 秒一轮：她走路 5 秒大概 20 格，够覆盖"余光"，也不会和拾取/战斗抢拍子。
+    everyMs: parseInt(process.env.MC_INSTINCT_PERCEPTION_MS ?? '5000', 10) || 5000,
+    // 每多少列让一次事件循环（诊断里 `batches` 用它算）。真让出由 scanColumnsIn 逐列做，
+    // 这个数字只用于"报出来我有多少批"。
+    batchColumns: 8,
+    // 竖直范围：和 homeTimer 的 dy 一致（16）。地表 + 洞穴一起看得见。
+    dy: 16,
+    // 归并距离：同类别、中心在这个范围内 → 记忆里算同一条（"那片黏土"不会碎成 30 条）。
+    mergeDist: 6,
+    // 聚片的相邻判定（切比雪夫距离）—— 一棵树的树冠/树干跨 3 格要能连起来。
+    gap: 3,
+    // 记忆过期：超过这个时间没再确认 → 降权（不是删！"没去确认" ≠ "没有了"）
+    decayAfterMs: 30 * 60 * 1000,
+    decayRate: 0.5,
+    // 走到那片发现没了 → 删掉（"东西真没了"）。只有"确实走过、且这一轮扫到过那里"才判。
+    goneRadius: 8,
+    // 事件冷却：同一个位置同一类，这么久内只告诉 mind 一次（别刷屏）
+    tellCooldownMs: 120000,
   },
   cave: {
     // 自动探洞会把“人在洞里”误当成“主人让我探险”。默认关闭；明确下矿走 /delve，

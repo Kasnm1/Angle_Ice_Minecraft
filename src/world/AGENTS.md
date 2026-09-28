@@ -14,6 +14,7 @@
 | `block-palette.js` / `palette-registry.js` | 方块调色板解析 + 三道闸 + 写回 `bot.registry` |
 | `item-registry.js` | 物品表写回 `bot.registry`（规则与方块**刻意不同**，见 [`registry/AGENTS.md`](../../registry/AGENTS.md)） |
 | `entity-registry.js` | 给 mineflayer 认不出的模组生物补服务端真名 + 记"谁打了她 / 打了玩家"（仇恨）；`isHostileEntity` 敌对判据只此一份 |
+| `perception.js` | **野外资源感知（她的"余光"，2026-09-29）**：`classifyBlock`（分类，**用真实标签**不是硬编码名单）、`cluster`（同类聚成一片）、`rank` / `renderLine`（排序 + 出那行字）、`scanAround`（32 格分段扫描，复用 `instinct/core.js` 的 `scanColumnsIn`）、以及持久记忆 `load` / `save` / `merge` / `forget` / `containerTargets`。**记忆格式见 [`memory/AGENTS.md`](../../memory/AGENTS.md)**；判据（家里/开过/太远）只此一份 |
 
 ## 必须知道的历史结论
 
