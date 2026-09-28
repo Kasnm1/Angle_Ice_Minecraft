@@ -61,9 +61,6 @@ $NODE scripts/instinct-scheduling-test.js        # 调度/计时器
 
 ## 已知遗留（第 3 步搬移时发现，**没改**，详见 `modpack-study/refactor-p3b/report.md`）
 
-- `scripts/instinct-scheduling-test.js` 在 `vm.runInNewContext` 里把 `instinct.js` 当**单文件**
-  加载，靠沙箱注入受控 `setInterval`/`setImmediate`。拆开后 `install()` 是从 `core.js`
-  **跨文件 require** 来的，用的是**宿主**计时器，沙箱桩接不到 → 该脚本报红并卡到超时。
-  函数内容没问题（`install` 逐字节相同）。修法是把这个脚本也改成「读整个 `src/instinct/` 目录拼起来」，
-  但那个文件不在第 3 步 b 的改动白名单里，留待授权。
+- ~~`scripts/instinct-scheduling-test.js` 拆开后卡到超时~~ —— 已修（2026-09-28）：脚本改成把 `src/instinct/` 的子文件也载进**同一个 vm 沙箱**，
+  `core.js` 的 `setInterval` 用的就是桩。37/37。
 
