@@ -1457,6 +1457,12 @@ function install (bot, state, deps) {
   }
 
   const bareName = (n) => String(n).replace(/^minecraft:/, '');
+  // 矿看不看得见：视线打得到，或者有一面露在空气/水里（矿洞里露出来的）—— 判据在 place.exposedToOpen，只一处
+  const oreVisible = (b) => {
+    if (!b) return false;
+    try { if (bot.canSeeBlock(b)) return true; } catch (_) {}
+    return require('./place').exposedToOpen(b.position, (x, y, z) => bot.blockAt(new (require('vec3').Vec3)(x, y, z)));
+  };
   const hazardAround = (p) => {
     for (const [dx, dy, dz] of [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]]) {
       const b = bot.blockAt(p.offset(dx, dy, dz));
@@ -1508,7 +1514,7 @@ function install (bot, state, deps) {
     const ores = pts.map(p => {
       const b = bot.blockAt(p); if (!b) return null;
       const row = T.ores.get(b.type);
-      return { name: row.name, pos: p, value: row.value, tier: row.tier, notPickaxe: !!row.notPickaxe, drops: (row.drops || []).map(bareName), visible: bot.canSeeBlock(b), hazard: hazardAround(p) };
+      return { name: row.name, pos: p, value: row.value, tier: row.tier, notPickaxe: !!row.notPickaxe, drops: (row.drops || []).map(bareName), visible: oreVisible(b), hazard: hazardAround(p) };
     }).filter(Boolean);
     // 镐子和"缺不缺这种矿"都要算上精妙背包里的（N-9：镐子在背包里时以前判"镐子不够"不挖）。
     // 背包读不到就按老逻辑（只看身上），并在 skip 原因里写清"背包读不到"——不能说"没有"。
@@ -2139,7 +2145,7 @@ function install (bot, state, deps) {
       if (!T.ores.size) return;
       const pick = pickaxeTier(carriedNames(bot, state).names);   // 算上精妙背包里的镐子（N-9）
       for (const p of bot.findBlocks({ matching: [...T.ores.keys()], maxDistance: 12, count: 16 })) {
-        const b = bot.blockAt(p); if (!b || !bot.canSeeBlock(b)) continue;
+        const b = bot.blockAt(p); if (!b || !oreVisible(b)) continue;   // 同一判据：露出一面也算看得见
         const row = T.ores.get(b.type);
         const isIron = (row.drops || []).some(d => /raw_iron|iron_ingot/.test(d));
         if (!(row.value === 'high' || (pick < TIER.iron && isIron))) continue;

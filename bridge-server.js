@@ -5462,7 +5462,9 @@ const handlers = {
         const all = state.bot.findBlocks({ matching: blockId, maxDistance: radius, count: 64 });
         const f1 = all.filter(p => !skipped.has(`${p.x},${p.y},${p.z}`));
         const f2 = f1.filter(p => !guardHome || !nearBuilt(p));
-        const cands = f2.filter(p => vein.has(`${p.x},${p.y},${p.z}`) || state.bot.canSeeBlock(state.bot.blockAt(p)));
+        // 看得见 = 视线打得到，或者有一面露在洞里的空气/水里（placeLogic.exposedToOpen；只露一面的矿以前被判成看不见）
+        const cands = f2.filter(p => vein.has(`${p.x},${p.y},${p.z}`) || state.bot.canSeeBlock(state.bot.blockAt(p))
+          || placeLogic.exposedToOpen(p, (x, y, z) => state.bot.blockAt(new Vec3(x, y, z))));
         // 高低差 4 → 8（2026-09-28 实机：矿洞里天花板上的矿常超过 4 格，全被筛掉，报成"128 格都没有"）
         const scoredAll = cands.map(p => ({ p, dy: Math.abs(p.y - Math.floor(me.y)), d: p.distanceTo(me), open: exposed(p) }));
         mineSeen = { radius, found: all.length, skippedBefore: all.length - f1.length, nearHouse: f1.length - f2.length, hidden: f2.length - cands.length, tooHighLow: scoredAll.filter(c => c.dy > 8).length };
@@ -5796,7 +5798,7 @@ const handlers = {
       error: mined.length > 0 ? undefined : (aborted ? '被新的命令打断了' : !mineSeen || !mineSeen.found
         ? `${mineSeen?.radius ?? radius} 格内没有 ${label}`
         : `${mineSeen.radius} 格内有 ${mineSeen.found} 块 ${label}，但挖不到：${[
-          mineSeen.hidden ? `${mineSeen.hidden} 块埋在石头里看不见（要挖进去，或者用 delve 往那边挖）` : '',
+          mineSeen.hidden ? `${mineSeen.hidden} 块埋在石头里（没有一面露出来，要挖进去，或者用 delve 往那边挖）` : '',
           mineSeen.tooHighLow ? `${mineSeen.tooHighLow} 块高低差超过 8 格` : '',
           mineSeen.nearHouse ? `${mineSeen.nearHouse} 块挨着人造方块（怕拆到房子）` : '',
           mineSeen.skippedBefore ? `${mineSeen.skippedBefore} 块刚才试过挖不动` : '',

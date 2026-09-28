@@ -320,7 +320,22 @@ function findStandY (dropY, selfY, blockAt, x, z) {
   return Math.min(fallback, s);
 }
 
-module.exports = { planPlacement, evaluateFace, bodyOccupies, eyeFrom, offsetLabel, AIRY, isReplaceable, setReplaceable, REACH, FACES, HALF_WIDTH, DEADLY, isStandable, reachableStandY, findStandY };
+/**
+ * 这块方块有没有"露出来"：六个面里有一面贴着空气 / 水 / 草这类空的格子。
+ * 2026-09-28 实机：矿洞里露出来的深层铁矿她不挖 —— 以前只认 canSeeBlock（眼睛到方块**中心**拉一条线），
+ * 矿只露一面（天花板、侧墙拐角）时那条线会先擦到旁边的石头，判成"看不见"。真人探险只要矿贴着洞里的空气就看得到。
+ * getBlock(x,y,z) → {name} | null；读不到的邻格不算露出（不猜）。
+ */
+function exposedToOpen (pos, getBlock) {
+  for (const [dx, dy, dz] of [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]]) {
+    let b = null;
+    try { b = getBlock(pos.x + dx, pos.y + dy, pos.z + dz); } catch (_) { b = null; }
+    if (b && isReplaceable(b.name)) return true;
+  }
+  return false;
+}
+
+module.exports = { exposedToOpen, planPlacement, evaluateFace, bodyOccupies, eyeFrom, offsetLabel, AIRY, isReplaceable, setReplaceable, REACH, FACES, HALF_WIDTH, DEADLY, isStandable, reachableStandY, findStandY };
 
 // ------------------------------------------------------------------ 自测
 
@@ -528,6 +543,13 @@ if (require.main === module && process.argv.includes('--selftest')) {
   check('模组草：能放能站', [isReplaceable('regions_unexplored:steppe_grass'), isStandable({ name: 'regions_unexplored:steppe_grass' })], [true, true]);
   check('标签里的蜂蜜网：能往里放，但不站（不是植物）', [isReplaceable('the_bumblezone:honey_web'), isStandable({ name: 'the_bumblezone:honey_web' })], [true, false]);
   check('纽扣（不在标签里）不算可替换', isReplaceable('spruce_button'), false);
+
+  console.log('\n露出来的方块（矿洞里看得见的矿）');
+  { const W = (open) => (x, y, z) => (open.includes(`${x},${y},${z}`) ? { name: 'cave_air' } : { name: 'stone' });
+    check('★ 天花板上只露下面一面 → 算露出', exposedToOpen({ x: 0, y: 10, z: 0 }, W(['0,9,0'])), true);
+    check('四面都是石头 → 没露出', exposedToOpen({ x: 0, y: 10, z: 0 }, W([])), false);
+    check('贴着水 → 算露出', exposedToOpen({ x: 0, y: 10, z: 0 }, (x, y, z) => (y === 11 ? { name: 'water' } : { name: 'stone' })), true);
+    check('邻格读不到 → 不猜', exposedToOpen({ x: 0, y: 10, z: 0 }, () => null), false); }
 
   console.log(`\n  ${pass}/${total} 通过`);
   process.exit(pass === total ? 0 : 1);
