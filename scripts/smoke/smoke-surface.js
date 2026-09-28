@@ -19,6 +19,13 @@
 
 const EventEmitter = require('events');
 const path = require('path');
+const os = require('os');
+
+// ★ 冒烟测试**绝不能碰真实记忆**：install() 会起 her 的余光计时器（`perceptionTimer`），
+//   它每几秒把野外资源写进 `memory/resources.json`。这里指到临时文件（同 smoke-install.js）。
+if (!process.env.MC_RESOURCES_FILE) {
+  process.env.MC_RESOURCES_FILE = path.join(os.tmpdir(), `smoke-resources-${process.pid}.json`);
+}
 
 const ROOT = path.join(__dirname, '..', '..');
 const { Vec3 } = require(path.join(ROOT, 'node_modules', 'vec3'));

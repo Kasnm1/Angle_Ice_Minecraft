@@ -15,6 +15,7 @@ const inventoryLedger = require('../../body/inventory-ledger.js');
 const itemRegistry = require('../../world/item-registry.js');
 const path = require('path');
 const pathing = require('../../world/pathing');
+const perception = require('../../world/perception.js');
 const storagePolicy = require('../../body/storage-policy.js');
 
 /** 跨文件符号表：由汇总文件 server.js 在两阶段装配时注入（见本文件末尾 bind）。 */
@@ -28,7 +29,7 @@ function sleep (...a) { return __ns.sleep.apply(null, a); }
 function withTimeout (...a) { return __ns.withTimeout.apply(null, a); }
 
 /**
- * 本文件负责的路由（11 条）：
+ * 本文件负责的路由（12 条）：
  *   GET /debug/registries
  *   GET /debug/registry
  *   GET /debug/packets
@@ -38,6 +39,7 @@ function withTimeout (...a) { return __ns.withTimeout.apply(null, a); }
  *   GET /ftbq/completed
  *   GET /instinct
  *   GET /instinct/events
+ *   GET /resources        —— 资源记忆原文（2026-09-29）：她"看过的"野外资源
  *   POST /instinct
  *   POST /stop
  *
@@ -249,7 +251,7 @@ const routes = {
     if (!I) return { installed: false };
     return {
       installed: true,
-      pickup: I.cfg.pickup, harvest: I.cfg.harvest, mine: I.cfg.mine, sleep: I.cfg.sleep, armor: I.cfg.armor, gaze: I.cfg.gaze, combat: I.cfg.combat, tidy: I.cfg.tidy, loot: I.cfg.loot, cave: I.cfg.cave, bridge: I.cfg.bridge, mlg: I.cfg.mlg, dig: I.cfg.dig, homeGrow: I.cfg.home, cmd: I.cfg.cmd, death: I.death || null, movePolicy: I.movePolicy || null,
+      pickup: I.cfg.pickup, harvest: I.cfg.harvest, mine: I.cfg.mine, sleep: I.cfg.sleep, armor: I.cfg.armor, gaze: I.cfg.gaze, combat: I.cfg.combat, tidy: I.cfg.tidy, loot: I.cfg.loot, cave: I.cfg.cave, bridge: I.cfg.bridge, mlg: I.cfg.mlg, dig: I.cfg.dig, homeGrow: I.cfg.home, cmd: I.cfg.cmd, perception: I.cfg.perception, death: I.death || null, movePolicy: I.movePolicy || null,
       combatNow: I.combat && I.running?.kind === 'combat' ? { since: I.combat.started, at: Date.now(), engaged: I.combat.engaged.size, killed: I.combat.killed } : null,
       lastCancel: state.lastCancel || null,
       diagnostics: I.diagnostics || {},
@@ -272,6 +274,49 @@ const routes = {
     if (!I) return { seq: 0, events: [] };
     return { seq: I.evSeq, events: I.events.filter(e => e.seq > (+since || 0)) };
   },
+
+  // 资源记忆原文（2026-09-29）：她"看过的"野外资源都在这里。
+  //
+  // 为什么要这个端点：她回答"哪里有黏土"时，证据是**记忆**，不是这一眼的扫描。
+  // 没有它就只能看见"这一眼扫到了什么"，分不清
+  //   "我记得 (x,z) 那边有"（记忆里在） / "附近看过了没有"（记忆里没有）
+  //   / "还没看过那边"（从来没扫到过）—— 这三种正是 AGENTS.md §5-1 要分开的。
+  //
+  // 参数（query，别从 body 取 —— `scripts/audit-get-params.js --strict` 管这个）：
+  //   radius  只看她这么近的记忆（默认不限）—— 有它才能说"附近 32 格看过了没有"
+  //   kind    只看某一类（log / ore / clay / sand / container …）
+  //   dim     默认按她**当前维度**过滤（跨维度的记忆走不过去，不该算"附近有"）
+  'GET /resources': async (_, q) => {
+    const st = perception.load();
+    const self = state.bot?.entity?.position || null;
+    const dim = q?.dim !== undefined ? String(q.dim) : (state.bot?.game?.dimension || null);
+    const radius = q?.radius !== undefined ? (+q.radius || 0) : null;
+    const kind = q?.kind ? String(q.kind) : null;
+    let places = st.places || [];
+    const total = places.length;
+    if (dim) places = places.filter(p => !p.dim || p.dim === dim);
+    if (kind) places = places.filter(p => p.kind === kind);
+    if (radius && self) places = places.filter(p => Math.hypot(p.center.x - self.x, p.center.z - self.z) <= radius);
+    // 家外的、没开过的容器单独列一份（主人点名的高优先级目标）
+    const seenKeys = state.__seenKeys || new Set();
+    const containers = perception.containerTargets(st.places || [], {
+      home: state.instinct?.home || null, seenKeys, dim: state.bot?.game?.dimension,
+    });
+    return {
+      ok: true,
+      file: perception.FILE(),
+      at: st.at, dim: st.dim,
+      total, filtered: places.length,
+      // 每条带上"她此刻在多远"（没有位置就 null —— 读不到，不是 0）
+      places: places.map(p => ({
+        ...p,
+        distance: self ? +Math.hypot(p.center.x - self.x, p.center.z - self.z).toFixed(1) : null,
+      })),
+      containersOutdoor: containers.map(c => ({ name: c.name, x: c.center.x, y: c.center.y, z: c.center.z, count: c.count })),
+      seenContainers: seenKeys.size,
+    };
+  },
+
   // home 除了几何位置，也带仓库白名单/保护规则；自动整理和 mind 手动整理必须共用。
   'POST /instinct': async (b = {}) => {
     const { radius, followRadius, home } = b;
@@ -362,7 +407,7 @@ function rebind (ns) {
 
 module.exports = {
   routes,
-  keys: ["GET /debug/registries","GET /debug/registry","GET /debug/packets","POST /jump","POST /flee","GET /inventory/ledger","GET /ftbq/completed","GET /instinct","GET /instinct/events","POST /instinct","POST /stop"],
+  keys: ["GET /debug/registries","GET /debug/registry","GET /debug/packets","POST /jump","POST /flee","GET /inventory/ledger","GET /ftbq/completed","GET /instinct","GET /instinct/events","GET /resources","POST /instinct","POST /stop"],
   bind,
   rebind,
  };

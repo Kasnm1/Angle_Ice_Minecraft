@@ -19,6 +19,15 @@
 
 const EventEmitter = require('events');
 const path = require('path');
+const os = require('os');
+
+// ★ 冒烟测试**绝不能碰真实记忆**：install() 会起 her 的余光计时器（`perceptionTimer`），
+//   它每几秒把野外资源写进 `memory/resources.json`。这里指到临时文件（和 perception.js
+//   的自测同一套做法）。放在 require 之前也没关系 —— perception.js 的路径是惰性求值的
+//   （`const FILE = () => process.env.MC_RESOURCES_FILE || …`），但放前面更保险。
+if (!process.env.MC_RESOURCES_FILE) {
+  process.env.MC_RESOURCES_FILE = path.join(os.tmpdir(), `smoke-resources-${process.pid}.json`);
+}
 
 const ROOT = path.join(__dirname, '..', '..');   // scripts/smoke/ → 项目根
 const { Vec3 } = require(path.join(ROOT, 'node_modules', 'vec3'));

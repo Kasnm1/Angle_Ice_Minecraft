@@ -317,6 +317,15 @@ function survivalFocus (s) {
   const boxes = s.unseenChests || [];
   if (boxes.length && !hostiles.length) {
     const b = boxes[0];
+    const wild = boxes.filter(c => c.outdoor).length;
+    // 野外箱子/木桶（任务书第 4 条，主人点名）：**手不忙就先开**——野外没开过的箱子是奖励箱，
+    // 一次性的，别人（这个服只有主人和她）不会替你留着。所以排在别的活前面，
+    // 但**不是压倒一切**：主人在叫你做事、在打架、夜里露天、血少 —— 这些先（和 pickLoot 的跳过条件一致）。
+    const busy = s.following || /follow|guard|attack|fight|escape|mine|delve|self_rescue/i.test(s.currentAction || '');
+    const risky = hostiles.length > 0 || (s.health != null && s.health <= 10);
+    if (wild && !busy && !risky) {
+      out.unshift(`野外有 ${wild} 个没打开过的箱子/木桶（最近的在 ${b.x},${b.y},${b.z}，${b.distance} 格）：手不忙就先过去开（check_chests），里面的东西拿走`);
+    }
     out.push(`视线里有 ${boxes.length} 个没打开过的箱子/木桶（最近的在 ${b.x},${b.y},${b.z}，${b.distance} 格）：先过去看（check_chests）—— 家外的是奖励箱，东西拿走；家里的看看放了什么`);
   }
   if (!home) {
@@ -366,6 +375,42 @@ function invText (items) {
   return (items || []).map(i => `${knowledge.label(i.name.includes(':') ? i.name : `minecraft:${i.name}`)}×${i.count}`).join('、') || '空的';
 }
 
+/**
+ * 她"现在缺什么" —— 喂给 `GET /surroundings` 的 needs，让桥接把她在意的东西排前面。
+ *
+ * 主人 2026-09-27："程序给事实、她自己排" —— 所以这里只是**排序线索**，不是命令：
+ * 计划当前步 / 心愿（正在研究的菜）/ 刚合成缺的料（技能报"失败：缺 XX"）。
+ * 拿不到就空着（桥接那边有自己的兜底排法：没开过的野外箱子永远在头两位）。
+ */
+function surroundNeeds () {
+  try {
+    const step = plan.current()?.text || '';
+    const A = ambition.state();
+    const focus = A.focus ? shortName(A.focus) : '';
+    // 刚失败缺的料：技能报回来的（见 liveFails 函数和 W.recentLive），只挑"缺 XX"那半句
+    const missing = (W.recentLive || []).map(x => String(x?.why || x?.text || '')).filter(x => /缺/.test(x)).slice(0, 4);
+    return [step, focus, ...missing].filter(Boolean).join(' ').slice(0, 200);
+  } catch (_) { return ''; }
+}
+
+/**
+ * 提示词里的【附近看得见的】—— 就一行（任务书第 3 条：只能加这一行）。
+ *
+ * 主人："對野外資源不敏感" —— 她以前只有"身边 16 格实体"，看不见树/矿/黏土/箱子。
+ * 现在桥接把 32 格内**看得见**的（露一面的就算）聚成几条，按"她缺什么 + 没开过的野外箱子"排好。
+ * 三种情形**分开说**（任务书：绝不能只有一个"附近没有"）：
+ *   ① 扫到了东西 → 照实念
+ *   ② 扫过了、附近确实没有 → "这块看过了没有"（不是"全世界没有"）
+ *   ③ 压根没读到（bridge 没起 / 端点旧） → "没看清"（不是"没有"）
+ */
+function surroundLine (s) {
+  const su = s?.surroundings;
+  if (su == null) return '';
+  if (su.line) return `【附近看得见的】${su.line}`;
+  // 记忆里有、只是这一刻 32 格里没看见 —— 那是"我记得在那边"，不是"没有"（分开说）
+  return '【附近看得见的】这一片 32 格没扫到东西（看过了，不是"没有"—— 更远的在你记得的地方，问你在哪记得就行）';
+}
+
 async function look () {
   const safe = p => bridge.get(p, 2000).catch(() => null);
   // 分两档（WorkBuddy 建议 32，Claude 核实：原来每秒 12 个请求打到 bridge，和本能、物理抢同一个事件循环）：
@@ -374,12 +419,15 @@ async function look () {
   const [st, inv, near, pl, chat, seen, slow, insNow] = await Promise.all([
     safe('/status'), safe('/inventory'), safe('/nearby?radius=16'), safe('/players'), safe('/chatlog?limit=30'),
     safe(`/containers/seen?since=${W.seenSince || 0}`),
-    slowDue ? Promise.all([safe('/doors?radius=6'), safe('/equipment'), safe('/chests/unseen?radius=24'), safe('/light')]) : null,
+    // 「附近看得见的」（她的余光，任务书第 3 条）：跟着慢档一起取 —— 本能层每 5 秒已经在扫了
+    // （见 instinct/core.js 的 perceptionTimer），mind 这边看一眼就行，不必每眼都问。
+    // 半径 32 和本能层扫描、tryLoot 一致（原来是 24，改了就对不上记忆里的野外箱子）。
+    slowDue ? Promise.all([safe('/doors?radius=6'), safe('/equipment'), safe('/chests/unseen?radius=32'), safe('/light'), safe(`/surroundings?radius=32&top=6&needs=${encodeURIComponent(surroundNeeds())}`)]) : null,
     // 本能现在的样子：战斗本能在打的时候，她不该抢着手（见 buildNow 的"【本能】"与 attack 工具）
     safe('/instinct'),
   ]);
   if (slow) W.slowLook = { at: Date.now(), v: slow };
-  const [doors, eq, boxes, lit] = W.slowLook?.v || [null, null, null, null];
+  const [doors, eq, boxes, lit, sur] = W.slowLook?.v || [null, null, null, null, null];
   // 本能（身体闲着时自己做的事）：做成了什么、看见什么没做成 —— 她得知道是自己干的
   const ins = await safe(`/instinct/events?since=${W.instinctSeq ?? 0}`);
   if (ins && Array.isArray(ins.events)) {
@@ -467,6 +515,9 @@ async function look () {
     curios: eq?.curios || null,
     backpack: eq?.backpack || null,
     unseenChests: boxes?.chests || [],
+    // 附近看得见的（余光）：桥接已经把同类聚成一条、按"她缺什么 + 没开过的野外箱子"排好了。
+    // 读不到就是 null（不是"附近什么都没有"）—— 提示词那边要分开说（任务书：不能只有一个"附近没有"）。
+    surroundings: sur?.ok ? { line: sur.line || '', items: sur.items || [], perf: sur.perf || null, at: sur.at || null } : null,
     light: lit?.light || null, dark: !!lit?.dark, torches: lit?.torches ?? null, lastBright: lit?.lastBright || null,
     // 本能层此刻在做什么：战斗本能在打的时候，她不该再伸手（见 combatInstinct / attack 工具）。
     // `readAt` 是这次成功读到的时刻 —— combatGuard 用它判"状态新不新鲜"（codex R-fix4-7）。
@@ -1092,6 +1143,7 @@ const SYSTEM = `你是 Angle_ICE（安琪），住在这个 Minecraft 模组服�
 - 位置说地方，不报坐标：家门口 / 楼上 / 矿洞底下 / 你左边那棵树。只有他问你在哪、又说不清的时候，或者你出事了要他来找你，才给一次坐标。
 - 他问你拿到了什么、箱子里有什么：挑两三样要紧的说（稀罕的、他用得上的、正缺的），剩下的"还有些杂的"一句带过。别像念清单一样一样报。
 - 事实（配方、数量、东西在哪）只说查到或看到的；没查就说"我查查"，查不到就说不知道。被追问时发现说错了，就认"我记错了"，别硬撑着再编一个。
+- 他问"XX 在哪"、或者你正缺某样东西：先看【附近看得见的】和你记得的地方，三种情形**说清是哪种** —— 记得在哪就说"我记得（x,z）那边有"，这一片扫过没有就说"附近看过了没有"，没去过那边就说"那边还没看过"。**绝不说成一句"附近没有"**（那是把"没去过""没扫到"当成"不存在"）；也别为了显得有用编一个坐标。
 - 普通物品栏和穿戴的精妙背包都是“你自己的随身物品”。找东西必须用 inventory(query) 同时查两处；返回 absenceProven=false 就先 open_backpack 刷新。没有查完两处，不准说“我没有”“弄丢了”“死时掉了”，更不能编物品消失的原因。
 - **自己的动作和因果也算事实**：你在地下，不等于你挖穿地板或掉下来。说“我挖穿了／摔下来了／被怪打下来”之前，必须有本轮工具结果或明确的本能动作记录证明这件事；只有位置变化、掉血或“当前位置像洞穴”都不算。没证据就说“我走到下面了，刚才怎么下来的我不确定”；玩家亲眼说是走下来的，要承认并改口，不能继续编原因。
 - 本能事件中的 entryMethod:unknown 是“没有记录进入方式”。任何事件文字和你的 inner 都可能不完整；只把已执行工具的返回和动作记录当作自己做过的证据。
@@ -1327,6 +1379,7 @@ function buildNow (why) {
     bodyNow(),
     (() => { const ci = combatInstinct(s); return ci ? `身体正在自己打${ci.name}${ci.killed ? `（已经打死 ${ci.killed} 只）` : ''}（战斗本能），不用你动手；要逃就说逃` : ''; })(),
     (() => { const f = survivalFocus(s); return f.length ? `\n【眼下最该操心的】\n${f.map(x => `· ${x}`).join('\n')}` : ''; })(),
+    surroundLine(s),
     W.projects?.length ? `\n【进行中的工程】${W.projects.map(p => `${p.name}(${p.id}) 完成 ${p.done}，还要挖 ${p.toDig}、放 ${p.toPlace}${Object.keys(p.missing || {}).length ? `，缺 ${Object.entries(p.missing).slice(0, 4).map(([k, n]) => `${knowledge.label(k.includes(':') ? k : 'minecraft:' + k).replace(/\(.*\)$/, '')}×${n}`).join('、')}` : ''}`).join('；')}` : '',
     W.layouts?.length ? `\n【家里的布置规划】${W.layouts.map(l => `${l.name}：摆好 ${l.done}/${l.total}${Object.keys(l.stillWant || {}).length ? `，还想要 ${Object.entries(l.stillWant).slice(0, 5).map(([k, n]) => `${knowledge.label(k.includes(':') ? k : 'minecraft:' + k).replace(/\(.*\)$/, '')}×${n}`).join('、')}` : ''}${l.canPlaceNow?.length ? `（手上已有 ${l.canPlaceNow.join('、')}）` : ''}${l.stale?.length ? `；要重新想的区：${l.stale.join('、')}` : ''}`).join('；')}` : '',
     W.commands?.known ? `\n【你能用的命令】传送/回家类：${W.commands.teleport.length ? W.commands.teleport.map(c => '/' + c).join(' ') : '没有'}${W.commands.admin?.length ? `；管理员（玩家明确要求才用）：${W.commands.admin.map(c => '/' + c).join(' ')}` : ''}` : '',
@@ -2124,6 +2177,9 @@ function mockBridge () {
     // 本能层现在什么样（战斗本能在打时 combatNow 非 null）
     if (p.startsWith('/instinct/events')) return { seq: 0, events: [] };
     if (p.startsWith('/instinct')) return { installed: true, combatNow: null, urgent: null, running: null };
+    // 她的余光（野外资源感知）：桥接聚好的一条 + 结构化条目
+    if (p.startsWith('/surroundings')) return { ok: true, radius: 32, at: Date.now(), line: '没开过的箱子 2 个（东北 20 格）、橡树 9 棵（东 6 格）', items: [{ kind: 'container', outdoor: true }, { kind: 'log' }], perf: { ms: 3, worstMs: 0.2 } };
+    if (p.startsWith('/chests/unseen')) return { chests: [] };
     return { success: true };
   };
   return {
@@ -3128,6 +3184,40 @@ async function selftest () {
     check('同一个晚上不重复说', W.pending.slice(n1).every(x => !/天黑了/.test(x.text)), W.pending.slice(n1).map(x => x.text));
     body._setBridge(base);
     W.phase = null;
+  }
+
+  console.log('\n她的余光（野外资源感知）：提示词里的那一行');
+  {
+    // 直接测真正跑的那个函数（surroundLine 由 buildNow 的 parts 调用）
+    check('★ 扫到东西：照实念（含"没开过的箱子"排在前面）', /【附近看得见的】没开过的箱子 2 个（东北 20 格）、橡树 9 棵（东 6 格）/.test(surroundLine({ surroundings: { line: '没开过的箱子 2 个（东北 20 格）、橡树 9 棵（东 6 格）' } })), surroundLine({ surroundings: { line: '没开过的箱子 2 个（东北 20 格）、橡树 9 棵（东 6 格）' } }));
+    // 扫过了没有 ≠ 没有：说"这块看过了没有"，不是"没有"
+    const none = surroundLine({ surroundings: { line: '', items: [] } });
+    check('★ 扫过了、附近没有：说"看过了没有"（不是"没有"）', /看过了/.test(none) && !/^【附近看得见的】没有/.test(none), none);
+    // 读不到 ≠ 没有：桥接没起 / 端点旧 → 整行不出现（不说"没有"）
+    check('★ 读不到（surroundings 为 null）：不冒出一行假"没有"', surroundLine({ surroundings: null }) === '', surroundLine({ surroundings: null }));
+    // 缺什么就排前面：桥接那边已经排好序，这里核对"她缺黏土时黏土在前"
+    check('★ 缺黏土：那一行里黏土在树前面', (() => { const l = '黏土一片（北 18 格，水下）、橡树 9 棵（东 6 格）'; const i = surroundLine({ surroundings: { line: l } }); return i.indexOf('黏土') < i.indexOf('橡树'); })(), true);
+    // 野外没开过的箱子：提示词里点名"手不忙就先过去开"，且排在第一条
+    const boxes = [{ name: 'chest', x: 20, y: 64, z: -12, distance: 23, outdoor: true }];
+    // survivalFocus 没有 pos 就整段不返回（见函数开头）—— 测试要带上 pos/items/nearby
+    const s2 = { health: 18, isDay: true, currentAction: null, pos: { x: 35, y: 64, z: -138 }, items: [], nearby: [], players: [], unseenChests: boxes, surroundings: { line: '没开过的箱子 1 个（东北 23 格）' } };
+    check('★ 野外箱子：那一行里有它（没开过的箱子）', /没开过的箱子/.test(surroundLine(s2)), surroundLine(s2));
+    // 手不忙 + 不危险：buildNow 会点名"先过去开"
+    {
+      const W0 = W.state;
+      W.state = { ...s2 };
+      const txt = buildNow('event').text;
+      check('★ 野外有没开过的箱子、手不忙：点名"先过去开"', /野外有 1 个没打开过的箱子.*先过去开/.test(txt), txt.match(/野外有[^\n]*/)?.[0]);
+      W.state = W0;
+    }
+    // 忙 / 危险时不催：跟着主人 / 打架 / 血少 → 让位给保命和主人
+    for (const [why, st] of [['跟着主人', { following: 'Ka_sum1' }], ['在打架', { currentAction: 'attack' }], ['血少', { health: 8 }]]) {
+      const W0 = W.state;
+      W.state = { ...s2, ...st };
+      const txt = buildNow('event').text;
+      check(`★ ${why}：不冒"野外有…先过去开"（让位给保命/主人）`, !/野外有 .*没打开过的箱子.*先过去开/.test(txt), txt.match(/野外有[^\n]*/)?.[0]);
+      W.state = W0;
+    }
   }
 
   console.log(`\n  ${pass}/${total} 通过`);

@@ -14,12 +14,17 @@ const __ns = {};
 let MAX_SCAN_BLOCK_POSITIONS;
 let state;
 let Vec3;
+let perception;
+let knowledge;
 
 function isPlayerBuilt (...a) { return __ns.isPlayerBuilt.apply(null, a); }
 
 /**
- * 本文件负责的路由（1 条）：
+ * 本文件负责的路由（2 条）：
  *   GET /scan
+ *   GET /surroundings   —— 她的"余光"（2026-09-29 新加）：周围约 32 格**看得见的**
+ *                          资源（树 / 矿 / 黏土 / 沙 / 作物 / 花 / 水 / 危险 / 容器），
+ *                          分类 + 聚片 + 按"她现在缺什么"排好序，给 mind 直接读。
  *
  * ⚠️ 上面的清单只是**说明**；真正的键名在下面 routes 对象里，与原 server.js 逐字一致。
  */
@@ -337,6 +342,78 @@ const routes = {
           + `现在最远看到 ${Math.sqrt(maxDist).toFixed(1)} 格 —— 缩小 radius 会更细，加大 radius 会更远`
         : undefined,
     };
+  },
+
+/**
+ * GET /surroundings —— 她的"余光"（2026-09-29，主人："對野外資源不敏感"）。
+ *
+ * 为什么不是加个参数到 `/scan`：`/scan` 是"有哪些方块、能不能挖"（P45/P20/P21 那套
+ * 挖矿判据），这个是"**这一片是什么资源、我要不要过去**"。两者服务的问题不同，
+ * 混在一起会让 `/scan` 的返回体继续膨胀（它已经 340 行了）。
+ *
+ * 数据来源全程是**真的**：
+ *   · 方块清单：`knowledge/generated/gamedata.json` 的真实标签（`block:minecraft:logs`
+ *     `block:forge:ores` …）展开成 registry id —— **不写死名单**；
+ *   · 矿的 tier/value：`knowledge/ores.json`（本能采矿用的同一份）；
+ *   · "看得见"：`bot.canSeeBlock` 或 `world/place.js` 的 `exposedToOpen`（同一份判据）；
+ *   · 分段让出：`instinct/core.js` 的 `scanColumnsIn`（**不重写扫描**，不冻进程）。
+ *
+ * 查询参数用 **query**（`scripts/audit-get-params.js --strict` 管这个）。
+ *   radius  32（默认；1–48）。32 的理由写在 `perception.scanAround` 的注释里。
+ *   top     返回几条（默认 6，最多 12）—— 和提示词里那一行的条数一致。
+ *   needs   逗号分隔的"她现在缺什么"（长期计划 / 心愿 / 合成缺料），排序用。
+ */
+'GET /surroundings': async (_, q) => {
+    if (!state.bot?.entity) return { ok: false, error: '还没连上（没有 bot）' };
+    const radius = Math.min(Math.max(4, parseInt(q?.radius ?? '32', 10) || 32), 48);
+    const top = Math.min(Math.max(1, parseInt(q?.top ?? '6', 10) || 6), 12);
+    const needs = q?.needs ? String(q.needs).split(',').map(s => s.trim()).filter(Boolean) : [];
+    if (!perception) return { ok: false, error: '感知模块没装上（perception 未注入）' };
+
+    // 真实标签 → registry id：从 knowledge 的 tags（`block:标签` → Set<全名>）拿
+    const tagIds = (tag) => {
+      try {
+        const set = knowledge?.load?.().tags?.get(`block:${tag}`);
+        return set ? [...set] : [];
+      } catch (_) { return []; }
+    };
+    const tagOf = (name, tag) => {
+      try {
+        const id = name.includes(':') ? name : `minecraft:${name}`;
+        return !!knowledge?.load?.().blockTags?.get(id)?.has(tag);
+      } catch (_) { return false; }
+    };
+
+    const r = await perception.scanAround({
+      bot: state.bot, radius, tagIds, tagOf,
+      scanIn: __ns.scanColumnsIn || require('../../instinct/core').scanColumnsIn,
+    });
+    // 记忆里"已经开过"的箱子不当新目标（判据在 body/util.js，同一份）
+    const seenKeys = state.__seenKeys || new Set();
+    const containers = perception.containerTargets(r.items, {
+      home: state.instinct?.home || null,
+      seenKeys,
+      dim: state.bot.game?.dimension,
+    });
+    // 把"开过的"标回 items（摘要行要能说"没开过的箱子 2 个"）
+    const seenSet = new Set([...r.items].filter(it => it.kind === 'container').map(it => perception.placeKey(it)));
+    const items = r.items.map(it => (it.kind === 'container'
+      ? { ...it, opened: seenKeys.has(perception.placeKey(it)) }
+      : it));
+    const ranked = perception.rank(items, needs, { max: top });
+    return {
+      ok: true,
+      radius, at: Date.now(),
+      // 每轮耗时写进诊断（任务书第 1 条）：单柱最长同步耗时 = worstMs
+      perf: r.perf,
+      kinds: ranked,
+      // 野外没开过的（主人点名"高优先级去获取内容"）—— 不要求"此刻看得见"
+      containers: containers.map(c => ({ name: c.name, x: c.center.x, y: c.center.y, z: c.center.z, distance: +Math.hypot(c.center.x - state.bot.entity.position.x, c.center.z - state.bot.entity.position.z).toFixed(1) })),
+      line: perception.renderLine(ranked),
+      // "没有"和"没扫到"分开：unloaded = 区块没加载（读不到），不是"没有"
+      unloaded: r.perf.unloadedColumns || 0,
+      seenContainers: seenSet.size,
+    };
   }
 };
 
@@ -345,17 +422,21 @@ function bind (ns) {
   if (ns.MAX_SCAN_BLOCK_POSITIONS !== undefined) MAX_SCAN_BLOCK_POSITIONS = ns.MAX_SCAN_BLOCK_POSITIONS;
   if (ns.isPlayerBuilt !== undefined) isPlayerBuilt = ns.isPlayerBuilt;
   if (ns.state !== undefined) state = ns.state;
+  if (ns.perception !== undefined) perception = ns.perception;
+  if (ns.knowledge !== undefined) knowledge = ns.knowledge;
 }
 
 /** 见 extract.js：在 loadDependencies() 之后由 server.js 再调一次，补上最新值。 */
 function rebind (ns) {
   for (const k of Object.keys(ns)) if (!(k in __ns)) __ns[k] = ns[k];
   Vec3 = ns.Vec3;
+  perception = ns.perception ?? perception;
+  knowledge = ns.knowledge ?? knowledge;
 }
 
 module.exports = {
   routes,
-  keys: ["GET /scan"],
+  keys: ["GET /scan", "GET /surroundings"],
   bind,
   rebind,
  };

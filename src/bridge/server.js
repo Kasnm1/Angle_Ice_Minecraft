@@ -101,6 +101,12 @@ for (const mod of [config, stateMod, util, goto, connect, http]) {
 
 for (const mod of [config, stateMod, util, goto, connect, http]) merge(mod);
 // 路由文件只提供 routes，稍后单独拼（不进 __ns —— 它们没有需要互相引用的名字）
+//
+// 两个**路由也要用**的模块（2026-09-29）：`GET /surroundings` 要真实的 knowledge 标签
+// 和 `world/perception.js`。它们不是拆分产物、原本在别的分区，所以在这里补进 __ns，
+// 由 routes/scan.js 的 bind/rebind 抄走（不这样做，路由里 require 也能跑，
+// 但会和"谁能注入测试替身"这条约定打架）。
+merge({ perception: require('../world/perception.js'), knowledge: require('../knowledge/knowledge.js') });
 
 // ---- 补绑包装：让 `loadDependencies()` 之后所有人拿到最新值 ------------------
 //

@@ -192,6 +192,10 @@
     "source": "bridge"
   },
   {
+    "key": "GET /resources",
+    "source": "bridge"
+  },
+  {
     "key": "GET /scan",
     "source": "bridge"
   },
@@ -201,6 +205,10 @@
   },
   {
     "key": "GET /status",
+    "source": "bridge"
+  },
+  {
+    "key": "GET /surroundings",
     "source": "bridge"
   },
   {
