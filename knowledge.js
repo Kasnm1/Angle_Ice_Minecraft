@@ -982,4 +982,6 @@ if (require.main === module) {
   else console.log('用法：node knowledge.js --selftest | recipe|uses|obtain|tree|guide|resolve|describe <名字>');
 }
 
-module.exports = { load, resolve, recipesFor, usesOf, obtain, materialTree, guide, describe, label, harvestTool, recipeRank, stationOf };
+// `naturalRaw` / `tagName` 导出给 hands.craft2 用：挑"最容易做的一条配方"时，
+// 要判"缺的原料能不能直接从自然方块挖到"，判据只此一份（AGENTS.md §5）—— 别在 hands 里另写一份。
+module.exports = { load, resolve, recipesFor, usesOf, obtain, materialTree, guide, describe, label, harvestTool, recipeRank, stationOf, naturalRaw, tagName };

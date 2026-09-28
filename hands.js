@@ -965,6 +965,127 @@ async function craftByRecipeBook (bot, recipeId, times, table) {
   return made;
 }
 
+/**
+ * 挑"最容易做的一条配方"，并说清缺什么。
+ *
+ * 起因（2026-09-28 实机）：`POST /craft2 {itemName:"stone_pickaxe"}` 的报错把**每条候选配方**的缺料
+ * 混在一句里吐出来 —— `缺 任意「#forge:rods/wooden（如 木棍）」(#forge:rods/wooden)；缺 火成岩(terramity:igneostone)、
+ * 木棍(minecraft:stick)`。她抓不住重点，而且"火成岩"这种模组石头本来就不该出现在首选建议里。
+ *
+ * 判据（复用 knowledge.js 已有的，不另写一份 —— AGENTS.md §5）：
+ *   · **原版优先**是最强的信号（`recipeRank`）：背包内 < 工作台/熔炉 < 原版类型 < 模组。
+ *     先按它排，能挡住"箱子 ← 橡木箱子"这类整合包加的**转换配方**被当成首选。
+ *   · 同档次再看缺的东西**越少越好**（种类数 → 总个数）。
+ *   · 缺的能**从自然方块直接挖到**（`naturalRaw`）优于还得再合成的。
+ * 报错只讲选中的这一条；其余配方最多加一句"另外还有 N 种做法"。
+ *
+ * @returns { best, rest, needs }
+ *   needs = [{ need, have, ok, sample }]  每种原料：要几个、有几个、够不够
+ */
+function rankRecipesFor (k, KB, have, id, R, times) {
+  const raw = (x) => !!(x && k.naturalRaw?.(x));
+  // 说给人听的名字：身上有的 > 原版里最"素"的那个 > 能直接挖到的 > 标签里第一个。
+  // 为什么这么挑：`quark:stone_tool_materials` 里有 andesite / diorite / granite / polished_andesite /
+  // infested_stone / stone / deepslate / tuff ……，主人能一眼认出来的是"石头"，不是"抛光安山岩"或"凝灰岩"
+  // （2026-09-28 实测踩到）。判据：① 名字里没有加工前缀（polished/chiseled/…）
+  // ② 名字最短（"stone" 比 "andesite"/"deepslate" 基础）③ 能用来做的东西最多（越基础的材料配方越多）。
+  const VARIANT_RE = /(?:^|[:_])(polished|chiseled|smooth|cut|cracked|mossy|infested|carved|waxed|stripped)(?:_|$)/;
+  /**
+   * 说给人听的名字。
+   * 优先级：身上有的 > **标签名里带这个基底名**的 > 最"素"的原版 > 能直接挖到的 > 第一个。
+   *
+   * `quark:stone_tool_materials` 里有 andesite / diorite / granite / polished_andesite / infested_stone /
+   * stone / deepslate / tuff ……，主人能一眼认出来的是"石头"。光按名字长短会挑到"凝灰岩(tuff)"，
+   * 但**标签名 `stone_tool_materials` 里就写着 stone** —— 这才是这个标签的本意（2026-09-28 实测踩到）。
+   */
+  const pickSample = (ids, alts) => {
+    const held = ids.find(x => (have.get(x) || 0) > 0);
+    if (held) return held;
+    const tagIds = (alts || []).filter(a => a.tag).map(a => String(a.tag).split(':').pop());
+    const vanilla = ids.filter(x => String(x).startsWith('minecraft:'));
+    const plain = vanilla.filter(x => !VARIANT_RE.test(x));
+    const pool = plain.length ? plain : vanilla;
+    // 先看"标签名里写着它"的那个 —— 这是标签的本意，哪怕它自己不是 naturalRaw
+    // （`minecraft:stone` 不是 naturalRaw，挖石头得到的是圆石，但"石头"才是主人认得的名字）。
+    // 2026-09-28 Claude 复查：先挑"能直接从自然方块挖到"的（石镐的 stone_tool_materials 里有圆石 —— 挖石头掉的就是它），
+    // 挑不到再按标签名（木板这类本来就要合成的）。以前名字优先，报成"石头 3"，她会去找石头，挖下来却是圆石。
+    const rawNamed = pool.filter(raw);
+    if (rawNamed.length) {
+      const pick = rawNamed.find(x => /(^|:)cobblestone$/.test(x)) || rawNamed[0];
+      return pick;
+    }
+    const named = pool.find(x => tagIds.some(t => t.split('_').includes((x.split(':')[1] || '').split('_')[0])));
+    if (named) return named;
+    const crafty = pool.filter(raw);
+    const final = crafty.length ? crafty : pool;
+    return final.slice().sort((a, b) => (a.split(':')[1] || '').length - (b.split(':')[1] || '').length
+      || (KB.byOutput.get(b) || []).length - (KB.byOutput.get(a) || []).length)[0]
+      || ids.find(raw) || ids[0] || null;
+  };
+  const slotIds = (alts) => [...new Set(alts.flatMap(a => (a.item ? [a.item] : [...(KB.tags.get(`item:${a.tag}`) || [])])))];
+  const slotNeed = (alts, need) => {
+    const ids = slotIds(alts);
+    const got = ids.reduce((n, x) => n + (have.get(x) || 0), 0);
+    return { need, have: got, ok: got >= need, sample: pickSample(ids, alts) };
+  };
+  const needs = (r) => {
+    if (r.shape) {
+      return Object.entries(r.shape.key).map(([ch, alts]) => {
+        const n = r.shape.pattern.join('').split(ch).length - 1;
+        return slotNeed(alts, n * times);
+      });
+    }
+    return r.in.map(s => slotNeed(s.alts, s.count * times));
+  };
+  // 这条配方是不是"**拆回来**"而不是"做出来"。
+  // 实机踩到：`chest` 的首选曾经是 `quark:.../chest_revert`（原料 = `#quark:revertable_chests`，
+  // 里面是各种 *_chest），报错成了"还缺 橡木箱子"—— 箱子当然不该用箱子做。
+  // 判据：**同一格**里每个候选原料的"基底名"都和目标一样（chest 那一格全是 *_chest）
+  // —— 那就是把目标本身换个形态，不是获得它的途径。
+  const baseName = (x) => String(x).split(':').pop().replace(/^.*_/, '');
+  const targetBase = baseName(id);
+  const isRevert = (r) => (r.shape
+    ? Object.values(r.shape.key)
+    : r.in.map(s => s.alts))
+    .some(alts => {
+      const ids = slotIds(alts);
+      return ids.length > 0 && ids.every(x => baseName(x) === targetBase);
+    });
+  const score = (r) => {
+    const ns = needs(r);
+    const short = ns.filter(s => !s.ok);
+    // 原版优先（recipeRank）是第一位的：整合包里的"转换配方"缺料同样少，但绝不该被推荐 —— 它只是
+    // 换个形态。用 isRevert 把它整个踢出候选。
+    return {
+      ns, revert: isRevert(r),
+      rank: [k.recipeRank(r), short.length, short.reduce((n, s) => n + (s.need - s.have), 0),
+        short.filter(s => s.sample && !raw(s.sample)).length],
+    };
+  };
+  const scored = R.map(r => ({ r, ...score(r) }));
+  // 有"真做法"就只在真做法里排；全都是拆回来的（罕见）才退回全量。
+  const real = scored.filter(s => !s.revert);
+  const pool = real.length ? real : scored;
+  const ranked = pool.sort((a, b) => {
+    for (let i = 0; i < a.rank.length; i++) if (a.rank[i] !== b.rank[i]) return a.rank[i] - b.rank[i];
+    return 0;
+  });
+  const best = ranked[0];
+  return { best, rest: ranked.slice(1), needs: best.ns, all: scored };
+}
+
+/** 把"缺什么"说成人话：`做石镐还缺：圆石 3（有 0）、木棍 2（有 1）`。tag 用具名例子，不吐 #forge:... */
+function shortfallText (k, KB, id, needs) {
+  const short = needs.filter(s => !s.ok);
+  if (!short.length) return null;
+  const parts = short.map(s => {
+    const name = s.sample ? k.label(s.sample) : '原料';
+    const bare = name.includes('(') ? name.slice(0, name.indexOf('(')) : name;
+    return `${bare} ${s.need}（有 ${s.have}）`;
+  });
+  return `做${k.label(id)}还缺：${parts.join('、')}`;
+}
+
 async function craft2 (bot, { itemName, count = 1 } = {}, withTimeout) {
   const k = K(); const KB = k.load();
   const id = k.resolve(itemName, 1)[0];
@@ -1072,7 +1193,15 @@ async function craft2 (bot, { itemName, count = 1 } = {}, withTimeout) {
     }
     return { crafted: id, made, recipe: r.id, consumed: d.lost, usedTable: !!recipe.requiresTable };
   }
-  throw new Error(`现在做不了 ${k.label(id)}：${[...new Set(tried)].slice(0, 4).join('；')}`);
+  // 全试完了还是没做成：不再把每条配方的缺料混在一句里（那样她抓不住重点）。
+  // 挑**最容易做的一条**说清楚缺什么，其余最多提一句"还有 N 种做法"。
+  const { best, rest, needs } = rankRecipesFor(k, KB, have, id, cands, Math.max(1, Math.ceil(count / ((cands[0].out.find(o => o.item === id)?.count) || 1))));
+  const shortText = shortfallText(k, KB, id, needs);
+  const extra = rest.length ? `（另外还有 ${rest.length} 种做法）` : '';
+  if (shortText) throw new Error(`${shortText}${extra}`);
+  // 原料都够却没做成 = 不是"缺料"，是尝试过程出错（要工作台没找到 / 摆好了服务器没给）
+  const why = [...new Set(tried)].slice(0, 2).join('；');
+  throw new Error(`现在做不了 ${k.label(id)}：材料是够的${why ? `，但${why}` : '，摆了没做成'}${extra}`);
 }
 
 // ------------------------------------------------------------------ 熔炉类
@@ -1301,6 +1430,42 @@ function ladderBottomReachable (col, feetY) {
   return Math.abs(col.bottom - Math.floor(feetY)) <= 2.5;
 }
 
+/**
+ * 爬到梯子顶以后，从梯子格**迈出去**该踩哪一格。
+ *
+ * 纯函数（自测直接驱动，不用真游戏）：给定梯子顶那一格的方块（为了读 `facing`）和
+ * `blockAt(x,y,z)` 读方块，返回**按优先级排好的可站格**。
+ *
+ * 为什么先看 facing：梯子是贴在墙上的一片薄板，`facing` 是它**背对墙**的方向，
+ * 所以有楼板的那一侧在 **-facing**（梯子正对的那面墙那侧）—— 先往那边迈，命中率最高。
+ * 读不到 `facing` 就四个方向都试（任务书给的兜底）。
+ *
+ * 层高怎么选：先试**梯子顶那一层**（脚踩 top）—— 敞开的阁楼/二层就是这种，人挂在梯子顶
+ * 往旁边一迈就上去了；没有才试 `top+1`（活板门那层地板，即梯子穿过的楼板）；再没有才试 `top+2`。
+ *
+ * ⚠️ 旧版是 `top+2 → top+1 → top` 这个顺序，而且要求先爬到 top+1 才肯迈。
+ * 实机 `爬到 y=128.2 就上不去了（梯子顶是 128）`：梯子顶 128、上面全空 → 非要爬到 129，
+ * 但梯子到 128 就没了，永远到不了，连迈的机会都没有（2026-09-28 修）。
+ */
+function ladderExitTargets (ladderTopBlock, col, blockAt) {
+  const FACE_BACK = { north: [0, 1], south: [0, -1], west: [1, 0], east: [-1, 0] };   // facing 的反方向
+  const back = FACE_BACK[String(ladderTopBlock?.getProperties?.().facing || '').toLowerCase()];
+  const dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+  const order = back ? [back, ...dirs.filter(([dx, dz]) => dx !== back[0] || dz !== back[1])] : dirs;
+  const usable = (c) => {
+    const under = blockAt(c.x, c.y - 1, c.z);
+    const feet = blockAt(c.x, c.y, c.z);
+    const head = blockAt(c.x, c.y + 1, c.z);
+    return solidUnder(under) && passable(feet) && passable(head);
+  };
+  const at = (y) => order.map(([dx, dz]) => ({ x: col.x + dx, z: col.z + dz, y })).filter(usable);
+  for (const y of [col.top, col.top + 1, col.top + 2]) {
+    const hit = at(y);
+    if (hit.length) return hit;
+  }
+  return [];
+}
+
 async function holdControls (bot, controls, ms) {
   for (const c of controls) bot.setControlState(c, true);
   await sleep(ms);
@@ -1396,21 +1561,20 @@ async function climbColumn (bot, state, col) {
     }
   }
   const topY = bot.entity.position.y;
-  if (topY < exitFeetY - 0.6) throw new Error(`爬到 y=${topY.toFixed(1)} 就上不去了（梯子顶是 ${col.top}）`);
-  log.push(`爬到了 y=${topY.toFixed(1)}`);
+  // ⚠️ 别在这里就判死（2026-09-28 修）。旧实机日志：`爬到 y=128.2 就上不去了（梯子顶是 128）`×4
+  // —— 梯子顶 128、上面 129/130/131 全空（敞开的阁楼），所以 `ceil=null` → `exitFeetY=129`，
+  // 于是要求爬到 129；可梯子到 128 就没了，人最高只能挂到 128.2，**永远到不了 129**，
+  // 结果连"往旁边迈上楼板"都没试就抛错了。现在：到没到 exitFeetY 都往下走去迈楼板，
+  // 只在**离梯子顶还差得远**（连顶都没够着）时才报错。
+  if (topY < col.top - 0.6) throw new Error(`爬到 y=${topY.toFixed(1)} 就上不去了（梯子顶是 ${col.top}）`);
+  log.push(`爬到了 y=${topY.toFixed(1)}${topY < exitFeetY - 0.6 ? '（上方够不着了，改从侧面迈出去）' : ''}`);
 
-  // 迈出去：找梯子顶旁边能站的格子（脚下实心、身体两格空）
-  const landY = col.top + 2;
-  const exits = [[1, 0], [-1, 0], [0, 1], [0, -1]].map(([dx, dz]) => ({ x: col.x + dx, z: col.z + dz }))
-    .filter(c => solidUnder(bot.blockAt(new Vec3(c.x, landY - 1, c.z))) && passable(bot.blockAt(new Vec3(c.x, landY, c.z))) && passable(bot.blockAt(new Vec3(c.x, landY + 1, c.z))));
-  // 出口层就在梯子顶上一格（活板门那层地板）的情况：脚下是地板，站在 top+1
-  const exits2 = exits.length ? [] : [[1, 0], [-1, 0], [0, 1], [0, -1]].map(([dx, dz]) => ({ x: col.x + dx, z: col.z + dz, y: col.top + 1 }))
-    .filter(c => solidUnder(bot.blockAt(new Vec3(c.x, c.y - 1, c.z))) && passable(bot.blockAt(new Vec3(c.x, c.y, c.z))) && passable(bot.blockAt(new Vec3(c.x, c.y + 1, c.z))));
-  // 头顶被挡：只能在梯子顶那一层（脚在 top）往旁边迈
-  const exits3 = exits.length || exits2.length ? [] : [[1, 0], [-1, 0], [0, 1], [0, -1]].map(([dx, dz]) => ({ x: col.x + dx, z: col.z + dz, y: col.top }))
-    .filter(c => solidUnder(bot.blockAt(new Vec3(c.x, c.y - 1, c.z))) && passable(bot.blockAt(new Vec3(c.x, c.y, c.z))) && passable(bot.blockAt(new Vec3(c.x, c.y + 1, c.z))));
-  const cands = exits.length ? exits.map(c => ({ ...c, y: landY })) : exits2.length ? exits2 : exits3;
+  // 迈出去：找梯子顶旁边能站的格子。挑哪一格 = ladderExitTargets（纯函数，自测直接驱动它）。
+  const ladderTop = bot.blockAt(new Vec3(col.x, col.top, col.z));
+  const blockAt = (x, y, z) => bot.blockAt(new Vec3(x, y, z));
+  const cands = ladderExitTargets(ladderTop, col, blockAt);
   if (!cands.length) throw new Error(`爬到顶了，但梯子顶 (${col.x},${col.top},${col.z}) 旁边没有能站的地方`);
+  log.push(`出口候选：${cands.map(c => `(${c.x},${c.y},${c.z})`).join(' ')}`);
   for (const c of cands) {
     for (let i = 0; i < 6; i++) {
       await bot.lookAt(new Vec3(c.x + 0.5, c.y + 1.6, c.z + 0.5), true);
@@ -4946,6 +5110,46 @@ if (require.main === module && process.argv.includes('--selftest')) {
     console.log('\n跨层入口：高两格的梯子仍应实际尝试');
     check('脚 y=121、梯子底 y=123 → 候选保留', ladderBottomReachable({ bottom: 123 }, 121.02), true);
     check('脚 y=121、梯子底 y=124 → 确实够不到', ladderBottomReachable({ bottom: 124 }, 121.02), false);
+
+    console.log('\n梯子到顶迈楼板：目标格要落在楼板上，且优先 facing 的反方向');
+    {
+      // 假世界：一列梯子贴在 z-1 那面墙（facing=south → 背对墙朝 +z，楼板在 -facing=-z 那侧）。
+      // 实机现场：梯子顶 y=128，129/130/131 全空（敞开阁楼），楼板在 (0,128,-1)。
+      const world = new Map();
+      const put = (x, y, z, name) => world.set(`${x},${y},${z}`, { name, boundingBox: /air/.test(name) || /ladder/.test(name) ? 'empty' : 'block' });
+      const blockAt = (x, y, z) => world.get(`${x},${y},${z}`) || { name: 'air', boundingBox: 'empty' };
+      // 梯子 z=0，从 120 到 128
+      for (let y = 120; y <= 128; y++) put(0, y, 0, 'ladder');
+      // 楼板（阁楼地板）在 z=-1 那一层，脚踩 y=128
+      put(0, 127, -1, 'oak_planks');
+      put(0, 128, -1, 'air'); put(0, 129, -1, 'air');
+      // 四周墙都堵上，只留 -z 那一侧能站（复现实机"只有楼板那边能迈"）
+      put(0, 127, 1, 'oak_planks'); put(0, 128, 1, 'oak_planks');   // +z 那面是墙
+      put(1, 127, 0, 'oak_planks'); put(1, 128, 0, 'oak_planks');
+      put(-1, 127, 0, 'oak_planks'); put(-1, 128, 0, 'oak_planks');
+      const ladderFacingSouth = { getProperties: () => ({ facing: 'south' }) };
+      const col = { x: 0, z: 0, bottom: 120, top: 128 };
+      const cands = ladderExitTargets(ladderFacingSouth, col, blockAt);
+      check('找得到楼板上的可站格', cands.length > 0, true);
+      check('★ 首选格是楼板那边 (0,128,-1)（facing=south 的反方向）', `${cands[0].x},${cands[0].y},${cands[0].z}`, '0,128,-1');
+      check('是**梯子顶那一层**（y=128），不是 top+2=130', cands[0].y, 128);
+      // 读不到 facing：也要能靠"脚下实心、头顶空"找到楼板
+      const noFacing = { getProperties: () => ({}) };
+      const cands2 = ladderExitTargets(noFacing, col, blockAt);
+      check('读不到 facing 时仍能找到楼板格', cands2.some(c => c.x === 0 && c.z === -1 && c.y === 128), true);
+      // 活板门那层（top+1）当出口的情况：梯子顶那层（128）四周没地板，只有 129 层有
+      const w2 = new Map();
+      const put2 = (x, y, z, name) => w2.set(`${x},${y},${z}`, { name, boundingBox: /air/.test(name) ? 'empty' : 'block' });
+      for (let y = 120; y <= 128; y++) put2(0, y, 0, 'ladder');
+      // 脚下实心在 128、身体空在 129、头顶空在 130 → 可站格是 y=129
+      put2(0, 128, -1, 'oak_planks'); put2(0, 129, -1, 'air'); put2(0, 130, -1, 'air');
+      // 128 那一层（脚踩 128）脚下是 127：不放地板 → 128 层不可站
+      put2(0, 127, -1, 'air');
+      const blockAt2 = (x, y, z) => w2.get(`${x},${y},${z}`) || { name: 'air', boundingBox: 'empty' };
+      const cands3 = ladderExitTargets(ladderFacingSouth, col, blockAt2);
+      check('top 那层没得站时退到 top+1（活板门那层地板）', cands3[0] && cands3[0].y, 129);
+    }
+
     {
       const mv = { exclusionAreasStep: [] };
       let costs = null;
@@ -4999,6 +5203,15 @@ if (require.main === module && process.argv.includes('--selftest')) {
       check('已经对 1 格，完成 20%', `${d.ok}/${d.pct}`, '1/20');
     }
 
+    console.log('\n合成缺料说成人话（测跑的那份：rankRecipesFor + shortfallText，用知识库真数据）');
+    {
+      const k = K(); const KB = k.load();
+      const say = (id, have = new Map()) => { const R = (KB.byOutput.get(id) || []).map(i => KB.recipes[i]); const r = rankRecipesFor(k, KB, have, id, R, 1); return shortfallText(k, KB, id, r.needs) || ''; };
+      const sp = say('minecraft:stone_pickaxe');
+      check('★ 石镐缺料说"圆石"（挖石头掉的就是圆石），不说"石头"', /圆石/.test(sp) && !/石头 \d/.test(sp), true);
+      check('★ 石镐缺料不提火成岩（模组配方）', /火成岩/.test(sp), false);
+      check('箱子缺料说木板', /木板/.test(say('minecraft:chest')), true);
+    }
     console.log('\n搭脚方块名单（整合包标签）');
     {
       const sc = scaffoldIds();
@@ -5115,4 +5328,4 @@ if (require.main === module && process.argv.includes('--selftest')) {
   })();
 }
 
-module.exports = { zoneArea, zoneWants, install, installDoorHabit, routes, slotByName, foodScore, fullId, botName, startFollow, farm, kitShortfall, kitAvailable, defaultLoadout, wearingBackpack, backpackTidy, fetchFromBackpack, ensureCarried, decideCarry, countInBackpackSeen, resolveCarryId, winInvCount, lookIntoBackpack, fuelValue, smelt, unseenChests, unseenCarts, inHomeArea, inCave, SCAFFOLD_IDS, scaffoldIds, isFiller };   // farm：收获本能直接调（instinct.js）
+module.exports = { rankRecipesFor, shortfallText, zoneArea, zoneWants, install, installDoorHabit, routes, slotByName, foodScore, fullId, botName, startFollow, farm, kitShortfall, kitAvailable, defaultLoadout, wearingBackpack, backpackTidy, fetchFromBackpack, ensureCarried, decideCarry, countInBackpackSeen, resolveCarryId, winInvCount, lookIntoBackpack, fuelValue, smelt, unseenChests, unseenCarts, inHomeArea, inCave, SCAFFOLD_IDS, scaffoldIds, isFiller };   // farm：收获本能直接调（instinct.js）

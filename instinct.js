@@ -1,6 +1,10 @@
 'use strict';
 
 const storagePolicy = require('./storage-policy');
+// 事件循环延迟监控（2026-09-28）：5 分钟一次的 homeTimer 大扫描曾让整个进程冻 ~14 秒
+// （实机 live-1214：12:20/12:25 的 scheduler.lagMs = 13511 / 14027，busyForMs 却是 0）。
+// monitorEventLoopDelay 量的是**事件循环本身**的延迟，和"本能是不是在忙"无关，正好能抓这种堵。
+const { monitorEventLoopDelay } = require('perf_hooks');
 // 敌对判据只此一份（AGENTS.md §5）：战斗本能、hands.threatNear、bridge /nearby 都调它。
 const { isHostileEntity } = require('./entity-registry.js');
 
@@ -151,6 +155,7 @@ const CFG = {
     enabled: process.env.MC_INSTINCT_PICKUP !== 'false',
     tickMs: 400,
     radius: 8,              // 水平几格内的掉落物才管
+    farRadius: 24,          // 闲着时去捡"看得见的"远处掉落物（tick 最后一步；0 = 关掉）—— 2026-09-28 加
     maxDy: 3,               // 高低差超过这个不管（楼上楼下、悬崖底）
     followRadius: 6,        // 跟随中：离她几格内
     followLeash: 8,         // 跟随中：离玩家几格内（捡完还追得上）
@@ -338,25 +343,32 @@ function whoThrew (spawnPos, players, radius = CFG.pickup.thrownRadius) {
  * 捡不捡、捡哪几堆。
  *
  * @param ctx.self       { x, y, z }   她的脚底
- * @param ctx.drops      [{ id, pos, ageMs, thrower, item }]  thrower = 谁扔的（'self' = 她自己，玩家名，null = 不是扔的）；item = 物品名或 null（读不到）
+ * @param ctx.drops      [{ id, pos, ageMs, thrower, item, visible }]  thrower = 谁扔的（'self' = 她自己，玩家名，null = 不是扔的）；item = 物品名或 null（读不到）；visible = 看得见吗（远处拾取用）
  * @param ctx.following  { pos } | null   正在跟的玩家
  * @param ctx.fails      Map id → { n, until }
  * @param ctx.canHold    (itemName|null) → boolean
  * @param ctx.now
+ * @param cfg.far        true 才走"远处拾取"模式：只挑 farRadius 以内**看得见**的（任务书第 4 条）。
+ *                       默认 false = 老行为（只用 radius，8 格内）。远处拾取是**显式**的另一件事，
+ *                       不能因为 cfg 里多了个数字就把普通拾取的半径悄悄放大。
  * @returns { ids: number[] } | { skip: string }   skip 写明为什么不捡（调试用，/instinct 看得到）
  */
 function pickPickup (ctx, cfg = CFG.pickup) {
   const { self, drops = [], following = null, fails = new Map(), canHold = () => true, now = Date.now() } = ctx;
   if (!self) return { skip: '没有位置' };
   const radius = following ? cfg.followRadius : cfg.radius;
-  const why = { young: 0, mine: 0, far: 0, full: 0, failed: 0 };
+  // 远处拾取模式：任务是"闲着时去捡看得见的"，所以只认 visible !== false 的；半径放宽到 farRadius。
+  const far = !!cfg.far && !following && cfg.farRadius > radius;
+  const reach = far ? cfg.farRadius : radius;
+  const why = { young: 0, mine: 0, far: 0, full: 0, failed: 0, hidden: 0 };
   const ok = [];
   for (const d of drops) {
     if (!d?.pos) continue;
     if (d.thrower === 'self') { why.mine++; continue; }
     if (d.ageMs < (d.thrower ? cfg.thrownSettleMs : cfg.settleMs)) { why.young++; continue; }
     const dist = hdist(d.pos, self);
-    if (dist > radius || Math.abs(d.pos.y - self.y) > cfg.maxDy) { why.far++; continue; }
+    if (dist > reach || Math.abs(d.pos.y - self.y) > cfg.maxDy) { why.far++; continue; }
+    if (far && d.visible === false) { why.hidden++; continue; }   // 远处：看不见的不去（不往黑处/墙后跑）
     if (following && hdist(d.pos, following.pos) > cfg.followLeash) { why.far++; continue; }
     const f = fails.get(d.id);
     if (f && f.n >= cfg.maxFails && now < f.until) { why.failed++; continue; }
@@ -365,7 +377,8 @@ function pickPickup (ctx, cfg = CFG.pickup) {
   }
   if (!ok.length) {
     const parts = Object.entries(why).filter(([, n]) => n).map(([k, n]) => `${k}=${n}`);
-    return { skip: parts.length ? `有掉落物但都不捡（${parts.join(' ')}）` : '附近没有掉落物' };
+    const tag = far ? `far=${reach} ` : '';
+    return { skip: parts.length ? `有掉落物但都不捡（${tag}${parts.join(' ')}）` : '附近没有掉落物' };
   }
   ok.sort((a, b) => a.dist - b.dist);
   return { ids: ok.slice(0, cfg.batch).map(o => o.id) };
@@ -998,6 +1011,42 @@ function install (bot, state, deps) {
   fillCfg(I.cfg);
   I.diagnostics = {};
   I.urgent = null;
+
+  // ---- 慢活计时 + 事件循环延迟（2026-09-28）
+  //
+  // 起因：实机每 5 分钟整个进程冻 ~14 秒。`scheduler.lagMs` 是"本能这一拍自己算的拍间隔"，
+  // 它能看出"某一拍晚了"，但 `busyForMs:0`（本能没在忙）时它分不清是谁堵的。
+  // 这里加两样：
+  //   · `slow(name, ms)` —— 每个大活干完量一次，超 200ms 打一行 `[instinct HH:MM:SS] slow <名字> <ms>`；
+  //   · `monitorEventLoopDelay` —— 量**事件循环本身**的延迟（和本能忙不忙无关）。
+  //     抓的是"同步代码堵住了整个进程"这种，正是 homeTimer 大扫描干的事。
+  if (!I.slowLog) I.slowLog = [];              // 最近几条慢活（GET /instinct 看）
+  const SLOW_MS = 200;
+  const slow = (name, ms) => {
+    if (!(ms >= SLOW_MS)) return ms;
+    const stamp = new Date().toTimeString().slice(0, 8);
+    console.log(`[instinct ${stamp}] slow ${name} ${ms.toFixed(0)}`);
+    I.slowLog.push({ at: Date.now(), name, ms: Math.round(ms) });
+    if (I.slowLog.length > 20) I.slowLog.shift();
+    return ms;
+  };
+  /** 量一段同步大活的耗时。fn 必须是同步的（这里就是要抓同步堵住事件循环的那段）。 */
+  const timed = (name, fn) => { const t0 = process.hrtime.bigint(); const r = fn(); slow(name, Number(process.hrtime.bigint() - t0) / 1e6); return r; };
+
+  let loopHist = null;
+  try {
+    loopHist = monitorEventLoopDelay({ resolution: 20 });
+    loopHist.enable();
+  } catch (_) { loopHist = null; }
+  /** 事件循环延迟（毫秒）。p50/p99/max；max 是**自上次读以来**的最大值，读完就重置，别让它一直粘着历史峰值。 */
+  const loopDelay = () => {
+    if (!loopHist) return null;
+    const ms = (ns) => Math.round(ns / 1e6);
+    const out = { p50: ms(loopHist.percentile(50)), p99: ms(loopHist.percentile(99)), max: ms(loopHist.max) };
+    loopHist.reset();
+    return out;
+  };
+
   let ended = false;
   let sleepAnchor = null; let sleptAt = 0;
   const sleeping = () => {
@@ -1063,6 +1112,33 @@ function install (bot, state, deps) {
       if (!itemName) return false;   // 读不出是什么，又没有空格 —— 保守：不去
       return bot.inventory.items().some(i => i.name === itemName && i.count < (i.stackSize || 64));
     } catch (_) { return false; }
+  }
+
+  /**
+   * 这堆掉落物她**看得见**吗（远处拾取用）。
+   *
+   * mineflayer 只有 `canSeeBlock`（blocks.js:229，用 `world.raycast` 打一条视线），没有 `canSeeEntity`。
+   * 这里用同样的 `world.raycast` 从眼睛打到掉落物那格：中途撞到实心方块 = 被挡住。
+   * 读不到（没有 world/raycast、或位置缺失）返回 null —— 上层按"未知不远去"处理（AGENTS.md §5）。
+   */
+  function readVisible (e) {
+    try {
+      const self = bot.entity;
+      if (!e?.position || !self?.position) return null;
+      const dist = e.position.distanceTo(self.position);
+      if (dist <= 8) return true;            // 脚边的不必打光：8 格内不会被挡得看不见
+      const world = bot.world;
+      if (!world?.raycast) return null;      // 读不到视线就说不清 —— 返回 null，不当"看得见"
+      const eye = (self.eyeHeight || 1.62);
+      const headPos = self.position.offset(0, eye, 0);
+      const target = e.position.offset(0, 0.25, 0);   // 掉落物很小，瞄它的下半身
+      const dir = target.minus(headPos);
+      const range = dir.norm();
+      if (!(range > 0)) return null;
+      const hit = world.raycast(headPos, dir.scale(1 / range), Math.max(0, range - 0.6),
+        (block) => !!block && block.boundingBox === 'block');   // 撞到实心方块就算挡住
+      return !hit;                            // 没撞到东西 = 一路通到掉落物跟前 = 看得见
+    } catch (_) { return null; }
   }
 
   function threatened () {
@@ -1546,58 +1622,111 @@ function install (bot, state, deps) {
 
   // ---- 家的范围随基地长大
   let builtIds = null;
-  const homeTimer = setInterval(() => {
+  // ---- 家的范围随基地长大
+  //
+  // ⚠️ 这一段曾经是**同步**的一大坨（2026-09-28 修）：`findBlocks` 是同步函数，一次要逐格扫
+  // 十几万到几百万格（基准见 modpack-study/fix6-20260928/bench-findblocks.js），
+  // 4 次大扫描叠起来把整个事件循环堵住十几秒 —— 实机 `scheduler.lagMs` 每 5 分钟飙到 13.5~14 秒。
+  // 现在：每个大扫描之间 `await yieldLoop()` 让出事件循环；扫描本身按**竖直分段**（小 maxDistance）
+  // 拆成多轮，单轮同步占用控制在 50ms 以内。目标是"任何一个计时器回调单次同步 < 50ms"。
+  const yieldLoop = () => new Promise(res => setImmediate(res));
+  /**
+   * 分段扫人造方块：竖着一段段找，每段之间让出事件循环。
+   * 为什么竖着分：`findBlocks` 的层是**八面体**扩的（blocks.js:164），maxDistance 越大层数越多、
+   * 扫的 section 越多 —— 把一次大扫描拆成多个小 maxDistance，每轮同步成本就线性下来。
+   * @returns 所有段命中的点（已按 |y - cy| <= 16 过滤，和原来的 filter 一致）
+   */
+  async function scanBuiltChunks (bot, c, builtIdList, maxDist, cap) {
+    const { Vec3 } = require('vec3');
+    // 每段 32 格：基准实测单段同步 ~10–28ms（比 48 格那段还保守），真实基地再密一倍也还压在 50ms 内。
+    const segs = Math.max(1, Math.ceil(maxDist / 32));
+    const out = []; const seen = new Set();
+    for (let i = 0; i < segs; i++) {
+      const d = Math.min(maxDist, (i + 1) * 32);
+      const pts = timed(`home.scanBuilt d=${d}`, () => bot.findBlocks({ point: c, matching: builtIdList, maxDistance: d, count: cap }));
+      for (const p of pts) {
+        if (Math.abs(p.y - c.y) > 16) continue;          // 和原来的 filter 一致
+        const k = `${p.x},${p.y},${p.z}`;
+        if (seen.has(k)) continue;                        // 段之间有重叠，去重
+        seen.add(k); out.push(p);
+        if (out.length >= cap) return out;                // 到 cap 就停（原来是 count=4000）
+      }
+      await yieldLoop();
+    }
+    return out;
+  }
+  let homeScanBusy = false;
+  const homeTimer = setInterval(async () => {
+    if (homeScanBusy) return;                             // 上一轮还没跑完（分轮后可能跨多拍）：别叠
     try {
       const H = I.cfg.home; const h = I.home;
       if (!H.grow || !h || !bot.entity) return;
       if (Date.now() - (I.lastHomeScan || 0) < H.everyMs) return;
       if (Math.hypot(bot.entity.position.x - h.center.x, bot.entity.position.z - h.center.z) > h.radius + H.near) return;   // 不在家附近：区块可能没加载，数不准
+      homeScanBusy = true;
       I.lastHomeScan = Date.now();
-      if (!builtIds) builtIds = Object.values(bot.registry.blocksByName).filter(b => deps.isPlayerBuilt?.(b.name) || /farmland/.test(b.name)).map(b => b.id);
-      const { Vec3 } = require('vec3');
-      const c = new Vec3(h.center.x, h.center.y, h.center.z);
-      const pts = bot.findBlocks({ point: c, matching: builtIds, maxDistance: Math.min(H.cap, h.radius + H.near), count: 4000 })
-        .filter(p => Math.abs(p.y - h.center.y) <= 16);
-      const r = homeFootprint(pts.map(p => Math.hypot(p.x - h.center.x, p.z - h.center.z)), h.radius, H);
-      // 顺便看看家里的耕地湿不湿（moisture=0 = 4 格内没水，会退化回泥土、庄稼长得慢）—— 只告诉 mind，不自己引水（会动主人的布局）
-      const dryIds = ['farmland'].map(n => bot.registry.blocksByName[n]?.id).filter(v => v != null);
-      const dry = bot.findBlocks({ point: c, matching: dryIds, maxDistance: h.radius, count: 400 })
-        .map(p => bot.blockAt(p)).filter(b => b && +(b.getProperties?.().moisture ?? 7) === 0);
-      const day = Math.floor(Date.now() / 86400000);
-      if (dry.length && I.dryToldDay !== day) {
-        I.dryToldDay = day;
-        const p0 = dry[0].position;
-        event('farmland_dry', `家里有 ${dry.length} 块耕地是干的（比如 ${p0.x},${p0.y},${p0.z}）：4 格内没有水，会退化回泥土、庄稼长得慢`, { count: dry.length });
-      }
-      // 顺便看看家里有没有暗处（光照 0 夜里会刷怪）—— 只告诉 mind，不自己插火把
-      if (I.darkToldDay !== day) {
-        const LIGHT_RE = /(^|:|_)(torch|lantern|glowstone|shroomlight|froglight|campfire|redstone_lamp|end_rod|candle|light)$/;
-        const srcIds = Object.values(bot.registry.blocksByName).filter(b => LIGHT_RE.test(b.name) && !/redstone_torch|soul_torch_off/.test(b.name)).map(b => b.id);
-        const sourceLights = bot.findBlocks({ point: c, matching: srcIds, maxDistance: h.radius, count: 64 })
-          .filter(p => Math.abs(p.y - h.center.y) <= 8).map(p => bot.blockAt(p)?.light);
-        const airIds = ['air', 'cave_air'].map(n => bot.registry.blocksByName[n]?.id).filter(v => v != null);
-        const cells = [];
-        for (const p of bot.findBlocks({ point: c, matching: airIds, maxDistance: Math.min(h.radius, 32), count: 3000 })) {
-          if (Math.abs(p.y - h.center.y) > 4) continue;
-          const below = bot.blockAt(p.offset(0, -1, 0)); const head = bot.blockAt(p.offset(0, 1, 0));
-          if (!below || below.boundingBox !== 'block' || /farmland|glass|leaves|slab|stairs|carpet|water|lava/.test(below.name)) continue;
-          if (!head || head.boundingBox !== 'empty') continue;
-          cells.push({ pos: { x: p.x, y: p.y, z: p.z }, light: bot.blockAt(p)?.light });
+      try {
+        if (!builtIds) builtIds = Object.values(bot.registry.blocksByName).filter(b => deps.isPlayerBuilt?.(b.name) || /farmland/.test(b.name)).map(b => b.id);
+        const { Vec3 } = require('vec3');
+        const c = new Vec3(h.center.x, h.center.y, h.center.z);
+        // ① 数人造方块的范围（分段 + 让出）
+        const pts = await scanBuiltChunks(bot, c, builtIds, Math.min(H.cap, h.radius + H.near), 4000);
+        const r = homeFootprint(pts.map(p => Math.hypot(p.x - h.center.x, p.z - h.center.z)), h.radius, H);
+        await yieldLoop();
+        // ② 家里的耕地湿不湿（moisture=0 = 4 格内没水，会退化回泥土、庄稼长得慢）—— 只告诉 mind，不自己引水（会动主人的布局）
+        const dryIds = ['farmland'].map(n => bot.registry.blocksByName[n]?.id).filter(v => v != null);
+        const dryPts = timed('home.scanFarmland', () => bot.findBlocks({ point: c, matching: dryIds, maxDistance: h.radius, count: 400 }));
+        // 每个点都要 blockAt 读 moisture：分段让出，别一次全读完
+        const dry = [];
+        for (let i = 0; i < dryPts.length; i++) {
+          const b = bot.blockAt(dryPts[i]);
+          if (b && +(b.getProperties?.().moisture ?? 7) === 0) dry.push(b);
+          if ((i + 1) % 100 === 0) await yieldLoop();
         }
-        const d = darkReport({ sourceLights, cells });
-        if (d) {
-          I.darkToldDay = day;
-          if (d.kind === 'unreadable') I.lastDarkNote = '家里有光源，但亮度读出来都是暗的 —— 读不到亮度，不报暗处';
-          else if (d.kind === 'no_source') event('dark_spot', '家里一个光源（火把、灯）都没看到，夜里整片都会刷怪', { count: cells.length });
-          else event('dark_spot', `家里有 ${d.count} 格地面是全黑的（比如 ${d.sample.map(q => `${q.x},${q.y},${q.z}`).join(' / ')}），夜里会刷怪`, { count: d.count, sample: d.sample });
+        const day = Math.floor(Date.now() / 86400000);
+        if (dry.length && I.dryToldDay !== day) {
+          I.dryToldDay = day;
+          const p0 = dry[0].position;
+          event('farmland_dry', `家里有 ${dry.length} 块耕地是干的（比如 ${p0.x},${p0.y},${p0.z}）：4 格内没有水，会退化回泥土、庄稼长得慢`, { count: dry.length });
         }
-      }
-      if (r > h.radius + 2) {
-        const old = h.radius;
-        h.radius = r;
-        event('home_grow', `家的范围跟着房子长大了：半径 ${old} → ${r} 格（数到 ${pts.length} 块人造方块）`, { radius: r, center: h.center });
-      }
-    } catch (_) {}
+        await yieldLoop();
+        // ③ 家里有没有暗处（光照 0 夜里会刷怪）—— 只告诉 mind，不自己插火把
+        if (I.darkToldDay !== day) {
+          const LIGHT_RE = /(^|:|_)(torch|lantern|glowstone|shroomlight|froglight|campfire|redstone_lamp|end_rod|candle|light)$/;
+          const srcIds = Object.values(bot.registry.blocksByName).filter(b => LIGHT_RE.test(b.name) && !/redstone_torch|soul_torch_off/.test(b.name)).map(b => b.id);
+          const sourceLights = timed('home.scanLights', () => bot.findBlocks({ point: c, matching: srcIds, maxDistance: h.radius, count: 64 }))
+            .filter(p => Math.abs(p.y - h.center.y) <= 8).map(p => bot.blockAt(p)?.light);
+          await yieldLoop();
+          const airIds = ['air', 'cave_air'].map(n => bot.registry.blocksByName[n]?.id).filter(v => v != null);
+          const airPts = timed('home.scanAir', () => bot.findBlocks({ point: c, matching: airIds, maxDistance: Math.min(h.radius, 32), count: 3000 }));
+          // cells 循环里每格要 3 次 blockAt：分段让出（原来一次性同步跑 3000 格）
+          const cells = [];
+          for (let i = 0; i < airPts.length; i++) {
+            const p = airPts[i];
+            if (Math.abs(p.y - h.center.y) <= 4) {
+              const below = bot.blockAt(p.offset(0, -1, 0)); const head = bot.blockAt(p.offset(0, 1, 0));
+              if (below && below.boundingBox === 'block' && !/farmland|glass|leaves|slab|stairs|carpet|water|lava/.test(below.name)
+                && head && head.boundingBox === 'empty') {
+                cells.push({ pos: { x: p.x, y: p.y, z: p.z }, light: bot.blockAt(p)?.light });
+              }
+            }
+            if ((i + 1) % 200 === 0) await yieldLoop();
+          }
+          const d = darkReport({ sourceLights, cells });
+          if (d) {
+            I.darkToldDay = day;
+            if (d.kind === 'unreadable') I.lastDarkNote = '家里有光源，但亮度读出来都是暗的 —— 读不到亮度，不报暗处';
+            else if (d.kind === 'no_source') event('dark_spot', '家里一个光源（火把、灯）都没看到，夜里整片都会刷怪', { count: cells.length });
+            else event('dark_spot', `家里有 ${d.count} 格地面是全黑的（比如 ${d.sample.map(q => `${q.x},${q.y},${q.z}`).join(' / ')}），夜里会刷怪`, { count: d.count, sample: d.sample });
+          }
+        }
+        if (r > h.radius + 2) {
+          const old = h.radius;
+          h.radius = r;
+          event('home_grow', `家的范围跟着房子长大了：半径 ${old} → ${r} 格（数到 ${pts.length} 块人造方块）`, { radius: r, center: h.center });
+        }
+      } finally { homeScanBusy = false; }
+    } catch (_) { homeScanBusy = false; }
   }, 30000);
 
   // ---- 搭路 / 落地水：按身上的东西随时调寻路（有搭脚方块才搭路；有水桶才敢往下跳高）
@@ -2235,16 +2364,22 @@ function install (bot, state, deps) {
     } catch (_) {}
     const now = Date.now();
     const last = {};
+    // 掉落物清单：① 的近距离拾取和末尾的远处拾取共用一份（都只是把地上的实体读出来）
+    const dropList = () => Object.values(bot.entities)
+      .filter(e => e?.position && e.isValid !== false && deps.isDropEntity(e))
+      .map(e => {
+        const sp = spawned.get(e.id);
+        // 本能装上之前就在地上的：没有刷出记录，当作早就落地、不是扔的
+        return {
+          id: e.id, pos: e.position, ageMs: sp ? now - sp.t : Infinity, thrower: sp ? sp.thrower : null,
+          item: deps.droppedItemOf(e)?.name ?? null,
+          visible: readVisible(e),   // 远处拾取要看"看不看得见"；读不到给 null（当未知，不远去）
+        };
+      });
 
     // ① 拾取（掉落物 5 分钟就没了，最先）
     if (P.enabled) {
-      const drops = Object.values(bot.entities)
-        .filter(e => e?.position && e.isValid !== false && deps.isDropEntity(e))
-        .map(e => {
-          const sp = spawned.get(e.id);
-          // 本能装上之前就在地上的：没有刷出记录，当作早就落地、不是扔的
-          return { id: e.id, pos: e.position, ageMs: sp ? now - sp.t : Infinity, thrower: sp ? sp.thrower : null, item: deps.droppedItemOf(e)?.name ?? null };
-        });
+      const drops = dropList();
       // 夜里在露天：半径收到脚边
       const cfg = nightOut ? { ...P, radius: Math.min(P.radius, P.nightOutRadius), followRadius: Math.min(P.followRadius, P.nightOutRadius) } : P;
       const pick = pickPickup({ self: bot.entity.position, drops, fails, canHold, now, following: followEnt ? { pos: followEnt.position } : null }, cfg);
@@ -2274,6 +2409,16 @@ function install (bot, state, deps) {
       if (r.did) { I.last = { t: now, ...last, [k]: '做了' }; return; }
       last[k] = r.skip;
     }
+    // ⑨ 远处拾取（2026-09-28 加）：上面全都没事做、身体空着 = 真闲着了。
+    // 实机 10 分钟里 `pickup` 一直是 `有掉落物但都不捡（far=6~17）` —— 掉落物在 8 格拾取半径外，
+    // 她整整 10 分钟没去。这里在"真闲着"时去捡看得见的远处掉落物（farRadius，默认 24）。
+    // 夜里在露天早就在上面 return 了；血不够、有怪、背包满都不会走到这里（或 pickPickup 自己会拒）。
+    if (P.enabled && P.farRadius > P.radius) {
+      const drops = dropList();
+      const pick = pickPickup({ self: bot.entity.position, drops, fails, canHold, now, following: null }, { ...P, far: true });
+      if (pick.ids) { last.pickup = `去捡远处 ${pick.ids.length} 堆（far）`; I.last = { t: now, ...last }; await runPickup(pick.ids, null); return; }
+      if (pick.skip && /far=/.test(pick.skip)) last.pickup = pick.skip;
+    }
     I.last = { t: now, ...last };
   }
 
@@ -2282,7 +2427,18 @@ function install (bot, state, deps) {
   let tickStartedAt = 0;
   const timer = setInterval(async () => {
     const now = Date.now();
-    I.scheduler = { at: now, maxLagMs: Math.max(I.scheduler?.maxLagMs || 0, now - lastTickAt - CFG.pickup.tickMs), lagMs: Math.max(0, now - lastTickAt - CFG.pickup.tickMs), busyForMs: ticking ? now - tickStartedAt : 0 };
+    // lagMs = 这一拍比"应该来的时刻"晚了多少（本能自己的拍子）。它只在**这一拍真的被叫到时**才算，
+    // 所以事件循环被同步代码堵住时它也会偏大 —— 但分不清"堵"还是"本能在忙"。
+    // loopMs 是 monitorEventLoopDelay 量的**事件循环本身**的延迟，和本能忙不忙无关：
+    // 两者一起看就能分清（实机 12:20 那次：lagMs=13511 而 busyForMs=0 → 就是被堵了）。
+    I.scheduler = {
+      at: now,
+      maxLagMs: Math.max(I.scheduler?.maxLagMs || 0, now - lastTickAt - CFG.pickup.tickMs),
+      lagMs: Math.max(0, now - lastTickAt - CFG.pickup.tickMs),
+      busyForMs: ticking ? now - tickStartedAt : 0,
+      loopMs: loopDelay(),
+      slow: I.slowLog.length ? I.slowLog[I.slowLog.length - 1] : null,
+    };
     lastTickAt = now;
     if (ticking) return;
     tickStartedAt = now;
@@ -2386,6 +2542,21 @@ function selftest () {
   check('从近到远', r.ids.join(','), '2,4,5,3');
   check('跳过的原因写得出来', /mine=1/.test(pickPickup({ self: me, drops: [d(1, 3, 0, { thrower: 'self' })] }).skip), true);
   check('没有掉落物 → 如实说没有', pickPickup({ self: me, drops: [] }).skip, '附近没有掉落物');
+
+  // ---- 远处拾取（任务书第 4 条）：闲着时才去捡 farRadius 内看得见的
+  {
+    const farCfg = { ...P, far: true };
+    // 实机现场：掉落物在 6~17 格（8 格半径外），她不去 → 远处模式要选中它
+    check('★ 闲着 + 12 格外的 → 远处模式会去捡', pickPickup({ self: me, drops: [d(9, 12, 0)] }, farCfg).ids?.[0], 9);
+    check('远处模式：15 格内也去（实机 far=15）', pickPickup({ self: me, drops: [d(9, 15, 0)] }, farCfg).ids?.[0], 9);
+    check('远处模式：超出 farRadius(24) 的不去', pickPickup({ self: me, drops: [d(9, 30, 0)] }, farCfg).ids, undefined);
+    check('远处模式：看不见的（墙后）不去', pickPickup({ self: me, drops: [d(9, 12, 0, { visible: false })] }, farCfg).ids, undefined);
+    check('远处模式：看得见的才去', pickPickup({ self: me, drops: [d(9, 12, 0, { visible: true })] }, farCfg).ids?.[0], 9);
+    check('★ 不开 far 时老行为不变：12 格外的仍然不管', pickPickup({ self: me, drops: [d(9, 12, 0)] }).ids, undefined);
+    check('★ 跟随中不给远处模式（只捡 6 格内的）', pickPickup({ self: me, drops: [d(9, 12, 0)], following: { pos: me } }, farCfg).ids, undefined);
+    check('远处模式也照样不捡自己扔的', pickPickup({ self: me, drops: [d(9, 12, 0, { thrower: 'self' })] }, farCfg).ids, undefined);
+    check('远处模式也照样受"两次没捡到"冷却', pickPickup({ self: me, drops: [d(9, 12, 0)], fails: new Map([[9, { n: 2, until: 1e12 }]]), now: 0 }, farCfg).ids, undefined);
+  }
 
   // 跟随中：离她近、离玩家也近才捡
   const fol = { pos: { x: 3, y: 64, z: 0 } };
