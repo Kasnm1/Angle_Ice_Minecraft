@@ -1,0 +1,15 @@
+[
+  "handlers",
+  "state",
+  "main",
+  "CFG",
+  "server",
+  "createBot",
+  "json",
+  "withTimeout",
+  "fixMojibake",
+  "saveState",
+  "botPos",
+  "requireConnected",
+  "BRIDGE_VERSION"
+]

@@ -135,7 +135,9 @@ switch ($cmd) {
       $fails = ([regex]::Matches($out, '(?m)^\s*FAIL.*$') | ForEach-Object { $_.Value.Trim() }) -join ' | '
       "{0,-34} {1} {2}" -f $f, $sum, $fails
     }
-    foreach ($f in 'src\bridge\server.js', 'src\mind\body.js') { & $Node --check $f; "{0,-34} --check ok" -f $f }
+    # 第 3 步把 src\bridge\server.js 拆成子文件后，这里只加不减：
+    # 子文件都没有 --selftest（bridge 的规矩：一跑就连服务器），只做 --check。
+    foreach ($f in 'src\bridge\server.js', 'src\bridge\config.js', 'src\bridge\state.js', 'src\bridge\util.js', 'src\bridge\goto.js', 'src\bridge\connect.js', 'src\bridge\http.js', 'src\bridge\routes\inspect.js', 'src\bridge\routes\scan.js', 'src\bridge\routes\pickup.js', 'src\bridge\routes\body.js', 'src\bridge\routes\place.js', 'src\bridge\routes\move.js', 'src\bridge\routes\mine.js', 'src\bridge\routes\gather.js', 'src\bridge\routes\palette.js', 'src\bridge\routes\diag.js', 'src\mind\body.js') { & $Node --check $f; "{0,-34} --check ok" -f $f }
   }
   'logs' {
     $w = if ($what -eq 'all') { 'mind' } else { $what }

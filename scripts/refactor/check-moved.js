@@ -427,7 +427,11 @@ function compare (beforeSpecs, afterSpecs) {
   for (const spec of afterSpecs) {
     const code = readSource(spec);
     for (const [name, info] of sliceFunctions(code)) {
-      if (!afterFns.has(name)) afterFns.set(name, { hash: info.hash, file: spec.file, isObject: !!info.isObject });
+      // 拆后同名的可能不止一份（各文件的转发壳 `function x (...a) { return __ns.x… }`）：
+      // 只要有一份与拆前一字不差就算 same，否则先到先得
+      const prev = afterFns.get(name);
+      const want = beforeFns.get(name)?.hash;
+      if (!prev || (prev.hash !== want && info.hash === want)) afterFns.set(name, { hash: info.hash, file: spec.file, isObject: !!info.isObject });
     }
   }
 
@@ -495,7 +499,7 @@ function main () {
   // 两种调用形态：① --before <ref> --files ... ② --before a.js,b.js --after x.js,y.js
   let bSpecs, aSpecs;
   if (args.after.length || args.afterDir) {
-    bSpecs = args.files.map(f => ({ file: f }));
+    bSpecs = beforeSpecs;   // 带 ref：拆前读 git show <ref>:<file>（以前这里丢了 ref，读成了磁盘上拆完的文件）
     aSpecs = args.afterDir
       ? collectFiles(args.afterDir).map(f => ({ file: f }))
       : args.after.map(f => ({ file: f }));

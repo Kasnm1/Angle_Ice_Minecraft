@@ -314,8 +314,83 @@ function checkHandsExports () {
   return PROBLEMS;
 }
 
-// ---- 主流程 ----------------------------------------------------------------
+/**
+ * bridge-server（`src/bridge/server.js`）接口快照（第 3 步拆巨石的防线，照 checkHandsExports）。
+ *
+ * 为什么要有：`src/bridge/server.js` 被拆成 config/state/util/goto/connect/http +
+ * routes/*.js 之后，它自己变成**汇总入口**（require 各子文件、两阶段 bind、
+ * 按原顺序把路由拼回一张 handlers）。两个东西一旦漂移，只有实机才炸：
+ *
+ *   ① **导出名与顺序** —— `bridge-server.js`（根目录那个一行转发器）与若干测试
+ *      按名字取用；丢一个就是运行时 undefined。
+ *   ② **handlers 的键序** —— `Object.keys(handlers)` 被 `GET /404` 的 `available`
+ *      字段和 `routes-test` 的快照依赖。分组重排后若逐组 assign 的顺序不对，
+ *      键序会变，但"有多少个路由"不变 —— 只查数量抓不到。
+ *
+ * 因为 server.js 在 require 时**只有定义、没有副作用**（不起服务器、不连游戏），
+ * 所以这里可以直接 require 它。绝不要在这条路径上调 main()/createBot()。
+ */
+function checkBridgeExports () {
+  const PROBLEMS = [];
+  const expFile = path.join(ROOT, 'references', 'exports-bridge.json');
+  const orderFile = path.join(ROOT, 'references', 'handlers-order-bridge.json');
+  let wantExports, wantOrder;
+  try {
+    wantExports = JSON.parse(fs.readFileSync(expFile, 'utf8'));
+  } catch (e) {
+    return [`references/exports-bridge.json 读不到：${e.message}`];
+  }
+  try {
+    wantOrder = JSON.parse(fs.readFileSync(orderFile, 'utf8'));
+  } catch (e) {
+    return [`references/handlers-order-bridge.json 读不到：${e.message}`];
+  }
 
+  let bridge;
+  try {
+    bridge = require(path.join(ROOT, 'src', 'bridge', 'server.js'));
+  } catch (e) {
+    return [`src/bridge/server.js 加载失败：${e.message}`];
+  }
+
+  // ---- ① 导出名 + 顺序 ----
+  const got = Object.keys(bridge);
+  if (got.length !== wantExports.length) {
+    PROBLEMS.push(`导出个数变了：快照 ${wantExports.length}，现在 ${got.length}`);
+  }
+  const missing = wantExports.filter(n => !got.includes(n));
+  const added = got.filter(n => !wantExports.includes(n));
+  if (missing.length) PROBLEMS.push(`快照里有、现在没了：${missing.join(', ')}`);
+  if (added.length) PROBLEMS.push(`快照里没有、现在多了：${added.join(', ')}`);
+  const sameOrder = wantExports.every((n, i) => got[i] === n);
+  if (!missing.length && !added.length && !sameOrder) {
+    const at = wantExports.findIndex((n, i) => got[i] !== n);
+    PROBLEMS.push(`导出顺序变了（第 ${at + 1} 个：快照 ${wantExports[at]}，现在 ${got[at]}）`);
+  }
+
+  // ---- ② handlers 键序 ----
+  // bridge 自己贡献的 58 个键必须**按快照里的相对顺序**出现。
+  // 后面还有 hands.js / commonsense.js 挂上来的键，所以只校验这 58 个的相对次序，
+  // 且允许别的键插在中间之外（真实情况是它们全排在 bridge 之后）。
+  const keys = Object.keys(bridge.handlers || {});
+  if (!keys.length) {
+    PROBLEMS.push('handlers 是空的（汇总没拼回来？）');
+    return PROBLEMS;
+  }
+  let prev = -1;
+  for (const k of wantOrder) {
+    const at = keys.indexOf(k);
+    if (at < 0) { PROBLEMS.push(`路由键快照里有、现在没了：${k}`); continue; }
+    if (at < prev) PROBLEMS.push(`路由键顺序变了：${k}（快照里在 ${wantOrder[keys.indexOf(k)]} 之前，实际排在后面）`);
+    prev = at;
+  }
+  const notFn = keys.filter(k => typeof bridge.handlers[k] !== 'function');
+  if (notFn.length) PROBLEMS.push(`这些路由不是函数：${notFn.join(', ')}`);
+
+  return PROBLEMS;
+}
+
+// ---- 主流程 ----------------------------------------------------------------
 async function main () {
   let plan = buildPlan();
   if (ONLY) plan = plan.filter(j => ONLY.some(k => j.label.includes(k)));
@@ -433,15 +508,26 @@ async function main () {
     console.log('\n  [exports] hands.js 的 47 个导出名与顺序和快照一致');
   }
 
+  // ---- bridge-server 导出与路由键序快照 ---------------------------------------
+  // 第 3 步拆巨石的防线（见 references/exports-bridge.json 与 handlers-order-bridge.json）。
+  const bridgeProblems = checkBridgeExports();
+  if (bridgeProblems.length) {
+    console.log('\n  ✗ bridge-server 接口快照对不上（导出名/顺序 或 路由键序）：');
+    for (const p of bridgeProblems) console.log(`      ${p}`);
+  } else {
+    console.log('\n  [exports] bridge-server 的 13 个导出名与顺序、58 个路由键的次序都和快照一致');
+  }
+
   // ---- 总判定 ---------------------------------------------------------------
   const passed = rows.filter(r => r.kind === 'pass').length;
   console.log('');
   console.log(`  合计：${passed} 通过 · ${known.length} 已知失败 · ${newFails.length} 新失败 · 总用时 ${elapsed.toFixed(1)}s`);
 
-  if (pathProblems.length || exportProblems.length || newFails.length) {
+  if (pathProblems.length || exportProblems.length || bridgeProblems.length || newFails.length) {
     if (newFails.length) console.log('  ✗ 有非已知失败，退出码 1');
     else if (pathProblems.length) console.log('  ✗ paths.js 数据路径检查失败，退出码 1');
-    else console.log('  ✗ hands.js 导出快照对不上，退出码 1');
+    else if (exportProblems.length) console.log('  ✗ hands.js 导出快照对不上，退出码 1');
+    else console.log('  ✗ bridge-server 接口快照对不上，退出码 1');
     process.exit(1);
   }
   console.log('  ✓ 全绿（已知失败未增加）');

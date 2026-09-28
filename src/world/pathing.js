@@ -3186,7 +3186,13 @@ if (require.main === module && process.argv.includes('--selftest')) {
   //    它不能证明逻辑对（逻辑由纯函数自测证明），只防"改回去"。
   {
     let bsrc = '';
-    try { bsrc = require('fs').readFileSync(require('path').join(paths.ROOT, 'src', 'bridge', 'server.js'), 'utf8'); } catch (_) {}
+    // 第 3 步拆巨石后 bridge 分成 src/bridge/ 下多个文件：整目录（含 routes/）拼起来读，锁的意思不变
+    try {
+      const fs = require('fs'); const p = require('path'); const dir = p.join(paths.ROOT, 'src', 'bridge');
+      const files = fs.readdirSync(dir).filter(f => f.endsWith('.js')).map(f => p.join(dir, f))
+        .concat(fs.readdirSync(p.join(dir, 'routes')).filter(f => f.endsWith('.js')).map(f => p.join(dir, 'routes', f)));
+      bsrc = files.sort().map(f => fs.readFileSync(f, 'utf8')).join('\n');
+    } catch (_) {}
     if (bsrc) {
       // fix0 #1：严格预算 —— 必须有 `budgetLeftMs`，且不再出现旧的 `budgetMs - (Date.now() - t0)` 形式
       check('★ bridge /pickup 有严格预算 budgetLeftMs（fix0 #1）', /budgetLeftMs/.test(bsrc), true);
