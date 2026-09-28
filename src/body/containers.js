@@ -35,6 +35,7 @@ function installDoorHabit (...a) { return __ns.installDoorHabit.apply(null, a); 
 function invCounts (...a) { return __ns.invCounts.apply(null, a); }
 function isDark (...a) { return __ns.isDark.apply(null, a); }
 function isLoadoutItem (...a) { return __ns.isLoadoutItem.apply(null, a); }
+function summarizeWindow (...a) { return __ns.summarizeWindow.apply(null, a); }   // 拆分时漏了（用在 ...展开里，扫描没看出来），2026-09-29 补
 function kitMatch (...a) { return __ns.kitMatch.apply(null, a); }
 function knownTierOf (...a) { return __ns.knownTierOf.apply(null, a); }
 function lightAt (...a) { return __ns.lightAt.apply(null, a); }

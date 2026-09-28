@@ -12,6 +12,7 @@ const placeLogic = require('../../world/place');
 const { isStandable } = require('../../world/place');   // 拆分时漏搬（原 server.js:31 的解构），2026-09-29 补
 
 /** 跨文件符号表：由汇总文件 server.js 在两阶段装配时注入（见本文件末尾 bind）。 */
+const { DEADLY, findStandY } = require('../../world/place');   // 原 server.js:31 从 place.js 解构；拆分时被错做成 __ns 转发壳（没人导出，DEADLY 还是正则），2026-09-29 改回
 const __ns = {};
 
 let handlers;
@@ -19,8 +20,6 @@ let state;
 let Vec3;
 let goals;
 
-function DEADLY (...a) { return __ns.DEADLY.apply(null, a); }
-function findStandY (...a) { return __ns.findStandY.apply(null, a); }
 function isAiryForPlace (...a) { return __ns.isAiryForPlace.apply(null, a); }
 function sameItem (...a) { return __ns.sameItem.apply(null, a); }
 function sleepMs (...a) { return __ns.sleepMs.apply(null, a); }
@@ -600,8 +599,6 @@ const routes = {
 
 function bind (ns) {
   for (const k of Object.keys(ns)) if (!(k in __ns)) __ns[k] = ns[k];
-  if (ns.DEADLY !== undefined) DEADLY = ns.DEADLY;
-  if (ns.findStandY !== undefined) findStandY = ns.findStandY;
   if (ns.handlers !== undefined) handlers = ns.handlers;
   if (ns.isAiryForPlace !== undefined) isAiryForPlace = ns.isAiryForPlace;
   if (ns.sameItem !== undefined) sameItem = ns.sameItem;

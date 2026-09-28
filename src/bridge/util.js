@@ -13,13 +13,13 @@ const pathing = require('../world/pathing');
 const placeLogic = require('../world/place');
 
 /** 跨文件符号表：由汇总文件 server.js 在两阶段装配时注入（见本文件末尾 bind）。 */
+const { reachableStandY } = require('../world/place');   // 原 server.js:31 从 place.js 解构；拆分时被错做成 __ns 转发壳（没人导出，DEADLY 还是正则），2026-09-29 改回
 const __ns = {};
 
 let CFG;
 let state;
 let goals;
 
-function reachableStandY (...a) { return __ns.reachableStandY.apply(null, a); }
 
 function botPos() {
   const p = state.bot?.entity?.position;
@@ -523,7 +523,6 @@ function runLookup(script, type, kw, limit) {
 function bind (ns) {
   for (const k of Object.keys(ns)) if (!(k in __ns)) __ns[k] = ns[k];
   if (ns.CFG !== undefined) CFG = ns.CFG;
-  if (ns.reachableStandY !== undefined) reachableStandY = ns.reachableStandY;
   if (ns.state !== undefined) state = ns.state;
 }
 

@@ -12,13 +12,13 @@ const instinct = require('../../instinct/instinct.js');
 const pathing = require('../../world/pathing');
 
 /** 跨文件符号表：由汇总文件 server.js 在两阶段装配时注入（见本文件末尾 bind）。 */
+const { findStandY } = require('../../world/place');   // 原 server.js:31 从 place.js 解构；拆分时被错做成 __ns 转发壳（没人导出，DEADLY 还是正则），2026-09-29 改回
 const __ns = {};
 
 let state;
 let Vec3;
 let goals;
 
-function findStandY (...a) { return __ns.findStandY.apply(null, a); }
 function fingerprintDelta (...a) { return __ns.fingerprintDelta.apply(null, a); }
 function inventoryFingerprint (...a) { return __ns.inventoryFingerprint.apply(null, a); }
 function isDropEntity (...a) { return __ns.isDropEntity.apply(null, a); }
@@ -340,7 +340,6 @@ const routes = {
 
 function bind (ns) {
   for (const k of Object.keys(ns)) if (!(k in __ns)) __ns[k] = ns[k];
-  if (ns.findStandY !== undefined) findStandY = ns.findStandY;
   if (ns.fingerprintDelta !== undefined) fingerprintDelta = ns.fingerprintDelta;
   if (ns.inventoryFingerprint !== undefined) inventoryFingerprint = ns.inventoryFingerprint;
   if (ns.isDropEntity !== undefined) isDropEntity = ns.isDropEntity;
