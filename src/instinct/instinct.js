@@ -3534,8 +3534,8 @@ function selftest () {
       /Math\.min\(geoR, 32\)/.test(srcText) && /Math\.min\(h\.radius, 32\)/.test(srcText), true);
     check('★ 家生长 30 分钟一次',
       /everyMs: 1800000/.test(srcText), true);
-    check('★ 存东西时不存随身装备的判据在 hands.js（那里也有源码锁）',
-      /isLoadoutItem/.test(require('fs').readFileSync(require('path').join(paths.ROOT, 'src', 'body', 'hands.js'), 'utf8')), true);
+    check('★ 存东西时不存随身装备的判据在 body/kit.js（那里也有源码锁）',
+      /isLoadoutItem/.test(require('fs').readFileSync(require('path').join(paths.ROOT, 'src', 'body', 'kit.js'), 'utf8')), true);
     check('★ 挖之前先把镐子拿到身上（ensureCarried /pickaxe$/）',
       /ensureCarried\(bot, state, \(it\) => \/pickaxe\$\/\.test\(it\.name\)/.test(srcText), true);
     check('★ 挖矿被打断 → 清失败冷却、下一拍接着挖',
