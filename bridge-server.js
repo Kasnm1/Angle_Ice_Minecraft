@@ -5459,7 +5459,7 @@ const handlers = {
           const b = state.bot.blockAt(p.offset(dx, dy, dz)); if (b && isPlayerBuilt(b.name)) return true;
         } return false; };
         // 每一关筛掉几块都记下来：一块都挖不到时要说清楚是"没有"还是"看不见 / 太高太低 / 挨着房子"（AGENTS.md §5-1）
-        const all = state.bot.findBlocks({ matching: blockId, maxDistance: radius, count: 64 });
+        const all = state.bot.findBlocks({ matching: blockId, maxDistance: radius, count: 512 });   // 只取最近 64 块时，附近埋着的会把露出来的挤掉
         const f1 = all.filter(p => !skipped.has(`${p.x},${p.y},${p.z}`));
         const f2 = f1.filter(p => !guardHome || !nearBuilt(p));
         // 看得见 = 视线打得到，或者有一面露在洞里的空气/水里（placeLogic.exposedToOpen；只露一面的矿以前被判成看不见）

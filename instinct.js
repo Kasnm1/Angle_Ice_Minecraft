@@ -1510,7 +1510,7 @@ function install (bot, state, deps) {
     if (bot.inventory.emptySlotCount() < CFG.minFreeSlots) return { skip: '背包快满了，不挖' };
     const T = loadTables();
     if (!T.oresLoaded || !T.ores.size) return { skip: '没有矿表（knowledge/ores.json）' };
-    const pts = bot.findBlocks({ matching: [...T.ores.keys()], maxDistance: M.radius, count: 64 });
+    const pts = bot.findBlocks({ matching: [...T.ores.keys()], maxDistance: M.radius, count: 256 });   // 64 会被附近埋着的矿占满，露出来的轮不到
     const ores = pts.map(p => {
       const b = bot.blockAt(p); if (!b) return null;
       const row = T.ores.get(b.type);
@@ -2144,7 +2144,7 @@ function install (bot, state, deps) {
       const T = loadTables();
       if (!T.ores.size) return;
       const pick = pickaxeTier(carriedNames(bot, state).names);   // 算上精妙背包里的镐子（N-9）
-      for (const p of bot.findBlocks({ matching: [...T.ores.keys()], maxDistance: 12, count: 16 })) {
+      for (const p of bot.findBlocks({ matching: [...T.ores.keys()], maxDistance: 12, count: 96 })) {   // 同上：别让埋着的占满名额
         const b = bot.blockAt(p); if (!b || !oreVisible(b)) continue;   // 同一判据：露出一面也算看得见
         const row = T.ores.get(b.type);
         const isIron = (row.drops || []).some(d => /raw_iron|iron_ingot/.test(d));
