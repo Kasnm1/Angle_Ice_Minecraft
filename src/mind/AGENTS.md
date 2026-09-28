@@ -25,6 +25,11 @@
   或者改 `PERSONA.md` / 给她的工具说明。程序只保留**本能**。
 - 说与做一致：她说"在做木镐"，状态里就必须真有这件事。
 - 动作结果以 bridge 返回的**实际变化**为准，不以"调用成功"为准。
+- **说话出口的四道闸是例外**（`mind.js` 的 `REPORT_NUDGE` / `ASK_TOO_MUCH_NUDGE` / `HONEST_NUDGE`，
+  以及原有的 `LOOK_NUDGE` / `DECIDE_NUDGE`）：它们是主人 2026-09-29 明确要的"少汇报、少问、不说没发生的事"，
+  拦下后**不静默吞掉** —— 往历史里塞一条 `ok:false` + 提示，让她自己重想。
+  判据在 `speech.js` 的 `classify()`（只此一处，`scripts/speech-audit.js` 也用这一份）。
+  **加一类完成式只改 `mind.js` 的 `FACT_CLAIMS` 表**；加一类说话内容改 `classify()`。
 
 ## 必须知道
 
@@ -32,6 +37,7 @@
 - 自测 / `--sim` 用 `MC_MIND_FILE` 指向临时文件，**绝不能写进真的 `memory/mind.json`**。
 - `.env` 里有 `LLM_API_KEY` —— 不打印、不写进日志、不提交。
 - 调人格/说话形态后用 `node scripts/speech-audit.js` 拿数字说话。
+  实机日志也能直接量：`node scripts/speech-audit.js logs/mind-win-20260929.log`（形态 + 汇报/问/回话/其他 的比例）。
 
 ## 自测
 
