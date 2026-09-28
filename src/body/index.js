@@ -50,6 +50,8 @@ const { ADMIN_CMDS, FOLLOW_LOST_MS, FOLLOW_TICK_MS, FURNITURE_RE, KEYS, NEVER_CM
 const { BRANCH, BUILT_RE, FILLER_RE, LIGHT_RE, ORE_RE, ORE_Y, TORCH_RE, TORCH_SPEC, caveStep, clearCell, delve, digBlock, ensureFiller, fillerItem, inCave, isDark, isFiller, lightAt, lightIdsCache, lightIdsRegistry, lightUp, makeTorches, mines, nearestLight, oreIdsCache, oreIdsRegistry, placeFiller, placeTorchHere, saveMines, sensedOres, stepTo, torchCount, torchItem, tunnelTo, visibleOres } = require('./mining');
 const { SEED_OF, collectDrops, cropInfo, farm, seedFor } = require('./farming');
 const { NOT_SCAFFOLD_RE, NOT_STORAGE_RE, SCAFFOLD_IDS, SCAFFOLD_TAGS, STORAGE_RE, TIERS, WEAPON_CHECK, defaultLoadout, isLoadoutItem, kitAvailable, kitMatch, kitShortfall, loadoutTargetShortfall, pickLoadout, protectLoadout, scaffoldCache, scaffoldIds } = require('./kit');
+// 挖方块前挑工具（2026-09-29）：判据只此一处，挖的调用点都从这里取（见 tool-choice.js）
+const { NAME_RULES, TOOL_RE, ensureDigTool, equipDigTool, fastestOfKind, pickDigTool, toolKindFor } = require('./tool-choice');
 const { START_COVER, allSlots, furnish, invCount, layoutSave, layoutStatus, layoutStatusSlots, layouts, placeAt, projectCells, projectDiff, projectSave, projectStatus, projectWork, projects, saveLayouts, saveProjects, slotState, survey, zoneArea, zoneFreeFloor, zoneMark, zonePresent, zoneWants } = require('./build');
 
 // ---- 把 8 个兄弟文件接起来（第 3 步重构）--------------------------------------
@@ -59,6 +61,9 @@ const { START_COVER, allSlots, furnish, invCount, layoutSave, layoutStatus, layo
 // 原来那些名字，取到的始终是同一份真身。
 const __files = { util: require('./util'), containers: require('./containers'), craft: require('./craft'), movement: require('./movement'), mining: require('./mining'), farming: require('./farming'), kit: require('./kit'), build: require('./build') };
 const __ns = Object.assign({}, __files.util, __files.containers, __files.craft, __files.movement, __files.mining, __files.farming, __files.kit, __files.build);
+// tool-choice.js 是完全独立的一份（不 require 兄弟文件、不被兄弟文件 require），
+// 所以不需要 bind 回填；它的名字直接进总表，兄弟文件用转发壳 `function X () { return __ns.X(...) }` 取。
+Object.assign(__ns, { NAME_RULES, TOOL_RE, ensureDigTool, equipDigTool, fastestOfKind, pickDigTool, toolKindFor });
 __files.util.bind(__ns);
 __files.containers.bind(__ns);
 __files.craft.bind(__ns);

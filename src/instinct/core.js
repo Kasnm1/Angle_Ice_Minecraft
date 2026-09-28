@@ -136,6 +136,79 @@ function breatheRefused (res, cfg = CFG.breathe) {
   return !!res.aborted;                                                            // 什么都没报：被打断才算没成
 }
 
+/**
+ * 读一个**别的玩家实体**的血量。读不到返回 null（不是 20、不是 0）。
+ *
+ * mineflayer 只给 bot 自己维护 `bot.health`（`lib/plugins/health.js`：只有
+ * `update_health` 包会写它）。别的玩家没有这个属性 —— 他们的血量在**实体 metadata**
+ * 里：`mineflayer/lib/plugins/entities.js:461` 收到 `entity_metadata` 包时，
+ * 若 `bot.supportFeature('mcDataHasEntityMetadata')` 成立，会按
+ * `bot.registry.entitiesByName[entity.name].metadataKeys` 把包里的 key 映射成
+ * 带名字的对象，但**只挂进局部变量 `metas`，不写回 entity**。
+ *
+ * 所以唯一可靠的读法是：拿同一份 `metadataKeys`，用 `indexOf('health')` 找到槽位，
+ * 再去 `entity.metadata[该槽位]` 取值。查过 `minecraft-data` 1.20.1：
+ * player 与 zombie 的 metadataKeys 里都有 `health`（124/124 个实体都有这张表）。
+ *
+ * ⚠️ 明确的"读不到"：查不到 metadataKeys、没有 entity.metadata、取到的不是有限数、
+ *    或者值 > maxHp（比如读成了别的字段）→ **一律返回 null**。
+ *    调用方据此走"读不到"分支，绝不把它当成满血或危险（AGENTS.md §5-1）。
+ *
+ * @returns {number|null} 血量（0..maxHp），读不到 = null
+ */
+function victimHealth (bot, victim, maxHp = 20) {
+  try {
+    const keys = bot?.registry?.entitiesByName?.[victim?.name]?.metadataKeys;
+    const i = Array.isArray(keys) ? keys.indexOf('health') : -1;
+    if (i < 0) return null;
+    const md = victim?.metadata;
+    if (!md) return null;
+    const hp = typeof md === 'object' && !Array.isArray(md) ? md[i] : undefined;
+    if (!Number.isFinite(hp) || hp < 0 || hp > maxHp) return null;
+    return hp;
+  } catch (_) { return null; }
+}
+
+/**
+ * 这个玩家这一下挨打，"值不值得惊动 mind"。
+ *
+ * 主人 2026-09-29 实机：掉一点血她每次都问"你没事吧"。原判据是"48 格内玩家挨打就发"
+ * （core.js 的 entityHurt）+ 同一人 20 秒冷却，摔一下、被怪擦一下都触发，太吵。
+ * 现在按**严重度**判（阈值与理由见 `config.js` 的 `CFG.playerHurt`）：
+ *   ① 血量 ≤ lowHp（8 = 4 颗心）→ 危险，报；
+ *   ② windowMs（10 秒）内累计掉血 ≥ burstHp（6 = 3 颗心）→ 掉得多，报；
+ *   ③ windowMs 内挨打次数 ≥ burstHits（3）→ 被连着打（"被围攻"），报。
+ * 不满足 = 小伤，**不报**（她不该每次都问）。
+ *
+ * ⚠️ **"没有"和"读不到"必须分开**（AGENTS.md §5-1）：
+ *   读得到血量（hp 是有限数）→ 按 ①②③ 判；
+ *   读不到血量（hp === null）→ **既不当满血（会漏报）也不当危险（会误报）**，
+ *   只按 ③ 的"挨打次数"判 —— 次数是可靠的（每次挨打都真收到了事件）。
+ *
+ * 纯函数（`history` 由调用方维护，只放窗口内**本次之前**的事件），可离线自测。
+ *
+ * @param {object} p
+ * @param {number|null} p.hp     这一下之后读到的血量（null = 读不到）
+ * @param {number} p.hpLoss      这一下掉了多少血（读不到时按 0 计）
+ * @param {Array<{at:number, loss:number}>} p.history  窗口内本次之前的挨打记录
+ * @param {object} cfg           CFG.playerHurt
+ * @returns {{tell:boolean, why:string, kind:string}}
+ */
+function playerHurtPlan ({ hp = null, hpLoss = 0, history = [] } = {}, cfg = CFG.playerHurt) {
+  const hits = history.length + 1;                                              // 含这一次
+  const cumulativeLoss = hpLoss + history.reduce((a, e) => a + (+e?.loss || 0), 0);
+  const seen = hp != null;                                                      // 读得到血量吗
+  const lowNow = seen && hp <= cfg.lowHp;                                       // ① 现在血就低
+  const burstLoss = seen && cumulativeLoss >= cfg.burstHp;                      // ② 窗口内掉了不少（要读得到血才算得出）
+  const burstHits = hits >= cfg.burstHits;                                      // ③ 窗口内挨打够多次（不依赖血量）
+  if (lowNow) return { tell: true, why: `血只剩 ${hp}（${Math.round(hp / 2)} 颗心）`, kind: 'low_hp' };
+  if (burstLoss) return { tell: true, why: `${Math.round(cfg.windowMs / 1000)} 秒内掉了 ${cumulativeLoss} 点血`, kind: 'burst' };
+  if (burstHits) return { tell: true, why: `${Math.round(cfg.windowMs / 1000)} 秒内挨了 ${hits} 下`, kind: 'hits' };
+  // 读不到血量、挨打次数也不够 → 不报（但不能因此说"他没事"，只是这次够不上"危险"）
+  if (!seen) return { tell: false, why: `读不到血量，这一下只挨了 ${hits} 次（够不上危险）`, kind: 'unknown_hp' };
+  return { tell: false, why: `小伤（血 ${hp}）`, kind: 'minor' };
+}
+
 /** 以实体姿态纠正 mineflayer 的睡眠缓存；缺失姿态时不猜。
  * 来源：mineflayer/lib/plugins/entities.js 只在姿态 2 时 emit entitySleep，
  * 恢复清醒却依赖另一个 animation 包；若未收到该包，会一直拦住本能。
@@ -1673,18 +1746,38 @@ function install (bot, state, deps) {
   bot.on('rain', onWeather);
   bot.on('weatherUpdate', onWeather);
 
-  // ---- 玩家挨打：告诉 mind（打人的怪战斗本能本来就会打，这里只是让她"知道"）
-  const hurtTold = new Map();
+  // ---- 玩家挨打：**只有真的危险才**告诉 mind（主人 2026-09-29 实机：掉一点血她每次都问）
+  //
+  // 判据在纯函数 `playerHurtPlan()`（文件上方）里，阈值在 `CFG.playerHurt`（config.js）。
+  // 这里只做三件事：维护"每个玩家最近挨打的记录"、读血量、按 plan 决定发不发。
+  //
+  // ⚠️ 读血量：别的玩家没有 `bot.health`，只有在实体 metadata 里（见 `victimHealth` 的注释）。
+  //    读不到时 `playerHurtPlan` 会**只按挨打次数**判，绝不猜满血/危险。
+  //    掉血量 = 上一次读到的血 − 这一次读到的血；两次里有一次读不到就算不出，记 0。
+  const hurtSeen = new Map();   // username → { lastHealth:number|null, events:[{at,loss}] }
   bot.on('entityHurt', (victim, source) => {
     try {
       const H = I.cfg.playerHurt;
       if (!H.enabled || victim?.type !== 'player' || victim === bot.entity || !victim.username) return;
       if (source?.type === 'player') return;   // 玩家之间闹着玩不归本能管
       if (!bot.entity || victim.position.distanceTo(bot.entity.position) > H.radius) return;
-      if (Date.now() - (hurtTold.get(victim.username) || 0) < H.quietMs) return;
-      hurtTold.set(victim.username, Date.now());
+      const now = Date.now();
+      const rec = hurtSeen.get(victim.username) || { lastHealth: null, events: [], toldAt: 0 };
+      const hp = victimHealth(bot, victim, H.maxHp);
+      const hpLoss = (hp != null && rec.lastHealth != null) ? Math.max(0, rec.lastHealth - hp) : 0;
+      // 只留窗口内的记录（窗口外的老账不算"短时间掉血/连着挨打"）
+      rec.events = rec.events.filter(e => now - e.at <= H.windowMs);
+      const plan = playerHurtPlan({ hp, hpLoss, history: rec.events }, H);
+      rec.events.push({ at: now, loss: hpLoss });     // 记下这一次，供后面判"短时间累计/连打"
+      rec.lastHealth = hp;
+      // 冷却按**发出去的那一次**算：小伤没发，不该占掉冷却（不然真危险那一下可能被压掉）
+      const quiet = now - rec.toldAt < H.quietMs;
+      hurtSeen.set(victim.username, rec);
+      if (!plan.tell || quiet) return;
+      rec.toldAt = now;
       const dist = Math.round(victim.position.distanceTo(bot.entity.position));
-      event('player_hurt', `${victim.username} 挨打了${source?.name ? `（${source.name}）` : '（摔的、烧的或者看不见的东西）'}，离她 ${dist} 格`, { player: victim.username, by: source?.name || null });
+      const by = source?.name ? `${source.name}` : '摔的、烧的或者看不见的东西';
+      event('player_hurt', `${victim.username} 有危险：${plan.why}（${by}），离她 ${dist} 格`, { player: victim.username, by: source?.name || null, reason: plan.kind });
     } catch (_) {}
   });
 
@@ -1904,7 +1997,7 @@ async function yieldBody (state, key, args = {}) {
   await Promise.race([r.done.catch(() => {}), new Promise(res => setTimeout(res, CFG.yieldWaitMs))]);
 }
 
-module.exports = { bind, bodyBusy, breatheRefused, caveBoundary, createCheck, install, ownsBodyAtCleanup, scanColumnsGen, scanColumnsIn, scanColumnsSync, settleJob, syncSleepState, yieldBody };
+module.exports = { bind, bodyBusy, breatheRefused, caveBoundary, createCheck, install, ownsBodyAtCleanup, playerHurtPlan, scanColumnsGen, scanColumnsIn, scanColumnsSync, settleJob, syncSleepState, victimHealth, yieldBody };
 
 // ------------------------------------------------------------------ 自测
 // 第 3 步重构：这几节原本挤在 instinct.js 的自测段里（同一个 function selftest 外套）。
@@ -1926,6 +2019,68 @@ const __sections = [
     check('开着箱子 → 不空', typeof bodyBusy({ windowOpen: true }), 'string');
     check('★ 刚被叫停 → 站着别动', typeof bodyBusy({ quietUntil: 100, now: 50 }), 'string');
     check('停的时间过了 → 空', bodyBusy({ quietUntil: 100, now: 150 }), null);
+  }],
+  // ---- 玩家受伤：只有真的危险才惊动 mind（主人 2026-09-29 实机）----
+  // 测的是**跑的那份** playerHurtPlan（core.js 上方），不另抄一份实现。
+  ['玩家受伤：小伤不吭声，危险才报', async (t) => {
+    const { check, ns } = t;
+    const { playerHurtPlan, victimHealth, CFG } = ns;
+    const H = CFG.playerHurt;
+
+    // ---- 掉 1 点血：满血边上、只挨一下 → 不报 ----
+    check('★ 掉 1 点血（血 19，没连续）→ 不报', playerHurtPlan({ hp: 19, hpLoss: 1, history: [] }).tell, false);
+    check('掉 1 点血的 why 明说是小伤', playerHurtPlan({ hp: 19, hpLoss: 1, history: [] }).kind, 'minor');
+    check('★ 血 10 挨一下（还不算低）→ 不报', playerHurtPlan({ hp: 10, hpLoss: 1, history: [] }).tell, false);
+
+    // ---- ① 血量低（≤ lowHp=8）→ 报 ----
+    check('★ 血 8（4 颗心）→ 报', playerHurtPlan({ hp: 8, hpLoss: 1, history: [] }).tell, true);
+    check('血量低的理由 = low_hp', playerHurtPlan({ hp: 8, hpLoss: 1, history: [] }).kind, 'low_hp');
+    check('血 3 → 报', playerHurtPlan({ hp: 3, hpLoss: 2, history: [] }).tell, true);
+    check('★ 血 9（差一点）→ 不报', playerHurtPlan({ hp: 9, hpLoss: 1, history: [] }).tell, false);
+
+    // ---- ② 短时间累计掉血 ≥ burstHp=6 → 报（即使现在血还高）----
+    check('★ 10 秒内累计掉 6 点（血还有 12）→ 报', playerHurtPlan({ hp: 12, hpLoss: 3, history: [{ at: 0, loss: 3 }] }).tell, true);
+    check('累计掉血的理由 = burst', playerHurtPlan({ hp: 12, hpLoss: 3, history: [{ at: 0, loss: 3 }] }).kind, 'burst');
+    check('累计掉 5 点（差一点）→ 不算 burst', playerHurtPlan({ hp: 13, hpLoss: 3, history: [{ at: 0, loss: 2 }] }).kind !== 'burst', true);
+
+    // ---- ③ 短时间连续挨打 ≥ burstHits=3 → 报（读不到血量也能判）----
+    check('★ 窗口内挨第 3 下（前两下各掉 1）→ 报', playerHurtPlan({ hp: 17, hpLoss: 1, history: [{ at: 0, loss: 1 }, { at: 1, loss: 1 }] }).tell, true);
+    check('连续挨打的理由 = hits', playerHurtPlan({ hp: 17, hpLoss: 1, history: [{ at: 0, loss: 1 }, { at: 1, loss: 1 }] }).kind, 'hits');
+    check('★ 只挨第 2 下 → 还不报', playerHurtPlan({ hp: 18, hpLoss: 1, history: [{ at: 0, loss: 1 }] }).tell, false);
+
+    // ---- 读不到血量：既不当满血也不当危险，只按挨打次数 ----
+    const unk1 = playerHurtPlan({ hp: null, hpLoss: 0, history: [] });
+    check('★ 读不到血量、只挨一下 → 不报（不当满血，也不当危险）', unk1.tell, false);
+    check('读不到血量的 why 明说"读不到"（不是"没事"）', /读不到血量/.test(unk1.why), true);
+    check('读不到血量的 kind = unknown_hp', unk1.kind, 'unknown_hp');
+    check('★ 读不到血量，但窗口内挨了 3 下 → 照样报（次数可靠）',
+      playerHurtPlan({ hp: null, hpLoss: 0, history: [{ at: 0, loss: 0 }, { at: 1, loss: 0 }] }).tell, true);
+    check('读不到血量时不会因为 hpLoss 大就报（算不出，不猜）',
+      playerHurtPlan({ hp: null, hpLoss: 99, history: [] }).tell, false);
+
+    // ---- victimHealth：从实体 metadata 按 metadataKeys 取，读不到给 null ----
+    const mkBot = (keys) => ({ registry: { entitiesByName: { player: keys ? { metadataKeys: keys } : {} } } });
+    const keys = ['shared_flags', 'air_supply', 'custom_name', 'custom_name_visible', 'silent', 'no_gravity', 'pose', 'ticks_frozen', 'living_entity_flags', 'health'];
+    check('★ 从 metadata 里按 health 的槽位取值', victimHealth(mkBot(keys), { name: 'player', metadata: { 9: 13 } }), 13);
+    check('★ 没有 metadataKeys 表 → null（读不到，不是满血）', victimHealth(mkBot(null), { name: 'player', metadata: { 9: 13 } }), null);
+    check('★ 表里没有 health 槽位 → null', victimHealth(mkBot(['pose']), { name: 'player', metadata: { 0: 1 } }), null);
+    check('★ 没有 metadata → null', victimHealth(mkBot(keys), { name: 'player' }), null);
+    check('★ 取到的不是数 → null', victimHealth(mkBot(keys), { name: 'player', metadata: { 9: 'x' } }), null);
+    check('★ 值 > maxHp（读成别的字段）→ null，不猜', victimHealth(mkBot(keys), { name: 'player', metadata: { 9: 300 } }), null);
+    check('值为负 → null', victimHealth(mkBot(keys), { name: 'player', metadata: { 9: -1 } }), null);
+    check('bot 为空也不抛', victimHealth(null, { name: 'player', metadata: { 9: 5 } }), null);
+
+    // ---- 源码形状锁：entityHurt 真的走了 playerHurtPlan，且冷却只给小伤放行 ----
+    const srcText = t.instinctSrc();
+    check('★ entityHurt 用 playerHurtPlan 判严重度（不再"挨打就发"）',
+      /playerHurtPlan\(\{ hp, hpLoss, history: rec\.events \}, H\)/.test(srcText), true);
+    check('★ 挨打记录只留窗口内的（老账不算"短时间"）',
+      /rec\.events\.filter\(e => now - e\.at <= H\.windowMs\)/.test(srcText), true);
+    check('★ 小伤不占冷却：只有 plan.tell 才更新 toldAt',
+      /rec\.toldAt = now/.test(srcText) && /if \(!plan\.tell \|\| quiet\) return;[\s\S]{0,80}rec\.toldAt = now/.test(srcText), true);
+    check('★ 阈值在 CFG.playerHurt（不是散在代码里）', H.quietMs >= 60000 && H.lowHp === 8 && H.burstHp === 6 && H.burstHits === 3, true);
+    check('★ 事件文字不再像在催她关心（写了"有危险"+理由）',
+      /event\('player_hurt', `\$\{victim\.username\} 有危险：\$\{plan\.why\}/.test(srcText), true);
   }],
   ['让出身体', async (t) => {
     const { check, instinctSrc, ns } = t;

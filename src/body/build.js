@@ -25,6 +25,8 @@ function plainTimeout (...a) { return __ns.plainTimeout.apply(null, a); }
 function sleep (...a) { return __ns.sleep.apply(null, a); }
 function surveyChar (...a) { return __ns.surveyChar.apply(null, a); }
 function threatNear (...a) { return __ns.threatNear.apply(null, a); }
+// 挖之前挑工具（2026-09-29）：判据在 tool-choice.js，只有那一份
+function equipDigTool (...a) { return __ns.equipDigTool.apply(null, a); }
 function bind (ns) { Object.assign(__ns, ns); BUILT_RE = ns.BUILT_RE; FURNITURE_RE = ns.FURNITURE_RE; N6 = ns.N6; }
 
 function projects (state) {
@@ -155,7 +157,9 @@ async function projectWork (bot, state, { id, maxMs = 90000, maxOps = 60 } = {})
       const wet = N6.map(([dx, dy, dz]) => bot.blockAt(dig.pos.offset(dx, dy, dz))).find(isLiquid);
       if (wet) { skip.add(key(dig.pos)); continue; }
       if (b && !b.diggable) { skip.add(key(dig.pos)); continue; }
-      const tool = bot.pathfinder?.bestHarvestTool?.(b); if (tool) await bot.equip(tool, 'hand').catch(() => {});
+      // 挖之前挑工具（2026-09-29）：以前是 bestHarvestTool（只看身上，模组方块会挑错）。
+      // equipDigTool 挑不出来就照旧 —— 见 tool-choice.js。
+      await equipDigTool(bot, b);
       try { await bot.lookAt(dig.pos.offset(0.5, 0.5, 0.5), true); await plainTimeout(bot.dig(b, true), 15000); dug++; ops++; } catch (_) { skip.add(key(dig.pos)); }
       continue;
     }

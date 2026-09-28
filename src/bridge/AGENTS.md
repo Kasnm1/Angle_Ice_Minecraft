@@ -36,7 +36,7 @@
 | `routes/body.js` | ~350 | 6 条：`GET /plugins` `/entities`、`POST /look` `/attack` `/equip` `/chat` |
 | `routes/place.js` | ~630 | `POST /place` `/shelter` |
 | `routes/move.js` | ~360 | `POST /drop` `/unstick` `/command` `/move` |
-| `routes/mine.js` | ~520 | `POST /mine` |
+| `routes/mine.js` | ~520 | `POST /mine`（挖之前先用 `body/tool-choice` 的 `ensureDigTool` 挑工具，回包多一个 `toolsUsed`） |
 | `routes/gather.js` | ~390 | 6 条：`POST /collect` `/craft` `/follow` `/control` `/climb` `/activate` |
 | `routes/palette.js` | ~170 | 5 条：`GET /palette` `/palette/state` `/palette/block` `/palette/climbable`、`POST /registry/import-palette` |
 | `routes/diag.js` | ~330 | 11 条：`GET /debug/registries` `/debug/registry` `/debug/packets` `/inventory/ledger` `/ftbq/completed` `/instinct` `/instinct/events`、`POST /jump` `/flee` `/instinct` `/stop` |

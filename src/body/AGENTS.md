@@ -16,6 +16,7 @@
 | `mining.js` | 24 项：挖矿与下矿（`delve`）、矿脉/亮源注册表缓存、火把、填缝 |
 | `farming.js` | 4 项：作物 / 种子 / 收成 / `farm` |
 | `kit.js` | 9 项：装备清单（`defaultLoadout`/`isLoadoutItem`/`kitShortfall`）、脚手架判定。`scaffoldCache` 缓存 |
+| `tool-choice.js` | **挖方块前挑工具**（2026-09-29）。`toolKindFor`（该用铲/斧/镐：material → harvestTools → 名字兜底，**判据只此一处**）、`pickDigTool` / `fastestOfKind`（身上挑 digTime 最快的）、`equipDigTool` / `ensureDigTool`（换到手上，身上没有就去精妙背包拿；拿不到就照旧挖）。**不 require 兄弟文件**，名字直接进 `index.js` 的 `__ns` |
 | `build.js` | 23 项：工程 / 家具布局（`project*`/`layout*`）、`placeAt`、`survey` |
 | `commonsense.js` | 常识动作：装水 / 倒水 / 锄地 / 钓鱼 / 动物 / 载具（`routes({ state })`） |
 | `equip-policy.js` | `pickAutoEquip`（"该换成什么到手上来"）。原在 `decision.js`，旧脑干删除时**原样**搬出。被 `../bridge/server.js`（`POST /equip` auto 分支）和 `../instinct/instinct.js`（`deps.pickAutoEquip`）**两边**引用 —— 改它要两边都测 |
@@ -33,6 +34,7 @@ $NODE src/body/containers.js --selftest                  # 21 条
 $NODE src/body/craft.js --selftest                       # 30 条
 $NODE src/body/movement.js --selftest                    # 31 条（假 bot 驱动真实的 startFollow / go）
 $NODE src/body/kit.js --selftest                         # 50 条
+$NODE src/body/tool-choice.js --selftest                 # 32 条（挖之前挑工具，真 1.20.1 方块）
 $NODE src/body/build.js --selftest                       # 21 条
 $NODE src/body/commonsense.js --selftest
 $NODE src/body/equip-policy.js --selftest                # 该换什么到手上来（空手 / 拿错东西）
@@ -62,6 +64,19 @@ $NODE scripts/test-all.js                                # 全绿：含 [exports
 `HSTATE`（bridge 的 `state`）只存在 `index.js`：`install` 先写它再转调 `containers` 的 `installInner`，
 `containers` / `craft` 各接一个 `setHandsState(handsState)` 的 getter 读同一份 —— **不要另存副本**。
 `knowledge`/`K()` 只在 `util.js`；`scaffoldCache` 在 `kit.js`；`oreIdsCache`/`lightIdsCache` 在 `mining.js`。
+
+## 挖方块前挑工具（2026-09-29）
+
+`tool-choice.js` 是**唯一一份**"该用哪种工具"的判据（`material` → `harvestTools` → 名字兜底），
+挖方块的四个调用点都从这里取：
+
+- `bridge/routes/mine.js`（`POST /mine`）—— 直接用 `toolChoice.ensureDigTool`（走 `hands.ensureCarried` 去背包拿）；
+- `mining.js` 的 `digBlock`、`build.js` 的施工挖格 —— 用 `__ns.equipDigTool` 转发壳；
+- `farming.js` 的收庄稼 —— **没接**：那里挖的都是 age 作物（硬度≈0，工具不影响），
+  而且换工具会和后面补种的 `bot.equip(seed)` 打架。
+
+`ensureCarried` 身上够时不开界面（`source:'carried'`），所以"每块都调"不会拖慢 ——
+只有身上真没有时才去开一次精妙背包。**任何一步失败都只是 `took:false`，不阻断挖掘**。
 
 ## 第 3 步已完成（2026-09-28）
 

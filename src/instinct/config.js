@@ -168,8 +168,28 @@ const CFG = {
   shore: { enabled: process.env.MC_INSTINCT_SHORE !== 'false', afterMs: 3000, radius: 12, checkMs: 1000, retryMs: 8000 },
   // 天气：下雨 / 打雷 / 雨停告诉 mind；打雷在露天当夜里（白天也刷怪），打雷时在家可以睡
   weather: { enabled: process.env.MC_INSTINCT_WEATHER !== 'false' },
-  // 玩家挨打：告诉 mind（同一个人 20 秒内只说一次）
-  playerHurt: { enabled: process.env.MC_INSTINCT_PLAYER_HURT !== 'false', radius: 48, quietMs: 20000 },
+  // 玩家挨打：**只有真的危险才**告诉 mind（主人 2026-09-29 实机：掉一点血她每次都问"你没事吧"）。
+  //
+  // 原判据是"48 格内玩家挨打就发" + 同一人 20 秒冷却 —— 摔一下、被怪擦一下都算，
+  // 于是她一天问候十几遍。现在改成按**严重度**判：小伤不吭声，只有下面任一条成立才发：
+  //   ① 血量低：victim health ≤ lowHp（8 = 4 颗心）。原版玩家 20 血，8 血已是"再不治要出事"的量，
+  //      而且这时她该做的是去帮忙/给吃的，不是寒暄。
+  //   ② 短时间内掉血很多：windowMs（10 秒）内累计 ≥ burstHp（6 = 3 颗心）。
+  //      连续被怪打、摔了一跤、火烧，都是这种"一下子掉了不少"的形态。
+  //   ③ 被怪连续打：windowMs 内挨打次数 ≥ burstHits（3）。有些怪单次伤害低（小僵尸 2 点），
+  //      单看一次掉血不够，但连挨三下就是"被围攻"了。
+  // 判定依据见 core.js 的 playerHurtPlan()：**"没有"和"读不到"分开** ——
+  // 读不到血量时不许当成满血（漏报）也不许当成危险（误报），只按 ③ 的挨打次数判。
+  playerHurt: {
+    enabled: process.env.MC_INSTINCT_PLAYER_HURT !== 'false',
+    radius: 48,
+    quietMs: 180000,   // 同一玩家：发过之后 3 分钟内不再发（原来是 20 秒，实机太吵）
+    lowHp: 8,          // 血量 ≤ 这个 = 真的危险（4 颗心）
+    burstHp: 6,        // 窗口内累计掉这么多血 = 掉得很多（3 颗心）
+    burstHits: 3,      // 窗口内挨打这么多次 = 被怪连着打（读不到血量时的唯一判据）
+    windowMs: 10000,   // 上面两个"短时间"有多短
+    maxHp: 20,         // 血量上限；读到的值比它大 = 读到的不是玩家血量（当读不到处理）
+  },
   minFreeSlots: 2,          // 收获、采矿至少留几个空格
   yieldWaitMs: 1500,        // 让出身体时最多等本能收拾多久
 };

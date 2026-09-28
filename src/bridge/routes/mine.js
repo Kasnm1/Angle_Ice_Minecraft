@@ -10,6 +10,12 @@
 const instinct = require('../../instinct/instinct.js');
 const pathing = require('../../world/pathing');
 const placeLogic = require('../../world/place');
+// 挖之前挑工具（2026-09-29）：判据只此一处（body/tool-choice.js）。
+// 这个包在 Windows 上**没装** mineflayer-tool（启动日志："三个反射插件都没装"），
+// 所以 bot.dig() 手上是什么就用什么 —— 以前她拿镐子挖黏土、拿剑砍树。
+// tool-choice 是独立模块（不 require 兄弟文件），不会成环；ensureCarried 走 hands（同 place.js）。
+const toolChoice = require('../../body/tool-choice');
+const hands = require('../../body/hands.js');
 
 /** 跨文件符号表：由汇总文件 server.js 在两阶段装配时注入（见本文件末尾 bind）。 */
 const { reachableStandY } = require('../../world/place');   // 原 server.js:31 从 place.js 解构；拆分时被错做成 __ns 转发壳（没人导出，DEADLY 还是正则），2026-09-29 改回
@@ -86,6 +92,9 @@ const routes = {
     // **必须暴露** —— 它和"真的挖不动"是两种完全不同的故障，
     // 混在一起会让运维去查错方向（去查工具/硬度，而不是查动作没生效）。
     const digStalls = [];
+    // 挖每块之前挑了什么工具（2026-09-29 新增）。**必须暴露** ——
+    // "她还在用错工具挖"和"挑工具没生效"是两种不同的故障，混在一起只能看到"挖得慢"。
+    const toolsUsed = [];
     const maxR = maxRadius ? Math.max(1, +maxRadius) : null;
     const ladder = pathing.buildRadiusLadder(maxR ? { initialRadius: Math.min(maxR, 8), maxRadius: maxR } : {});
     let aborted = false;
@@ -215,6 +224,14 @@ const routes = {
             }
             const beforeBlock = state.bot.blockAt(block.position);
             const beforeName = beforeBlock?.name ?? null;
+
+            // 挖之前把"这个方块该用的工具"弄到手上（2026-09-29）：
+            // 用 block 本体（不是 registry 查出来的 def）判 —— 它带着真实的 material / harvestTools。
+            // 身上没有就去精妙背包拿（ensureCarried：身上够时不开界面，所以不会每块都慢）。
+            // 任何一步失败都只 took:false，**不阻断挖掘**（不许因为没铲子就不挖）。
+            // 记进 sweep 记录，便于实机核对"到底换没换"。
+            const toolPick = await toolChoice.ensureDigTool(state.bot, block, state, hands.ensureCarried);
+            if (toolPick?.name) toolsUsed.push({ at: where, kind: toolPick.kind, name: toolPick.name, source: toolPick.source });
 
             await withTimeout(state.bot.dig(block));
 
@@ -457,6 +474,9 @@ const routes = {
       mined: mined.length,
       minedBlocks: mined.slice(0, 16),
       dropsPicked,
+      // 每块之前挑了什么工具（kind: shovel/axe/pickaxe；source: carried/backpack/none/unknown）。
+      // 空数组 = 一次都没挑到（可能身上没工具，也可能方块认不出该用什么）。
+      toolsUsed: toolsUsed.slice(0, 16),
       // ★ 2026-09-25（P44 架构修复）：`ok` —— 让这个 handler 也能**否决**路由层的
       //   `success: true`。语义："这次挖掘在世界里有没有真的发生"。
       //   `mined` 已经在 P1c 修成"世界真的变了才算"，所以它 > 0 就是可信判据。

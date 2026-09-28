@@ -9,7 +9,7 @@
 |---|---|
 | `instinct.js` | **汇总**（普通文件，不是符号链接）：把下面 8 个子文件的导出拼回原来那份 `module.exports`（56 个名字、顺序一字不差）。外部 `require('../instinct/instinct.js')` 不用改；`--selftest` 在这里跑**全部**小节 |
 | `config.js` | `CFG` / `fillCfg` / `TIER` / `TIER_NAME` / `ARMOR_RANK` / `HURT_FEET` / `HURT_BELOW` / `STRUCTURE_SIGNS` / `COMBAT_YIELD` / `PASSIVE_POSTS` |
-| `core.js` | `install()`（1630 行闭包，整体搬来，内部计时器没拆）、`bodyBusy` / `createCheck` / `settleJob` / `ownsBodyAtCleanup` / `breatheRefused` / `syncSleepState` / `caveBoundary` / `scanColumns*` / `yieldBody` |
+| `core.js` | `install()`（1630 行闭包，整体搬来，内部计时器没拆）、`bodyBusy` / `createCheck` / `settleJob` / `ownsBodyAtCleanup` / `breatheRefused` / `playerHurtPlan` / `victimHealth` / `syncSleepState` / `caveBoundary` / `scanColumns*` / `yieldBody` |
 | `combat.js` | `mobKind` / `attackCooldownMs` / `combatPlan` / `armorRank` / `pickArmor` / `toolWorn` / `hazardUnder` / `pickStepOff` |
 | `survival.js` | `pickEat` / `needBreath` / `effectPlan` / `shoreRingOffsets` / `pickShore` / `mlgStep` / `pickRecovery` |
 | `mining.js` | `pickaxeTier` / `needTier` / `bareNameOf` / `pickOre` / `pickCaveStep` / `pickTorchStep` / `darkReport` / `noteDelve` / `pickDelveResume` |
@@ -45,6 +45,29 @@
 - 敌对判据：`../world/entity-registry.js` 的 `isHostileEntity`（战斗本能、`hands.threatNear`、
   bridge `/nearby` 都调它）。
 - 站位/可替换判据：`../world/place.js` 的 `isStandable` / `exposedToOpen`（含草、藤、雪层，P50）。
+
+## 玩家受伤：只有真危险才告诉 mind（2026-09-29）
+
+主人实机："她掉一点血每次都问'你没事吧'"。原判据是"48 格内玩家挨打就发 + 20 秒冷却"，
+摔一下、擦一下都触发。现在按**严重度**判 —— 判据在 `core.js` 的 `playerHurtPlan()`（纯函数），
+阈值在 `CFG.playerHurt`（阈值与理由都写在那里的注释里）：
+
+- ① 血量 ≤ `lowHp`(8) → 危险；
+- ② `windowMs`(10s) 内累计掉血 ≥ `burstHp`(6) → 掉得多；
+- ③ `windowMs` 内挨打 ≥ `burstHits`(3) → 被连着打。
+- 都不满足 = 小伤，**不报**。冷却 `quietMs` 拉到 3 分钟，且**只按"真发出去的那次"算**
+  （小伤不占冷却，免得真危险那一下被压掉）。
+
+**玩家血量从哪读**（`core.js` 的 `victimHealth()`）：mineflayer 的 `bot.health` **只对自己**
+（`lib/plugins/health.js` 只有 `update_health` 包写它）。别人的血量在**实体 metadata** 里：
+`lib/plugins/entities.js:461` 收到 `entity_metadata` 时按
+`bot.registry.entitiesByName[entity.name].metadataKeys` 映射，但只挂进局部变量、**不写回 entity**。
+所以按同一份 `metadataKeys` 找 `health` 的槽位，再读 `entity.metadata[槽位]`。
+**读不到就返回 null**（不是 20、不是 0），`playerHurtPlan` 此时只按 ③ 的挨打次数判 ——
+既不猜满血（会漏报）也不猜危险（会误报）。
+
+`playerHurt` 事件的文字写的是"XX 有危险：<理由>"，并带 `reason` 字段（`low_hp`/`burst`/`hits`）。
+mind 侧提示词对应的一小段也已改成"小伤不用每次都问，真危险才关心"。
 
 ## 自测
 

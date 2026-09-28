@@ -34,14 +34,18 @@ function scaffoldIds (...a) { return __ns.scaffoldIds.apply(null, a); }
 function sleep (...a) { return __ns.sleep.apply(null, a); }
 function threatNear (...a) { return __ns.threatNear.apply(null, a); }
 function unseenChests (...a) { return __ns.unseenChests.apply(null, a); }
+// 挖之前挑工具（2026-09-29）：判据在 tool-choice.js，只有那一份
+function equipDigTool (...a) { return __ns.equipDigTool.apply(null, a); }
 function bind (ns) { Object.assign(__ns, ns); N6 = ns.N6; REACH = ns.REACH; }
 
 async function digBlock (bot, block) {
   if (airish(block)) return { ok: true };
   if (BUILT_RE.test(block.name)) return { ok: false, why: `前面是 ${block.name}（人造的，不拆）` };
   if (!block.diggable || block.hardness == null || block.hardness < 0) return { ok: false, why: `${block.name} 挖不动` };
-  const tool = bot.pathfinder?.bestHarvestTool?.(block);
-  if (tool && bot.heldItem?.type !== tool.type) await bot.equip(tool, 'hand').catch(() => {});
+  // 挖之前先挑最合适的工具拿到手上（2026-09-29）：判据在 tool-choice.js。
+  // 以前用 `bot.pathfinder.bestHarvestTool` —— 它只看身上背包、且模组方块（material 空）
+  // 会返回背包第一件东西（可能是剑）。equipDigTool 认不出就返回 took:false，照旧挖。
+  await equipDigTool(bot, block);
   const need = block.harvestTools && Object.keys(block.harvestTools).length;
   if (need && !(bot.heldItem && block.harvestTools[bot.heldItem.type])) return { ok: false, needTool: true, why: `${block.name} 要更好的镐子才掉东西` };
   await bot.lookAt(block.position.offset(0.5, 0.5, 0.5), true);
