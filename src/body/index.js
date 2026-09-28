@@ -93,10 +93,10 @@ __files.craft.setHandsState(handsState);
 function routes ({ state, withTimeout }) {
   const bot = () => state.bot;
   return {
-    'POST /eat': async (b = {}) => eat(bot(), b),
+    'POST /eat': async (b = {}) => eat(bot(), b, state),
     'POST /use': async (b = {}) => use(bot(), state, b),
     'POST /wear': async (b = {}) => wear(bot(), state, b),
-    'POST /craft2': async (b = {}) => craft2(bot(), b, withTimeout),
+    'POST /craft2': async (b = {}) => craft2(bot(), b, withTimeout, state),
     'POST /smelt': async (b = {}) => smelt(bot(), b, state),
     'POST /give': async (b = {}) => give(bot(), b),
     'POST /climb_up': async (b = {}) => climbUp(bot(), state, b),

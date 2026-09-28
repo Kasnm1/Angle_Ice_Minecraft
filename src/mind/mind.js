@@ -2006,7 +2006,38 @@ async function selftest () {
       ? { items: [] }
       : { curios: ['sophisticatedbackpacks:diamond_backpack'], equipment: {}, backpack: { items: {}, slots: 0, used: 0, at: now } } });
     const unreadable = await body._personalInventory({ query: '铁锭' });
-    check('0/0 是读不到，不是假装空背包', unreadable.sophisticatedBackpack.readable === false && unreadable.absenceProven === false && /不能说没有/.test(unreadable.note), unreadable);
+    check('0/0 是读不到，不是假装空背包', unreadable.sophisticatedBackpack.readable === false && unreadable.absenceProven === false, unreadable);
+    check('读不到时不说"没有"', /读不到|不能说没有/.test(unreadable.note), unreadable.note);
+
+    // 2026-09-29 问题 4：快照太旧 / 从没看过 → **身体层自己开背包刷新**，不再推给 LLM
+    const old = now - 600000;   // 10 分钟前的旧快照
+    let opened = 0;
+    const withBackpack = (at) => ({
+      get: async (p) => {
+        if (p === '/inventory') return { items: [] };
+        // 刷新后（opened>0）返回新鲜快照；刷新前返回旧的
+        return { curios: ['sophisticatedbackpacks:diamond_backpack'], equipment: {}, backpack: opened ? { items: { 'minecraft:raw_iron': 5 }, slots: 108, used: 1, at: Date.now() } : { items: { 'minecraft:raw_iron': 5 }, slots: 108, used: 1, at } };
+      },
+      post: async (p) => { if (p === '/backpack/open') opened++; return { success: true }; },
+    });
+    body._setBridge(withBackpack(old));
+    const stale = await body._personalInventory({ query: '粗铁' });
+    check('★ 旧快照 → 自己开了背包刷新（不用 LLM 先 open）', opened === 1, opened);
+    check('★ 刷新后拿到新鲜内容、resortedOnQuery=true', stale.sophisticatedBackpack.refreshedOnQuery === true && stale.combined['minecraft:raw_iron'] === 5, stale.sophisticatedBackpack);
+    check('刷新后可以判断有没有', stale.absenceProven === true, stale);
+    opened = 0;
+    body._setBridge(withBackpack(Date.now()));   // 新鲜快照：不该再开
+    const fresh = await body._personalInventory({ query: '粗铁' });
+    check('★ 快照还新鲜 → 不重复开背包（省一次界面）', opened === 0, opened);
+    // 刷新失败 → 如实说"读不到"，不说"没有"
+    opened = 0;
+    body._setBridge({
+      get: async (p) => (p === '/inventory' ? { items: [] } : { curios: ['sophisticatedbackpacks:diamond_backpack'], equipment: {}, backpack: { items: {}, slots: 0, used: 0, at: old } }),
+      post: async () => { throw new Error('背包没打开（身上、背饰上都没有背包？）'); },
+    });
+    const failed = await body._personalInventory({ query: '粗铁' });
+    check('★ 刷新失败 → readable=false 且带上失败原因', failed.sophisticatedBackpack.readable === false && /没开成/.test(failed.sophisticatedBackpack.note || ''), failed.sophisticatedBackpack);
+    check('★ 刷新失败也不说"没有"', failed.absenceProven === false, failed);
     body._setBridge(mockBridge());
   }
 

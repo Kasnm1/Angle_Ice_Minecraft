@@ -33,10 +33,20 @@ function scaffoldIds () {
   return list;
 }
 
+/**
+ * 随身装备单（`essential` = 缺了要惊动 mind，见 `kitShortfall`）。
+ *
+ * 2026-09-29（主人）：原来没有**铲**（`pickaxe$` 匹配不上 `iron_shovel`，`(^|_)axe$` 也匹配不上），
+ * 于是挖黏土/沙子/泥土时工具在背包里也拿不出来（`tool-choice.js` 认得该用铲，`ensureCarried`
+ * 却因为没有这件装备、连"背包里有记录"都不看）。补上铲，与斧同级（非 essential —— 缺斧缺铲
+ * 不挡挖掘，只是挖得慢）。理由和边界写在 `tool-choice.js` 顶部的注释里：
+ * `NAME_RULES` 已把 clay/dirt/sand/gravel/snow… 归成铲，名单是最全的一份。
+ */
 function defaultLoadout () {
   return [
     { kind: 'best', re: /pickaxe$/, count: 1, label: '最好的镐', essential: true },
     { kind: 'best', re: /(^|_)axe$/, count: 1, label: '最好的斧' },
+    { kind: 'best', re: /(^|_)shovel$/, count: 1, label: '最好的铲' },
     { kind: 'best', re: /sword$/, count: 1, label: '最好的剑' },
     { kind: 'food', count: 16, min: 4, label: '吃的', essential: true },
     { kind: 'id', id: 'minecraft:torch', count: 16, label: '火把' },
@@ -260,6 +270,11 @@ const __sections = [
         check('★ 模组镐也认（整合包）', LO('ltc2:steel_pickaxe'), true);
         check('★ 斧 → 随身装备', LO('minecraft:iron_axe'), true);
         check('★ 剑 → 随身装备', LO('minecraft:diamond_sword'), true);
+        // 2026-09-29 主人：装备单原来没有铲（挖黏土/沙子的工具），补上
+        check('★ 铲 → 随身装备（2026-09-29 补的）', LO('minecraft:iron_shovel'), true);
+        check('★ 木铲也是铲', LO('minecraft:wooden_shovel'), true);
+        check('★ 模组铲也认', LO('somemod:steel_shovel'), true);
+        check('★ 铲与镐不混淆（镐不是铲、铲不是镐）', [LO('minecraft:iron_shovel') && /shovel/.test('iron_shovel'), kitMatch(kb, { kind: 'best', re: /pickaxe$/ }, { name: 'minecraft:iron_shovel' })], [true, false]);
         check('★ 火把 → 随身装备', LO('minecraft:torch'), true);
         check('★ 水桶 → 随身装备（落地水，保命的）', LO('minecraft:water_bucket'), true);
         check('★ 圆石 → 随身装备（搭脚方块）', LO('minecraft:cobblestone'), true);

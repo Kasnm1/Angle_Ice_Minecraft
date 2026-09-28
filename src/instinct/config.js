@@ -86,6 +86,9 @@ const CFG = {
     scanMs: 250,
     loseMs: 2500,           // 这么久没有目标 = 打完了
     maxMs: 90000,
+    // 2026-09-29 问题 2c：怪在多远才允许"开精妙背包拿武器/盾"。
+    // 5 格开外 = 还有缓冲，开背包换装划算；5 格以内贴脸，开界面挨打不值（理由见 equipForFight）。
+    fightFromBackpackDist: 5,
   },
   tidy: {
     enabled: process.env.MC_INSTINCT_TIDY !== 'false',

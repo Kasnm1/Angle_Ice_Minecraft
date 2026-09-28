@@ -18,6 +18,7 @@ function fillCfg (...a) { return __ns.fillCfg.apply(null, a); }
 function mobKind (...a) { return __ns.mobKind.apply(null, a); }
 function attackCooldownMs (...a) { return __ns.attackCooldownMs.apply(null, a); }
 function combatPlan (...a) { return __ns.combatPlan.apply(null, a); }
+function fightGearFetchPlan (...a) { return __ns.fightGearFetchPlan.apply(null, a); }
 function pickArmor (...a) { return __ns.pickArmor.apply(null, a); }
 function toolWorn (...a) { return __ns.toolWorn.apply(null, a); }
 function hazardUnder (...a) { return __ns.hazardUnder.apply(null, a); }
@@ -1433,27 +1434,25 @@ function install (bot, state, deps) {
         const g = await deps.handlers['POST /go']({ x: h.center.x, y: h.center.y, z: h.center.z, range: 3, abort });
         if (abort() || g?.arrived === false) return { error: `没走到家${g?.error ? `：${g.error}` : ''}` };
       }
-      // 背着背包：先把背包里的倒出来一起整理（不然背包满了就永远满着，每次都白跑回家）。最多两轮
-      let r = null; let unpacked = 0;
+      // 背着背包：**organizeStorage 自己就会把背包里的倒出来再归位**（2026-09-29 移到身体层）。
+      // 以前这里是"外面套一层 unpack + organize，最多两轮" —— 背包一大两轮清不完，而且
+      // 那层 unpack 是盲倒（不看倒出来了什么），和身体层各写一份。现在只调一次，让它自己做到底。
       const organizeArgs = storagePolicy.storageRequest(h, { abort, mode: 'daily' }, { discover: false });
       if (!organizeArgs.only?.length) return { error: '家里没有可自动整理的已登记箱子（还没登记，或都受保护）；不会猜哪些箱子能动' };
-      for (let round = 0; round < 2 && !abort(); round++) {
-        let u = null;
-        if (deps.hands.wearingBackpack?.(bot, state)) {
-          try { u = await deps.handlers['POST /backpack/tidy']({ stash: false, restock: false, unpack: true, abort }); } catch (_) {}
-          unpacked += u?.unpacked || 0;
-        }
-        r = await deps.handlers['POST /storage/organize'](organizeArgs);
-        if (!u?.unpacked) break;
-      }
-      return { ...r, unpacked };
+      const r = await deps.handlers['POST /storage/organize'](organizeArgs);
+      return { ...r, unpacked: r?.backpack?.unpacked || 0 };
     });
     const after = kitNow();
-    note({ kind: 'tidy', why: pick.why, aborted: aborted || undefined, moved: r?.moved, error: r?.error });
+    // 背包那一段单独说清（读不到 / 箱子满了 / 倒完了），不和"整理完了"混成一句
+    const bp = r?.backpack;
+    const bpNote = bp && bp.status === 'unreadable' ? `；背包读不到（${bp.why || '打不开'}），里面的没算`
+      : bp && bp.status === 'chestsFull' ? `；箱子装不下背包里剩下的（还剩 ${bp.remaining ?? '?'} 件）`
+        : bp && bp.unpacked ? `（其中从背包倒出来 ${bp.unpacked} 件）` : '';
+    note({ kind: 'tidy', why: pick.why, aborted: aborted || undefined, moved: r?.moved, error: r?.error, backpack: bp?.status });
     if (!aborted) {
       event('tidy', r?.error
         ? `想回家整理（${pick.why}），没做成：${String(r.error).slice(0, 80)}`
-        : `${r?.completed === false ? '回家整理了一部分' : '回家整理了'}（${pick.why}）：搬了 ${r?.moved ?? 0} 组${r?.unpacked ? `（其中从背包倒出来 ${r.unpacked} 组）` : ''}${after.short.length ? `；还缺 ${after.short.join('、')}` : '，该带的都带上了'}`,
+        : `${r?.completed === false ? '回家整理了一部分' : '回家整理了'}（${pick.why}）：搬了 ${r?.moved ?? 0} 组${bpNote}${after.short.length ? `；还缺 ${after.short.join('、')}` : '，该带的都带上了'}`,
       r?.boxes ? { storage: { completed: r.completed === true, boxes: r.boxes } } : {});
     }
     return { did: 'tidy' };
@@ -1554,18 +1553,48 @@ function install (bot, state, deps) {
     return out;
   }
 
-  async function equipForFight () {
+  /**
+   * 打架前换武器 / 上盾（2026-09-29 问题 2c：也要看精妙背包）。
+   *
+   * **什么时候才去背包拿** —— 阈值取 `first.dist >= 5`（`I.cfg.combat.fightFromBackpackDist`，默认 5）：
+   *   · 怪还在 5 格开外 = "看见了"而不是"已经贴脸"。这时多花 0.7~1.4 秒开背包换把好剑是划算的
+   *     （精妙背包一次 shift 拿一组要 `sleep(700)`，见 `fetchFromBackpack` 的注释）。
+   *   · 怪已经 5 格以内（`C.detect` 默认值附近）→ **不碰背包**：开背包界面会关掉当前窗口 +
+   *     暂停一瞬，贴脸时这一下足够被连打好几拳，得不偿失。宁可先用手上这把打，边打边拉开距离。
+   *   · 阈值比"怪会不会立刻够到我"略宽一点：僵尸/骷髅的仇恨范围常在 8~16 格，5 格开外
+   *     通常还有 1~2 秒缓冲，够一次拿取。
+   *
+   * 有距离就不猜：`first.dist` 读不到（测试桩）时按"贴脸"处理（保守，不乱开背包）。
+   */
+  async function equipForFight (first = null) {
     try {
-      const inv = bot.inventory.items().map(i => i.name);
-      const pick = deps.pickAutoEquip?.({ held: bot.heldItem?.name ?? null, inventory: inv, want: 'weapon' });
+      const dist = first?.dist ?? null;
+      const hasShieldNow = /shield/.test(bot.inventory.slots[45]?.name || '') || bot.inventory.items().some(i => /shield/.test(i.name));
+      const firstPick = deps.pickAutoEquip?.({ held: bot.heldItem?.name ?? null, inventory: bot.inventory.items().map(i => i.name), want: 'weapon' });
+      // 判据是纯函数（instinct/combat.js 的 fightGearFetchPlan），理由写在那里的注释里
+      const plan = fightGearFetchPlan({ dist, hasShield: hasShieldNow, hasWeapon: !!(firstPick?.itemName && firstPick.itemName !== bot.heldItem?.name) });
+      // 盾：优先补（纯收益）。身上没有、怪又还远 → 去精妙背包拿
+      if (!hasShieldNow) {
+        let sh = bot.inventory.items().find(i => /shield/.test(i.name));
+        if (!sh && plan.fetchShield && state && deps.hands.ensureCarried) {
+          try {
+            const got = await deps.hands.ensureCarried(bot, state, (it) => /shield/.test(it.name || ''), 1);
+            if (got?.got > 0) sh = bot.inventory.items().find(i => /shield/.test(i.name));
+          } catch (_) {}
+        }
+        if (sh) await bot.equip(sh, 'off-hand');
+      }
+      // 武器：先用手上这把的最优（pickAutoEquip 的结论），没有更好的、怪又还远才去背包翻
+      let pick = firstPick;
+      if (!(pick?.itemName && pick.itemName !== bot.heldItem?.name) && plan.fetchWeapon && state && deps.hands.ensureCarried) {
+        try {
+          const got = await deps.hands.ensureCarried(bot, state, (it) => /(sword|(^|_)axe)$/.test(it.name || ''), 1);
+          if (got?.got > 0) pick = deps.pickAutoEquip?.({ held: bot.heldItem?.name ?? null, inventory: bot.inventory.items().map(i => i.name), want: 'weapon' });
+        } catch (_) {}
+      }
       if (pick?.itemName && pick.itemName !== bot.heldItem?.name) {
         const it = bot.inventory.items().find(i => i.name === pick.itemName);
         if (it) await bot.equip(it, 'hand');
-      }
-      // 盾：放到副手（有的话）
-      if (!/shield/.test(bot.inventory.slots[45]?.name || '')) {
-        const sh = bot.inventory.items().find(i => /shield/.test(i.name));
-        if (sh) await bot.equip(sh, 'off-hand');
       }
     } catch (_) {}
     return /shield/.test(bot.inventory.slots[45]?.name || '');
@@ -1693,7 +1722,35 @@ function install (bot, state, deps) {
   let eating = false;
   const checkEat = createCheck('eat', async (d) => {
     if (ended || !state.connected || !I.cfg.eat.enabled || eating || !bot.entity || sleeping() || I.urgent) return;
-    const hasFood = bot.inventory.items().some(i => deps.hands.foodScore(i) > 0);
+    // 「有没有吃的」要连**精妙背包**一起算（2026-09-29 主人：实机 `hungry 饿了（饥饿 6/20），身上没有吃的`，
+    // 其实面包塞在背包里）。三步，判据全部复用现成的，不另写名单：
+    //   ① 身上有 → 有；
+    //   ② 身上没有、背包快照里有吃的（`state.backpackSeen`，foodScore 只此一份）→ 也算有（`POST /eat` 会去拿）；
+    //   ③ 快照读不到（从没开过 / 没背背包）→ **先打开看一眼**（`lookIntoBackpack`），还读不到才按"身上没有"报。
+    // 不能把"背包读不到"直接当"没有吃的" —— 那正是她饿着不吃、还报错的根因（AGENTS.md §5-1）。
+    let hasFood = bot.inventory.items().some(i => deps.hands.foodScore(i) > 0);
+    if (!hasFood) {
+      const seenFood = () => {
+        const items = state.backpackSeen?.items;
+        if (!items) return null;   // 读不到
+        return Object.entries(items).some(([name, count]) => count > 0 && deps.hands.foodScore({ name }) > 0);
+      };
+      let inPack = seenFood();
+      // ⚠️ 开背包看一眼会打断手上的事（开界面）：只在**真饿了、没在打架、没开着别的界面**时看，而且一分钟最多一次
+      //    （2026-09-29 Claude 复核：原来这一步在判"饿不饿 / 忙不忙"之前，快照一直读不到时每 2 秒开一次背包）。
+      //    忙着的时候只有饿到 urgentAt 才看（跟 pickEat 的"忙完再吃"一致）。
+      const hungry = bot.food != null && bot.food <= I.cfg.eat.at;
+      const busyNow = !!(I.inflight || state.currentAction || (I.running && I.running.kind !== 'combat'));
+      const mayPeek = hungry && !fighting && !bot.currentWindow && (!busyNow || bot.food <= I.cfg.eat.urgentAt)
+        && Date.now() - (I.eatPeekAt || 0) > 60000;
+      if (inPack == null && deps.hands.lookIntoBackpack && mayPeek) {
+        I.eatPeekAt = Date.now();
+        try { await deps.hands.lookIntoBackpack(bot, state); } catch (_) {}
+        inPack = seenFood();
+      }
+      hasFood = inPack === true;
+      d.foodInBackpack = inPack;
+    }
     const busy = bodyBusy({ inflight: I.inflight, currentAction: state.currentAction, windowOpen: false, quietUntil: 0 }) || (I.running && I.running.kind !== 'combat' ? `本能在做 ${I.running.kind}` : null);
     const pick = pickEat({ food: bot.food, busy, fighting, windowOpen: !!bot.currentWindow, eating, hasFood, failUntil: I.eatFailUntil || 0 }, I.cfg.eat);
     d.skip = pick?.skip || (pick?.eat ? null : '还不饿');
@@ -1707,7 +1764,7 @@ function install (bot, state, deps) {
     eating = true;
     try {
       const r = await deps.handlers['POST /eat']({});
-      if (r?.ate) note({ kind: 'eat', item: r.item, from: r.foodBefore, to: r.foodAfter, urgent: pick.urgent || undefined });
+      if (r?.ate) note({ kind: 'eat', item: r.item, from: r.foodBefore, to: r.foodAfter, took: r.from === 'backpack' ? 'backpack' : undefined, urgent: pick.urgent || undefined });
       else I.eatFailUntil = Date.now() + I.cfg.eat.failCooldownMs;
     } catch (e) {
       I.eatFailUntil = Date.now() + I.cfg.eat.failCooldownMs;
@@ -2378,6 +2435,30 @@ const __sections = [
       console.log(`\n${pass} passed, ${fail} failed`);
       return fail ? 1 : 0;
     });
+  }],
+  // ---- 打架前翻不翻精妙背包（2026-09-29 问题 2c）----
+  // 测的是**跑的那份** fightGearFetchPlan（instinct/combat.js），不另抄一份实现。
+  ['打架前：怪远才翻背包找武器/盾，贴脸不翻', async (t) => {
+    const { check, ns, instinctSrc } = t;
+    const { fightGearFetchPlan, CFG } = ns;
+    const TH = CFG.combat.fightFromBackpackDist;
+    check('阈值默认是 5 格', TH, 5);
+    const p8 = fightGearFetchPlan({ dist: 8, hasShield: false, hasWeapon: false });
+    check('★ 怪在 8 格、身上没盾没武器 → 武器去翻', p8.fetchWeapon, true);
+    check('★ 怪在 8 格 → 盾也去翻', p8.fetchShield, true);
+    const p3 = fightGearFetchPlan({ dist: 3, hasShield: false, hasWeapon: false });
+    check('★ 怪在 3 格（贴脸）→ 武器不翻', p3.fetchWeapon, false);
+    check('★ 怪在 3 格（贴脸）→ 盾也不翻', p3.fetchShield, false);
+    check('正好 5 格（=阈值）→ 翻', fightGearFetchPlan({ dist: 5, hasShield: false, hasWeapon: false }).fetchWeapon, true);
+    check('差一点点 4.9 格 → 不翻', fightGearFetchPlan({ dist: 4.9, hasShield: false, hasWeapon: false }).fetchWeapon, false);
+    check('★ 距离读不到 → 武器不翻', fightGearFetchPlan({ dist: null, hasWeapon: false }).fetchWeapon, false);
+    check('★ 距离读不到 → 盾不翻（保守，不乱开背包）', fightGearFetchPlan({ dist: null, hasShield: false }).fetchShield, false);
+    check('说明是"距离读不到"', /距离读不到/.test(fightGearFetchPlan({ dist: null }).reason), true);
+    check('★ 身上已经有更好的武器 → 不用去背包翻武器', fightGearFetchPlan({ dist: 9, hasWeapon: true, hasShield: false }).fetchWeapon, false);
+    check('★ 已经有盾 → 不用去翻盾', fightGearFetchPlan({ dist: 9, hasWeapon: false, hasShield: true }).fetchShield, false);
+    // 源码形状锁：equipForFight 真的用了这个判据（不是只在旁边写着）
+    check('★ equipForFight 用 fightGearFetchPlan 决定去不去背包', /const plan = fightGearFetchPlan\(\{ dist, hasShield: hasShieldNow/.test(instinctSrc()), true);
+    check('★ 贴脸时不碰背包（去背包拿都必须过 plan.fetch*）', /plan\.fetchShield && state && deps\.hands\.ensureCarried/.test(instinctSrc()), true);
   }],
 ];
 register('core', __sections);

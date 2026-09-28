@@ -25,6 +25,9 @@ function canUseFrom (...a) { return __ns.canUseFrom.apply(null, a); }
 function canUseNow (...a) { return __ns.canUseNow.apply(null, a); }
 function categoryOf (...a) { return __ns.categoryOf.apply(null, a); }
 function compareSortedItems (...a) { return __ns.compareSortedItems.apply(null, a); }
+// 合成缺料时去精妙背包补料（2026-09-29）：判据/入口都在 containers.js，这里只转发
+function countInBackpackSeen (...a) { return __ns.countInBackpackSeen.apply(null, a); }
+function resolveCarryId (...a) { return __ns.resolveCarryId.apply(null, a); }
 function containerOpen (...a) { return __ns.containerOpen.apply(null, a); }
 function curiosEquip (...a) { return __ns.curiosEquip.apply(null, a); }
 function delta (...a) { return __ns.delta.apply(null, a); }
@@ -315,7 +318,146 @@ function shortfallText (k, KB, id, needs) {
   return `做${k.label(id)}还缺：${parts.join('、')}`;
 }
 
-async function craft2 (bot, { itemName, count = 1 } = {}, withTimeout) {
+/**
+ * 缺料时**先从精妙背包补料**再把料算全（2026-09-29 主人）。
+ *
+ * 实机：`做木棍还缺竹子 2（有 0）` —— 竹子其实在精妙背包里。以前 `craft2` 的 `have`
+ * 只数 `invCounts(bot)`（身上 36 格），背包里的原料一律当"没有"。
+ *
+ * 判据全部复用现成的，不另写名单：
+ *   · 要不要去拿：`countInBackpackSeen(state, id)` —— 快照里有就值得开一次背包；
+ *     返回 `null` = **读不到**（从没开过 / 没背背包），这时不假装"没有"，也不硬开。
+ *   · 怎么拿：`ensureCarried(bot, state, id, need)`（唯一入口，"有/没有/读不到"三分开）。
+ *
+ * 只对 `cands` 里**任何一条配方会用到的原料**去补（避免为一个不相干的配方白开背包）。
+ * 有东西真被搬上来 → 返回 true，调用方重算 `have`。
+ *
+ * @returns {Promise<boolean>} 是否往身上补进了东西（没补/读不到都返回 false）
+ */
+async function topUpFromBackpack (bot, state, KB, cands, have, carry) {
+  if (!state || typeof carry !== 'function') return false;
+  // 候选配方的全部原料 id（含标签展开）
+  const wanted = new Set();
+  for (const r of cands) {
+    const slotAlts = r.shape ? Object.values(r.shape.key) : r.in.map(s => s.alts);
+    for (const alts of slotAlts) for (const a of alts) {
+      if (a.item) wanted.add(a.item);
+      else for (const x of KB.tags.get(`item:${a.tag}`) || []) wanted.add(x);
+    }
+  }
+  let moved = false;
+  for (const id of wanted) {
+    if ((have.get(id) || 0) > 0) continue;                 // 身上已经有这种料，不用去背包拿
+    if (countInBackpackSeen(state, id, null) == null) continue;   // 背包读不到 → 不猜、不硬开
+    try {
+      const got = await carry(bot, state, id, 1);
+      if (got && got.got > 0) moved = true;
+    } catch (_) { /* 拿不到就照旧按"身上没有"算，不阻断合成 */ }
+  }
+  return moved;
+}
+
+/**
+ * 附近没有工作台 / 熔炉，但**身上或背包里有** → 自己放一个在旁边用，用完**挖回来**。
+ *
+ * 实机（2026-09-29）：`craft(iron_shovel) ✗ 材料是够的，但要工作台，但 16 格内没有（背包里有的话先 place 放下）`
+ * —— 这句话是在让 mind 自己去放，mind 没做。项目原则是"身体能做的别推给意识层"，所以这里直接做完。
+ *
+ * 流程：① 身上没有就从精妙背包拿一件（`ensureCarried`，唯一入口）；
+ *      ② 找一处**能站、能贴面**的空位放下（站位判据走 `place.js`，不另写）；③ 交给调用方用；
+ *      ④ `finally` 里**挖回来**（`collectDrops` 捡），不给玩家留一地工作台。
+ *
+ * ⚠️ 放不下 / 收不回都**如实报**（返回值带 `placed` / `recovered` / `why`），不假装成功；
+ *    但**不抛** —— 放不下就退回原来的行为（照旧报"要工作台"），别因为放不下把合成整个弄崩。
+ *
+ * @param {object} bot
+ * @param {object} state
+ * @param {string} itemName  要放的方块（`minecraft:crafting_table` / `minecraft:furnace`）
+ * @param {Function} fn      `(block) => Promise<any>`：趁工作台还在时做的事
+ * @returns {Promise<{ok:boolean, placed:boolean, recovered:boolean|null, result?:any, why?:string, block?:object}>}
+ */
+async function withPlacedStation (bot, state, itemName, fn, carry = null) {
+  const carryFn = typeof carry === 'function' ? carry : ensureCarried;
+  const want = fullId(itemName);
+  // ① 先看身上有没有；没有就去背包拿（读不到/都没有都只影响"能不能放"，不抛）
+  let have = bot.inventory.items().find(i => fullId(i.name) === want);
+  if (!have && state) {
+    try {
+      await carryFn(bot, state, want, 1);
+      have = bot.inventory.items().find(i => fullId(i.name) === want);
+    } catch (_) {}
+  }
+  if (!have) return { ok: false, placed: false, recovered: null, why: `身上和背包里都没有 ${k_labelStation(want)}` };
+  if (bot.currentWindow) { bot.closeWindow(bot.currentWindow); await sleep(200); }
+
+  // ② 找一处能放的空位：脚下同层、旁边有实心可贴面（判据来自 place.js 的 evaluateFace/planPlacement）
+  const block = await placeNearbySelf(bot, want);
+  if (!block) return { ok: false, placed: false, recovered: null, why: `附近没有能放下 ${k_labelStation(want)} 的空位` };
+
+  let result = null; let recovered = null;
+  try {
+    result = await fn(block);
+  } finally {
+    // ④ 用完挖回来（挖掉 + 把掉落物捡起来）。收不回如实记，不假装
+    recovered = await recoverPlaced(bot, block);
+  }
+  return { ok: true, placed: true, recovered, result, block };
+}
+
+const k_labelStation = (id) => (id === 'minecraft:crafting_table' ? '工作台' : id === 'minecraft:furnace' ? '熔炉' : id);
+
+/**
+ * 在**自己身边**放一个方块：脚下同层的 6 个方向各试一次，要"空格 + 有实心邻居可贴"。
+ * 站位/可替换判据复用 `place.js`（`isStandable` 那条线），这里不重写几何。
+ */
+async function placeNearbySelf (bot, want) {
+  const it = bot.inventory.items().find(i => fullId(i.name) === want);
+  if (!it) return null;
+  let placed = null;
+  try {
+    if (bot.heldItem?.type !== it.type) await bot.equip(it, 'hand');
+    const f = bot.entity.position.floored();
+    // 先试脚下往上、再试四周同一层（和 placeTorchHere 同一套候选顺序，够稳）
+    const cands = [[0, 0, 0], [1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1], [0, 1, 0]];
+    for (const [dx, dy, dz] of cands) {
+      const pos = f.offset(dx, dy, dz);
+      const cur = bot.blockAt(pos);
+      if (cur && cur.boundingBox === 'block') continue;       // 那格被占了
+      const below = bot.blockAt(pos.offset(0, -1, 0));
+      if (!below || below.boundingBox !== 'block') continue;  // 得有个实心底
+      // 站在要放的那格里会把自己卡住：脚下那格跳过（第 0 个候选）—— 让人先站开
+      const same = pos.x === f.x && pos.z === f.z && (pos.y === f.y || pos.y === f.y + 1);
+      if (same) continue;
+      try {
+        await bot.lookAt(pos.offset(0.5, 0.5, 0.5), true);
+        await bot.placeBlock(below, new Vec3(0, 1, 0));
+      } catch (_) { continue; }
+      await sleep(250);
+      const now = bot.blockAt(pos);
+      if (now && fullId(now.name) === want) { placed = now; break; }
+    }
+  } catch (_) {}
+  return placed;
+}
+
+/** 把刚放下的工作台/熔炉挖回来并捡起。返回 null = 读不到；true/false = 收回了没有 */
+async function recoverPlaced (bot, block) {
+  try {
+    if (bot.currentWindow) { bot.closeWindow(bot.currentWindow); await sleep(200); }
+    const at = block.position;
+    const b = bot.blockAt(at);
+    if (!b || fullId(b.name) !== fullId(block.name)) return null;   // 已经不在了（读不到 / 被拿走）
+    await bot.dig(b, true);
+    await sleep(300);
+    if (bot.collectBlock?.collect) { try { await bot.collectBlock.collect(bot.blockAt(at) || b); } catch (_) {} }
+    const gone = !bot.blockAt(at) || bot.blockAt(at)?.boundingBox === 'empty';
+    const backInInv = bot.inventory.items().some(i => fullId(i.name) === fullId(block.name));
+    return !!(gone && backInInv) || gone;
+  } catch (_) { return false; }
+}
+
+async function craft2 (bot, { itemName, count = 1 } = {}, withTimeout, state = null, ensureCarriedFn = null) {
+  const carry = typeof ensureCarriedFn === 'function' ? ensureCarriedFn : ensureCarried;
   const k = K(); const KB = k.load();
   const id = k.resolve(itemName, 1)[0];
   if (!id) throw new Error(`不认识 ${itemName}`);
@@ -329,9 +471,27 @@ async function craft2 (bot, { itemName, count = 1 } = {}, withTimeout) {
   if (!cands.length) throw new Error(`${k.label(id)} 没有工作台/背包配方（${(KB.byOutput.get(id) || []).length ? '要用别的工作站做，查 recipe' : '不能合成'}）`);
 
   let table = nearestBlock(bot, ['crafting_table']);
-  const have = invCounts(bot);
+  let have = invCounts(bot);
+  // 原料可能在精妙背包里（实机"做木棍还缺竹子 2（有 0）"）—— 先补一次再算料
+  const topped = await topUpFromBackpack(bot, state, KB, cands, have, carry);
+  if (topped) have = invCounts(bot);
   const inTag = (tag, x) => KB.tags.get(`item:${tag}`)?.has(x);
   const tried = [];
+  // 报告缺料时的"另两处"证据：背包快照里有没有、能不能读到（AGENTS.md §5-1 分开报）
+  const packNoteFor = (list) => {
+    if (!state) return '';
+    const inPack = []; const unknown = [];
+    for (const raw of list) {
+      const pid = resolveCarryId ? resolveCarryId(raw) : fullId(raw);
+      const n = countInBackpackSeen(state, pid, null);
+      if (n == null) unknown.push(k.label(pid));
+      else if (n > 0) inPack.push(`${k.label(pid)}×${n}`);
+    }
+    const parts = [];
+    if (inPack.length) parts.push(`背包里有 ${inPack.join('、')}（没拿上来）`);
+    if (unknown.length) parts.push(`${unknown.join('、')} 在背包里有没有读不到`);
+    return parts.length ? `；${parts.join('；')}` : '';
+  };
 
   for (const r of cands) {
     const per = r.out.find(o => o.item === id)?.count || 1;
@@ -402,7 +562,25 @@ async function craft2 (bot, { itemName, count = 1 } = {}, withTimeout) {
     const recipe = new Recipe(enumItem);
     if (recipe.requiresTable && !table) {
       table = await findAndApproach(bot, ['crafting_table']);
-      if (!table) { tried.push('要工作台，但 16 格内没有（背包里有的话先 place 放下）'); continue; }
+    }
+    // 附近没有工作台、但身上/背包里有 → **自己放一个用完再收回**（2026-09-29 主人：
+    // 以前这里只说"背包里有的话先 place 放下"，把这一步甩给 mind；mind 没做）。
+    if (recipe.requiresTable && !table) {
+      const st = await withPlacedStation(bot, state, 'minecraft:crafting_table', async (blk) => {
+        const before2 = invCounts(bot);
+        await withTimeout(craftByHand(bot, enumItem, times, blk), 15000 + times * 5000);
+        await sleep(300);
+        return delta(before2, invCounts(bot));
+      }, carry);
+      if (!st.ok) {
+        tried.push(`要工作台，但 16 格内没有，也没放成（${st.why || '原因不明'}）`);
+        continue;
+      }
+      const d2 = st.result || {};
+      const made2 = d2.gained?.[id] || 0;
+      if (made2 > 0) return { crafted: id, made: made2, recipe: r.id, consumed: d2.lost || {}, usedTable: true, tableRecovered: st.recovered };
+      tried.push(`用自己放的工作台摆好了但没拿到`);
+      continue;
     }
     const before = invCounts(bot);
     try {
@@ -427,7 +605,12 @@ async function craft2 (bot, { itemName, count = 1 } = {}, withTimeout) {
   const { best, rest, needs } = rankRecipesFor(k, KB, have, id, cands, Math.max(1, Math.ceil(count / ((cands[0].out.find(o => o.item === id)?.count) || 1))));
   const shortText = shortfallText(k, KB, id, needs);
   const extra = rest.length ? `（另外还有 ${rest.length} 种做法）` : '';
-  if (shortText) throw new Error(`${shortText}${extra}`);
+  if (shortText) {
+    // 缺料说明里**分开写**"身上有 / 背包里有 / 都没有 / 背包读不到"（AGENTS.md §5-1）。
+    // needs 里的 have 是身上的；背包那两份另查快照。
+    const shortRaw = needs.filter(s => !s.ok).map(s => s.sample).filter(Boolean);
+    throw new Error(`${shortText}${packNoteFor(shortRaw)}${extra}`);
+  }
   // 原料都够却没做成 = 不是"缺料"，是尝试过程出错（要工作台没找到 / 摆好了服务器没给）
   const why = [...new Set(tried)].slice(0, 2).join('；');
   throw new Error(`现在做不了 ${k.label(id)}：材料是够的${why ? `，但${why}` : '，摆了没做成'}${extra}`);
@@ -464,7 +647,6 @@ async function smelt (bot, { itemName, count = 1, fuel } = {}, state = null) {
   for (const t of KB.itemTags.get(fullId(input.name)) || []) for (const i of KB.byInput.get(`#${t}`) || []) idx.add(i);
   const types = new Set([...idx].map(i => KB.recipes[i].type));
   const order = [['minecraft:smelting', 'furnace'], ['minecraft:smoking', 'smoker'], ['minecraft:blasting', 'blast_furnace']];
-  let block = null; let used = null;
   if (!types.size || ![...types].some(t => order.some(([ty]) => ty === t))) throw new Error(`${k.label(fullId(input.name))} 不能用熔炉类烧`);
   // 16 格内所有能烧它的炉子，按距离排；走不到就换下一台（楼上那台过不去，不代表楼下那台也不行）
   const usable = order.filter(([t]) => types.has(t));
@@ -477,65 +659,77 @@ async function smelt (bot, { itemName, count = 1, fuel } = {}, state = null) {
       if (blk) cands.push({ blk, type, d: eyeDist(bot, blk) });
     }
   }
-  if (!cands.length) throw new Error(`16 格内没有能烧它的炉子（需要：${usable.map(([, b]) => b).join(' / ')}）`);
-  cands.sort((a, b2) => a.d - b2.d);
-  const why = [];
-  for (const c of cands) {
-    try { await approach(bot, c.blk); block = c.blk; used = c.type; break; } catch (e) { why.push(e.message); }
-  }
-  if (!block) throw new Error(`附近的炉子都走不过去：${why.slice(0, 3).join('；')}`);
-  const recipe = [...idx].map(i => KB.recipes[i]).find(r => r.type === used);
-  const outId = recipe.out[0].item;
-
-  let n = Math.min(count, input.count);
-  const before = invCounts(bot);
-  const furnace = await bot.openFurnace(block);
-  let fuelNote = null;
-  try {
-    // 炉子里原本有燃料就算上它（按剩余火候估不准，保守当作只够 1 个）
-    const existing = furnace.fuelItem() ? fuelValue(bot, furnace.fuelItem()) * furnace.fuelItem().count : 0;
-    const need = Math.max(0, n - existing);
-    if (need > 0) {
-      // 燃料可能在精妙背包里（N-9：日志里 `没有燃料` ×5）—— 先把它当"随身物品"补齐再判"没有"。
-      // 判据用 fuelValue（K() 的 itemTags：logs / planks / logs_that_burn …），
-      // **不自己重写正则** —— 以前那条 `/(^|:)(...|_log|_planks|...)$/` 是完整匹配项，
-      // `minecraft:oak_log` / `minecraft:oak_planks` 一律匹配不上，背包里的木头燃料被误判成"没有"。
-      if (state) await ensureCarried(bot, state, (it) => fuelValue(bot, it) > 0, Math.max(1, Math.ceil(need / 8)));
-      const f = fuel ? (() => { const it = findItem(bot, fuel); return it ? { i: it, v: fuelValue(bot, it) || 1 } : null; })()
-        : pickFuel(bot, fullId(input.name), need);
-      if (!f && !existing) throw new Error('没有燃料（煤、木炭、原木、木板、木棍都行）');
-      if (f) {
-        const k2 = Math.min(f.i.count, Math.ceil(need / f.v));
-        await furnace.putFuel(f.i.type, null, k2);
-        const canDo = Math.floor(existing + k2 * f.v);
-        if (canDo < n) { fuelNote = `燃料只够烧 ${canDo} 个（${f.i.name}×${k2}）`; n = Math.max(1, canDo); }
+  // 炉体：不管是现成的还是自己放的，烧的动作只写一份。
+  const doSmelt = async (furnaceBlock, usedType) => {
+    let n = Math.min(count, input.count);
+    const before = invCounts(bot);
+    const furnace = await bot.openFurnace(furnaceBlock);
+    let fuelNote = null;
+    try {
+      // 炉子里原本有燃料就算上它（按剩余火候估不准，保守当作只够 1 个）
+      const existing = furnace.fuelItem() ? fuelValue(bot, furnace.fuelItem()) * furnace.fuelItem().count : 0;
+      const need = Math.max(0, n - existing);
+      if (need > 0) {
+        // 燃料可能在精妙背包里（N-9：日志里 `没有燃料` ×5）—— 先把它当"随身物品"补齐再判"没有"。
+        // 判据用 fuelValue（K() 的 itemTags：logs / planks / logs_that_burn …），
+        // **不自己重写正则** —— 以前那条 `/(^|:)(...|_log|_planks|...)$/` 是完整匹配项，
+        // `minecraft:oak_log` / `minecraft:oak_planks` 一律匹配不上，背包里的木头燃料被误判成"没有"。
+        if (state) await ensureCarried(bot, state, (it) => fuelValue(bot, it) > 0, Math.max(1, Math.ceil(need / 8)));
+        const f = fuel ? (() => { const it = findItem(bot, fuel); return it ? { i: it, v: fuelValue(bot, it) || 1 } : null; })()
+          : pickFuel(bot, fullId(input.name), need);
+        if (!f && !existing) throw new Error('没有燃料（煤、木炭、原木、木板、木棍都行）');
+        if (f) {
+          const k2 = Math.min(f.i.count, Math.ceil(need / f.v));
+          await furnace.putFuel(f.i.type, null, k2);
+          const canDo = Math.floor(existing + k2 * f.v);
+          if (canDo < n) { fuelNote = `燃料只够烧 ${canDo} 个（${f.i.name}×${k2}）`; n = Math.max(1, canDo); }
+        }
       }
+      await furnace.putInput(input.type, null, n);
+      // 一个 10 秒（烟熏炉/高炉 5 秒）。等够了或者超时就收
+      const each = usedType === 'minecraft:smelting' ? 10000 : 5000;
+      const deadline = Date.now() + n * each + 3000;
+      while (Date.now() < deadline) {
+        await sleep(1000);
+        if ((furnace.outputItem()?.count || 0) >= n) break;
+        if (!furnace.inputItem() && !furnace.outputItem()) break;
+      }
+      if (furnace.outputItem()) await furnace.takeOutput();
+      // 没烧完的原料拿回来 —— 不能把玩家的东西丢在炉子里就走
+      if (furnace.inputItem()) { try { await furnace.takeInput(); } catch (_) {} }
+    } finally {
+      furnace.close();
     }
-    await furnace.putInput(input.type, null, n);
-    // 一个 10 秒（烟熏炉/高炉 5 秒）。等够了或者超时就收
-    const each = used === 'minecraft:smelting' ? 10000 : 5000;
-    const deadline = Date.now() + n * each + 3000;
-    while (Date.now() < deadline) {
-      await sleep(1000);
-      if ((furnace.outputItem()?.count || 0) >= n) break;
-      if (!furnace.inputItem() && !furnace.outputItem()) break;
+    await sleep(600);
+    const d = delta(before, invCounts(bot));
+    // 同一原料可能有好几条互相冲突的配方（本包里鸡蛋能烤出三种"煎蛋"），服务器用哪条它说了算 ——
+    // 所以按"实际多了什么"算，不按我们预测的产物算
+    const got = Object.values(d.gained).reduce((a, v) => a + v, 0);
+    const leftIn = (before.get(fullId(input.name)) || 0) - (invCounts(bot).get(fullId(input.name)) || 0) - got;
+    const out = { smelted: fullId(input.name), in: furnaceBlock.name, got: d.gained, gotCount: got, asked: count, fuelNote };
+    if (leftIn > 0) out.warning = `还有 ${leftIn} 个原料留在炉子里没拿回来（${furnaceBlock.position.x},${furnaceBlock.position.y},${furnaceBlock.position.z}）`;
+    if (got < count) out.note = `要烧 ${count} 个，实际拿到 ${got} 个${fuelNote ? `：${fuelNote}` : ''}`;
+    return out;
+  };
+
+  // 16 格内有现成的 → 走过去用它（原行为）。
+  if (cands.length) {
+    cands.sort((a, b2) => a.d - b2.d);
+    const why = [];
+    let near = null;
+    for (const c of cands) {
+      try { await approach(bot, c.blk); near = c; break; } catch (e) { why.push(e.message); }
     }
-    if (furnace.outputItem()) await furnace.takeOutput();
-    // 没烧完的原料拿回来 —— 不能把玩家的东西丢在炉子里就走
-    if (furnace.inputItem()) { try { await furnace.takeInput(); } catch (_) {} }
-  } finally {
-    furnace.close();
+    if (near) return await doSmelt(near.blk, near.type);
+    // 有炉子但都走不过去 → 别急着放弃：自己放一个（2026-09-29 问题 3）
+    const placed = await withPlacedStation(bot, state, 'minecraft:furnace', (blk) => doSmelt(blk, 'minecraft:smelting'), ensureCarried);
+    if (placed.ok) return placed.result;
+    throw new Error(`附近的炉子都走不过去（${why.slice(0, 3).join('；')}），自己放一个也不行：${placed.why || '不知道怎么放'}`);
   }
-  await sleep(600);
-  const d = delta(before, invCounts(bot));
-  // 同一原料可能有好几条互相冲突的配方（本包里鸡蛋能烤出三种"煎蛋"），服务器用哪条它说了算 ——
-  // 所以按"实际多了什么"算，不按我们预测的产物算
-  const got = Object.values(d.gained).reduce((a, v) => a + v, 0);
-  const leftIn = (before.get(fullId(input.name)) || 0) - (invCounts(bot).get(fullId(input.name)) || 0) - got;
-  const out = { smelted: fullId(input.name), in: block.name, got: d.gained, gotCount: got, asked: count, fuelNote };
-  if (leftIn > 0) out.warning = `还有 ${leftIn} 个原料留在炉子里没拿回来（${block.position.x},${block.position.y},${block.position.z}）`;
-  if (got < count) out.note = `要烧 ${count} 个，实际拿到 ${got} 个${fuelNote ? `：${fuelNote}` : ''}`;
-  return out;
+  // 16 格内一个都没有 → 身上/背包里有熔炉就自己放一个用，用完挖回来（2026-09-29 问题 3）
+  const placed = await withPlacedStation(bot, state, 'minecraft:furnace', (blk) => doSmelt(blk, 'minecraft:smelting'), ensureCarried);
+  if (placed.ok) return placed.result;
+  throw new Error(`16 格内没有能烧它的炉子（需要：${usable.map(([, b]) => b).join(' / ')}），自己放一个也不行：${placed.why || '不知道怎么放'}`);
 }
 
 /**
@@ -611,15 +805,53 @@ async function give (bot, { itemName, count, player } = {}) {
   return { given: wantId, count: n, to: player, confirmed: false, note: `丢在 ${player} 脚边了，还没看到他捡起来（${dropped ? '东西在地上' : '没看到掉落物'}）` };
 }
 
-async function eat (bot, { itemName } = {}) {
+/**
+ * 吃东西。不给 itemName 时自己挑最好的食物。
+ *
+ * 2026-09-29 主人："吃东西、合成、打架换装备时不看背包"。实机日志
+ * `hungry 饿了（饥饿 6/20），身上没有吃的` —— 吃的其实塞在精妙背包里（她自己说"背包塞了 82 样"）。
+ *
+ * 所以：**身上没有吃的 → 先从背包拿一份到身上，再吃**。判据复用现成的两条，不另写：
+ *   · 是不是吃的 = `foodScore(it) > 0`（`util.js`，全项目唯一一份）；
+ *   · 从哪拿 = `ensureCarried(bot, state, predicate)`（`containers.js`，唯一入口，"有/没有/读不到"三分开）。
+ *
+ * `state` 可选：老调用点（bridge 的 `POST /eat` 现在会传）不传时退回旧行为（只看身上）。
+ * 结果里带 `from`（`'carried'` / `'backpack'`），说清这份吃的从哪来 —— mind 要能分辨
+ * "身上就有"和"刚从背包摸出来的"。
+ *
+ * `ensureCarriedFn` 是给自测用的注入点（照 `tool-choice.js` 的 `ensureDigTool` 那套，
+ * 避免自测去改 8 个文件共享的 `__ns`）；生产调用不传，走模块内的转发壳（同一份真身）。
+ */
+async function eat (bot, { itemName } = {}, state = null, ensureCarriedFn = null) {
+  const carry = typeof ensureCarriedFn === 'function' ? ensureCarriedFn : ensureCarried;
   let item;
   if (itemName) {
     item = findItem(bot, itemName);
-    if (!item) throw new Error(`背包里没有 ${itemName}`);
+    if (!item) {
+      // 点名要吃的东西也可能在背包里（"背包里有面包、身上没有"）
+      if (state) {
+        const got = await carry(bot, state, itemName, 1);
+        if (got.source === 'unknown') throw new Error(`身上没有 ${itemName}，${got.why || '背包也读不到'}`);
+        item = findItem(bot, itemName);
+      }
+      if (!item) throw new Error(`背包里没有 ${itemName}`);
+    }
   } else {
+    // 身上有没有吃的：没有就去背包摸一份出来（背包里也没有就算了，如实报）
+    let from = 'carried';
     item = bot.inventory.items().map(i => [i, foodScore(i)]).filter(([, s]) => s > 0).sort((a, b) => b[1] - a[1])[0]?.[0];
-    if (!item) return { ate: false, reason: '背包里没有能吃的东西' };
+    if (!item && state) {
+      // predicate 版本：任意一种吃的都行，拿一份，再按 foodScore 挑最好的那件
+      const got = await carry(bot, state, (it) => foodScore(it) > 0, 1);
+      if (got.source === 'backpack') from = 'backpack';
+      // 读不到就说读不到（不说"没有"），且原因按 got.why 原样带给上层
+      if (!got.got && got.source === 'unknown') return { ate: false, reason: `身上没有吃的；${got.why || '背包读不到'}`, backpackUnknown: true };
+      item = bot.inventory.items().map(i => [i, foodScore(i)]).filter(([, s]) => s > 0).sort((a, b) => b[1] - a[1])[0]?.[0];
+    }
+    if (!item) return { ate: false, reason: '身上和背包里都没有能吃的东西' };
+    item.__eatFrom = from;
   }
+  const from = item.__eatFrom || 'carried';
   const foodBefore = bot.food;
   if (foodBefore >= 20) return { ate: false, reason: '已经吃饱了（饥饿值 20）', item: item.name };
   const before = invCounts(bot);
@@ -638,7 +870,7 @@ async function eat (bot, { itemName } = {}) {
     e.data = { item: item.name, foodBefore, foodAfter: bot.food };
     throw e;
   }
-  return { ate: true, item: item.name, foodBefore, foodAfter: bot.food, consumed: d.lost };
+  return { ate: true, item: item.name, foodBefore, foodAfter: bot.food, consumed: d.lost, from };
 }
 
 async function use (bot, state, { itemName, target = 'air', x, y, z, entity, hand = 'hand', holdMs = 300 } = {}) {
@@ -922,7 +1154,7 @@ const FOOD_RE = /(cooked|baked|roast|grilled|fried|_stew|_soup|salad|bread|pie|c
 
 const NOT_FOOD_RE = /(seeds|sapling|_block|crate|bag|_bucket$|spawn_egg|raw_|rotten|poisonous|spider_eye|pufferfish)/;
 
-module.exports = { setHandsState, FOOD_RE, NOT_FOOD_RE, applyBoxSnapshot, approach, bind, click, clickIn, cookInPot, craft2, craftByHand, craftByRecipeBook, eat, findAndApproach, fuelValue, give, pickFuel, rankRecipesFor, returnGrid, safeTransfer, settleCursor, shortfallText, smelt, snapshotContainer, sortContainer, sortInventory, sortRange, use, wear, withBackpackLock };
+module.exports = { setHandsState, FOOD_RE, NOT_FOOD_RE, applyBoxSnapshot, approach, bind, click, clickIn, cookInPot, craft2, craftByHand, craftByRecipeBook, eat, findAndApproach, fuelValue, give, pickFuel, rankRecipesFor, returnGrid, safeTransfer, settleCursor, shortfallText, smelt, snapshotContainer, sortContainer, sortInventory, sortRange, topUpFromBackpack, use, wear, withBackpackLock, withPlacedStation };
 
 // ------------------------------------------------------------------ 自测
 // 第 3 步重构：这几节原本挤在 hands.js 的自测段里（同一个 (async () => {…})() 外套），
@@ -1051,6 +1283,212 @@ const __sections = [
           try { await approach(bot, block); } catch (e) { err = e; }
           check('⑦ 走到跟前仍用不了 → 抛错', /用不了/.test(err?.message || ''), true);
         }
+      }
+  }],
+  ['[0f] 吃东西也看背包（2026-09-29：背包里有面包、身上没有 → 先拿出来再吃）', async (t) => {
+    const { check } = t;
+    const { eat, foodScore } = t.h;
+      {
+        // 假 bot：身上 items() 返回给定几件；equip / consume 记录调用
+        const mkBot = (carried, { food = 6 } = {}) => {
+          const slots = carried.map((c, i) => ({ name: c.name, count: c.count, type: 100 + i, metadata: 0, stackSize: 64, foodPoints: c.foodPoints || 0 }));
+          return {
+            food,
+            inventory: { items: () => slots, slots, emptySlotCount: () => 20 },
+            equipped: null,
+            consumed: 0,
+            equip: async function (it) { this.equipped = it.name; },
+            // 真 consume：吃掉手上那件（从 slots 里扣 1），饥饿 +6 —— 让 eat 的"核对真实变化"能通过
+            consume: async function () {
+              this.consumed++;
+              const it = this.inventory.slots.find(x => x.name === this.equipped);
+              if (it) it.count -= 1;
+              this.food = Math.min(20, this.food + 6);
+            },
+          };
+        };
+        // 自测通过 eat 的第 4 个参数注入假的"从背包拿"（生产走模块内转发壳，同一份真身）。
+        // 不去改 8 个文件共享的 __ns —— craft.js 的 __ns 和 index.js 的 __ns 是两个对象
+        // （bind 是「按值拷进各文件自己的 __ns」），改 index 的那个不影响这里的转发壳。
+        const stub = (fn) => fn;
+
+        {
+          // ---- ① ★ 身上没有吃的、背包里有面包 → 先从背包拿出来，吃到嘴 ----
+          {
+            const bot = mkBot([]);
+            let asked = null;
+            const bread = { name: 'minecraft:bread', count: 1, type: 200, metadata: 0, stackSize: 64, foodPoints: 5 };
+            const bag = stub(async (b, st, spec, count) => {
+              asked = { isFn: typeof spec === 'function', count };
+              b.inventory.slots.push(bread);   // 模拟"从背包拿到了身上"
+              return { have: 1, got: 1, source: 'backpack' };
+            });
+            const r = await eat(bot, {}, { backpackSeen: { items: { 'minecraft:bread': 3 } } }, bag);
+            check('★ 身上没有、背包里有面包 → 吃到了', r.ate, true);
+            check('★ 报的是面包', r.item, 'minecraft:bread');
+            check('★ from=backpack（说清是从背包摸出来的）', r.from, 'backpack');
+            check('★ 去背包拿时用的是 predicate（任意一种吃的都行）', asked && asked.isFn, true);
+          }
+          // ---- ② 身上就有吃的 → from=carried，不去开背包 ----
+          {
+            const bot = mkBot([{ name: 'minecraft:cooked_beef', count: 2 }]);
+            let called = false;
+            const bag = stub(async () => { called = true; return { have: 0, got: 0, source: 'none' }; });
+            const r = await eat(bot, {}, { backpackSeen: { items: { 'minecraft:bread': 3 } } }, bag);
+            check('★ 身上有熟牛排 → 直接吃，不开背包', { ate: r.ate, from: r.from, opened: called }, { ate: true, from: 'carried', opened: false });
+          }
+          // ---- ③ ★ 点名要吃的东西只在背包里 → 也拿出来吃 ----
+          {
+            const bot = mkBot([]);
+            const bread = { name: 'minecraft:bread', count: 1, type: 200, metadata: 0, stackSize: 64, foodPoints: 5 };
+            let specType = null;
+            const bag = stub(async (b, st, spec) => {
+              specType = typeof spec;
+              b.inventory.slots.push(bread);
+              return { have: 1, got: 1, source: 'backpack' };
+            });
+            const r = await eat(bot, { itemName: '面包' }, { backpackSeen: { items: {} } }, bag);
+            check('点名要的是具体物品名（不是 predicate）', specType, 'string');
+            check('★ 点名"面包"、身上没有、背包里拿出来 → 吃到', { ate: r.ate, item: r.item }, { ate: true, item: 'minecraft:bread' });
+          }
+          // ---- ④ 背包读不到 → 如实报"读不到"，不混成"没有" ----
+          {
+            const bot = mkBot([]);
+            const bag = stub(async () => ({ have: 0, got: 0, source: 'unknown', absenceProven: false, why: '身上没有，背包读不到' }));
+            const r = await eat(bot, {}, {}, bag);
+            check('★ 背包读不到 → ate=false 且说明读不到', { ate: r.ate, unk: r.backpackUnknown, why: r.reason }, { ate: false, unk: true, why: '身上没有吃的；身上没有，背包读不到' });
+          }
+          // ---- ⑤ 身上和背包都没有 → 如实报"都没有"（和 ④ 分开）----
+          {
+            const bot = mkBot([]);
+            const bag = stub(async () => ({ have: 0, got: 0, source: 'none', absenceProven: true, why: '身上和背包里都没有' }));
+            const r = await eat(bot, {}, { backpackSeen: { items: {} } }, bag);
+            check('★ 都没有 → 报"都没有"（不是"读不到"）', { ate: r.ate, unk: !!r.backpackUnknown, reason: r.reason }, { ate: false, unk: false, reason: '身上和背包里都没有能吃的东西' });
+          }
+          // ---- ⑥ 不传 state（旧调用点）→ 退回旧行为，只看身上 ----
+          {
+            const bot = mkBot([]);
+            const bag = stub(async () => { throw new Error('不该被调用'); });
+            const r = await eat(bot, {}, null, bag);
+            check('不传 state 时不碰背包（旧行为不变）', { ate: r.ate, reason: r.reason }, { ate: false, reason: '身上和背包里都没有能吃的东西' });
+          }
+          // ---- 判据只此一份：吃的判据用 foodScore，没另写食物名单 ----
+          check('foodScore 是唯一一份吃的判据（eat 用它挑食物）',
+            /foodScore\(i\) > 0|foodScore\(it\) > 0/.test(t.handsSrc()), true);
+        }
+      }
+  }],
+  ['[0g] 合成缺料看背包 / 缺工作台自己放了再收回（2026-09-29）', async (t) => {
+    const { check } = t;
+    const { topUpFromBackpack, withPlacedStation, craft2 } = t.h;
+      {
+        // ---- topUpFromBackpack：只在"快照里真有"时才去拿（读不到不硬开）----
+        const KB = { tags: new Map([['item:planks', new Set(['minecraft:oak_planks', 'minecraft:birch_planks'])]]) };
+        const cands = [{ shape: { key: { X: [{ tag: 'planks' }] } } }];
+        const mkBotItems = (arr) => ({ inventory: { items: () => arr, slots: arr } });
+        {
+          // 背包快照里有木板 → 去拿一次（拿完身上多出来）
+          // 注：标签 `planks` 展开成 oak+birch 两个 id，快照里只有 oak → 只对 oak 那一次真拿到
+          const arr = [];
+          const bot = mkBotItems(arr);
+          const askedIds = [];
+          const carry = async (b, st, spec) => {
+            askedIds.push(spec);
+            if (spec !== 'minecraft:oak_planks') return { have: 0, got: 0, source: 'none' };
+            arr.push({ name: 'minecraft:oak_planks', count: 4, type: 5 }); return { have: 4, got: 4, source: 'backpack' };
+          };
+          const moved = await topUpFromBackpack(bot, { backpackSeen: { items: { 'minecraft:oak_planks': 4 } } }, KB, cands, new Map(), carry);
+          check('★ 快照里有原料 → 去背包拿（moved=true）', { moved, askedOak: askedIds.includes('minecraft:oak_planks') }, { moved: true, askedOak: true });
+        }
+        {
+          // 背包读不到（从没开过）→ 不去拿、也不假装没有
+          const bot = mkBotItems([]);
+          let calls = 0;
+          const carry = async () => { calls++; return { have: 0, got: 0, source: 'unknown' }; };
+          const moved = await topUpFromBackpack(bot, {}, KB, cands, new Map(), carry);
+          check('★ 背包读不到 → 不去开背包（不猜）', { moved, calls }, { moved: false, calls: 0 });
+        }
+        {
+          // 身上已经有这种料 → 不必去背包拿
+          const bot = mkBotItems([{ name: 'minecraft:oak_planks', count: 8, type: 5 }]);
+          let calls = 0;
+          const carry = async () => { calls++; return { have: 0, got: 0, source: 'backpack' }; };
+          const moved = await topUpFromBackpack(bot, { backpackSeen: { items: { 'minecraft:oak_planks': 4, 'minecraft:birch_planks': 4 } } }, KB, cands, new Map([['minecraft:oak_planks', 8], ['minecraft:birch_planks', 8]]), carry);
+          check('身上已够（两种都够）→ 不开背包', { moved, calls }, { moved: false, calls: 0 });
+        }
+
+        // ---- withPlacedStation：放下 → 用 → 收回；放不下/没有都如实报 ----
+        const V3 = t.Vec3;
+        const mkPlaceBot = ({ invHas = [], placeOk = true } = {}) => {
+          const world = new Map();
+          const key = (p) => `${p.x},${p.y},${p.z}`;
+          // 站的地方在 (0.5,64,0.5)：脚下 y=63 铺一圈实心底，其余全空
+          for (let dx = -1; dx <= 1; dx++) for (let dz = -1; dz <= 1; dz++) {
+            world.set(`${dx},63,${dz}`, { name: 'minecraft:stone', boundingBox: 'block', position: new V3(dx, 63, dz) });
+          }
+          const items = invHas.map((n, i) => ({ name: n, count: 1, type: 900 + i }));
+          return {
+            items, world,
+            inventory: { items: () => items, slots: items },
+            entity: { position: new V3(0.5, 64, 0.5) },
+            heldItem: null,
+            currentWindow: null,
+            equip: async function (it) { this.heldItem = it; },
+            lookAt: async () => {},
+            blockAt: (p) => world.get(`${p.x},${p.y},${p.z}`) || null,
+            placeBlock: async (ref, face) => {
+              if (!placeOk) throw new Error('放不上');
+              const p = ref.position;
+              const at = new V3(p.x + (face?.x || 0), p.y + (face?.y || 0), p.z + (face?.z || 0));
+              world.set(key(at), { name: 'minecraft:crafting_table', boundingBox: 'block', position: at });
+            },
+            dig: async (b) => { world.delete(key(b.position)); items.push({ name: b.name, count: 1, type: 950 }); },
+            collectBlock: null, closeWindow: () => {},
+          };
+        };
+        {
+          // 身上就有工作台：放下 → fn 拿到方块 → 收回
+          const bot = mkPlaceBot({ invHas: ['minecraft:crafting_table'] });
+          let usedBlock = null;
+          const st = await withPlacedStation(bot, {}, 'minecraft:crafting_table', async (blk) => { usedBlock = blk?.name; return 'done'; });
+          check('★ 身上有工作台 → 放下并用上', { ok: st.ok, placed: st.placed, used: usedBlock }, { ok: true, placed: true, used: 'minecraft:crafting_table' });
+          check('★ 用完挖回来了', { recovered: st.recovered, kept: bot.items.some(i => i.name === 'minecraft:crafting_table') }, { recovered: true, kept: true });
+          check('fn 的返回值带出来了', st.result, 'done');
+        }
+        {
+          // 身上没有、背包里有 → 先 ensureCarried 拿出来再放
+          const bot = mkPlaceBot({ invHas: [] });
+          let asked = null;
+          const carry = async (b, st, spec) => { asked = spec; b.inventory.items().push({ name: 'minecraft:crafting_table', count: 1, type: 42 }); return { have: 1, got: 1, source: 'backpack' }; };
+          const st = await withPlacedStation(bot, {}, 'minecraft:crafting_table', async () => 'ok', carry);
+          check('★ 身上没有、背包里有 → 从背包拿出来放', { ok: st.ok, asked }, { ok: true, asked: 'minecraft:crafting_table' });
+        }
+        {
+          // 都没有 → 不抛，如实报 why
+          const bot = mkPlaceBot({ invHas: [] });
+          const carry = async () => ({ have: 0, got: 0, source: 'none' });
+          const st = await withPlacedStation(bot, {}, 'minecraft:crafting_table', async () => 'ok', carry);
+          check('★ 都没有 → ok=false 且说清', { ok: st.ok, placed: st.placed, hasWhy: /都没有/.test(st.why || '') }, { ok: false, placed: false, hasWhy: true });
+        }
+        {
+          // 放不下 → ok=false，不抛
+          const bot = mkPlaceBot({ invHas: ['minecraft:crafting_table'], placeOk: false });
+          const st = await withPlacedStation(bot, {}, 'minecraft:crafting_table', async () => 'ok');
+          check('★ 放不下 → ok=false、不抛、说清', { ok: st.ok, hasWhy: /空位/.test(st.why || '') }, { ok: false, hasWhy: true });
+        }
+
+        // ---- craft2：缺工作台但背包里有 → 走"自己放"这条路（不报"让 mind 放"）----
+        check('★ craft2 的"要工作台"分支已改成自己放（源码形状锁）',
+          /withPlacedStation\(bot, state, 'minecraft:crafting_table'/.test(t.handsSrc()), true);
+        check('★ 旧的"让 mind 去 place"提示语不再作为行为出现（只在注释里留了出处）',
+          /tried\.push\([^)]*place 放下/.test(t.handsSrc()), false);
+        // ---- smelt：缺熔炉也自己放（2026-09-29 问题 3 的熔炉半边）----
+        check('★ smelt 缺炉子时走 withPlacedStation（源码形状锁）',
+          /withPlacedStation\(bot, state, 'minecraft:furnace'/.test(t.handsSrc()), true);
+        check('★ 烧的动作只写一份（doSmelt 内层函数）',
+          /const doSmelt = async \(furnaceBlock, usedType\) =>/.test(t.handsSrc()), true);
+        check('★ smelt 不再直接抛"16 格内没有能烧它的炉子"就完事',
+          /if \(!cands\.length\) throw new Error\(`16 格内没有能烧它的炉子/.test(t.handsSrc()), false);
       }
   }],
 ];

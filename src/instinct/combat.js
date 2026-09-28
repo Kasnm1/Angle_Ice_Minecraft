@@ -53,6 +53,36 @@ function combatPlan (ctx, cfg = CFG.combat) {
   return { mode: 'melee', target: t };
 }
 
+/**
+ * 打架前"要不要为了武器/盾去翻精妙背包"的判据（2026-09-29 问题 2c）。
+ *
+ * 纯函数，好离线穷举；`equipForFight` 就按它的结论决定去不去 `ensureCarried`。
+ *
+ * 阈值 `cfg.fightFromBackpackDist`（默认 5 格）的理由：
+ *   · 怪在 5 格**开外** = "看见了"而不是"已贴脸"。这时多花 0.7~1.4 秒开背包换把好剑/补个盾值得
+ *     （精妙背包一次 shift 拿取要等 `sleep(700)`，见 `fetchFromBackpack` 的注释）。
+ *   · 怪在 5 格**以内** → 不开背包。开背包要关掉当前窗口、还会卡一瞬，
+ *     贴脸时这一下足够被连打好几拳；宁可先用手上这把打、边打边拉距离。
+ *   · 阈值取 5：僵尸/骷髅的仇恨常在 8~16 格，5 格通常还留 1~2 秒缓冲，够一次拿取。
+ *   · `dist` 读不到（null）→ 按"贴脸"（保守，不乱开背包）。
+ *
+ * @param {{dist?:number|null, hasWeapon?:boolean, hasShield?:boolean}} ctx
+ * @returns {{fetchWeapon:boolean, fetchShield:boolean, reason:string}}
+ */
+function fightGearFetchPlan (ctx = {}, cfg = CFG.combat) {
+  const { dist = null, hasWeapon = false, hasShield = false } = ctx;
+  const threshold = cfg?.fightFromBackpackDist ?? 5;
+  const farEnough = dist != null && dist >= threshold;
+  if (!farEnough) {
+    return { fetchWeapon: false, fetchShield: false, reason: dist == null ? '距离读不到，按贴脸处理（不开背包）' : `怪只有 ${dist} 格（< ${threshold}），贴脸不开背包` };
+  }
+  // 盾是纯收益：只要还没有、且怪还远，就去补
+  const fetchShield = !hasShield;
+  // 武器：身上没有"更好的"（hasWeapon=false 表示 pickAutoEquip 说手上这把就够/没有可换的）
+  const fetchWeapon = !hasWeapon;
+  return { fetchWeapon, fetchShield, reason: `怪在 ${dist} 格（≥ ${threshold}），可以开背包翻武器/盾` };
+}
+
 function armorRank (name) {
   const bare = String(name || '').replace(/^.*:/, '');
   for (const [re, r] of ARMOR_RANK) if (re.test(bare)) return r;
@@ -96,7 +126,7 @@ function pickStepOff (cells = []) {
   return ok[0] || null;
 }
 
-module.exports = { armorRank, attackCooldownMs, bind, combatPlan, hazardUnder, mobKind, pickArmor, pickStepOff, toolWorn };
+module.exports = { armorRank, attackCooldownMs, bind, combatPlan, fightGearFetchPlan, hazardUnder, mobKind, pickArmor, pickStepOff, toolWorn };
 
 // ------------------------------------------------------------------ 自测
 // 第 3 步重构：这几节原本挤在 instinct.js 的自测段里（同一个 function selftest 外套）。

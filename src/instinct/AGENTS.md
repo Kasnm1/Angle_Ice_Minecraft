@@ -10,7 +10,7 @@
 | `instinct.js` | **汇总**（普通文件，不是符号链接）：把下面 8 个子文件的导出拼回原来那份 `module.exports`（56 个名字、顺序一字不差）。外部 `require('../instinct/instinct.js')` 不用改；`--selftest` 在这里跑**全部**小节 |
 | `config.js` | `CFG` / `fillCfg` / `TIER` / `TIER_NAME` / `ARMOR_RANK` / `HURT_FEET` / `HURT_BELOW` / `STRUCTURE_SIGNS` / `COMBAT_YIELD` / `PASSIVE_POSTS` |
 | `core.js` | `install()`（1630 行闭包，整体搬来，内部计时器没拆）、`bodyBusy` / `createCheck` / `settleJob` / `ownsBodyAtCleanup` / `breatheRefused` / `playerHurtPlan` / `victimHealth` / `syncSleepState` / `caveBoundary` / `scanColumns*` / `yieldBody` |
-| `combat.js` | `mobKind` / `attackCooldownMs` / `combatPlan` / `armorRank` / `pickArmor` / `toolWorn` / `hazardUnder` / `pickStepOff` |
+| `combat.js` | `mobKind` / `attackCooldownMs` / `combatPlan` / `fightGearFetchPlan` / `armorRank` / `pickArmor` / `toolWorn` / `hazardUnder` / `pickStepOff`。`fightGearFetchPlan`（2026-09-29 问题 2c）：打架前**要不要为武器/盾去翻精妙背包**的纯判据 —— 怪 ≥ `CFG.combat.fightFromBackpackDist`（默认 5 格）才翻，贴脸不翻（开界面会挨打） |
 | `survival.js` | `pickEat` / `needBreath` / `effectPlan` / `shoreRingOffsets` / `pickShore` / `mlgStep` / `pickRecovery`；**水下判据只此一份**（2026-09-29）：`blocksWater` / `headInWater` / `waterBreathing` / `oxygenNum` / `mineShouldStop` / `underwaterKeep` / `columnClear` / `breathPlan` |
 | `mining.js` | `pickaxeTier` / `needTier` / `bareNameOf` / `pickOre` / `pickCaveStep` / `pickTorchStep` / `darkReport` / `noteDelve` / `pickDelveResume` |
 | `pickup.js` | `hdist` / `whoThrew` / `pickPickup` / `pickHarvest` / `pickLoot` / `pickTidy` / `carriedNames` / `carriedTally` / `pickupFailIds` |

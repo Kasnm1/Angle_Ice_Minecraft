@@ -86,11 +86,35 @@ const fullItemId = (name) => String(name || '').includes(':') ? String(name) : `
  * 精妙背包不开界面时只有上次可信快照；查询“有没有”时把新鲜度和能否证明没有一并返回，
  * 避免模型把“普通物品栏没看到”说成“我没有/死时掉了”。
  */
-async function personalInventory ({ query = '' } = {}) {
-  const [main, eq] = await Promise.all([
+async function personalInventory ({ query = '', refreshMs = 30 } = {}) {
+  const [main, eq0] = await Promise.all([
     bridge.get('/inventory').catch(e => ({ error: e.message, items: [] })),
     bridge.get('/equipment').catch(e => ({ error: e.message })),
   ]);
+  // 精妙背包的内容**只有开过界面才有快照**。快照太旧 / 从没看过时，身体层自己开一下读，
+  // 别再让意识层先 open_backpack 刷新（2026-09-29 问题 4：那句提示把"能不能查"推给了 LLM，
+  // 它经常忘了刷，于是把"没看到"说成"我没有"）。
+  //
+  // 只在**真的背着背包**、且快照缺/旧时才刷 —— 不背包的人（或没背饰槽的整合包）不会白开一次界面。
+  // 刷不动时**如实说"读不到"**（比如界面同步认不出边界），绝不退回"没有"（项目原则 §5.1）。
+  const isWorn = (eq) => (eq?.curios || []).some(x => /backpack/.test(x)) || /backpack/.test(eq?.equipment?.torso || '');
+  const staleness = (eq) => {
+    const bp = eq?.backpack;
+    const ok = !!(bp && Number.isFinite(bp.slots) && bp.slots > 0 && bp.items && typeof bp.items === 'object');
+    return { ok, age: ok && Number.isFinite(bp.at) ? Math.max(0, (Date.now() - bp.at) / 1000) : null };
+  };
+  let eq = eq0;
+  let refreshed = false; let refreshError = null;
+  if (isWorn(eq)) {
+    const s = staleness(eq);
+    if (!s.ok || s.age == null || s.age > refreshMs) {
+      try {
+        await bridge.post('/backpack/open', {}, 8000);
+        eq = await bridge.get('/equipment').catch(() => eq);
+        refreshed = true;
+      } catch (e) { refreshError = e.message; }
+    }
+  }
   const q = String(query || '').trim().toLowerCase();
   const matches = (id, display = '') => !q || id.toLowerCase().includes(q) || String(display).toLowerCase().includes(q) || knowledge.label(id).toLowerCase().includes(q);
   const tally = (entries) => {
@@ -102,7 +126,7 @@ async function personalInventory ({ query = '' } = {}) {
     return out;
   };
   const ordinary = tally(main.items || []);
-  const worn = (eq.curios || []).some(x => /backpack/.test(x)) || /backpack/.test(eq.equipment?.torso || '');
+  const worn = isWorn(eq);
   const bp = eq.backpack;
   const readable = !!(bp && Number.isFinite(bp.slots) && bp.slots > 0 && bp.items && typeof bp.items === 'object');
   const backpack = {};
@@ -114,20 +138,20 @@ async function personalInventory ({ query = '' } = {}) {
   const combined = { ...ordinary };
   for (const [id, count] of Object.entries(backpack)) combined[id] = (combined[id] || 0) + count;
   // 要断言“现在没有”，精妙背包必须刚看过；旧快照只能证明“上次看时有/没有”。
-  const absenceProven = !!q && !main.error && (!worn || (readable && ageSeconds <= 30));
+  const absenceProven = !!q && !main.error && (!worn || (readable && ageSeconds <= refreshMs));
   return {
     scope: '普通物品栏和穿戴的精妙背包都是我的随身物品',
     query: query || null,
     ordinaryInventory: { readable: !main.error, items: ordinary, ...(main.error ? { error: main.error } : {}) },
     sophisticatedBackpack: worn
       ? (readable
-          ? { worn: true, readable: true, lastCheckedSecondsAgo: ageSeconds, slots: bp.slots, used: bp.used, items: backpack }
-          : { worn: true, readable: false, note: '内容暂时读不到，不代表空；先 open_backpack 刷新' })
+          ? { worn: true, readable: true, refreshedOnQuery: refreshed || undefined, lastCheckedSecondsAgo: ageSeconds, slots: bp.slots, used: bp.used, items: backpack }
+          : { worn: true, readable: false, note: refreshError ? `试着自己开背包刷新，没开成：${String(refreshError).slice(0, 120)}；内容读不到，不代表空` : '内容读不到，不代表空' })
       : { worn: false, readable: true, items: {} },
     combined,
     absenceProven,
     note: q && !Object.keys(combined).length
-      ? (absenceProven ? '两处都查过，当前没有匹配物品' : '还不能说没有或掉了；先 open_backpack 刷新，再用同一 query 查询')
+      ? (absenceProven ? '两处都查过，当前没有匹配物品' : (readable ? '还没看过背包（快照太旧）' : '背包读不到；不能说没有或掉了'))
       : 'combined 是我全部随身物品中本次匹配到的结果',
   };
 }
@@ -875,7 +899,7 @@ const TOOLS = {
 
   inventory: {
     kind: 'info',
-    desc: '查看自己的全部随身物品：普通物品栏 + 穿戴的精妙背包。查某样东西时把名字写进 query；只有返回 absenceProven=true 才能说“我没有”，否则先 open_backpack 刷新，不能猜是掉了。',
+    desc: '查看自己的全部随身物品：普通物品栏 + 穿戴的精妙背包。查某样东西时把名字写进 query。背包内容快照太旧时这个工具会自己开背包刷新一次，你不用先 open_backpack。只有返回 absenceProven=true 才能说"我没有"；背包 readable=false（内容读不到）时不能说没有或掉了。',
     params: { query: { type: 'string', description: '要找的物品名，如 铁锭、粗铁；不填则列出全部随身物品' } }, required: [],
     run: personalInventory,
   },

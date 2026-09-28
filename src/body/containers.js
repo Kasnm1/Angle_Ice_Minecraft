@@ -741,8 +741,54 @@ async function fetchAnyFromBackpack (bot, state, predicate, count = 1) {
   });
 }
 
+/**
+ * 把精妙背包里的杂物**倒到身上**，好让 organizeStorage 的下一步把它们送进箱子。
+ *
+ * 为什么不能直接背包→箱子：精妙背包的格子走它自己的同步通道（`sophisticatedcore:channel`
+ * 的 2 号消息），和普通箱子/玩家物品栏**不是同一套槽位空间**，服务端也不支持跨界面直搬。
+ * 所以只能"背包 → 随身 36 格 → 箱子"两跳（`backpackTidy` 的 `unpack` 注释写的就是这条）。
+ *
+ * ⚠️ 判据/入口只有一份：`backpackTidy({stash:false, restock:false, unpack:true})` ——
+ *    这里不另写一份"点哪一格"的逻辑（AGENTS.md §5.1）。
+ *
+ * ⚠️ **必须核对真实变化**，不信"调用成功"：
+ *    `unpack` 数的是"成功 shift+左键了多少格"，那是**它自己的计数**；
+ *    这里另取一次 `state.backpackSeen`（`noteBackpack` 写的可信快照）**前后对比**，
+ *    只有"背包里的总件数真的少了"才算这一轮倒出来了。两者不一致时以快照为准。
+ *
+ * @returns {Promise<{unpacked:number, before:number|null, after:number|null, readable:boolean, why?:string}>}
+ *   before/after = 背包快照里的总件数（null = 读不到）；readable=false 时 why 说清是哪一种打不开
+ *
+ * `tidyFn` 只是为了离线自测能塞桩（和 craft.js 的 `eat`/`withPlacedStation` 同一个套路：
+ *   本模块内 `backpackTidy` 是**直接声明**的，内部调用绕过 `__ns`，外面改不动它）。
+ */
+async function drainBackpackOnePass (bot, state, { abort = null, tidyFn = null } = {}) {
+  if (!state || !wearingBackpack(bot, state)) return { unpacked: 0, before: null, after: null, readable: false, why: '没背着精妙背包' };
+  const tidy = typeof tidyFn === 'function' ? tidyFn : backpackTidy;
+  const snapTotal = () => {
+    const items = state.backpackSeen?.items;
+    if (!items) return null;                        // 读不到（从没打开过 / 上次没同步上）
+    return Object.values(items).reduce((a, n) => a + n, 0);
+  };
+  const before = snapTotal();
+  let u = null; let err = null;
+  try { u = await tidy(bot, state, { stash: false, restock: false, unpack: true, abort }); } catch (e) { err = e; }
+  const after = snapTotal();                        // backpackTidy 的 finally 里 noteBackpack 过了
+  // 先看快照有没有变少（这是唯一可信的"真倒出来了"证据）；快照读不到才退回它的计数
+  const bySnap = (before != null && after != null) ? Math.max(0, before - after) : null;
+  const unpacked = bySnap != null ? bySnap : (u?.unpacked || 0);
+  // readable = "这一趟真的读到了背包现在的样子"。打开失败 / 从没打开过 → false，
+  // **不能**因为"之前有过快照"（before 非 null）就说读得到 —— 那正是"读不到"被伪装成"里面没有"的来源。
+  const readable = !err && after != null;
+  const why = err ? `倒背包失败：${err.message}`
+    : !readable ? '背包打不开（没背着 / 界面认不出），里面有什么看不到'
+      : (u?.unpacked && bySnap === 0) ? '背包里记着的东西一件都没真倒出来（界面同步对不上？）'
+        : null;
+  return { unpacked, before, after, readable, why };
+}
+
 // abort：进程内调用才能传（随身物品本能被命令打断时用），每开一个箱子之前问一次
-async function organizeStorage (bot, state, { radius = 12, assign = {}, loadout = null, maxPasses = 4, dryRun = false, only = null, allFloors = false, skip = [], abort = null, mode = 'rebalance' } = {}) {
+async function organizeStorage (bot, state, { radius = 12, assign = {}, loadout = null, maxPasses = 4, dryRun = false, only = null, allFloors = false, skip = [], abort = null, mode = 'rebalance', drainBackpack = true } = {}) {
   const t0 = Date.now();
   const stop = () => typeof abort === 'function' && abort();
   const daily = mode === 'daily';
@@ -825,17 +871,22 @@ async function organizeStorage (bot, state, { radius = 12, assign = {}, loadout 
   // 日常归位只把身上的东西送回已登记箱子，不从箱子里抽出“错类”去重排整个仓库。
   const misplaced = (box) => daily ? 0 : cats0(box).filter(c => !(owner[c] || []).includes(box.key) && (owner[c] || []).length).length;
   const invWants = (box) => bot.inventory.items().some(it => home(it).includes(box.key));
-  for (let pass = 0; pass < maxPasses; pass++) {
+  /**
+   * 走一趟"该去的箱子"，把**身上**该归位的放进去（拿出不属于这的、放进属于这的）。
+   * 抽成函数是为了 ③ 和 ③b（背包倒腾）能共用同一份搬运逻辑 —— 不在两处各写一遍。
+   * @returns {Promise<number>} 这一趟真实搬动的组数（按窗口里的真实变化数，不信"点了就算"）
+   */
+  const sweepPass = async (label = '') => {
     let changed = 0;
     // 只去需要去的：里面有放错的，或者身上有东西该放进去的（空的、没分到类的箱子不去）
     const todo = boxes.filter(b => misplaced(b) > 0 || invWants(b))
       .sort((a, b) => bot.entity.position.distanceTo(a.pos) - bot.entity.position.distanceTo(b.pos));
-    if (!todo.length) break;
+    if (!todo.length) return 0;
     for (const box of todo) {
       if (stop()) { log.push('被新的命令打断'); break; }
       if (!(misplaced(box) > 0 || invWants(box))) continue;
       visits++;
-      try { await containerOpen(bot, state, box.pos); } catch (e) { log.push(`第 ${pass + 1} 轮打不开 ${box.key}：${e.message}`); continue; }
+      try { await containerOpen(bot, state, box.pos); } catch (e) { log.push(`${label ? label + '：' : ''}打不开 ${box.key}：${e.message}`); continue; }
       const w = bot.currentWindow;
       // 放进属于这里的（随身装备单里的先不放，最后再算）
       const invEntries = []; for (let i = w.inventoryStart; i < w.inventoryEnd; i++) if (w.slots[i]) invEntries.push({ slot: i, item: w.slots[i] });
@@ -863,8 +914,55 @@ async function organizeStorage (bot, state, { radius = 12, assign = {}, loadout 
       applyBoxSnapshot(box, snapshotContainer(bot, w));
       noteSeen(bot, state, w, state.openContainerPos); bot.closeWindow(w); await sleep(150);
     }
-    log.push(`第 ${pass + 1} 轮去了 ${todo.length} 个箱子，搬了 ${changed} 组`);
+    return changed;
+  };
+  for (let pass = 0; pass < maxPasses; pass++) {
+    const changed = await sweepPass(`第 ${pass + 1} 轮`);
+    log.push(`第 ${pass + 1} 轮搬了 ${changed} 组`);
     if (!changed) break;
+  }
+
+  // ③b 精妙背包里的杂物：主人要的次序是
+  //     ① 先把身上不在装备单里的清进箱子（上面 ③ 已经做了）
+  //     ② 再把背包里的杂物倒到身上（drainBackpackOnePass）
+  //     ③ 回 ③ 再清进箱子
+  //     ④ 重复 ②③，直到背包里没东西可倒 / 箱子满了 / 超时
+  // 以前只由 instinct 的 tryTidy 在外面套一层 unpack+organize（两轮就停），背包一大就永远清不完。
+  const backpack = { tried: false, readable: null, before: null, after: null, unpacked: 0, rounds: 0, why: null, stoppedBy: null };
+  if (drainBackpack && !daily && !stop()) {
+    const DEADLINE = t0 + Math.min(180000, 20000 + boxes.length * 4000);   // 别把一件整理拖成十分钟
+    const pass = async (round) => {
+      const r = await drainBackpackOnePass(bot, state, { abort });
+      backpack.tried = true;
+      backpack.rounds = round;
+      if (r.before != null) backpack.before = r.before;
+      if (r.after != null) backpack.after = r.after;
+      backpack.readable = r.readable;
+      if (r.why) backpack.why = r.why;
+      backpack.unpacked += r.unpacked;
+      return r;
+    };
+    for (let round = 1; round <= maxPasses; round++) {
+      if (stop()) { backpack.stoppedBy = 'aborted'; break; }
+      if (Date.now() > DEADLINE) { backpack.stoppedBy = 'timeout'; break; }
+      const r = await pass(round);
+      if (!r.readable) { backpack.stoppedBy = 'backpackUnreadable'; break; }        // 读不到 → 不能假装"背包里没有"
+      if (!r.unpacked) { backpack.stoppedBy = r.before === 0 ? 'backpackEmpty' : 'nothingToDrain'; break; }  // 没倒出来 → 要么空了、要么倒不动
+      // 倒出来了 → 立刻再来一轮 ③，把刚倒到身上的送进箱子
+      let changed = 0;
+      for (let sub = 0; sub < 2; sub++) {
+        const done = await sweepPass(`背包第 ${round} 轮后`);
+        changed += done;
+        if (!done) break;
+      }
+      if (!changed) {
+        // 倒到身上了、却一件也没进箱子 —— 只能是箱子满了（或者没有属于它们的箱子）
+        backpack.stoppedBy = 'chestsFull';
+        log.push(`从背包倒出来 ${r.unpacked} 件，但没有箱子装得下（箱子满了，或者这类没有分到箱子）`);
+        break;
+      }
+    }
+    if (backpack.unpacked > 0) log.push(`从精妙背包倒腾出来 ${backpack.unpacked} 件（${backpack.rounds} 轮）`);
   }
 
   // ④ 完整重整才把每个箱子内部重排；日常归位只补随身装备，不制造无意义搬动。
@@ -929,10 +1027,38 @@ async function organizeStorage (bot, state, { radius = 12, assign = {}, loadout 
   if (!conserved) log.push('整理前后物品总数不一致；结果不记为完成');
   const blockingShortfall = daily ? shortfall.filter(x => x.essential) : shortfall;
   const completed = !stop() && !blocked && (daily || misplacedStacks === 0) && cursorEmpty && conserved && blockingShortfall.length === 0;
+  // 背包那一段的结论：**分开报**，不混进"成功/失败"一句话（任务要求）。
+  //   · 没背着背包 / 没让倒（daily）→ 不适用，不报
+  //   · 读不到 → 'unreadable'（打不开 / 同步认不出边界），which is NOT "背包里没有"
+  //   · 倒完了、箱子也放得下 → 'drained'
+  //   · 箱子满了装不下剩下的 → 'chestsFull'（主人要能一眼区分"整理完了"和"箱子不够"）
+  const backpackStatus = !backpack.tried ? (drainBackpack && !daily ? 'notWorn' : 'skipped')
+    : !backpack.readable ? 'unreadable'
+      : backpack.stoppedBy === 'chestsFull' ? 'chestsFull'
+        : backpack.stoppedBy === 'timeout' ? 'timeout'
+          : backpack.stoppedBy === 'aborted' ? 'aborted'
+            : backpack.unpacked > 0 ? 'drained' : 'empty';
+  const backpackBlocked = backpackStatus === 'unreadable';
   return {
     boxes: boxes.map(b => ({ at: b.key, name: b.name, slots: b.slots, holds: layout[b.key] || [], used: b.used, skipped: !!b.skipped })),
     mode: daily ? 'daily' : 'rebalance', completed, status: completed ? 'completed' : (stop() ? 'aborted' : 'partial'),
     verification: { misplacedStacks, cursorEmpty, conserved, loadoutShortfall: shortfall },
+    // 精妙背包这一段单独一张账（rebalance 才动）：读不到 ≠ 里面没有
+    backpack: {
+      status: backpackStatus,
+      worn: !!backpack.tried,
+      readable: backpack.readable,
+      unpacked: backpack.unpacked, rounds: backpack.rounds,
+      remaining: backpack.after, totalBefore: backpack.before,
+      stoppedBy: backpack.stoppedBy, why: backpack.why,
+      note: backpackStatus === 'unreadable' ? `背包读不到（${backpack.why || '打不开或认不出界面'}）：里面的东西没算进这次整理`
+        : backpackStatus === 'chestsFull' ? `箱子装不下背包里剩下的东西（还剩 ${backpack.after ?? '?'} 件）`
+          : backpackStatus === 'drained' ? `从背包倒出来 ${backpack.unpacked} 件，都归位了`
+            : backpackStatus === 'empty' ? '背包里没有可倒出来的东西'
+              : backpackStatus === 'timeout' ? `背包倒腾超时（已倒 ${backpack.unpacked} 件）`
+                : null,
+    },
+    backpackBlocked,
     moved, visits, carrying: carry, notes: log, seconds: Math.round((Date.now() - t0) / 1000),
   };
 }
@@ -1267,7 +1393,7 @@ let backpackChain = Promise.resolve();
 
 const LOOT_ORDER = ['工具装备', '矿物', '食物', '其他', '方块', '木头', '作物种子'];
 
-module.exports = { CAT_ORDER, CURIO_FIRST, LOOT_ORDER, anyOf, auditSortedRange, backpackChain, backpackOpen, backpackTidy, bind, categoryOf, checkChests, compareSortedItems, containerOpen, containerPut, containerTake, countInBackpackSeen, curiosEquip, curiosList, curiosOpen, curiosUnequip, decideCarry, deposit, ensureCarried, fetchAnyFromBackpack, fetchFromBackpack, ftbqSend, identityTotals, install, installModProtocols, lookIntoBackpack, lootCart, lootNearby, matcher, noteBackpack, noteCurios, noteSeen, organizeStorage, packedSlots, placeStructure, resolveCarryId, sameTotals, setHandsState, stableValue, stackIdentity, tally, threatNear, unseenCarts, unseenChests, wearingBackpack, withdraw };
+module.exports = { CAT_ORDER, CURIO_FIRST, LOOT_ORDER, anyOf, auditSortedRange, backpackChain, backpackOpen, backpackTidy, bind, categoryOf, checkChests, compareSortedItems, containerOpen, containerPut, containerTake, countInBackpackSeen, curiosEquip, curiosList, curiosOpen, curiosUnequip, decideCarry, deposit, drainBackpackOnePass, ensureCarried, fetchAnyFromBackpack, fetchFromBackpack, ftbqSend, identityTotals, install, installModProtocols, lookIntoBackpack, lootCart, lootNearby, matcher, noteBackpack, noteCurios, noteSeen, organizeStorage, packedSlots, placeStructure, resolveCarryId, sameTotals, setHandsState, stableValue, stackIdentity, tally, threatNear, unseenCarts, unseenChests, wearingBackpack, withdraw };
 
 // ------------------------------------------------------------------ 自测
 // 第 3 步重构：这几节原本挤在 hands.js 的自测段里（同一个 (async () => {…})() 外套），
@@ -1332,6 +1458,62 @@ const __sections = [
         let transferError = null; try { await safeTransfer(transferBot, { window: fw }); } catch (e) { transferError = e.message; }
         check('transfer 失败会先把游标物品放回窗口，不丢到地上', { error: transferError, cursor: fw.selectedItem, restored: fw.slots[0]?.count }, { error: 'destination full', cursor: null, restored: 8 });
       }
+  }],
+  ['[0c] 整理时把精妙背包里的杂物倒进箱子（2026-09-29 问题 1）', async (t) => {
+    const { check, Vec3 } = t;
+    const { drainBackpackOnePass } = t.h;
+    const mkState = (items) => ({ backpackSeen: items ? { items, slots: 36, used: Object.keys(items).length, at: 1 } : null });
+    const mkBot = (inv) => ({
+      inventory: { items: () => inv, slots: [null, null, null, null, null, null, { name: 'sophisticatedbackpacks:backpack' }] },
+      entity: { position: new Vec3(0.5, 64, 0.5) },
+    });
+
+    {
+      // 背包里有 50 件 → 真倒出来。判据是**快照前后差**，不是它自报的 unpacked
+      const inv = [];
+      const state = mkState({ 'minecraft:cobblestone': 30, 'minecraft:dirt': 20 });
+      let calls = 0;
+      const tidyFn = async (b, st) => {
+        calls++;
+        for (const [name, count] of Object.entries(st.backpackSeen.items)) inv.push({ name, count, type: 1 });
+        st.backpackSeen = { items: {}, slots: 36, used: 0, at: Date.now() };
+        return { unpacked: 50, stashed: 0, took: 0 };
+      };
+      const r = await drainBackpackOnePass(mkBot(inv), state, { tidyFn });
+      check('★ 背包里有 50 件 → 按快照前后差算出来', { unpacked: r.unpacked, readable: r.readable, after: r.after }, { unpacked: 50, readable: true, after: 0 });
+      check('一轮只调一次 backpackTidy', calls, 1);
+      check('★ 身上真的多了那 50 件（信实际变化）', inv.reduce((a, x) => a + x.count, 0), 50);
+    }
+    {
+      // 背包打不开 → readable=false，且**不能说"背包里没有"**
+      const state = mkState({ 'minecraft:dirt': 5 });
+      const r = await drainBackpackOnePass(mkBot([]), state, { tidyFn: async () => { throw new Error('背包没打开（身上、背饰上都没有背包？）'); } });
+      check('★ 背包打不开 → readable=false、unpacked=0', { unpacked: r.unpacked, readable: r.readable }, { unpacked: 0, readable: false });
+      check('★ 打不开的原因如实带出来', /背包没打开/.test(r.why || ''), true);
+    }
+    {
+      // 自报倒了、快照一件没少（界面同步对不上）→ 不认它的自报
+      const state = mkState({ 'minecraft:dirt': 10 });
+      const r = await drainBackpackOnePass(mkBot([]), state, { tidyFn: async () => ({ unpacked: 10, stashed: 0, took: 0 }) });
+      check('★ 自报倒了但快照没变 → unpacked 记 0（不信"调用成功"）', r.unpacked, 0);
+      check('并说明白是同步对不上', /没真倒出来/.test(r.why || ''), true);
+    }
+    {
+      // 没背背包 → 不适用（不是"读不到"）
+      const bot = { inventory: { items: () => [], slots: [] }, entity: { position: new Vec3(0, 64, 0) } };
+      const r = await drainBackpackOnePass(bot, mkState({ 'minecraft:dirt': 3 }), {});
+      check('★ 没背背包 → unpacked=0，说清是"没背着"', { unpacked: r.unpacked, why: /没背着/.test(r.why || '') }, { unpacked: 0, why: true });
+    }
+    {
+      // 源码形状锁：organizeStorage 真的调了它，返回里有 backpack 分项账，
+      // 且 instinct 里旧的"外面套一层 unpack"已删（改由身体层一次做到底）
+      check('★ organizeStorage 里调了 drainBackpackOnePass', /await drainBackpackOnePass\(bot, state/.test(t.handsSrc()), true);
+      check('★ 返回里带 backpack 分项账（status/stoppedBy/remaining）', /backpack:\s*\{[\s\S]{0,120}status:\s*backpackStatus[\s\S]{0,200}stoppedBy:/.test(t.handsSrc()), true);
+      const fs = require('fs'); const path = require('path');
+      const inst = fs.readFileSync(path.join(__dirname, '..', 'instinct', 'core.js'), 'utf8');
+      check('★ instinct 里旧的"外面套 unpack 两轮"已删', /round < 2 && !abort\(\)/.test(inst), false);
+      check('★ instinct 读 r.backpack.status 分开报', /bp\.status === 'unreadable'/.test(inst), true);
+    }
   }],
 ];
 register('containers', __sections);

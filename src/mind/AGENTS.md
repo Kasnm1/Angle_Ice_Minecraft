@@ -9,7 +9,7 @@
 | 文件 | 职责 |
 |---|---|
 | `mind.js` | `:3003`。一条连续的经历流：`look()` 看世界 → 事件 debounce → `think()` 多轮调模型（可查书）→ `runTool()`；`instinctEat` / `fastPath`（"停""跟我来"）是仅有的程序本能；上下文快满 → `sleepAndSort()` 她自己整理记忆、写日记。`cli(argv)` 是命令行入口（`--selftest` / `--sim` / 直接跑） |
-| `body.js` | "能做什么"：`TOOLS`（bridge 动作 + 查书）、`bridge` 客户端、模型调用（主/备线路、重试）、读 `.env`。**不放任何"该怎么做"的判断** |
+| `body.js` | "能做什么"：`TOOLS`（bridge 动作 + 查书）、`bridge` 客户端、模型调用（主/备线路、重试）、读 `.env`。**不放任何"该怎么做"的判断**。`personalInventory`（`inventory` 工具，2026-09-29 问题 4）：背包快照太旧/从没看过时**自己 `POST /backpack/open` 刷新一次**，不再让 LLM 先 `open_backpack`；刷不动就如实报"读不到"，绝不说"没有" |
 | `memory-store.js` | `memory/mind.json`：`people` / `memories` / `journal` / `episodes` / `skills` / `ambition` / `homes`。强化、遗忘（半衰期 14 天）、按此刻涉及的人/物 `recall` |
 | `speech.js` | 发送前把一段话拆成 2–4 条短消息；**只拆不改字**（保真校验）；危险提示不拆；括号小动作不发 |
 | `ambition.js` | 《食录逸闻》食物清单与进度；`candidates()` 只给可能性，不替她决定 |
