@@ -638,7 +638,9 @@ function combatPlan (ctx, cfg = CFG.combat) {
     .sort((a, b) => ((a.evidence === 'hurt') ? 0 : 1) - ((b.evidence === 'hurt') ? 0 : 1) || a.dist - b.dist);
   if (!fightable.length) return null;
   const t = fightable[0];
-  if (t.kind === 'ranged' && !hasShield && t.dist > cfg.reach) return { mode: 'avoid', target: t, keep: cfg.rangedKeep };
+  // 远程怪没盾：以前是“保持距离躲”，结果站着挨箭（主人 2026-09-28：被骷髅打了好几下都不动）。
+  // 骷髅本来就在远处射，躲只会一直挨 —— 冲上去近战；血少时上面的 retreat 会先接管。
+  if (t.kind === 'ranged' && !hasShield) return { mode: 'melee', target: t, charge: true };
   if (t.kind === 'ranged' && hasShield) return { mode: 'shield', target: t };
   return { mode: 'melee', target: t };
 }
@@ -1872,6 +1874,8 @@ function install (bot, state, deps) {
   async function tryRecover () {
     const d = I.death;
     if (!I.cfg.cmd.enabled || !d || d.recovered || !d.told) return null;
+    // 打架中 / 有怪冲她来：先别 /back 传走（实机 13:44:42 重生后骷髅在打她，这时 /back 把她传回死的地方）
+    if (I.running?.kind === 'combat' || I.urgent === 'combat' || threatened()) return { skip: '附近有怪在打她，打完再回去捡' };
     const cmds = await serverCmds();
     const pick = pickRecovery({ death: d, here: bot.entity.position, dim: dimNow(), hasBack: cmds.has('back'), hasTp: cmds.has('tp'), sinceMs: Date.now() - d.at }, I.cfg.cmd);
     // 先置位，别让同一次死在下一拍又发一遍。但**被打断不算回收过了** ——
@@ -3232,7 +3236,8 @@ function selftest () {
   check('★ 血只剩 5 → 跑', combatPlan({ targets: [T('zombie', 4)], hp: 5 })?.mode, 'retreat');
   check('★ 苦力怕 4 格 → 躲开，不近战', combatPlan({ targets: [T('creeper', 4)] })?.mode, 'avoid');
   check('苦力怕在 7 格外、只有它 → 不动（不追着打苦力怕）', combatPlan({ targets: [T('creeper', 9)] }), null);
-  check('★ 骷髅、没盾 → 躲', combatPlan({ targets: [T('skeleton', 8)] })?.mode, 'avoid');
+  check('★ 骷髅、没盾 → 冲上去近战（躲只会站着挨箭）', combatPlan({ targets: [T('skeleton', 8)] })?.mode, 'melee');
+  check('★ 骷髅、没盾、血少 → 跑', combatPlan({ targets: [T('skeleton', 8)], hp: 5 })?.mode, 'retreat');
   check('★ 骷髅、有盾 → 举盾贴上去', combatPlan({ targets: [T('skeleton', 8)], hasShield: true })?.mode, 'shield');
   check('骷髅已经贴脸（没盾）→ 直接打', combatPlan({ targets: [T('skeleton', 2)] })?.mode, 'melee');
   check('超出发现距离 → 不管', combatPlan({ targets: [T('zombie', 15)] }), null);
