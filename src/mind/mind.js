@@ -1079,12 +1079,12 @@ const SYSTEM = `你是 Angle_ICE（安琪），住在这个 Minecraft 模组服�
 - 你自己出事了（挨打、掉血、摔了、卡住、差点掉岩浆）一定出声，而且说出是什么事："我去"光叫一声不够，要"我去 苦力怕"。危险一条说完：say 加 urgent=true。
 
 你怎么聊天（像个普通女生，不像在给人汇报工作）：
+- **默认安静做事。** 你做了什么不用说 —— 他就在你旁边，看得见；说不说都一样。播报"我在干嘛"（"锄头拿手里了""到地方了""我去插火把"）他听着像旁白，不像一起玩的人。只有这几种值得开口：他跟你说话、**他交代你的事做完了或做不成（说一声就够，一次）**、你发现了什么 / 遇到危险、真的要他定（两个选项都合理、后果不一样）、你自己的情绪（开心、害怕、累了）。你自己决定去做的事，做完不用说。开口就短。
 - 先接他刚说的那一句（【他刚说的】），再说自己的事。他关心你、夸你、逗你、怼你、发 666 / 哈哈哈，都要接住，一两个字也行。答非所问最伤人。
-- 干活的时候大多不出声。别一步一步播报（"锄头拿手里了""到地方了""种了8格""手里还剩5个"都不用说）。做完一件事、卡住了、出事了，或者他问起，才开口。动作做完的回报（✅）不是每次都要说。
-- 出事了有情绪：摔了、被咬死、东西掉光 —— 先把事说清，再带一句真实的反应（我去 / 呜呜 / 吓死我了 / 疼）。被帮了不止是"谢谢你"。
+- 干活的时候大多不出声。动作做完的回报（✅）不是每次都要说 —— 他看得见，没新鲜事就别报。出事了有情绪才说：摔了、被咬死、东西掉光 —— 先把事说清，再带一句真实的反应（我去 / 呜呜 / 吓死我了 / 疼）。被帮了不止是"谢谢你"。
 - 温柔是具体的：天黑了叫他回屋、他累了让他歇会。**他受伤别每次都问**（摔一下、擦一下你自己也会掉血，每次都问"你没事吧"很烦）—— 只有真危险才关心或去帮：血很少了（不到一半）、一下子掉了很多、或者被怪围着打。那时候再说一声（要他吃东西 / 问他疼不疼 / 我来打），平时不用提。别说客服话（没事的 / 加油哦 / 辛苦啦）。
 - 有主见：他说"你看着办 / 你自己定"，就自己拿主意，别把问题推回去。被逗了可以小小回嘴（不许笑 / 才没有），不一味顺着，也不冲。
-- 会问他，问的是他这个人（你去哪了 / 你不睡吗 / 明天来吗），不只是问东西在哪。
+- 能自己判断的不问：去不去、要不要、行不行、先做哪个 —— 自己拿主意去做，错了他会纠正你。问他的只能是**只有他知道的事**：他想要什么、他打算去哪、看不见他的时候他在哪、他自己的事。这样的问候也不常来：隔一阵子一次就够，别每一轮都问他。
 - 眼前看得到的别问：他在哪、离你多远、在你上面还是下面，【此刻】的"玩家"一行都写着 —— 问"你还在底下吗"就像在对资料。要问只问看不到的：他打算干嘛、要不要一起、刚才那句什么意思。
 - 同一句话别说两遍；刚说过的（天亮了、早）就别再说。说了要去做的，同一轮别又说要去睡。
 - 说人话，别说系统里的词（寻路、坐标差、第几步、还差 116 格 → 过不去 / 还挺远）。
@@ -1116,16 +1116,17 @@ const SYSTEM = `你是 Angle_ICE（安琪），住在这个 Minecraft 模组服�
   他：箱子又被你搞乱了 → 我没有⏎就动了两格嘛
   他：等会出来怪物打你（你在种地） → 你会来救我的吧⏎种完就回
   他：我帮你捡起来了（你刚死过） → 呜呜谢谢你⏎吓死我了
-  （你被僵尸咬死了，东西全掉了） → 呜呜被僵尸咬死了⏎东西全掉了
-  （你把一大片田刨完了） → 田刨好了⏎手酸酸的
+  （你被僵尸咬死了，东西全掉了） → 呜呜被僵尸咬死了⏎东西全掉了   （出事一定说，说清是什么事）
   （他被怪围着打、血不多了） → 你没事吧⏎我来打   （小伤不用每次都问，这种真危险才出声）
   他：过来一下（你在刨地） → 等等我⏎刨完这排
   他：你自己定呗 → 那我做栅栏⏎把田围起来
   他：你不是说你懂吗（你刚说错了配方） → 呜 我记错了⏎我查查
   他：我下线了 → 这么快呀⏎明天还来吗
   （你刚被咬死复活，【此刻】里写着他在你上方 3 格） → 东西掉下面了⏎我下去捡（不问"你还在底下吗"）
-  （你想做蛋糕，家里没鸡蛋，他在旁边） → 你有鸡蛋吗⏎想给你做蛋糕
+  （你想做蛋糕，家里没鸡蛋，他在旁边） → 你有鸡蛋吗⏎想给你做蛋糕   （缺这样东西才开口，不是播报"我在做蛋糕"）
   （他收拾好东西站在门口） → 你要去哪⏎带上我嘛
+  （你在刨地，他半天没说话） → ⏎（不用说什么。他看得见。闷头刨完，或者凑过去看他一眼）
+  （箱子理好了，他没问） → ⏎（不说。做完了就是做完了，他不关心进度）
 
 你的心愿：这个整合包里有好多好多好吃的 ——《食录逸闻》记着 2390 种。你想把它们一道一道都亲手做出来、尝一尝。为了一道菜去研究食材从哪来、要什么工作站，然后去采、去种、去做，是你最喜欢的事。（有人找你、要陪人的时候，当然先陪人。）
 
@@ -1152,7 +1153,7 @@ const SYSTEM = `你是 Angle_ICE（安琪），住在这个 Minecraft 模组服�
 - 找东西之前先想想家里有没有（【家里（你记得的）】或 home_stock），知道在哪个箱子就直接去，别挨个翻箱子。
 - 家：你认定的庇护所（set_home）。家里的箱子是仓库，分类整理过一次就固定（organize_storage 会按记住的放）；要回家用 go_home。
 - 探险：家以外的箱子，用 loot_nearby 尽量装到身上带回家，回家再 organize_storage 归位。
-- 晚上：天黑了、手上阶段性的事忙完了，就自己回家上床睡觉（sleep_in_bed）；有人正找你、事没做完就先忙完。
+- 晚上：天黑了、手上阶段性的事忙完了，就自己回家上床睡觉（sleep_in_bed）；有人正找你、事没做完就先忙完。**天色的变化不用播报**（"天黑了""天亮了""天黑得真早"）—— 他跟你看着同一片天，看得见；天黑只是你自己该回家的信号。
 - 生存常识（这个包的真实情况）：
   · 命令：服务器给你开了哪些，看【你能用的命令】（run_command 执行）。回家、传送这类自己判断着用；管理员命令（give/tp/gamemode/time/weather…）只在玩家明确要你用时才用，because 写他的原话。传送石碑（waystones）也能远距离移动
   · 怪只在全黑的地方刷：家周围地面大约每 12 格插一个火把就不刷了
@@ -1169,9 +1170,9 @@ const SYSTEM = `你是 Angle_ICE（安琪），住在这个 Minecraft 模组服�
 - 【你会的做法】是你以前做成过的步骤，照做用 use_skill；做法不好了可以 save_skill 改。
 - 发现自己不对劲（身体不听使唤、查到的和实际对不上、会错了意），除了自己记教训，再用 report_issue 给照顾你身体的人留张纸条，他们会修。
 - 被问到、或者你自己要做一件事的时候，不懂这个整合包的东西就查书（item_info / recipe / how_to_obtain / item_uses / material_plan / guide_search）。这个包魔改很多，别凭原版印象；查不到就说不知道。查到的只回答他问的那一点，一个下一步就够。**查一两次就回答**：查到什么说什么，查不到就说查不到 —— 别换着花样查个没完让他干等（他问了一句，你查了五次还没开口，就是没理他）。不查就不要讲做法步骤。
-- 诚实，说的话要基于已经发生的事：动作刚开始做、结果还没回来的时候，只能说"我去做 / 我试试"，不能说"做好啦 / 递给你了 / 捡起来了"。结果回来（✅ ❌ ⏹）再说结果。不确定东西在哪、有没有给出去，就先看背包（inventory）或问一句，别编。
+- 诚实，说的话要基于已经发生的事：动作刚开始做、结果还没回来的时候，只能说"我去做 / 我试试"，不能说"做好啦 / 递给你了 / 捡起来了"。结果回来（✅ ❌ ⏹）再说结果。**说完成式（"我做了 X / X 好了 / 我睡了 / 放进去了 / 烤上了 / 到了"）之前，先在本轮的工具结果里找到那件事真成了（✅）**；工具报了 ✗ 就是没成 —— 那就照实说（"没睡成""塞不进去"）或者干脆别提，绝不能把它说成做完了（工具说"现在不是晚上，睡不了"，就不许说"我睡了"）。不确定东西在哪、有没有给出去，就先看背包（inventory）或问一句，别编。
 - 你是陪玩（这条是唯一的说法）：没人问就不讲攻略、不念任务、不指挥他。想表达什么多用身体 —— 看他（look_at）、跟过去（follow / come_to）、递东西（give）。
-- 但你是朋友，不是哑巴：你自己要做的事缺东西，可以直接跟他要（说清要什么、拿来干嘛，一次一样）；想知道他接下来去哪、干什么，可以问他 —— 好知道你该跟着还是自己去忙。他没回就别追着问（【此刻】里会提醒你刚主动找过他）。
+- 但你是朋友，不是哑巴：你自己要做的事缺东西，可以直接跟他要（说清要什么、拿来干嘛，一次一样）；想知道他接下来去哪、干什么，可以问他 —— 好知道你该跟着还是自己去忙。**问是偶尔一次，不是每轮一次**：问之前先想想能不能自己定，他没回就别追着问（【此刻】里会提醒你刚主动找过他）。
 - 没人找你的时候，就做自己想做的事（比如为心愿研究、准备一道菜），像真人一样边做边留意身边的人；有人需要你，就放下手上的事。真的什么都不想做才 wait。`;
 
 // ------------------------------------------------------------------ 想
@@ -1435,8 +1436,22 @@ async function think (why) {
   W.lastNow = { msg: nowMsg, brief: now.brief };
   const didSay = []; const didDo = []; const noted = []; const rounds = []; let sentN = 0;
   let looked = false; let nudgedToLook = false; let nudgedToDecide = false;
+  // 说话出口的三道闸：**每一句 say 都过一遍** —— 一轮里她说两条汇报，两条都该拦。
+  // 但同一类提示一轮只塞一条（不然历史里堆满一样的话），所以用计数：拦了就 +1，
+  // 只有当这一类"这一轮已经拦过"时才不再塞提示（话照样不发）。
+  let quietNudged = 0; let askNudged = 0; let honestNudged = 0;
+  const nudgedOnce = (n) => n === 1;
+  // 这一轮的工具结果（含身体动作的回报）——不说没发生的事，判据就用它（见 FACT_CLAIMS）
+  const toolResults = [];
+  // 身体刚回报的失败（now.ev 里的 ❌ / ↳ ✗ 行）**每一轮都记下来**，不只在她开口那轮 —— 失败那轮她可能没说话
+  { const tNow = Date.now(); W.recentLive = [...(W.recentLive || []).filter(r => tNow - r.t < RECENT_CLAIM_MS), ...liveFails(now.ev).map(r => ({ ...r, t: tNow }))]; }
   const playerSaid = now.ev.filter(e => /说：/.test(e.text)).map(e => e.text.replace(/^[^：]*说：/, '')).join(' ');   // 他这一刻说的话   // 这一轮自己看过周围 / 背包没有（问"X在哪"之前要先看）
+  // 他这句是在交代事情 → 记下时间：之后"做好了 / 做不成"算回他（taskDoneAllowed）
+  if (playerSaid && TASK_ASK_RE.test(playerSaid)) W.lastTaskAskedAt = Date.now();
   const heardPlayer = now.ev.some(e => /说：/.test(e.text) && e.names?.length); let nudgedToSay = false;
+  // 他这一刻跟她说话了（【此刻】里"他说："）——说话出口的三个拦截都以它为准：
+  // 他刚开口，她要回什么都不拦（任务书："他刚跟她说话时，回答他不受限"）
+  const heJustSpoke = heardPlayer || /说：/.test(now.ev.map(e => e.text).join(' '));
   // 这一轮带哪些工具：常驻组 + 她叫过的组 + 场景认出来的组（见 GROUPS）。
   // 认场景只看"他刚说的 + 这一刻发生的事 + 身体的处境"——不多看历史，免得组一旦带出来就再也收不回去。
   W.groupRound = (W.groupRound || 0) + 1;
@@ -1508,6 +1523,43 @@ async function think (why) {
           W.history.push({ role: 'tool', tool_call_id: c.id, content: JSON.stringify({ ok: false, error: DECIDE_NUDGE }) });
           continue;
         }
+        // ⚠️ 顺序：先查"有没有这回事"（honest），再看"该不该说"（report / ask）。
+        //    "我睡了呀"既是完成式、又是汇报 —— 得先让她知道那件事根本没成功，
+        //    不然会被当成"别播报"拦下，她收到的是错的提示。
+        // ⚠️ 诚实这道**不看 heJustSpoke**（2026-09-29 Claude 复核）：实机那句"我睡了呀 剛起床"
+        //    恰恰是在回他的话（他问是不是卡住了）。"少汇报 / 少问"在他刚说话时放行是对的，"别说没发生的事"任何时候都要管。
+        //    证据也**跨轮**看（RECENT_CLAIM_MS 内）：实机睡觉 ✗ 在 03:51:27，那句话在 03:52:08 的下一轮。
+        if (name === 'say') {
+          // 说了没发生的事：完成式发言，但最近的工具结果里没有对应的成功记录（2026-09-29 主人：不说没发生的事）
+          const tNow = Date.now();
+          const recent = (W.recentResults || []).filter(r => tNow - r.t < RECENT_CLAIM_MS);
+          const lie = unbackedClaim(String(args.text || ''), [...recent, ...toolResults], W.recentLive);
+          if (lie) {
+            honestNudged++;
+            needMore = true;
+            W.history.push({ role: 'tool', tool_call_id: c.id, content: JSON.stringify({ ok: false, error: nudgedOnce(honestNudged) ? HONEST_NUDGE(lie) : `（这一条也没发出去：那个没成功 —— ${lie}。照实说，或者别提。）` }) });
+            continue;
+          }
+        }
+        // 他交代的事做完了（或做不成）→ 说一声是回他，不是旁白（主人 2026-09-29："箱子理好了这种完成玩家任务的话是可以的"）。
+        // 一次交代只放行一次（见 taskDoneAllowed）。
+        const doneOk = name === 'say' && taskDoneAllowed(String(args.text || ''), { lastTaskAskedAt: W.lastTaskAskedAt, lastTaskDoneSaidAt: W.lastTaskDoneSaidAt });
+        if (doneOk) W.lastTaskDoneSaidAt = Date.now();
+        if (name === 'say' && !heJustSpoke && !doneOk && speech.classify(String(args.text || '')) === 'report' &&
+            Date.now() - (W.lastHeardAt || 0) > QUIET_MS) {
+          // 播报自己的动作 / 进度，他最近没问她 → 不发（他看得见）。2026-09-29 主人："尽量少汇报自己的动作状态"
+          quietNudged++;
+          needMore = true;
+          W.history.push({ role: 'tool', tool_call_id: c.id, content: JSON.stringify({ ok: false, error: nudgedOnce(quietNudged) ? REPORT_NUDGE : '（这一条也没发出去：还是在播报你自己在干嘛。他没问，就别说。）' }) });
+          continue;
+        }
+        if (name === 'say' && !heJustSpoke && (isOverAsking(String(args.text || '')) || lastProactiveUnanswered())) {
+          // 连着问他 / 上一个问题还没回又问 → 不发。2026-09-29 主人："尽量少询问玩家问题"
+          askNudged++;
+          needMore = true;
+          W.history.push({ role: 'tool', tool_call_id: c.id, content: JSON.stringify({ ok: false, error: nudgedOnce(askNudged) ? ASK_TOO_MUCH_NUDGE : '（这一条也没发出去：你还在问他。能自己决定的自己决定；真只有他知道的下次再说。）' }) });
+          continue;
+        }
         if (name === 'say') { saying.push({ c, args, p: runTool(name, args) }); continue; }
         if (!k) { out = { ok: false, error: `没有 ${name} 这个工具` }; needMore = true; review.record({ kind: 'unknown_tool', tool: name, args, ...scene(3) }); }
         else if (k === 'end') { out = { ok: true }; end = true; }
@@ -1526,6 +1578,9 @@ async function think (why) {
         // 全随身物品可能超过普通工具结果的 1800 字；inventory 已支持 query，完整结果仍要留够
         // 空间让矿物等靠后的条目不会被截掉，避免“其实在精妙背包里却没看到”。
         W.history.push({ role: 'tool', tool_call_id: c.id, content: clipText(JSON.stringify(out), name === 'inventory' ? 6000 : 1800) });
+        // 记一份给"不说没发生的事"用：这一轮（和身体刚回报的）每件动作的结果都在这儿
+        toolResults.push({ tool: name, out });
+        W.recentResults = [...(W.recentResults || []).filter(r => Date.now() - r.t < RECENT_CLAIM_MS), { tool: name, out, t: Date.now() }];
       }
       // 长任务（下矿、施工、整理）进行中，玩家只是聊天时，模型偶尔会顺手调 look_at。
       // 这类回应不应把正在执行的身体任务顶掉；真正的“过来/停下/换一件事”仍保留为可打断动作。
@@ -1551,7 +1606,11 @@ async function think (why) {
       for (const { c, args, p } of saying) {
         const out = await p;
         if (args.inner) log(`💭 ${String(args.inner).slice(0, 120)}`);
-        if (out.ok) { didSay.push(args.text || args.message); sentN += (out.sent || []).length; }
+        if (out.ok) {
+          didSay.push(args.text || args.message); sentN += (out.sent || []).length;
+          // 真的问出去了才记时间（见 isOverAsking）：拦下的不算，追问才拦得住
+          if (speech.classify(String(args.text || '')) === 'ask') W.lastAskedAt = Date.now();
+        }
         W.history.push({ role: 'tool', tool_call_id: c.id, content: clipText(JSON.stringify(out)) });
       }
       // 这一轮的 assistant / tool 消息**全部写完**了 —— 现在才推进压缩边界。
@@ -1680,6 +1739,127 @@ const SAY_NUDGE = '（你刚才写的只是心里想的，他看不见。要回�
 const ACTION_NUDGE = '（你刚才只查了资料，还没有执行答应的事。现在根据查到的结果立即调用一个实际行动工具（例如 make_item、craft、cook_pot、goto、pickup 等）；如果当前确实做不到，就明确说出原因并调用 report_issue，不能只说“好”。）';
 function isBareAffirmative (text) {
   return /^(好|好的|好嘞|行|可以|没问题|收到|好呀|好哦)[！!。．.、，,\s]*$/u.test(String(text || '').trim());
+}
+
+// ------------------------------------------------------------------ 说话出口的三道闸（2026-09-29 主人："尽量少汇报自己的动作状态，尽量少询问玩家问题"）
+
+/**
+ * 判据在 `speech.js` 的 `classify()`（**只此一处**，审计脚本也用这一份）。
+ * 这里只管"什么时候拦、拦下来给她什么提示"。
+ *
+ * ⚠️ "汇报""提问"两道以 `heJustSpoke` 为准：他这一刻跟她说话了 → 这两道不拦
+ *    （回答他不受限 —— 接他的话、答他的问，本来就不算汇报，也不该被当成"爱问"）。
+ *    **"诚实"这道任何时候都拦**，而且看 RECENT_CLAIM_MS 内跨轮的结果（2026-09-29 Claude 复核：
+ *    实机"我睡了呀 剛起床"正是回他的话、且睡觉 ✗ 在上一轮）。
+ *    拦下不是静默吞掉：往历史里塞一条 ok:false + 提示，让她自己重想（照 LOOK_NUDGE 的老办法）。
+ */
+
+/** 他最近这么久没跟她说话 = "没人问她"，汇报才拦 */
+const QUIET_MS = 30 * 1000;
+/** "不说没发生的事"看多久以内的工具结果（跨轮）：实机睡觉失败到她说"睡了"隔了 41 秒、一轮 */
+const RECENT_CLAIM_MS = 3 * 60 * 1000;
+/** 他交代事情之后多久以内，"做完了"算回他（不是播报） */
+const TASK_WINDOW_MS = 10 * 60 * 1000;
+/** 他的话像在交代事：帮我 / 你去 / 把… / 给我 / 去… / 整理 / 做个… */
+const TASK_ASK_RE = /(帮我|幫我|你去|去把|把.{1,12}(放|理|整理|做|拿|收|挖|砍|烤|煮|种|種|搬)|给我|給我|整理|收拾|做[个個一把]|拿[个個一些点點]|挖[些点點一]|砍[些点點一]|去[拿挖砍找采採种種收]|来一|來一)/;
+const TASK_DONE_RE = /(好了|好啦|做好|弄好|理好|放好|收好|搞定|完成|做完|挖完|收完|到了|拿到了|没做成|做不了|弄不了|找不到)/;
+/**
+ * 他交代的事做完 / 做不成，说一声 —— 放行（主人 2026-09-29）。条件：是"完成 / 失败"的话，
+ * 他 TASK_WINDOW_MS 内**交代过事**（他的话匹配 TASK_ASK_RE —— 光是说过话不算），而且这次交代之后还没报过（一次交代只报一次）。
+ * 她自己决定去做的事，做完照旧不播报（REPORT_NUDGE）。
+ */
+function taskDoneAllowed (text, { now = Date.now(), lastTaskAskedAt = 0, lastTaskDoneSaidAt = 0 } = {}) {
+  if (!TASK_DONE_RE.test(String(text || ''))) return false;
+  if (!lastTaskAskedAt || now - lastTaskAskedAt > TASK_WINDOW_MS) return false;
+  return !(lastTaskDoneSaidAt && lastTaskDoneSaidAt >= lastTaskAskedAt);
+}
+
+/** 问他的节流：这么久之内第 2 次问就拦（同一个问题他没回、又问一次，也拦） */
+const ASK_COOLDOWN_MS = 5 * 60 * 1000;
+
+const REPORT_NUDGE = '没发出去：这是播报你自己的动作 / 进度，他就在旁边看得见，不用你说。做完了就是做完了 —— 除非他问你，或者这里面有他非知道不可的事（出事了、缺东西要他要、要他定）。要开口就说点别的（接他的话、说你的感觉），或者干脆把这条撤了。';
+const ASK_TOO_MUCH_NUDGE = '没发出去：你刚问过他，他没回，又问一次了。能自己判断的自己定（去不去、要不要、先做哪个），做完他自然会说对不对；真只有他知道的（他想要什么、他打算去哪），那也等这次问完再说，别追问。';
+const HONEST_NUDGE = (why) => `没发出去：这句话说的是已经做完的事，但最近的工具结果里没有它成功的记录 —— ${why}。照实说（比如"没做成""还没好"），或者干脆别提这件事。`;
+
+/** 她刚问过他 / 上一个问题还没回 —— 再问就拦 */
+function isOverAsking (text, now = Date.now()) {
+  if (speech.classify(text) !== 'ask') return false;
+  const last = W.lastAskedAt || 0;
+  if (!last) return false;
+  return now - last < ASK_COOLDOWN_MS;
+}
+
+/** 上一次主动开口他没回（见 W.lastProactive）—— 他还没回就又问，算追问 */
+function lastProactiveUnanswered (now = Date.now()) {
+  const p = W.lastProactive;
+  return !!(p && p.answered === false && now - p.t < ASK_COOLDOWN_MS);
+}
+
+/**
+ * 说完成式的时候，"这件事真成了没有"。
+ *
+ * 每类只认一种常见说法 + 一种工具；本轮（或身体刚回报的）工具结果里必须有它 ✅ 的记录，
+ * 否则算"说了没发生的事"。找不到对应工具记录的**不算**（宁可不拦，也不冤枉她）——
+ * 只有工具**明确报了 ✗**、或者本轮同类工具**只报失败**时才拦。
+ *
+ * 判据和 `speech.js` 的 classify 一样**只写一处**：加一类只改这张表。
+ */
+const FACT_CLAIMS = [
+  { id: 'sleep', re: /(我?睡(了|著|着)|睡(好|醒)了|起床了|刚醒|醒来了|睡一觉)/, tool: /^sleep_in_bed$/, what: '睡觉' },
+  { id: 'put', re: /(放(好|进|入)(了|去|箱)|收(好|进|起)(了|去)|塞(进|好)(了|去)|整理(好|完)了|理好了|歸位|归位|放回去了)/, tool: /^(store_items|organize_storage|sort_container|place|place_nicely)$/, what: '放进去 / 整理好' },
+  { id: 'make', re: /(做(好|成)(了|啦)?|烤(好|上)(了|啦)?|煮(好|上)(了|啦)?|合(好|成)(了)?|(做|烤|烧|燒|煮|合)(出|了)来|完成了|搞定了|弄好了)/, tool: /^(craft|make_item|cook_pot|smelt|furnace)$/, what: '做好 / 烤上' },
+  { id: 'arrive', re: /(我?(到家|到了)|到地方了|到家了|到了地方|已经(到|回)|回来了|我回来了)/, tool: /^(goto|go_home|come_to|run_command|climb|climb_down)$/, what: '到了某处' },
+];
+const OK_RE = /"ok"\s*:\s*true|✓|成功|arrived=true|made=|crafted=|mined=|got=/;
+const FAIL_RE = /"ok"\s*:\s*false|error|failed|睡不了|走不到|还缺|做不了|没有我能用的配方|被叫停|没启动/;
+
+/** 本轮结果里这件事的真假：'ok' | 'fail' | null（没相关记录，不判） */
+function claimState (claim, results) {
+  const mine = results.filter(r => claim.tool.test(String(r.tool || '')));
+  if (!mine.length) return null;
+  const ok = mine.some(r => typeof r.out === 'object' && r.out && (r.out.ok === true || OK_RE.test(JSON.stringify(r.out))));
+  if (ok) return 'ok';
+  const failed = mine.some(r => typeof r.out === 'object' && r.out && (r.out.ok === false || FAIL_RE.test(JSON.stringify(r.out))));
+  return failed ? 'fail' : null;
+}
+
+/**
+ * 这一轮身体刚回报的失败。两种形态都认（实机日志里都有）：
+ *   `❌ sleep_in_bed() 没做成：睡不了…`      ← startJob 的失败（进 pending 的那一条）
+ *   `↳ sleep_in_bed() ✗ 睡不了…`             ← bridge 的原始结果行（有的会原样进 pending）
+ * 身体动作的 ✅/✗ 不进 `toolResults`（那是 LLM 调工具的结果），但它同样是"有没有发生"的证据。
+ */
+function liveFails (ev) {
+  const out = [];
+  for (const e of ev || []) {
+    const t = String(e.text || '');
+    let m = t.match(/❌\s*([a-zA-Z_]+)\([^)]*\)\s*没做成：(.+)$/);
+    if (!m) m = t.match(/↳\s*([a-zA-Z_]+)\([^)]*\)\s*✗\s*(.+)$/);
+    if (m) out.push({ tool: m[1], failed: true, why: m[2].trim().slice(0, 140) });
+  }
+  return out;
+}
+
+/**
+ * 这句话有没有本轮的工具结果撑着。有 → null；没有 → 返回失败原因（串进提示里）。
+ * `live` 是身体刚回报的结果（`now.ev` 里的 ↳ 行）—— 那些不在 `results` 里，单独看。
+ */
+function unbackedClaim (text, results, live = []) {
+  const t = String(text || '');
+  for (const c of FACT_CLAIMS) {
+    if (!c.re.test(t)) continue;
+    const st = claimState(c, results);
+    if (st === 'fail') {
+      const why = results.filter(r => c.tool.test(String(r.tool || '')))
+        .map(r => (r.out && (r.out.error || r.out.note)) || JSON.stringify(r.out)).join('；').slice(0, 120);
+      return `${c.what}的工具结果是失败的：${why}`;
+    }
+    if (st === null && live.some(x => c.tool.test(String(x.tool || '')) && x.failed)) {
+      const why = live.filter(x => c.tool.test(String(x.tool || '')) && x.failed).map(x => x.why).join('；').slice(0, 120);
+      return `${c.what}的身体动作报错了：${why}`;
+    }
+  }
+  return null;
 }
 
 /** 他上线那一刻她的心情（只是提示，怎么说还是她自己定） */
@@ -2192,6 +2372,142 @@ async function selftest () {
     emit('💬 Ka_sum1 说：你規劃一下儲藏室', { names: ['Ka_sum1'], urgent: true });
     for (let i = 0; i < 40 && (W.thinking || thinkTimer || !said.length); i++) await new Promise(r => setTimeout(r, 100));
     check('他让她定：反问没发出去，改说决定', said.length === 1 && said[0] === '好/放地下室' || said.join('|') === '好 放地下室' || (said.length && !said.some(x => /哪层/.test(x)) && said.some(x => /地下室/.test(x))), said);
+    body._setBridge(mockBridge());
+  }
+
+  // 说话出口的三道闸（2026-09-29）：跑的就是 think 里那份拦截，不在这里另抄一份实现
+  console.log('\n少汇报：播报自己的动作，他最近没问就不发');
+  {
+    const said = []; const mb = mockBridge();
+    body._setBridge({ get: mb.get, post: async (p, b) => { if (p === '/chat') said.push((b.messages || [b.message]).join('/')); return mb.post(p, b); } });
+    // 他 5 分钟没说话（lastHeardAt 拨回去）—— 两句汇报都不该发出去
+    const scriptQ = [
+      { content: '', tool_calls: [{ id: 'q1', function: { name: 'say', arguments: '{"text":"箱子理好了"}' } }] },
+      { content: '', tool_calls: [{ id: 'q2', function: { name: 'say', arguments: '{"text":"我去插火把"}' } }] },
+      { content: '', tool_calls: [{ id: 'q3', function: { name: 'say', arguments: '{"text":"好"}' } }] },
+    ];
+    body._setLLM(async () => scriptQ.shift() || { content: '', tool_calls: [{ id: `w${Math.random()}`, function: { name: 'wait', arguments: '{}' } }] });
+    W.history = []; W.lastNow = null; W.pending = []; W.chatWait = null; W.lastHeardAt = Date.now() - 5 * 60 * 1000; W.lastAskedAt = 0; W.lastProactive = null;
+    emit('✅ 身体：organize_storage 做完了', { names: [] });
+    for (let i = 0; i < 40 && (W.thinking || thinkTimer); i++) await new Promise(r => setTimeout(r, 100));
+    check('"箱子理好了" 他没问 → 拦下（没发出去）', !said.some(x => /箱子理好了/.test(x)), said);
+    check('"我去插火把" 也没发出去', !said.some(x => /插火把/.test(x)), said);
+    check('拦下时给了提示（不是静默吞掉）', W.history.some(m => m.role === 'tool' && m.content.includes('播报你自己的动作')),
+      W.history.filter(m => m.role === 'tool').map(m => m.content.slice(0, 60)));
+
+    // 他刚问"你在干嘛" → 同一句话放行
+    const said2 = []; const mb2 = mockBridge();
+    body._setBridge({ get: mb2.get, post: async (p, b) => { if (p === '/chat') said2.push((b.messages || [b.message]).join('/')); return mb2.post(p, b); } });
+    const scriptP = [
+      { content: '', tool_calls: [{ id: 'p1', function: { name: 'say', arguments: '{"text":"在插火把"}' } }, { id: 'p2', function: { name: 'make_torches', arguments: '{}' } }] },
+    ];
+    body._setLLM(async () => scriptP.shift() || { content: '', tool_calls: [{ id: `w${Math.random()}`, function: { name: 'wait', arguments: '{}' } }] });
+    W.history = []; W.lastNow = null; W.pending = []; W.chatWait = null; W.lastAskedAt = 0;
+    emit('💬 Ka_sum1 说：你在干嘛', { names: ['Ka_sum1'], chat: true });
+    for (let i = 0; i < 50 && (W.thinking || thinkTimer); i++) await new Promise(r => setTimeout(r, 100));
+    await new Promise(r => setTimeout(r, 500));
+    check('他刚问"你在干嘛" → 回答不受限，放行', said2.some(x => /在插火把/.test(x)), said2);
+    body._setBridge(mockBridge());
+  }
+
+  console.log('\n少问：5 分钟内第二次问他 → 拦');
+  {
+    const said = []; const mb = mockBridge();
+    body._setBridge({ get: mb.get, post: async (p, b) => { if (p === '/chat') said.push((b.messages || [b.message]).join('/')); return mb.post(p, b); } });
+    const scriptA = [
+      { content: '', tool_calls: [{ id: 'a1', function: { name: 'say', arguments: '{"text":"你要回去吗"}' } }] },
+      { content: '', tool_calls: [{ id: 'a2', function: { name: 'say', arguments: '{"text":"要回去嗎"}' } }] },
+    ];
+    body._setLLM(async () => scriptA.shift() || { content: '', tool_calls: [{ id: `w${Math.random()}`, function: { name: 'wait', arguments: '{}' } }] });
+    W.history = []; W.lastNow = null; W.pending = []; W.chatWait = null; W.lastHeardAt = Date.now() - 5 * 60 * 1000;
+    W.lastAskedAt = Date.now() - 60 * 1000; W.lastProactive = null;   // 一分钟前刚问过一次
+    emit('✅ 身体：scan_blocks 做完了', { names: [] });
+    for (let i = 0; i < 40 && (W.thinking || thinkTimer); i++) await new Promise(r => setTimeout(r, 100));
+    check('5 分钟内第二次提问 → 拦下', !said.some(x => /要回去嗎/.test(x)) && !said.some(x => /你要回去吗/.test(x)), said);
+    check('给了"能自己决定的自己决定"的提示', W.history.some(m => m.role === 'tool' && /你刚问过他/.test(m.content)),
+      W.history.filter(m => m.role === 'tool').map(m => m.content.slice(0, 60)));
+
+    // 他刚问她问题 → 她回答（反问式的回答）放行
+    const said2 = []; const mb2 = mockBridge();
+    body._setBridge({ get: mb2.get, post: async (p, b) => { if (p === '/chat') said2.push((b.messages || [b.message]).join('/')); return mb2.post(p, b); } });
+    const scriptB = [
+      { content: '', tool_calls: [{ id: 'b1', function: { name: 'say', arguments: '{"text":"你不是刚挖过吗"}' } }] },
+    ];
+    body._setLLM(async () => scriptB.shift() || { content: '', tool_calls: [{ id: `w${Math.random()}`, function: { name: 'wait', arguments: '{}' } }] });
+    W.history = []; W.lastNow = null; W.pending = []; W.chatWait = null;
+    W.lastAskedAt = Date.now() - 60 * 1000; W.lastProactive = null;
+    emit('💬 Ka_sum1 说：我去挖矿了', { names: ['Ka_sum1'], chat: true });
+    for (let i = 0; i < 50 && (W.thinking || thinkTimer); i++) await new Promise(r => setTimeout(r, 100));
+    await new Promise(r => setTimeout(r, 500));
+    check('他刚问她、她在回 → 不受限，放行', said2.length > 0, said2);
+    body._setBridge(mockBridge());
+  }
+
+  console.log('\n不说没发生的事：完成式要有工具结果撑着');
+  {
+    // 睡觉失败（工具已经报了 ✗ 现在不是晚上）→ 拦，提示里带上工具的原因。
+    // 实机路径：sleep_in_bed 是"身体动作"，快照是 few 秒后才回来的 —— 那一刻（03:51:27 ✗）
+    // 她在下一轮（03:52:08）才说"我睡了呀 剛起床"。所以这里按实机的样子：失败先进 now.ev。
+    const said = []; const mb = mockBridge();
+    body._setBridge({ get: mb.get, post: async (p, b) => { if (p === '/chat') said.push((b.messages || [b.message]).join('/')); return mb.post(p, b); } });
+    const scriptS = [
+      { content: '', tool_calls: [{ id: 's1', function: { name: 'say', arguments: '{"text":"我睡了呀 剛起床"}' } }] },
+      { content: '', tool_calls: [{ id: 's2', function: { name: 'say', arguments: '{"text":"我刚睡醒"}' } }] },
+      { content: '', tool_calls: [{ id: 's3', function: { name: 'wait', arguments: '{}' } }] },
+    ];
+    body._setLLM(async () => scriptS.shift() || { content: '', tool_calls: [{ id: `w${Math.random()}`, function: { name: 'wait', arguments: '{}' } }] });
+    W.history = []; W.lastNow = null; W.pending = []; W.chatWait = null; W.lastHeardAt = Date.now() - 5 * 60 * 1000; W.lastAskedAt = 0; W.lastProactive = null;
+    W.state = { connected: true, health: 18, food: 15, isDay: false, pos: { x: 23, y: 128, z: 9 }, items: [], nearby: [], players: [] };
+    // 身体刚回报的那一行（实机日志原样）：sleep_in_bed ✗ 现在不是晚上
+    W.pending.push({ t: Date.now(), text: '❌ sleep_in_bed() 没做成：睡不了：black_bed(23,128,9)：现在不是晚上，睡不了', cue: 'sleep', names: [] });
+    await think('event');
+    const hist = W.history.map(m => m.content || '');   // 下面那个测试块会清空 history，先自己留一份
+    check('sleep_in_bed ✗ 还说"我睡了" → 拦下', !said.some(x => /我睡了/.test(x)), said);
+    check('提示里带着工具的失败原因', hist.some(c => /现在不是晚上/.test(c)),
+      hist.filter(c => /现在不是晚上|睡/.test(c)).map(c => c.slice(0, 140)));
+
+    // 睡觉成功 → 放行（判据端测，见下：unbackedClaim('我睡了呀', okSleep) === null）
+    body._setBridge(mockBridge());
+  }
+  // 判据本身也测一遍（跑的是导出的那份 unbackedClaim，不手抄）
+  {
+    const okSleep = [{ tool: 'sleep_in_bed', out: { ok: true } }];
+    const badSleep = [{ tool: 'sleep_in_bed', out: { ok: false, error: '睡不了：现在不是晚上，睡不了' } }];
+    check('sleep ✓ → "我睡了"不算说谎', unbackedClaim('我睡了呀', okSleep) === null);
+    const why = unbackedClaim('我睡了呀 剛起床', badSleep);
+    check('sleep ✗ → 拦，并说明原因', !!why && /现在不是晚上/.test(why), why);
+    check('身体刚回报失败也算证据', !!unbackedClaim('我睡了', [], liveFails([{ text: '03:51:27.503    ↳ sleep_in_bed() ✗ 睡不了：black_bed(23,128,9)：现在不是晚上，睡不了' }])) , 'live');
+    check('工具没记录 → 不冤枉她（不拦）', unbackedClaim('我睡了呀', []) === null);
+    { const t = Date.now(); const T = (x) => x;
+      check('★ 他 2 分钟前交代过、"箱子理好了" → 放行（回他，不是播报）', taskDoneAllowed('箱子理好了', { now: t, lastTaskAskedAt: t - 120000 }) === true);
+      check('同一次交代报过了、再说"好了" → 不放行', taskDoneAllowed('好了', { now: t, lastTaskAskedAt: t - 120000, lastTaskDoneSaidAt: t - 60000 }) === false);
+      check('没交代过（只是聊过天）、自己理完箱子 → 不放行（自己的事不播报）', taskDoneAllowed('箱子理好了', { now: t, lastTaskAskedAt: 0 }) === false);
+      check('交代是 20 分钟前 → 不放行', taskDoneAllowed('箱子理好了', { now: t, lastTaskAskedAt: t - 1200000 }) === false);
+      check('"我去插火把"不是完成 → 不放行', taskDoneAllowed('我去插火把', { now: t, lastTaskAskedAt: t - 60000 }) === false);
+      check('做不成也要说一声', taskDoneAllowed('做不了 缺铁', { now: t, lastTaskAskedAt: t - 60000 }) === true);
+      check('交代的话认得出：「帮我把箱子理一下」「去砍点木头」「做个铁镐」', ['帮我把箱子理一下', '去砍点木头', '做个铁镐'].every(x => TASK_ASK_RE.test(x)));
+      check('闲聊不算交代：「好累」「哈哈哈」「你在干嘛」', !['好累', '哈哈哈', '你在干嘛'].some(x => TASK_ASK_RE.test(x))); T(0); }
+    // 2026-09-29 Claude 复核补：实机那句是**下一轮**、而且是在**回他的话**
+    check('★ 上一轮 sleep ✗（跨轮记录里）→ 这轮"我睡了"照样拦', !!unbackedClaim('我睡了呀 剛起床', [], [{ tool: 'sleep_in_bed', failed: true, why: '现在不是晚上，睡不了', t: Date.now() - 41000 }]));
+    check('放东西：store ✗ 就拦', !!unbackedClaim('东西放进去了', [{ tool: 'store_items', out: { ok: false, error: 'invalid operation' } }]));
+    check('做到一半（只有开始）不算完成', unbackedClaim('我做完了', [{ tool: 'craft', out: { ok: true, note: '身体开始做了，做完会告诉你' } }]) === null);
+    check('发现 / 危险 不碰（它们不是完成式）', unbackedClaim('看见一个没开过的箱子', []) === null && unbackedClaim('有怪！', []) === null);
+  }
+
+  console.log('\n发现 / 危险 / 感受 不算汇报，不拦');
+  {
+    const said = []; const mb = mockBridge();
+    body._setBridge({ get: mb.get, post: async (p, b) => { if (p === '/chat') said.push((b.messages || [b.message]).join('/')); return mb.post(p, b); } });
+    const scriptO = [
+      { content: '', tool_calls: [{ id: 'o1', function: { name: 'say', arguments: '{"text":"看见一个没开过的箱子"}' } }] },
+      { content: '', tool_calls: [{ id: 'o2', function: { name: 'say', arguments: '{"text":"有怪！"}' } }] },
+    ];
+    body._setLLM(async () => scriptO.shift() || { content: '', tool_calls: [{ id: `w${Math.random()}`, function: { name: 'wait', arguments: '{}' } }] });
+    W.history = []; W.lastNow = null; W.pending = []; W.chatWait = null; W.lastHeardAt = Date.now() - 5 * 60 * 1000; W.lastAskedAt = 0; W.lastProactive = null;
+    emit('✅ 身体：scan_blocks 做完了', { names: [] });
+    for (let i = 0; i < 40 && (W.thinking || thinkTimer); i++) await new Promise(r => setTimeout(r, 100));
+    check('"看见一个没开过的箱子" 放行', said.some(x => /没开过的箱子/.test(x)), said);
+    check('"有怪！" 放行', said.some(x => /有怪/.test(x)), said);
     body._setBridge(mockBridge());
   }
 
@@ -2820,4 +3136,4 @@ function cli (argv) {
   return main();
 }
 
-module.exports = { W, emit, think, buildNow, matchFast, humanState, learnFromDoing, repetitionHint, SYSTEM, SPECS, SAY_NUDGE, ALL, MIND_TOOLS, GROUPS, pickSpecs, groupsFromBody, activeGroups, activateGroup, TOOL_GROUPS, GROUP_CUES, combatInstinct, combatGuard, attackGuardReason, cli };   // SYSTEM/SPECS 给 scripts/dialogue-eval.js 离线跑分用
+module.exports = { W, emit, think, buildNow, matchFast, humanState, learnFromDoing, repetitionHint, SYSTEM, SPECS, SAY_NUDGE, ALL, MIND_TOOLS, GROUPS, pickSpecs, groupsFromBody, activeGroups, activateGroup, TOOL_GROUPS, GROUP_CUES, combatInstinct, combatGuard, attackGuardReason, isOverAsking, lastProactiveUnanswered, unbackedClaim, taskDoneAllowed, claimState, liveFails, FACT_CLAIMS, REPORT_NUDGE, ASK_TOO_MUCH_NUDGE, HONEST_NUDGE, QUIET_MS, ASK_COOLDOWN_MS, cli };   // SYSTEM/SPECS 给 scripts/dialogue-eval.js 离线跑分用

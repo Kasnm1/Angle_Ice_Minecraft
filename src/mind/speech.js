@@ -114,6 +114,48 @@ function gapFor (next) {
   return Math.round(350 + len(next) * 70 + Math.random() * 300);
 }
 
+// ------------------------------------------------------------------ 内容分类（判据只此一处）
+
+/**
+ * 她这一句话在干什么。只分四类，别的判断（情绪、危险、发现）都归 other —— 那三类不是要说她少说。
+ *
+ *   report  汇报自己的动作 / 进度（"箱子理好了""我去插火把""挖了 3 个铁矿"）
+ *   ask     问玩家（"要回去嗎""你還在底下嗎"）
+ *   other   其他：感受、发现、危险、闲聊、跟他要东西
+ *
+ * ⚠️ 这是**统计用**的粗判，也是出口拦截（mind.js 的 REPORT_GATE / ASK_GATE）的判据。
+ *    「发现」（看见没开过的箱子）和「危险」（有怪！）必须**不算**汇报 —— 那正是她该开口的事。
+ *    两处共用这一份，改判据只改这里。
+ */
+
+// 她自己的动作：动词 + 完成/进行的样子
+const REP_VERB = /(挖|採|采|砍|種|种|鋤|锄|澆|浇|烤|煮|燉|炖|燒|烧|做|合|合成|造|蓋|盖|建|搭|圍|围|修|整理|收拾|理好|歸位|归位|放好|放入|收進|收进|塞|搬|撿|捡|拾|插|鋪|铺|拆|換|换|穿|戴|裝備|装备|拿|帶|带|到家|回家|出門|出门|出發|出发|走|跑|過去|过去|過來|过来|跟上|睡|起床|醒|釣|钓|餵|喂|裝|装|備|备|準備|准备|正在|先|去)/;
+// 完成式 / 进度式的收尾（"…好了""…完了""…了""…中"）
+const REP_DONE = /(好了|好啦|完了|完畢|完毕|了|啦|中|呢|完|好|成|到位|歸位|归位|搞定|結束|结束)$/;
+// 播报"我又做了 X"的第一人称动作句
+const REP_SELF = /^(我|咱)(这就|就|马上|立刻|先|去|來|来|在|正|剛|刚|已經|已经|要|把|給|给|又|再)/;
+// 明显不是汇报：发现、危险、情绪、对话（`我去` 单独成条才是被吓到，"我去插火把"是汇报）
+const NOT_REPORT = /(看見|看见|發現|发现|瞅見|瞅见|瞧見|瞧见|聽到|听到|聞|好像|可能|感覺|感觉|覺得|觉得|怕|嚇|吓|危險|危险|救命|苦力怕|僵屍|僵尸|骷髏|骷髅|蜘蛛|怪物|有怪|死了|掉血|血不|疼|痛|嗚|呜|糟糕|完了呀|天哪|^我去[，,]?$|诶|欸|咦)/;
+
+const ASK_MARK = /[？?]/;
+// 疑问词。只认真的在问：他自己的打算 / 意愿 / 一样他的东西
+// （`哪有` 不算 —— 被夸时的"哪有"是害羞，不是问东西在哪；真正问位置是"哪里/在哪/哪儿的"）
+const ASK_WORD = /(嗎|吗)\s*$|哪[里兒儿]|在哪|啥|什麼|什么|怎麼|怎么|要不要|行不行|好不好|對不對|对不对|可以不|能幫我|帮我|要不|多久|幾點|几点/;
+const ASK_ONLY_KNOWER = /(你想|你要|你打算|你準備|你准备|你呢|你不|你要不要|你回來|你回来|你睡了|你在幹嘛|你在干嘛|你幹嘛|你干嘛|你去哪|你去過|你去过)/;
+
+/** 归类：report / ask / other。判据从上到下，先命中先算。 */
+function classify (text) {
+  const t = String(text || '').trim();
+  if (!t) return 'other';
+  // 汇报自己的动作优先于"问"：`我这就去放？` 这种形态极少，而"我去插火把"必须先算汇报
+  if (REP_SELF.test(t) && REP_VERB.test(t)) return 'report';
+  // 问玩家：有问号，或带疑问词，或问"只有他知道"的事
+  if (ASK_MARK.test(t) || ASK_WORD.test(t) || ASK_ONLY_KNOWER.test(t)) return 'ask';
+  if (NOT_REPORT.test(t)) return 'other';
+  if (REP_VERB.test(t)) return 'report';
+  return 'other';
+}
+
 // ------------------------------------------------------------------ 审计
 
 /**
@@ -160,10 +202,17 @@ function selftest () {
   const a = audit(['诶？', '你来啦', '挖到3个铁矿啦！嘿嘿～']);
   check('平均字数（2+3+11）/3', a.avgLen, 5.3);
   check('口头禅计数', a.catchphraseEh, 1);
+  console.log('\n内容分类');
+  check('完成式动作 → 汇报', ['箱子理好了', '我去插火把', '挖了3个铁矿', '我到家了'].map(classify), ['report', 'report', 'report', 'report']);
+  check('疑问 → 问玩家', ['要回去嗎', '你還在底下嗎', '你在干嘛', '黏土在哪里'].map(classify), ['ask', 'ask', 'ask', 'ask']);
+  check('发现和危险不是汇报', ['看见一个没开过的箱子', '有怪！', '那边有个箱子'].map(classify), ['other', 'other', 'other']);
+  check('被夸的"哪有"是害羞，不是问', ['哪有'].map(classify), ['other']);
+  check('感受 / 闲聊 → 其他', ['呜 摔疼了', '嘿嘿', '才没有'].map(classify), ['other', 'other', 'other']);
+  check('空话归其他', [''].map(classify), ['other']);
   console.log(`\n  ${pass}/${total} 通过`);
   process.exit(pass === total ? 0 : 1);
 }
 
 if (require.main === module && process.argv.includes('--selftest')) selftest();
 
-module.exports = { segment, gapFor, audit, wordsOnly, len, punctCount };
+module.exports = { segment, gapFor, audit, classify, wordsOnly, len, punctCount };
