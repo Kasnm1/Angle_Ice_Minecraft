@@ -21,8 +21,9 @@
 
 const fs = require('fs');
 const path = require('path');
+const paths = require('../paths');
 
-const FILE = () => process.env.MC_PLAN_FILE || path.join(__dirname, 'memory', 'plan.json');
+const FILE = () => process.env.MC_PLAN_FILE || path.join(paths.MEMORY, 'plan.json');
 let P = null;
 
 function load () {
@@ -140,7 +141,7 @@ function ideas (f) {
 let ML = null;
 function mainline () {
   if (ML) return ML;
-  try { ML = JSON.parse(fs.readFileSync(path.join(__dirname, 'knowledge', 'mainline.json'), 'utf8')); } catch (_) { ML = { quests: [], prereq: [] }; }
+  try { ML = JSON.parse(fs.readFileSync(path.join(paths.KNOWLEDGE, 'mainline.json'), 'utf8')); } catch (_) { ML = { quests: [], prereq: [] }; }
   return ML;
 }
 

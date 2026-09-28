@@ -120,7 +120,7 @@ async function till (bot, { x, z, radius = 4, count: want = 9, allowDry = false,
   if (!hoe) return { ok: false, error: '身上没有锄头' };
   const center = x != null && z != null ? new Vec3(+x, bot.entity.position.y, +z) : bot.entity.position;
   let dirtTag = null;
-  try { dirtTag = require('./knowledge').load().tags.get('block:minecraft:dirt'); } catch (_) {}
+  try { dirtTag = require('../knowledge/knowledge').load().tags.get('block:minecraft:dirt'); } catch (_) {}
   const ids = tillableNames(Object.keys(bot.registry.blocksByName), dirtTag).map(n => bot.registry.blocksByName[n]?.id).filter(v => v != null);
   const cands = bot.findBlocks({ matching: ids, point: center, maxDistance: radius + 1, count: 200 })
     .map(p => bot.blockAt(p))

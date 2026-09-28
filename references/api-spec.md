@@ -108,7 +108,7 @@ dig computes to ≈376 and is discarded, so **without a pickaxe she cannot tunne
 which is what a real player experiences too.
 
 Costs are tunable: `MC_DIG_COST`, `MC_PLACE_COST`, `MC_LIQUID_COST`. The policy itself
-lives in `pathing.js` (`node pathing.js --selftest`, 87 cases).
+lives in `pathing.js` (`node src/world/pathing.js --selftest`, 87 cases).
 
 Known trade-off: **doors are protected** and `canOpenDoors` is off, so a closed door locks
 her out. Deliberate — better to be unable to enter than to remove the player's door.
@@ -917,7 +917,7 @@ The body is also brought to a stop (`pathfinder.setGoal(null)` + `clearControlSt
 before placing — a drifting body places the block into the neighbouring cell.
 
 ①③④ are pure geometry and live in **`place.js`**, which `bridge-server.js` requires directly
-(`node place.js --selftest`, 23 cases). Condition ② needs a live raycast, so it is the only
+(`node src/world/place.js --selftest`, 23 cases). Condition ② needs a live raycast, so it is the only
 one handled in the handler.
 
 Errors — each names the offending face so the caller knows what to fix:
@@ -1005,7 +1005,7 @@ Fails with `Player not visible: <name>` if that player isn't in range, or
 > - `pickAutoEquip` (used by `POST /equip {auto:true, want:…}` and by the instinct before a
 >   fight) moved verbatim to `equip-policy.js`.
 > - the read side of the decision trail moved to `events-reader.js` — offline only, no route:
->   `node events-reader.js --tail 30`. The trail itself (`memory/events.jsonl`) is frozen; the
+>   `node src/mind/events-reader.js --tail 30`. The trail itself (`memory/events.jsonl`) is frozen; the
 >   write side is gone, so the aggregate `--stats` view was not carried over.
 >
 > See `docs/REFACTOR-PLAN-20260928.md` (step 1) for the full list of what was deleted and why.

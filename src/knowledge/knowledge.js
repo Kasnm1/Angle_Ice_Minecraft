@@ -34,8 +34,9 @@
 
 const fs = require('fs');
 const path = require('path');
+const paths = require('../paths');
 
-const DIR = path.join(__dirname, 'knowledge');
+const DIR = paths.KNOWLEDGE;
 const GEN = path.join(DIR, 'generated');
 
 // ------------------------------------------------------------------ 工作站

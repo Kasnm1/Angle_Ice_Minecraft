@@ -32,8 +32,8 @@
 const fs = require('fs')
 const path = require('path')
 
-const palette = require('../block-palette.js')
-const paletteRegistry = require('../palette-registry.js')
+const palette = require('../src/world/block-palette.js')
+const paletteRegistry = require('../src/world/palette-registry.js')
 
 const BAD = path.join(__dirname, '..', 'registry', 'block-palette.json')
 const REAL = path.join(__dirname, '..', 'registry', 'angel_block_palette.txt')

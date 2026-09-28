@@ -29,7 +29,7 @@
 
 > 早期的自主层 `autopilot.js`（脑干，:3002，规则打分循环）与 `brain.js`（快脑/主脑双模型）
 > 已于 **2026-09-28** 删除（`mind.js` + `instinct.js` 取代）。其中 `pickAutoEquip`
-> 判据没有丢，原样搬到了 [`equip-policy.js`](equip-policy.js)。见
+> 判据没有丢，原样搬到了 [`src/body/equip-policy.js`](src/body/equip-policy.js)。见
 > [`docs/REFACTOR-PLAN-20260928.md`](docs/REFACTOR-PLAN-20260928.md)。
 
 **不绑定任何 agent 运行时** —— 它就是个本地 HTTP 服务，谁都能驱动。
@@ -80,29 +80,35 @@ node mind.js                         # 意识           → 127.0.0.1:3003
 
 ## 目录结构
 
-根目录的 `.js` 是扁平摆放的，按功能分 5 区（完整路由表见 [`AGENTS.md`](AGENTS.md) 第二节）：
+代码按功能**分区放在 [`src/`](src/) 下**（第 2 步重构，2026-09-28；完整路由表见
+[`AGENTS.md`](AGENTS.md) 第二节）；根目录只剩 `bridge-server.js` / `mind.js` 两个
+**一行转发的入口**（Windows 的 `scripts/win/angel.ps1` 起的就是它们）：
 
-| 分区 | 文件 |
+| 分区 | 文件（`src/` 下） |
 |---|---|
-| ① 桥 / 协议 / 注册表（手+眼） | `bridge-server.js` `hands.js` `instinct.js` `commonsense.js` `inventory-ledger.js` `ftbq-sync.js` `fml-handshake.js` `registry-probe.js` `block-palette.js` `palette-registry.js` `item-registry.js` `entity-registry.js` `reconnect.js` `equip-policy.js` |
-| ② 寻路 / 放置 | `pathing.js` `place.js` |
-| ③ 意识 / 人格 | `mind.js` `body.js` `plan.js` `night.js` `memory-store.js` `speech.js` `ambition.js` `self-review.js` `llm-*.js` `PERSONA.md` |
-| ④ 知识库 | `knowledge.js` + `knowledge/`（配方、标签、掉落、任务书、矿表、作物表、通关主线，从包体自动提取） |
+| 共用 | `paths.js`（数据路径唯一来源）`log-stamp.js` |
+| ① 桥 / 协议 / 注册表（手+眼） | `bridge/server.js` `bridge/body-command-lock.js` `bridge/reconnect.js` `body/hands.js` `body/commonsense.js` `body/equip-policy.js` `body/storage-policy.js` `body/inventory-ledger.js` `body/ftbq-sync.js` `instinct/instinct.js` `world/fml-handshake.js` `world/registry-probe.js` `world/block-palette.js` `world/palette-registry.js` `world/item-registry.js` `world/entity-registry.js` |
+| ② 寻路 / 放置 | `world/pathing.js` `world/place.js` |
+| ③ 意识 / 人格 | `mind/mind.js` `mind/body.js` `mind/memory-store.js` `mind/speech.js` `mind/ambition.js` `mind/plan.js` `mind/night.js` `mind/self-review.js` `mind/llm-*.js` `mind/events-reader.js` + `PERSONA.md` |
+| ④ 知识库 | `knowledge/knowledge.js` + `knowledge/`（配方、标签、掉落、任务书、矿表、作物表、通关主线，从包体自动提取） |
 | ⑤ 运维 / 诊断 | `scripts/` `logs/` `memory/field-log.md`（实机问题台帐） |
 
+**数据目录留在仓库根**（`memory/` `knowledge/` `registry/` `logs/` `config.json` `.env`），
+代码里要拼这些路径一律走 `src/paths.js`。
 其余目录：`registry/`（注册表快照、调色板、KubeJS dump）、`references/`（API 规格、Forge 握手、排错）。
 
-> `events-reader.js` 只读 `memory/events.jsonl`（旧脑干留下的决策留痕，历史证据）。
+> `src/mind/events-reader.js` 只读 `memory/events.jsonl`（旧脑干留下的决策留痕，历史证据）。
 
 ---
 
 ## 自测
 
-纯逻辑都抽成了可 require 的模块，**测的就是跑的那份代码**。每个模块 `node <文件> --selftest`，
+纯逻辑都抽成了可 require 的模块，**测的就是跑的那份代码**。每个模块 `node src/<区>/<文件>.js --selftest`，
 完整命令清单见 [`AGENTS.md`](AGENTS.md) 第四节（断言数量会变，以实际输出为准）。
+全套一起跑用 `npm test`（`scripts/test-all.js`）。
 
 > ⚠️ **先把 `npm install` 跑完再测**：注册表相关断言依赖 `minecraft-data`，缺了会报错或静默少跑。
-> ⚠️ **`bridge-server.js` 绝不能 `--selftest`**：一 `require` 就去连服务器，只能 `node --check`。
+> ⚠️ **`src/bridge/server.js` 绝不能 `--selftest`**（根目录的 `bridge-server.js` 同理）：一 `require` 就去连服务器，只能 `node --check`。
 
 ---
 

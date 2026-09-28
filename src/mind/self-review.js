@@ -31,9 +31,10 @@
 
 const fs = require('fs');
 const path = require('path');
+const paths = require('../paths');
 
 // 用到时才取路径：自测会在 require 之后才设 MC_REVIEW_FILE
-const FILE = () => process.env.MC_REVIEW_FILE || path.join(__dirname, 'memory', 'self-review.jsonl');
+const FILE = () => process.env.MC_REVIEW_FILE || path.join(paths.MEMORY, 'self-review.jsonl');
 
 const CATEGORIES = ['做不到', '查错了', '理解错了', '说错话', '不知道怎么办', '其他'];
 

@@ -21,6 +21,7 @@
  *   我们拿到原始 Buffer 自己看。**顺带这也是那个报错的根治办法。**
  */
 const mcData = require('minecraft-data');
+const paths = require('../paths');
 
 /**
  * 把 `declare_commands` 的解析换成"原样收字节"。
@@ -149,7 +150,7 @@ function attach (client, opts = {}) {
     // 把前 maxBytes 存盘，供离线细看（避免往日志里灌二进制）
     try {
       const fs = require('fs');
-      const p = require('path').join(__dirname, '..', 'memory', 'declare_commands.bin');
+      const p = require('path').join(paths.MEMORY, 'declare_commands.bin');
       fs.mkdirSync(require('path').dirname(p), { recursive: true });
       fs.writeFileSync(p, buf.slice(0, maxBytes));
       log(`[probe]   前 ${Math.min(maxBytes, buf.length)} 字节已存到 ${p}`);

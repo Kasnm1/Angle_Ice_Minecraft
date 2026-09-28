@@ -72,6 +72,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const paths = require('../paths');
 
 /**
  * `minecraft-data` 1.20.1 的原版物品基线。**只作为兜底常量**：
@@ -82,7 +83,7 @@ const VANILLA_ITEM_FALLBACK = 1255;
 /** 快照不带 stackSize；见文件顶部"刻意不做的事"。 */
 const ASSUMED_STACK_SIZE = 64;
 
-const REGISTRY_DIR = path.join(__dirname, 'registry');
+const REGISTRY_DIR = paths.REGISTRY;
 const DEFAULT_SNAPSHOT = path.join(REGISTRY_DIR, 'minecraft-item.json');
 
 /** 注入时**保留**快照里的全名（模组物品只有全名才不歧义），只在校验时归一化。 */

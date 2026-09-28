@@ -7,7 +7,7 @@
 
 | 消费者 | 读什么 | 用途 |
 |---|---|---|
-| `knowledge.js`（④ 区 mind/body/hands/ambition 都经它） | `generated/gamedata.json` + `generated/kubejs.json` + `item-names.json` + `quests.json` + `tooltips.md` | 配方 / 用途 / 获取途径 / 材料树 / 工作站 —— 返回**给模型读的中文纯文本** |
+| `src/knowledge/knowledge.js`（④ 区 mind/body/hands/ambition 都经它） | `generated/gamedata.json` + `generated/kubejs.json` + `item-names.json` + `quests.json` + `tooltips.md` | 配方 / 用途 / 获取途径 / 材料树 / 工作站 —— 返回**给模型读的中文纯文本** |
 | `lookup.py` + bridge 的 `/knowledge/search` | 顶层 `*.md` / `quests.json` / `item-names.json` | 任务、物品名、提示的关键词检索 |
 
 ## 文件来源（哪些是生成物，别手改）
@@ -22,17 +22,17 @@
 
 整合包目录默认 `~/Library/Application Support/minecraft`。整合包更新后按 `README.md` 末尾「重建知识库」执行。
 
-## 矿表 / 作物表（本能用，`instinct.js` 直接读）
+## 矿表 / 作物表（本能用，`src/instinct/instinct.js` 直接读）
 
 - `ores.json`：`{ name, tier, value, drops, notPickaxe? }`。`tier` = 最低镐等级（wood…netherite），`null` = 没查到 → 采矿本能**按铁镐**处理（保守）；
   `notPickaxe` = 不是镐子挖的（化石矿要铲子），采矿本能跳过。`value` high/mid 看见就挖，low 只在缺的时候挖。
 - `crops.json`：只收 **loot table 证明"age 到最大值时打掉 = 标准收获"** 的作物（`{ name, ageProp, maxAge, harvest:'break', seed, soil }`）。
   瓜茎、竹子、甘蔗、仙人掌、浆果丛、藤蔓这类打掉就毁了 / age 不是成熟度的，导入脚本会拒绝。
 
-## 改 `knowledge.js` 时
+## 改 `src/knowledge/knowledge.js` 时
 
 - 工作站推断里标 `guess` 的是"同模组名字最像的方块"猜的 —— 输出给模型时**必须带上"猜的"标记**，不许洗成确定。
 - 查不到就返回"不知道"，不要回落到原版配方（这是 `PERSONA.md`「别按原版攻略答」的底气）。
-- 手查：`$NODE knowledge.js obtain 铁锭` / `recipe 木镐` / `uses 煤炭` / `tree 铁镐` / `guide 七咒之戒`
-- 自测：`$NODE knowledge.js --selftest`（依赖 `generated/`，没生成会失败 —— 那是"读不到"，不是代码坏了）
-- `ambition.js` 从 `quests.json` 里 `groupTitle === '食录逸闻'` 取食物清单 —— 重建 `quests.json` 后跑 `$NODE ambition.js --selftest`。
+- 手查：`$NODE src/knowledge/knowledge.js obtain 铁锭` / `recipe 木镐` / `uses 煤炭` / `tree 铁镐` / `guide 七咒之戒`
+- 自测：`$NODE src/knowledge/knowledge.js --selftest`（依赖 `generated/`，没生成会失败 —— 那是"读不到"，不是代码坏了）
+- `src/mind/ambition.js` 从 `quests.json` 里 `groupTitle === '食录逸闻'` 取食物清单 —— 重建 `quests.json` 后跑 `$NODE src/mind/ambition.js --selftest`。

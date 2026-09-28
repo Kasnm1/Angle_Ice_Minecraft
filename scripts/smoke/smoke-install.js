@@ -22,8 +22,8 @@ const path = require('path');
 
 const ROOT = path.join(__dirname, '..', '..');   // scripts/smoke/ → 项目根
 const { Vec3 } = require(path.join(ROOT, 'node_modules', 'vec3'));
-const instinct = require(path.join(ROOT, 'instinct.js'));
-const night = require(path.join(ROOT, 'night.js'));
+const instinct = require(path.join(ROOT, 'src', 'instinct', 'instinct.js'));
+const night = require(path.join(ROOT, 'src', 'mind', 'night.js'));
 
 // ---- 假 bot：只提供 instinct 会碰到的字段 -----------------------------------
 function makeBot () {

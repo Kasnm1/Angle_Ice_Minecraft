@@ -17,7 +17,7 @@
  *
  * 用法：node scripts/fml-snapshot-test.js
  */
-const { parseSnapshot, Reader: R } = require('../fml-handshake.js');
+const { parseSnapshot, Reader: R } = require('../src/world/fml-handshake.js');
 
 // ---- 造字节用的小工具（故意不复用被测代码里的写函数，避免"自证"）----
 function wVarint (n) {
@@ -139,7 +139,7 @@ console.log('fml-snapshot-test');
 
 // 6. finish() 汇总：0 个配置文件也要打一行（R-fix5-中）
 {
-  const { createHandshake } = require('../fml-handshake.js');
+  const { createHandshake } = require('../src/world/fml-handshake.js');
   const lines = [];
   const hs = createHandshake((m) => lines.push(String(m)));
   hs.finish();

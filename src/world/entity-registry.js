@@ -51,8 +51,9 @@
 
 const fs = require('fs');
 const path = require('path');
+const paths = require('../paths');
 
-const DEFAULT_SNAPSHOT = path.join(__dirname, 'registry', 'minecraft-entity_type.json');
+const DEFAULT_SNAPSHOT = path.join(paths.REGISTRY, 'minecraft-entity_type.json');
 
 const CFG = {
   // "它打过谁"记多久。打一下就跑的骷髅，几秒后还在射程里，仍然是仇人。

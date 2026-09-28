@@ -1,12 +1,13 @@
 'use strict';
 
-const storagePolicy = require('./storage-policy');
+const storagePolicy = require('../body/storage-policy');
+const paths = require('../paths');
 // 事件循环延迟监控（2026-09-28）：5 分钟一次的 homeTimer 大扫描曾让整个进程冻 ~14 秒
 // （实机 live-1214：12:20/12:25 的 scheduler.lagMs = 13511 / 14027，busyForMs 却是 0）。
 // monitorEventLoopDelay 量的是**事件循环本身**的延迟，和"本能是不是在忙"无关，正好能抓这种堵。
 const { monitorEventLoopDelay } = require('perf_hooks');
 // 敌对判据只此一份（AGENTS.md §5）：战斗本能、hands.threatNear、bridge /nearby 都调它。
-const { isHostileEntity } = require('./entity-registry.js');
+const { isHostileEntity } = require('../world/entity-registry.js');
 
 /**
  * 本能层 —— 不过大脑、不过脑干，身体自己做的事（主人 2026-09-27）。
@@ -527,7 +528,7 @@ function hazardUnder ({ feet = null, below = null, fallingAbove = false } = {}) 
  * 要求：脚和头那格是空的（空气类）、脚下是实心且不伤人、不是岩浆/水。读不到的格子不去（不猜）。
  */
 function pickStepOff (cells = []) {
-  const open = (n) => n != null && require('./place').isStandable({ name: n });   // 判据只在 place.js 一处（P50：含草、藤、雪层）
+  const open = (n) => n != null && require('../world/place').isStandable({ name: n });   // 判据只在 place.js 一处（P50：含草、藤、雪层）
   const ok = cells.filter(c => open(c.feet) && open(c.head) && c.below != null && !/air|lava|water|fire|magma|cactus|powder_snow|campfire/.test(c.below));
   ok.sort((a, b) => (Math.abs(a.dx) + Math.abs(a.dz)) - (Math.abs(b.dx) + Math.abs(b.dz)));   // 先直的，再斜的
   return ok[0] || null;
@@ -1444,7 +1445,7 @@ function install (bot, state, deps) {
   let tables = null;
   function loadTables () {
     if (tables) return tables;
-    const read = (f) => { try { return JSON.parse(require('fs').readFileSync(require('path').join(__dirname, 'knowledge', f), 'utf8')); } catch (_) { return null; } };
+    const read = (f) => { try { return JSON.parse(require('fs').readFileSync(require('path').join(paths.KNOWLEDGE, f), 'utf8')); } catch (_) { return null; } };
     const ores = deps.tables?.ores || read('ores.json');
     const crops = deps.tables?.crops || read('crops.json');
     const reg = bot.registry;
@@ -1463,7 +1464,7 @@ function install (bot, state, deps) {
   const oreVisible = (b) => {
     if (!b) return false;
     try { if (bot.canSeeBlock(b)) return true; } catch (_) {}
-    return require('./place').exposedToOpen(b.position, (x, y, z) => bot.blockAt(new (require('vec3').Vec3)(x, y, z)));
+    return require('../world/place').exposedToOpen(b.position, (x, y, z) => bot.blockAt(new (require('vec3').Vec3)(x, y, z)));
   };
   const hazardAround = (p) => {
     for (const [dx, dy, dz] of [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]]) {
@@ -1829,7 +1830,7 @@ function install (bot, state, deps) {
   const naturalIds = () => {
     if (natIds) return natIds;
     let tagOf = () => undefined;
-    try { const kb = require('./knowledge').load(); tagOf = (t) => kb.tags.get(`block:${t}`); } catch (_) {}
+    try { const kb = require('../knowledge/knowledge').load(); tagOf = (t) => kb.tags.get(`block:${t}`); } catch (_) {}
     const reg = bot.registry;
     natIds = new Set();
     for (const n of deps.pathing.naturalDigNames(tagOf)) {
@@ -2597,7 +2598,7 @@ function install (bot, state, deps) {
         const f = bot.blockAt(p); if (!f || /water/.test(f.name)) continue;
         const b = bot.blockAt(p.offset(0, -1, 0)); if (!b || b.boundingBox !== 'block') continue;
         const h = bot.blockAt(p.offset(0, 1, 0));
-        cells.push({ pos: p, below: b.name, feet: f.name, head: h?.name, ok: require('./place').isStandable(f) && require('./place').isStandable(h) });
+        cells.push({ pos: p, below: b.name, feet: f.name, head: h?.name, ok: require('../world/place').isStandable(f) && require('../world/place').isStandable(h) });
       }
       rings = k + 1;
       if (cells.length) pick = pickShore(cells, me);   // 这一圈里有可站的 → 就在这圈挑
@@ -3534,7 +3535,7 @@ function selftest () {
     check('★ 家生长 30 分钟一次',
       /everyMs: 1800000/.test(srcText), true);
     check('★ 存东西时不存随身装备的判据在 hands.js（那里也有源码锁）',
-      /isLoadoutItem/.test(require('fs').readFileSync(require('path').join(__dirname, 'hands.js'), 'utf8')), true);
+      /isLoadoutItem/.test(require('fs').readFileSync(require('path').join(paths.ROOT, 'src', 'body', 'hands.js'), 'utf8')), true);
     check('★ 挖之前先把镐子拿到身上（ensureCarried /pickaxe$/）',
       /ensureCarried\(bot, state, \(it\) => \/pickaxe\$\/\.test\(it\.name\)/.test(srcText), true);
     check('★ 挖矿被打断 → 清失败冷却、下一拍接着挖',

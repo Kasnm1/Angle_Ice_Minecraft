@@ -27,7 +27,7 @@ const path = require('path');
 const vm = require('vm');
 
 const SRC = path.join(__dirname, '..', 'registry', 'zz_angel_dump_block_palette.js');
-const palette = require('../block-palette.js');
+const palette = require('../src/world/block-palette.js');
 
 let pass = 0;
 let fail = 0;

@@ -31,7 +31,7 @@ const fs = require('fs');
 const path = require('path');
 // 形状列的**唯一**判据来自 block-palette（解码就在那儿）。这里绝不自己数逗号 ——
 // 压缩形态（`.` = 所有 state 同形）本来就只有 1 项，数逗号会把正常表判成错。
-const palette = require('../block-palette.js');
+const palette = require('../src/world/block-palette.js');
 
 const DEFAULT_LOG = '<整合包目录>/logs/latest.log';   // 占位默认值：实际请用 --in 指定
 // 文件名故意与 bridge-server.js 的 paletteCandidates() 里的一致 —— 配好 MC_PACK_DIR
@@ -270,7 +270,7 @@ function checkVanilla (rows, mcData) {
 }
 
 /** 与 palette-registry.js 的内置锚点对齐，做一次"导入前预演"。 */
-function checkAnchors (rows, anchors = require('../palette-registry.js').parseAnchors(process.env.MC_PALETTE_ANCHORS)) {
+function checkAnchors (rows, anchors = require('../src/world/palette-registry.js').parseAnchors(process.env.MC_PALETTE_ANCHORS)) {
   // 和桥接导入用同一份锚点（以前这里抄了一份，加模组后两边会不同步）；配了 MC_PALETTE_ANCHORS 就用配的
   const byBlockId = new Map(rows.map((r) => [r.blockId, r]));
   const out = [];
@@ -607,7 +607,7 @@ function selftest () {
   //     这是最关键的一条：形状列在 KubeJS 侧编码、在本脚本透传、在 block-palette 侧解码，
   //     三段各自的自测都过了也不代表拼起来对 —— 必须真拼一次。
   {
-    const palette = require('../block-palette.js');
+    const palette = require('../src/world/block-palette.js');
     const rowsE2E = [
       { blockId: 0, first: 0, count: 1, name: 'minecraft:air', spec: '', shapes: '-' },
       { blockId: 1, first: 1, count: 2, name: 'minecraft:stone', spec: '', shapes: '.' },

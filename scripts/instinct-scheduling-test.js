@@ -8,7 +8,7 @@ const path = require('path');
 const { createRequire } = require('module');
 const { EventEmitter } = require('events');
 const { Vec3 } = require('vec3');
-const file = path.join(__dirname, '..', 'instinct.js');
+const file = path.join(__dirname, '..', 'src', 'instinct', 'instinct.js');
 let passed = 0;
 const ok = (value, message) => { assert.ok(value, message); passed++; };
 const flush = async () => { for (let i = 0; i < 20; i++) await Promise.resolve(); };
@@ -147,7 +147,7 @@ async function main () {
   await new Promise(r => setTimeout(r, 180)); await flush();
   ok(floated === 1 && cb.state.instinct.urgent === null, '憋气可以取消战斗，上浮不与攻击重叠');
   cb.bot.emit('end');
-  const hands = require('../hands');
+  const hands = require('../src/body/hands.js');
   const sb = new EventEmitter(); sb.isSleeping = false;
   const route = hands.routes({ state: { bot: sb } })['POST /sleep'];
   ok((await route({ abort: () => true })).aborted, '睡觉开始前已取消时不扫描世界');

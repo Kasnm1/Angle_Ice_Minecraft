@@ -35,8 +35,9 @@
 
 const fs = require('fs');
 const path = require('path');
+const paths = require('../paths');
 
-const DIR = path.join(__dirname, 'memory');
+const DIR = paths.MEMORY;
 
 const EVENTS_PATH = process.env.MC_EVENTS_PATH || path.join(DIR, 'events.jsonl');
 

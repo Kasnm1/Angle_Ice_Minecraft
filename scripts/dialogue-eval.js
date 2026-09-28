@@ -30,9 +30,9 @@
 const fs = require('fs');
 const path = require('path');
 process.chdir(path.join(__dirname, '..'));
-const body = require('../body.js');
-const { SYSTEM, SPECS, SAY_NUDGE } = require('../mind.js');
-const speech = require('../speech.js');
+const body = require('../src/mind/body.js');
+const { SYSTEM, SPECS, SAY_NUDGE } = require('../src/mind/mind.js');
+const speech = require('../src/mind/speech.js');
 
 const TESTS_DEFAULT = '/Users/starwish/aimc/modpack-study/tests/dialogue.jsonl';
 const OUTDIR = '/Users/starwish/aimc/modpack-study/tests/results';
@@ -142,15 +142,15 @@ async function judge (t, resp) {
 }
 
 // ---- 多轮：照 mind.js think() 的流程 —— 查完的结果喂回去，她查完才开口（只看第一轮会把"先查再说"误判成"该说不说"）
-const knowledge = require('../knowledge.js');
+const knowledge = require('../src/knowledge/knowledge.js');
 const MIND_KIND = (() => {   // mind.js 心里那些工具的类型（没导出，从源码里读，和 think() 用的是同一份定义）
-  const src = fs.readFileSync(path.join(__dirname, '..', 'mind.js'), 'utf8');
+  const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'mind', 'mind.js'), 'utf8');
   const seg = src.slice(src.indexOf('const MIND_TOOLS = {'), src.indexOf('const ALL ='));
   return Object.fromEntries([...seg.matchAll(/\n  (\w+): \{\n    kind: '(\w+)'/g)].map(m => [m[1], m[2]]));
 })();
 const kindOf = (n) => MIND_KIND[n] || body.TOOLS[n]?.kind || null;
 // 和真实运行一样多的轮数（mind.js CFG.maxRounds，现在是 6）—— 少给了会冤枉她"查了半天不说话"
-const MAX_ROUNDS = +(fs.readFileSync(path.join(__dirname, '..', 'mind.js'), 'utf8').match(/maxRounds:\s*(\d+)/) || [0, 6])[1];
+const MAX_ROUNDS = +(fs.readFileSync(path.join(__dirname, '..', 'src', 'mind', 'mind.js'), 'utf8').match(/maxRounds:\s*(\d+)/) || [0, 6])[1];
 const OFFLINE_KB = new Set(['item_info', 'recipe', 'how_to_obtain', 'item_uses', 'guide_search']);   // 只读知识库，离线能真跑
 const NO_LIVE = { ok: true, note: '（离线测评）这里看不到实时数据：以【此刻】里写的情况为准，情况里没写的就是不知道' };
 

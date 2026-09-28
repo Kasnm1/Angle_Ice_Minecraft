@@ -9,19 +9,20 @@
 
 const fs = require('fs');
 const path = require('path');
-const knowledge = require('./knowledge');
+const knowledge = require('../knowledge/knowledge');
 const speech = require('./speech');
 const mem = require('./memory-store');
-const storagePolicy = require('./storage-policy');
+const storagePolicy = require('../body/storage-policy');
+const paths = require('../paths');
 // 世界 = 连的是哪个服务器（config.json 的 MC_HOST:MC_PORT）；每个世界一个家
 try {
-  const conf = JSON.parse(fs.readFileSync(path.join(__dirname, 'config.json'), 'utf8'));
+  const conf = JSON.parse(fs.readFileSync(paths.CONFIG, 'utf8'));
   mem.setWorld(`${process.env.MC_HOST || conf.MC_HOST || 'localhost'}:${process.env.MC_PORT || conf.MC_PORT || 25565}`);
 } catch (_) { mem.setWorld(`${process.env.MC_HOST || 'localhost'}:${process.env.MC_PORT || 25565}`); }
 
 // ------------------------------------------------------------------ .env
 
-function loadDotEnv (file = path.join(__dirname, '.env')) {
+function loadDotEnv (file = paths.ENV) {
   let text;
   try { text = fs.readFileSync(file, 'utf8'); } catch (_) { return; }
   for (const line of text.split(/\r?\n/)) {
@@ -65,7 +66,7 @@ const localFallbacks = () => (process.env.LOCAL_FALLBACKS ?? '').split(',').map(
 let QUESTS = null;
 function findQuest (key) {
   if (!QUESTS) {
-    const q = JSON.parse(require('fs').readFileSync(require('path').join(__dirname, 'knowledge', 'quests.json'), 'utf8'));
+    const q = JSON.parse(require('fs').readFileSync(require('path').join(paths.KNOWLEDGE, 'quests.json'), 'utf8'));
     QUESTS = q.chapters.flatMap(ch => (ch.quests || []).map(x => ({ ...x, chapter: ch.title, group: ch.groupTitle })));
   }
   const k = String(key || '').trim();
@@ -675,7 +676,7 @@ async function pickAndPlace (list, area, note) {
 
 let STYLE = null;
 function styleGuide () {
-  if (STYLE == null) { try { STYLE = require('fs').readFileSync(path.join(__dirname, 'knowledge', 'style-guide.md'), 'utf8').slice(0, 6000); } catch (_) { STYLE = ''; } }
+  if (STYLE == null) { try { STYLE = require('fs').readFileSync(path.join(paths.KNOWLEDGE, 'style-guide.md'), 'utf8').slice(0, 6000); } catch (_) { STYLE = ''; } }
   return STYLE;
 }
 const DESIGN_SYS = `你是 Angle_ICE 自己的建筑眼光。看懂给你的这片地方（逐层俯视图、材质图例），按用途设计一个工程，输出蓝图。
@@ -731,7 +732,7 @@ let FURN = null;
 function furnishCatalog () {
   if (FURN) return FURN;
   try {
-    const c = JSON.parse(require('fs').readFileSync(path.join(__dirname, 'knowledge', 'furnishings.json'), 'utf8'));
+    const c = JSON.parse(require('fs').readFileSync(path.join(paths.KNOWLEDGE, 'furnishings.json'), 'utf8'));
     FURN = Object.entries(c).filter(([k, v]) => Array.isArray(v)).map(([k, v]) => `${k}：${v.slice(0, 25).map(x => `${x.id}=${x.zh || ''}${x.use ? `(${String(x.use).slice(0, 24)})` : ''}${x.size && x.size !== '1格' ? `[${x.size}]` : ''}`).join('；')}`).join('\n');
   } catch (_) { FURN = Object.entries(BASIC_FURNISH).map(([k, v]) => `${k}：${v.join('；')}`).join('\n'); }
   return FURN;

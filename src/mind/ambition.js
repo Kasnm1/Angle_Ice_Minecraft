@@ -23,15 +23,16 @@
 
 const fs = require('fs');
 const path = require('path');
-const knowledge = require('./knowledge');
+const knowledge = require('../knowledge/knowledge');
 const mem = require('./memory-store');
+const paths = require('../paths');
 
 let CAT = null;
 
 /** 《食录逸闻》里每一种要提交的食物 */
 function catalog () {
   if (CAT) return CAT;
-  const q = JSON.parse(fs.readFileSync(path.join(__dirname, 'knowledge', 'quests.json'), 'utf8'));
+  const q = JSON.parse(fs.readFileSync(path.join(paths.KNOWLEDGE, 'quests.json'), 'utf8'));
   const items = new Map();   // id → {id, chapter, quest}
   const chapters = [];
   for (const c of q.chapters || []) {
@@ -134,7 +135,7 @@ const VANILLA_STATIONS = new Set(['inventory', 'minecraft:crafting_table', 'mine
 let ROUTE = null;
 function route () {
   if (ROUTE) return ROUTE;
-  try { ROUTE = JSON.parse(fs.readFileSync(path.join(__dirname, 'knowledge', 'route.json'), 'utf8')); } catch (_) { ROUTE = { dishes: {}, rawUse: {} }; }
+  try { ROUTE = JSON.parse(fs.readFileSync(path.join(paths.KNOWLEDGE, 'route.json'), 'utf8')); } catch (_) { ROUTE = { dishes: {}, rawUse: {} }; }
   return ROUTE;
 }
 // 档位代价：T0 徒手/工作台 < T1 原版炉子 < T2 农夫乐事系 < T3 别的模组工作站 < C 只能靠机械动力 < T4 跨维度/Boss

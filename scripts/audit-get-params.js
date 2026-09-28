@@ -25,7 +25,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const SRC = path.join(__dirname, '..', 'bridge-server.js');
+const SRC = path.join(__dirname, '..', 'src', 'bridge', 'server.js');
 const strict = process.argv.includes('--strict');
 
 const lines = fs.readFileSync(SRC, 'utf8').split('\n');

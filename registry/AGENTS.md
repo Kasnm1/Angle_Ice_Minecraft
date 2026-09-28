@@ -14,7 +14,7 @@
 | 文件 | 性质 | 入库 |
 |---|---|---|
 | `minecraft-block.json` / `minecraft-item.json` | 每次 FML 登录握手自动覆盖写（含服务器地址） | ❌ |
-| `minecraft-menu.json` | 界面类型表，`hands.js` 开模组界面时把数字 id 翻成名字 | ✅ |
+| `minecraft-menu.json` | 界面类型表，`src/body/hands.js` 开模组界面时把数字 id 翻成名字 | ✅ |
 | `angel_block_palette.txt` | **完整**方块调色板 dump（客户端 KubeJS → `scripts/angelpal-to-palette.js`） | ✅ |
 | `vanilla-palette-1.20.1.txt` / `_vanilla-blocks-1.20.1.json` | 原版基线（`scripts/make-vanilla-palette.js`） | ✅ |
 | `block-palette.json` | **历史死路**：从 jar 反推，模组段偏 27 万位；留作 `palette-guard-test.js` 的坏样本 —— **别删、别拿来用** | ✅ |
@@ -23,7 +23,7 @@
 
 ## 方块 vs 物品：规则**刻意不同**，别"顺手统一"
 
-| | 方块（`palette-registry.js`） | 物品（`item-registry.js`） |
+| | 方块（`src/world/palette-registry.js`） | 物品（`src/world/item-registry.js`） |
 |---|---|---|
 | id 来源 | 前缀和推算 | 快照直接给定 |
 | 连续性 | **严格连续**（错一格全表平移） | 允许断点（只报告） |

@@ -54,9 +54,9 @@ function ok (name, cond, extra) {
  */
 function collectRoutes () {
   // 注意：require bridge **不连服务器**（第 3 条重构保证）。这里只要它的 handlers。
-  const bridge = require(path.join(ROOT, 'bridge-server.js'));
-  const hands = require(path.join(ROOT, 'hands.js'));
-  const commonsense = require(path.join(ROOT, 'commonsense.js'));
+  const bridge = require(path.join(ROOT, 'src', 'bridge', 'server.js'));
+  const hands = require(path.join(ROOT, 'src', 'body', 'hands.js'));
+  const commonsense = require(path.join(ROOT, 'src', 'body', 'commonsense.js'));
 
   const handRoutes = hands.routes({ state: bridge.state, withTimeout: bridge.withTimeout });
   const csRoutes = commonsense.routes({ state: bridge.state });

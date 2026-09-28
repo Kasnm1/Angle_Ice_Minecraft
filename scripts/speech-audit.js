@@ -17,7 +17,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { audit } = require('../speech');
+const { audit } = require('../src/mind/speech.js');
 
 const file = path.join(__dirname, '..', 'memory', 'journal.md');
 const sinceArg = process.argv.indexOf('--since');

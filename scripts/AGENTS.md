@@ -6,7 +6,7 @@
 
 | 类别 | 脚本 | 说明 |
 |---|---|---|
-| **进程** | `start.sh` / `stop.sh` | 只托管 `bridge-server.js`；PID 在 `$XDG_RUNTIME_DIR` 或 `/tmp`，日志 `logs/bridge.log`。node 按 `$NODE` → PATH → WorkBuddy 自带 的顺序找 |
+| **进程** | `start.sh` / `stop.sh` | 只托管 `src/bridge/server.js`；PID 在 `$XDG_RUNTIME_DIR` 或 `/tmp`，日志 `logs/bridge.log`。node 按 `$NODE` → PATH → WorkBuddy 自带 的顺序找 |
 | **契约测试**（离线，属于自测集） | `fml-snapshot-test.js` `palette-guard-test.js` `jev-contract-test.js` `angelpal-to-palette.js --selftest` | 改 ① 区 / ③ 区相关代码后必须跑 |
 | **网络诊断** | `mc-ping.js` `net-layers.js` `scan-login-channels.py` | 区分"端口 OPEN"与"服务真应答"（SSH 隧道假死时 TCP 6ms 成功但无应答） |
 | **注册表工具** | `angelpal-to-palette.js` `make-vanilla-palette.js` | 产物写到 `registry/` |

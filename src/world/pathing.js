@@ -1,5 +1,7 @@
 'use strict';
 
+const paths = require('../paths');
+
 /**
  * 寻路策略 —— 让"绕路"成为默认，"拆方块"成为最后手段。
  *
@@ -3184,7 +3186,7 @@ if (require.main === module && process.argv.includes('--selftest')) {
   //    它不能证明逻辑对（逻辑由纯函数自测证明），只防"改回去"。
   {
     let bsrc = '';
-    try { bsrc = require('fs').readFileSync(require('path').join(__dirname, 'bridge-server.js'), 'utf8'); } catch (_) {}
+    try { bsrc = require('fs').readFileSync(require('path').join(paths.ROOT, 'src', 'bridge', 'server.js'), 'utf8'); } catch (_) {}
     if (bsrc) {
       // fix0 #1：严格预算 —— 必须有 `budgetLeftMs`，且不再出现旧的 `budgetMs - (Date.now() - t0)` 形式
       check('★ bridge /pickup 有严格预算 budgetLeftMs（fix0 #1）', /budgetLeftMs/.test(bsrc), true);

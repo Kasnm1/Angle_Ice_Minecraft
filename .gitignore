@@ -89,3 +89,7 @@ memory/layouts.json*
 
 # memory/plan.json 是她自己写的长期计划（plan.js）
 memory/plan.json*
+
+# 重构后 src/ 下不该有运行时数据（数据目录在根）；万一写进来别入库（journal 有玩家聊天原文）
+src/**/memory/
+src/**/logs/

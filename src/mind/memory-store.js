@@ -36,9 +36,10 @@
 
 const fs = require('fs');
 const path = require('path');
+const paths = require('../paths');
 
 // 用到时才取路径：自测 / 模拟会在 require 之后才设 MC_MIND_FILE（写死在加载时会写进真的记忆）
-const FILE = () => process.env.MC_MIND_FILE || path.join(__dirname, 'memory', 'mind.json');
+const FILE = () => process.env.MC_MIND_FILE || path.join(paths.MEMORY, 'mind.json');
 
 const KINDS = ['lesson', 'promise', 'intention', 'fact', 'relation', 'feeling'];
 const SOURCE_WEIGHT = { experience: 1.0, told: 0.8, read: 0.6, guess: 0.4 };

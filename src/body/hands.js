@@ -33,10 +33,11 @@
  */
 
 const { Vec3 } = require('vec3');
+const paths = require('../paths');
 
 let knowledge = null;
 function K () {
-  if (!knowledge) knowledge = require('./knowledge');
+  if (!knowledge) knowledge = require('../knowledge/knowledge');
   return knowledge;
 }
 
@@ -2501,7 +2502,7 @@ function categoryOf (bot, item) {
   // 《食录逸闻》清单里也有工作台这种"要交的东西"—— 能放下的方块不算吃的（蛋糕这类可放置的食物靠 foodScore/标签认）
   const isBlock = !!(bot.registry.blocksByName[item.name] || bot.registry.blocksByName[String(item.name).split(':').pop()]);
   let inCatalog = false;
-  try { inCatalog = require('./ambition').isFood(id); } catch (_) {}
+  try { inCatalog = require('../mind/ambition').isFood(id); } catch (_) {}
   // 矿物/宝石先认：《食录逸闻》清单里也有要交绿宝石的任务，不能因为在清单里就当成吃的
   if (has(/^(forge|c):(ores|ingots|gems|raw_materials|nuggets|dusts)/)) return '矿物';
   // minecraft:fishes：很多模组的鱼（starcatcher…）只打了这个标签，没打 forge:foods（WorkBuddy 2026-09-27 统计：109 个）
@@ -3538,7 +3539,7 @@ async function lootNearby (bot, state, { radius = 10, home = null, exclude = [],
 // 所以这里的一切"发现"都只认**视线**（bot.canSeeBlock：眼睛到方块中心的射线第一个碰到的就是它）。
 
 // 看过的箱子存盘：bridge 重启后 seenContainers 就空了，不存的话每次重启她都要把家里的箱子全翻一遍
-const SEEN_FILE = require('path').join(__dirname, 'memory', 'containers-seen.json');
+const SEEN_FILE = require('path').join(paths.MEMORY, 'containers-seen.json');
 function seenKeys (state) {
   if (!state.__seenKeys) {
     try { state.__seenKeys = new Set(JSON.parse(require('fs').readFileSync(SEEN_FILE, 'utf8'))); } catch (_) { state.__seenKeys = new Set(); }
@@ -3648,7 +3649,7 @@ const ORE_RE = /(_ore|ancient_debris)$/;
 let oreIdsCache = null; let oreIdsRegistry = null;
 // 1.20 原版矿石数量最多的高度（分布峰值）；模组矿、没写目标就按铁
 const ORE_Y = { coal: 48, copper: 48, iron: 16, lapis: 0, gold: -16, redstone: -58, diamond: -58, emerald: 100 };
-const { isHostileEntity } = require('./entity-registry.js');
+const { isHostileEntity } = require('../world/entity-registry.js');
 /**
  * 8 格内有没有威胁：**原版怪按名字、模组怪按仇恨证据** —— 判据只在 entity-registry.js 一处
  * （AGENTS.md §5；以前这里有一份 `HOSTILE_RE`，比战斗本能那份短，模组怪漏了一半）。
@@ -3721,7 +3722,7 @@ function visibleOres (bot, want, radius, skip) {
 }
 
 const BRANCH = 8;   // 鱼骨支道长度（主道每 3 格一对，支道间隔 2 格实心：1×2 通道两侧各露一格，正好不漏）
-const MINES_FILE = require('path').join(__dirname, 'memory', 'mines.json');
+const MINES_FILE = require('path').join(paths.MEMORY, 'mines.json');
 function mines (state) {
   if (!state.__mines) { try { state.__mines = JSON.parse(require('fs').readFileSync(MINES_FILE, 'utf8')); } catch (_) { state.__mines = {}; } }
   return state.__mines;
@@ -4281,7 +4282,7 @@ function survey (bot, { x, y, z, r = 7, below = 2, above = 5 } = {}) {
 //   rows 从北到南（z 增），每行从西到东（x 增）；图例里没有的字符（空格、-）= 这格不管。
 // 限制：楼梯/门这类有朝向的方块，放下来的朝向由她当时的站位决定，不一定和设计一致。
 
-const PROJ_FILE = require('path').join(__dirname, 'memory', 'projects.json');
+const PROJ_FILE = require('path').join(paths.MEMORY, 'projects.json');
 function projects (state) {
   if (!state.__projects) { try { state.__projects = JSON.parse(require('fs').readFileSync(PROJ_FILE, 'utf8')); } catch (_) { state.__projects = {}; } }
   return state.__projects;
@@ -4443,7 +4444,7 @@ async function projectWork (bot, state, { id, maxMs = 90000, maxOps = 60 } = {})
 // 规划（分区 + 格子：放什么、在哪、挂墙/放地、为什么）存盘；status 对照世界看哪些摆好了、还缺什么；
 // furnish 把手上有的东西摆到它规划好的格子（不用再想一次）。
 
-const LAYOUT_FILE = process.env.MC_LAYOUT_FILE || require('path').join(__dirname, 'memory', 'layouts.json');   // MC_LAYOUT_FILE：测试用，别写进真的规划
+const LAYOUT_FILE = process.env.MC_LAYOUT_FILE || require('path').join(paths.MEMORY, 'layouts.json');   // MC_LAYOUT_FILE：测试用，别写进真的规划
 function layouts (state) {
   if (!state.__layouts) { try { state.__layouts = JSON.parse(require('fs').readFileSync(LAYOUT_FILE, 'utf8')); } catch (_) { state.__layouts = {}; } }
   return state.__layouts;

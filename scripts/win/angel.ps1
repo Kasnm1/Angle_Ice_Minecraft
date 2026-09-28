@@ -127,13 +127,15 @@ switch ($cmd) {
   }
   'selftest' {
     Set-Location $Root
-    foreach ($f in 'knowledge.js', 'ambition.js', 'memory-store.js', 'speech.js', 'pathing.js', 'place.js', 'hands.js', 'mind.js', 'palette-registry.js', 'block-palette.js', 'item-registry.js', 'equip-policy.js', 'llm-workbuddy.js') {
+    # 第 2 步重构后代码在 src/ 下；这里只是**诊断名单**（完整全套跑 npm test / scripts\test-all.js）。
+    # 启动的仍是根目录 bridge-server.js / mind.js（上面 install / start 里，不动）。
+    foreach ($f in 'src\knowledge\knowledge.js', 'src\mind\ambition.js', 'src\mind\memory-store.js', 'src\mind\speech.js', 'src\world\pathing.js', 'src\world\place.js', 'src\body\hands.js', 'src\mind\mind.js', 'src\world\palette-registry.js', 'src\world\block-palette.js', 'src\world\item-registry.js', 'src\body\equip-policy.js', 'src\mind\llm-workbuddy.js') {
       $out = (& $Node $f --selftest 2>&1 | Out-String)
       $sum = [regex]::Matches($out, '\d+ */ *\d+ *通过|\d+ passed, \d+ failed') | Select-Object -Last 1
       $fails = ([regex]::Matches($out, '(?m)^\s*FAIL.*$') | ForEach-Object { $_.Value.Trim() }) -join ' | '
-      "{0,-20} {1} {2}" -f $f, $sum, $fails
+      "{0,-34} {1} {2}" -f $f, $sum, $fails
     }
-    foreach ($f in 'bridge-server.js', 'body.js') { & $Node --check $f; "{0,-20} --check ok" -f $f }
+    foreach ($f in 'src\bridge\server.js', 'src\mind\body.js') { & $Node --check $f; "{0,-34} --check ok" -f $f }
   }
   'logs' {
     $w = if ($what -eq 'all') { 'mind' } else { $what }

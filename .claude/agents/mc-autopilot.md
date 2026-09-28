@@ -11,14 +11,14 @@ description: 【已废弃 2026-09-28】angleice ③ 区「脑干」专家 ——
 >
 > | 原来的活 | 现在找谁 |
 > |---|---|
-> | 自主行动、拾取 / 采矿 / 战斗 / 睡觉等反射 | `mc-bridge`（① 区，看 `instinct.js` —— 本能在 bridge 进程内，不走 HTTP） |
-> | 决策、该做什么、长期计划、说话 | `mc-mind`（③ 区，看 `mind.js` / `plan.js` / `body.js`） |
+> | 自主行动、拾取 / 采矿 / 战斗 / 睡觉等反射 | `mc-bridge`（① 区，看 `src/instinct/instinct.js` —— 本能在 bridge 进程内，不走 HTTP） |
+> | 决策、该做什么、长期计划、说话 | `mc-mind`（③ 区，看 `src/mind/mind.js` / `src/mind/plan.js` / `src/mind/body.js`） |
 > | 活干到一半被打断、退避、重试上限 | `mc-bridge`（原 `autopilot` 的看门狗与重试上限没有搬过来，是**有意**删的；现在的防护在 bridge 和本能里） |
-> | 决策留痕分析（`memory/events.jsonl`） | 没有对应 subagent —— 用 `node events-reader.js --tail 30` 离线读，**文件已冻结不再新增** |
+> | 决策留痕分析（`memory/events.jsonl`） | 没有对应 subagent —— 用 `node src/mind/events-reader.js --tail 30` 离线读，**文件已冻结不再新增** |
 >
 > 仍然存活、且原属这个分区的两个模块：
 >
-> - `equip-policy.js` —— `pickAutoEquip`（"该换成什么"，原样搬出），归 `mc-bridge`
+> - `src/body/equip-policy.js` —— `pickAutoEquip`（"该换成什么"，原样搬出），归 `mc-bridge`
 > - `scripts/jev-contract-test.js`（Jev 集成契约测试）**已删**；如果以后重新接 Jev 那类
 >   决策后端，先看 `SKILL.md` 的 "The Jev endpoint" 一节（契约与坑都记在那里）
 >

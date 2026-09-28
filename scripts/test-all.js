@@ -13,11 +13,17 @@
  *   - WorkBuddy 两次写出"测的不是跑的那份"的测试，因为没人统一跑过全套。
  *
  * 这个脚本把"全套"变成**代码里的一个列表**，且**自动发现**：
- *   - 根目录每个 `.js`：含 `--selftest` 分支的跑 `--selftest`；
- *     不含的（bridge-server / body / fml-handshake / registry-probe）跑 `--check` 语法检查；
+ *   - `src/` 下每个 `.js`：含 `--selftest` 分支的跑 `--selftest`；
+ *     不含的（`server.js` / `body.js`? / `fml-handshake` / `registry-probe` …）跑 `--check` 语法检查；
+ *   - 根目录两个入口 `bridge-server.js` / `mind.js`：**只** `--check`
+ *     （`mind.js` 现在一行转发到 `src/mind/mind.js`，它有 selftest，但入口本身不该跑）；
  *   - `scripts/*-test.js`：直接跑；
  *   - `scripts/angelpal-to-palette.js --selftest`；
  *   - `scripts/smoke/*.js`：假 bot 冒烟（第 0 步新入库）。
+ *
+ * ⚠️ **绝不能**对 `src/bridge/server.js` 跑 `--selftest`：它一 require 就连服务器、抢 3001。
+ *    自动发现靠"代码里真有 `--selftest` 分支"来区分，server.js 没有这个分支 → 走 `--check`。
+ *    （第 2 步重构前它在根目录，名叫 `bridge-server.js`，同样是 `--check`。）
  *
  * ## 硬规矩（对齐任务书第 1 条）
  *
@@ -54,8 +60,10 @@ const ONLY = onlyArg >= 0 ? (process.argv[onlyArg + 1] || '').split(',').map(s =
 // ---- 已知失败白名单（配置化，不硬编码）--------------------------------------
 const CONFIG_PATH = path.join(__dirname, 'test-all.config.json');
 let knownFailures = {};
+let CONFIG = {};
 try {
-  knownFailures = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8')).knownFailures || {};
+  CONFIG = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+  knownFailures = CONFIG.knownFailures || {};
 } catch (e) {
   console.warn(`[test-all] ⚠️ 读不到 ${path.relative(ROOT, CONFIG_PATH)}（${e.message}）—— 按"没有已知失败"处理`);
 }
@@ -64,41 +72,59 @@ try {
 
 const isSmoke = (name) => name.endsWith('.js');
 
-/** 根目录里哪些 .js 带 `--selftest` 分支（含注释里提一句的不算，要真的在代码里）。 */
-function rootSelftestFiles () {
+/** 递归收集 `dir` 下所有 `.js`（相对 ROOT 的路径，排序稳定）。 */
+function collectJs (dir) {
   const out = [];
-  for (const entry of fs.readdirSync(ROOT, { withFileTypes: true })) {
-    if (!entry.isFile() || !entry.name.endsWith('.js')) continue;
-    const src = fs.readFileSync(path.join(ROOT, entry.name), 'utf8');
-    // 项目里有三种写法都算"有 selftest 分支"：
-    //   process.argv.includes('--selftest')       （多数）
-    //   cmd === '--selftest'                       （knowledge.js：取 argv[0] 比）
-    //   process.argv.indexOf('--selftest')         （预留）
-    // 只认这几种**真判据**，注释里提一句 `--selftest` 不算。
-    if (/['"]--selftest['"]/.test(src) &&
-        /(includes|indexOf)\(\s*['"]--selftest['"]\s*\)|===\s*['"]--selftest['"]|['"]--selftest['"]\s*===/.test(src)) {
-      out.push(entry.name);
-    }
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const p = path.join(dir, entry.name);
+    if (entry.isDirectory()) out.push(...collectJs(p));
+    else if (entry.isFile() && entry.name.endsWith('.js')) out.push(p);
   }
-  return out;
+  return out.sort();
 }
 
-/** 没有 selftest 的根 .js —— 只做 `--check` 语法检查（不能执行，bridge-server 一跑就连服）。 */
-function rootCheckFiles () {
-  const all = fs.readdirSync(ROOT, { withFileTypes: true })
-    .filter(e => e.isFile() && e.name.endsWith('.js'))
-    .map(e => e.name);
-  const withSelftest = new Set(rootSelftestFiles());
-  return all.filter(f => !withSelftest.has(f)).sort();
+/**
+ * 哪些 `.js` 带 `--selftest` 分支（含注释里提一句的不算，要真的在代码里）。
+ * 项目里有三种写法都算"有 selftest 分支"：
+ *   process.argv.includes('--selftest')       （多数）
+ *   cmd === '--selftest'                       （knowledge.js：取 argv[0] 比）
+ *   process.argv.indexOf('--selftest')         （预留）
+ * 只认这几种**真判据**，注释里提一句 `--selftest` 不算。
+ *
+ * ⚠️ 这是安全关键：`src/bridge/server.js` 没有这个分支 → 不会被 `--selftest`（一跑就连服务器）。
+ */
+function hasSelftest (file) {
+  const src = fs.readFileSync(file, 'utf8');
+  return /['"]--selftest['"]/.test(src) &&
+    /(includes|indexOf)\(\s*['"]--selftest['"]\s*\)|===\s*['"]--selftest['"]|['"]--selftest['"]\s*===/.test(src);
 }
+
+/** 根目录两个入口：永远只 `--check`（它们是转发壳，跑起来会起服务）。 */
+const ROOT_ENTRIES = ['bridge-server.js', 'mind.js'];
 
 function buildPlan () {
   const plan = [];
-  for (const f of rootSelftestFiles()) {
-    plan.push({ label: f, args: [path.join(ROOT, f), '--selftest'], cwd: ROOT });
+
+  // src/ 下的所有 .js
+  const srcDir = path.join(ROOT, 'src');
+  if (fs.existsSync(srcDir)) {
+    for (const f of collectJs(srcDir)) {
+      const rel = path.relative(ROOT, f).split(path.sep).join('/');
+      if (hasSelftest(f)) {
+        // 有些模块自己不启动（由根入口调 cli()）—— 直接 node 它什么都不跑、还会被算成"通过"。
+        // 配置里写了 selftestVia 的，改从根入口跑（2026-09-28：src/mind/mind.js 的 198 条就这样漏了一轮）
+        const via = (CONFIG.selftestVia || {})[rel];
+        const runFile = via ? path.join(ROOT, via) : f;
+        plan.push({ label: via ? `${rel}（经 ${via}）` : rel, args: [runFile, '--selftest'], cwd: ROOT, expectAsserts: true });
+      }
+      else plan.push({ label: `${rel} --check`, args: ['--check', f], cwd: ROOT });
+    }
   }
-  for (const f of rootCheckFiles()) {
-    plan.push({ label: `${f} --check`, args: ['--check', path.join(ROOT, f)], cwd: ROOT });
+
+  // 根目录入口：只 --check（即使它们转发到的模块有 selftest）
+  for (const f of ROOT_ENTRIES) {
+    const p = path.join(ROOT, f);
+    if (fs.existsSync(p)) plan.push({ label: `${f} --check`, args: ['--check', p], cwd: ROOT });
   }
   const scriptsDir = path.join(ROOT, 'scripts');
   for (const entry of fs.readdirSync(scriptsDir, { withFileTypes: true })) {
@@ -209,6 +235,47 @@ function restoreRegistry (snap) {
   return changed;
 }
 
+// ---- paths.js 数据路径存在性检查 -------------------------------------------
+//
+// 第 2 步重构把代码挪进 `src/`，"项目根"从 `__dirname` 变成了
+// `path.resolve(__dirname, '..')`。要是这个 `..` 数错了，`memory/` `knowledge/`
+// 这些路径会**静默指到不存在的地方** —— 读不到 config 只是"用默认值"，
+// 读不到 memory 只是"记忆是空的"，**全套自测照样全绿**。
+//
+// 所以每次跑 test-all 都核对一遍：paths.js 里每个**数据路径**都真实存在。
+// 只查目录 / 根文件这类"必须存在"的；不查 memory/ 里的具体文件（可能还没生成）。
+function checkPaths () {
+  const PROBLEMS = [];
+  let paths;
+  try {
+    paths = require(path.join(ROOT, 'src', 'paths.js'));
+  } catch (e) {
+    return [`src/paths.js 加载失败：${e.message}`];
+  }
+  // ROOT 必须真的是仓库根（有 package.json）
+  if (!fs.existsSync(path.join(paths.ROOT, 'package.json'))) {
+    PROBLEMS.push(`paths.ROOT 不像仓库根（没有 package.json）：${paths.ROOT}`);
+  }
+  // 数据目录：这几份留着就得在
+  for (const key of ['MEMORY', 'KNOWLEDGE', 'REGISTRY']) {
+    const p = paths[key];
+    if (!p) { PROBLEMS.push(`paths.${key} 没导出`); continue; }
+    if (!fs.existsSync(p)) PROBLEMS.push(`paths.${key} 不存在：${p}`);
+  }
+  // LOGS：允许不存在（跑起来才建），但父目录必须是 ROOT
+  if (paths.LOGS && path.dirname(paths.LOGS) !== paths.ROOT) {
+    PROBLEMS.push(`paths.LOGS 不在项目根下：${paths.LOGS}`);
+  }
+  // 根文件：config.json / .env 是"不入库的本机配置"，**允许不存在**，
+  // 但路径必须落在 ROOT 下（算错了才是真问题）。
+  for (const key of ['CONFIG', 'ENV']) {
+    const p = paths[key];
+    if (!p) { PROBLEMS.push(`paths.${key} 没导出`); continue; }
+    if (path.dirname(p) !== paths.ROOT) PROBLEMS.push(`paths.${key} 不在项目根下：${p}`);
+  }
+  return PROBLEMS;
+}
+
 // ---- 主流程 ----------------------------------------------------------------
 
 async function main () {
@@ -248,6 +315,9 @@ async function main () {
     if (!r.ok && !r.counts) failCount = Math.max(failCount, 1);   // 退出码非 0 但解析不到条数
 
     let kind;
+    // 跑的是 --selftest 却一条断言都没数到：什么都没测，不能算通过
+    const zero = r.ok && r.expectAsserts && (!r.counts || !r.counts.pass);
+    if (zero) { r.ok = false; r.zeroAsserts = true; failCount = Math.max(failCount, 1); }
     if (r.ok) kind = 'pass';
     else if (known && failCount <= known.maxFail) kind = 'known';
     else kind = 'new';
@@ -305,13 +375,24 @@ async function main () {
   const restored = restoreRegistry(regSnap);
   if (restored.length) console.log(`\n  [registry] 测试改动了这些文件，已回滚内容：${restored.join(', ')}`);
 
+  // ---- paths.js 数据路径存在性 -----------------------------------------------
+  // 第 2 步的防线：路径算错了会让所有"读不到"变成静默的默认值，全套自测照样绿。
+  const pathProblems = checkPaths();
+  if (pathProblems.length) {
+    console.log('\n  ✗ paths.js 数据路径检查失败（路径算错了？）：');
+    for (const p of pathProblems) console.log(`      ${p}`);
+  } else {
+    console.log('\n  [paths] src/paths.js 的数据路径都在（memory / knowledge / registry）');
+  }
+
   // ---- 总判定 ---------------------------------------------------------------
   const passed = rows.filter(r => r.kind === 'pass').length;
   console.log('');
   console.log(`  合计：${passed} 通过 · ${known.length} 已知失败 · ${newFails.length} 新失败 · 总用时 ${elapsed.toFixed(1)}s`);
 
-  if (newFails.length) {
-    console.log('  ✗ 有非已知失败，退出码 1');
+  if (pathProblems.length || newFails.length) {
+    if (newFails.length) console.log('  ✗ 有非已知失败，退出码 1');
+    else console.log('  ✗ paths.js 数据路径检查失败，退出码 1');
     process.exit(1);
   }
   console.log('  ✓ 全绿（已知失败未增加）');

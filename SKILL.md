@@ -891,8 +891,8 @@ any caller reading `confidence` must tolerate its absence.
 
 > **The historical `--selftest` numbers, for reference:** `autopilot.js` 54 / `decision.js` 37 /
 > `events.js` 17 / `place.js` 23 / `pathing.js` 119 / `scripts/jev-contract-test.js` 34.
-> The `place.js` and `pathing.js` suites are **still live** (`node place.js --selftest`,
-> `node pathing.js --selftest`) — those modules were not touched by the deletion.
+> The `place.js` and `pathing.js` suites are **still live** (`node src/world/place.js --selftest`,
+> `node src/world/pathing.js --selftest` — 第 2 步重构后代码在 `src/world/`) — those modules were not touched by the deletion.
 > `bridge-server.js` still requires both, so in those two cases the tested code is still the
 > shipped code.
 
@@ -1290,7 +1290,7 @@ Core endpoints:
 - `POST /move`, `POST /mine`, `POST /collect`, `POST /craft`, `POST /follow`, `POST /stop` — live bot actions
 - `POST /control` — **raw key state, bypassing the pathfinder**: `{"forward":true,"durationMs":800}`. Accepts `forward/back/left/right/jump/sprint/sneak` (= WASD + space + shift). Capped at `MC_CONTROL_MAX_MS`, always releases in a `finally`, and **returns the exact displacement** `moved:{x,y,z}` so you can tell "jammed" from "moved". Use `POST /look` first to aim. See *The input layer* above for what this does and does not fix.
 - `POST /climb` — closed-loop ladder primitive: `{"x","y","z"}` of the ladder block. Looks at it, holds `forward`+`jump` in short bursts, and checks whether `y` actually rose. Gives up and reports `stalledAtY` rather than pressing forever. **Currently cannot succeed on a modded pack** — blocked by the physics layer, see *The input layer*.
-- `POST /place` — put a block down at `{x,y,z}`. Enforces four hard conditions (solid neighbour to place against, lookable face, eyes within 4.5 blocks, own hitbox not occupying the target), settles the body first, then **waits for the server's `blockUpdate`** rather than trusting client prediction. Refuses to overwrite anything non-replaceable. Geometry lives in `place.js` (`node place.js --selftest`). Errors name the offending face, e.g. `Target out of reach (need < 4.5 blocks from eyes) — walk closer first. Faces: below:too-far(7.6), …`
+- `POST /place` — put a block down at `{x,y,z}`. Enforces four hard conditions (solid neighbour to place against, lookable face, eyes within 4.5 blocks, own hitbox not occupying the target), settles the body first, then **waits for the server's `blockUpdate`** rather than trusting client prediction. Refuses to overwrite anything non-replaceable. Geometry lives in `src/world/place.js` (`node src/world/place.js --selftest`). Errors name the offending face, e.g. `Target out of reach (need < 4.5 blocks from eyes) — walk closer first. Faces: below:too-far(7.6), …`
 - `POST /drop` — toss an item on the ground, or hand it to `playerName` (looks at them first)
 - `POST /look` — turn the bot's head toward a player or coordinate
 - `POST /attack` — melee the nearest hostile mob (or a named `target`)

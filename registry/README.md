@@ -352,7 +352,7 @@ itemRegistry.injectItems(bot.registry, itemRegistry.buildIndex(snapshot))
 //  · registry.itemsArray[id] = rec
 ```
 
-自测：`node item-registry.js --selftest`（54 条断言）。查询：
+自测：`node src/world/item-registry.js --selftest`（54 条断言）。查询：
 
 ```bash
 curl --noproxy '*' 'http://127.0.0.1:3001/item?id=1284'                     # -> bountifulfares:lemon
