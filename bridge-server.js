@@ -4136,7 +4136,16 @@ const handlers = {
         //    这一项若已经是最后一项、且它自己吃超了预算，循环会自然结束 ——
         //    原来 `stopped` 就停在 `null`，调用方误以为"全部轮完了"。
         //    现在把"预算已耗尽但还有没轮到的"如实记成 `budget`。
-        if (i < drops.length - 1 && budgetLeftMs() <= 1000 && stopped === null) { stopped = 'budget'; break; }
+        //
+        //    ⚠️ 2026-09-28 二轮审计（wbR2 新发现，低）：判据用 `i < drops.length - 1`
+        //      是**索引**上界，不是"还有有效目标没轮" —— `drops` 里被上面
+        //      `(!d.isValid || !d.position) continue` 跳过的无效实体**照样占索引**。
+        //      于是"最后一个**有效**目标刚处理完、后面全是无效项、预算恰好耗尽"时，
+        //      会被误报成 `stopped:'budget'`（其实所有有效目标都轮过了）。
+        //      改为按"已处理的有效目标数 < 有效目标总数"判 —— 与上面 `tried` 的口径一致。
+        const moreValidLeft = i + 1 < drops.length
+          && drops.slice(i + 1).some(x => x.isValid !== false && x.position);
+        if (moreValidLeft && budgetLeftMs() <= 1000 && stopped === null) { stopped = 'budget'; break; }
       }
     } finally {
       // 循环彻底结束，**此时没有任何 goto 在等** —— 这是唯一安全的清理位置。

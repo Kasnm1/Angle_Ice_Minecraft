@@ -3198,6 +3198,11 @@ if (require.main === module && process.argv.includes('--selftest')) {
       // fix0 #3：tried.push 在 isValid 检查之后
       check('★ bridge /pickup 先确认实体有效再记 tried（fix0 #3）',
         /if \(!d\.isValid \|\| !d\.position\) continue;\s*\n\s*tried\.push\(d\.id\);/.test(bsrc), true);
+      // wbR2：预算补判的"还有没轮到的"不能用索引上界（无效实体也占索引），要按有效目标数
+      check('★ bridge /pickup 预算补判按「还有有效目标」而不是 i < drops.length-1（wbR2）',
+        /drops\.slice\(i \+ 1\)\.some\(x => x\.isValid !== false && x\.position\)/.test(bsrc), true);
+      check('★ bridge /pickup 不再用索引上界判"还有没轮到的"（wbR2）',
+        /if \(i < drops\.length - 1 && budgetLeftMs\(\) <= 1000 && stopped === null\)/.test(bsrc), false);
       // fix2 #2：否决响应先展开 result，再贴 success/ok
       check('★ bridge 否决响应顺序：...result 在前、success/ok 在后（fix2 #2）',
         /\.\.\.result,\s*\n\s*success: false,\s*\n\s*ok: false,/.test(bsrc), true);

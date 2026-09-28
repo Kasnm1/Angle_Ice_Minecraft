@@ -85,8 +85,17 @@ function save (file = FILE()) {
   // 要么是旧的完整文件、要么是新的完整文件，**不会**留下半截 JSON。
   // 原来的 writeFileSync(file) 是先截断再写 —— 写一半断电，记忆就整份没了。
   const tmp = file + '.tmp';
-  fs.writeFileSync(tmp, JSON.stringify(S, null, 1));
-  fs.renameSync(tmp, file);
+  const data = JSON.stringify(S, null, 1);
+  fs.writeFileSync(tmp, data);
+  try {
+    fs.renameSync(tmp, file);
+  } catch (e) {
+    // Windows：目标文件正被别的进程打开（杀毒扫描、编辑器）时 rename 会 EPERM/EBUSY。
+    // 这时退回直接覆盖写（不原子，但总比这次不存、或者定时器里抛错把 mind 整个带走强）。
+    console.warn(`[memory] 原子替换失败（${e.code || e.message}），改为直接写入`);
+    fs.writeFileSync(file, data);
+    try { fs.unlinkSync(tmp); } catch (_) {}
+  }
   dirty = false;
 }
 

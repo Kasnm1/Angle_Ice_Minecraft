@@ -399,7 +399,17 @@ let llm = async function (opts) {
       } catch (e) {
         if (e.message === 'aborted') throw e;
         recordUsage({ route: name, model: L.MODEL, inChars: localChars });   // 失败的兜底也记（它确实发了）
-        last = new Error(`${last.message}；${name} 兜底也没成：${e.message}`); last.retryable = true; last.kind = e.kind || last.kind;
+        // ⚠️ 2026-09-28 二轮审计（wbR2 新发现，中）：**别再无条件 `retryable = true`**。
+        //    上面 teamorouter 那段刚按 R-fix4-1 保住"不可重试的错误不因包装而变成可重试"，
+        //    这一段却又把它翻回去了：一个 404 / 400（"这份请求本身不对"）走完本机兜底
+        //    仍失败后，`retryable` 被写成 `true`，mind 于是对着同一份发不出去的输入
+        //    继续重试 / 退避 / 空转（正是 R-fix4-1 要消掉的行为）。判据只有一处
+        //    （AGENTS §5）：沿用 `keepRetryable`，语义与上面那段完全一致。
+        //    `kind` 同理：content 类的 kind 必须保住，不能被 `e.kind || last.kind` 冲掉。
+        const keepRetryable = last?.retryable === false;
+        last = new Error(`${last.message}；${name} 兜底也没成：${e.message}`);
+        last.retryable = keepRetryable ? false : (e.retryable !== false);
+        last.kind = (last.kind === 'content' || e.kind === 'content') ? 'content' : (e.kind || last.kind);
       }
     }
   }
@@ -1486,6 +1496,39 @@ function selftest () {
     check('cached 只记有限的数', usage.cachedKnown >= 1, true);
     // 清掉这次测试留下的记录，免得影响别的
     delete usage.byModel['main:test-model-x'];
+  }
+
+  console.log('\n[3] 兜底包装不把"不可重试"翻回可重试（wbR2 新发现）');
+  {
+    // ⚠️ 回归点：改前本机兜底的 catch 里写死 `last.retryable = true`，
+    //    404/400（"这份请求本身不对"）走完兜底仍失败后会被标回可重试，
+    //    mind 于是对着同一份发不出去的输入反复重试 / 空转。
+    //    判据必须和 teamorouter 那段同源（AGENTS §5：一处判据）—— 用源码形状锁死。
+    const srcText = require('fs').readFileSync(__filename, 'utf8');
+    const localSeg = srcText.slice(srcText.indexOf('本机兜底也是"发出去了一次 prompt"'));
+    check('★ 本机兜底 catch 不再写死 retryable = true',
+      /last\.retryable = true;/.test(localSeg) === false, true);
+    check('★ 本机兜底 catch 沿用 keepRetryable 判据',
+      /const keepRetryable = last\?\.retryable === false;/.test(localSeg), true);
+    check('★ 本机兜底 catch 保 kind（content 不被冲掉）',
+      /last\.kind = \(last\.kind === 'content' \|\| e\.kind === 'content'\)/.test(localSeg), true);
+
+    // 行为验证：把那段语义等价跑一遍
+    const fold = (last0, e) => {
+      const keepRetryable = last0?.retryable === false;
+      const last = new Error(`${last0.message}；codex 兜底也没成：${e.message}`);
+      last.retryable = keepRetryable ? false : (e.retryable !== false);
+      last.kind = (last0.kind === 'content' || e.kind === 'content') ? 'content' : (e.kind || last0.kind);
+      return last;
+    };
+    const e400 = Object.assign(new Error('localhost 起不来'), { retryable: true });
+    const r1 = fold(Object.assign(new Error('400'), { retryable: false, kind: 'request' }), e400);
+    check('★ 400（不可重试）+ 本机兜底也失败 → 仍然不可重试', r1.retryable, false);
+    check('   kind 保留 request', r1.kind, 'request');
+    const r2 = fold(Object.assign(new Error('403'), { retryable: false, kind: 'content' }), e400);
+    check('★ 内容审计 + 本机兜底也失败 → 仍然 content', r2.kind, 'content');
+    const r3 = fold(Object.assign(new Error('429'), { retryable: true, kind: 'transient' }), e400);
+    check('  可重试的错走完兜底仍可重试', r3.retryable, true);
   }
 
   console.log(`\n  ${pass}/${total} 通过`);

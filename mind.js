@@ -1893,7 +1893,7 @@ async function main () {
   // 记忆落盘：60 秒一次。原来 10 秒 —— 有改动时每 10 秒整份重写 966KB 的 mind.json，
   // 而她的经历/回想本来就是一分钟级的变化，10 秒省不下任何东西。
   // 进程退出、睡觉整理等**显式**的 mem.save() 另算，不受这里影响。
-  setInterval(() => mem.save(), 60000);
+  setInterval(() => { try { mem.save(); } catch (e) { console.warn(`[memory] 存盘失败：${e.message}`); } }, 60000);   // 存盘出错不能把 mind 带走
   await holdBody(true);
   setInterval(() => holdBody(true), CFG.heartbeatMs);
   const bye = async () => { log('睡着了（进程退出）'); mem.save(); await holdBody(false); process.exit(0); };

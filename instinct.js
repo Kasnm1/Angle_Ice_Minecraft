@@ -961,6 +961,27 @@ function ownsBodyAtCleanup (I, myJob) {
   return !!I && I.running === myJob && myJob != null;
 }
 
+/**
+ * 憋气这一跳"到底跳了没有"。
+ *
+ * ⚠️ 2026-09-28 二轮审计（wbR2 新发现，高）：`runJob` 会把**某些情况下**的上浮直接拒掉
+ *    （`I.urgent` 被 yieldBody / 战斗 finally 改掉时走早退分支，返回
+ *    `{ r: { error: '已让出身体给紧急本能' }, aborted: true }`）。
+ *    早退发生在 `I.running = job` 之前 —— 这次上浮连 owner 都没拿到，一跳都没跳。
+ *    保命动作**不能有条件不满足就静默放弃的路径**，所以调用方必须能看出
+ *    "这一下根本没跳成、需要直接补跳"。判据抽到这里（纯函数，可离线自测）：
+ *    当真跳了（handler 报 `jumped > 0`）才放行；被拒 / 报错 / 跳了 0 下，
+ *    都算"没跳成"，调用方要**直接补一次**。
+ *
+ * @param {{aborted?:boolean, r?:{error?:string, jumped?:number}}} res runJob 的返回
+ * @returns {boolean} true = 这一下没真跳成，必须补跳
+ */
+function breatheRefused (res) {
+  if (!res) return true;
+  if (!Number.isFinite(res.r?.jumped) || res.r.jumped <= 0) return true;
+  return false;
+}
+
 function install (bot, state, deps) {
   const I = state.instinct = state.instinct || {
     cfg: {},
@@ -2036,10 +2057,34 @@ function install (bot, state, deps) {
       //    旧 job 的 finally 里"只清自己"的判据（`I.running === mine`）就会放行、
       //    不再与新上浮抢状态。`settled` 只用来标记"这次是强制的"（诊断用），
       //    两种情形走同一条有 owner 的路径。
+      //
+      //    ⚠️⚠️ 2026-09-28 二轮审计（wbR2 新发现，高）：**runJob 自己会把这次上浮拒掉**。
+      //      `runJob` 开头写着 `if (ended || (I.urgent && I.urgent !== kind)) return
+      //      { r: { error: '已让出身体给紧急本能' }, aborted: true }` —— 它假设
+      //      "`I.urgent` 有值但不是我自己 ⇒ 有别的事在急"。而憋气这条恰恰是
+      //      **先 `I.urgent = 'breathe'`、再 `runJob('breathe')`**，看着能对上；
+      //      但 `I.urgent` 是**共享字段**，`yieldBody`（命令来了）和战斗的 `finally`
+      //      都会把它清成别的值/null：只要在 `settleJob(old)` 这 800ms 窗口里
+      //      来过一条 `COMBAT_YIELD` 类命令，`I.urgent` 就被清成 `null`，
+      //      再晚一点气泡/战斗把它设成别的值，`runJob` 就**直接早退、一跳都不跳**。
+      //      早退分支在 `I.running = job` **之前**，所以这次上浮连 owner 都没拿到，
+      //      旧 job 反而可能还占着 `I.running` —— 淹死的路径就回来了（只是从
+      //      "绕过 runJob"换成了"被 runJob 拒绝"）。
+      //      **保命动作不能有一条"条件不满足就静默不跳"的路径**：早退/出错都
+      //      必须照样把这一下跳完。所以这里显式检查 `aborted`/`r.error`，
+      //      被拒就**直接调 handler**（不带 owner 也比淹死强 —— 宁可有竞态也不要溺水）。
       if (!settled) d.forced = true;
-      const { r } = await runJob('breathe', null, (abort) =>
+      let { r, aborted: bAborted } = await runJob('breathe', null, (abort) =>
         deps.handlers['POST /jump']({ durationMs: I.cfg.breathe.jumpMs, stopAtOxygen: 18, abort }));
-      note({ kind: 'breathe', oxygen: r?.oxygen, jumped: r?.jumped });
+      if (breatheRefused({ r, aborted: bAborted })) {
+        // 被 runJob 拒了（urgent 被别人占了 / ended）。保命优先：直接跳。
+        d.refused = r?.error || 'aborted';
+        try {
+          r = await deps.handlers['POST /jump']({ durationMs: I.cfg.breathe.jumpMs, stopAtOxygen: 18 });
+          bAborted = false;
+        } catch (e2) { I.last = { t: Date.now(), error: `breathe 兜底也失败: ${e2.message}` }; }
+      }
+      note({ kind: 'breathe', forced: d.forced || undefined, refused: d.refused, oxygen: r?.oxygen, jumped: r?.jumped });
       I.breathedAt = Date.now();
     } catch (e) { I.last = { t: Date.now(), error: `breathe: ${e.message}` }; } finally { breathing = false; if (I.urgent === 'breathe') I.urgent = null; }
   }, I.diagnostics);
@@ -2686,6 +2731,22 @@ function selftest () {
     check('★ event() 会拍平换行（一条事件一行）',
       /replace\(\/\[\\r\\n\]\+\/g, ' '\)/.test(srcText), true);
 
+    // ---- wbR2 新发现（高）：憋气上浮被 runJob 拒绝时必须有补跳 ----
+    // ⚠️ 回归点：改前 `const { r } = await runJob('breathe', …)` 直接吞掉早退结果，
+    //    被拒 = 一跳都不跳；测试 `breatheRefused` 判据 + 源码里真的用了它。
+    check('★ runJob 正常跳成 → 不算被拒', breatheRefused({ aborted: false, r: { jumped: 3 } }), false);
+    check('★ runJob 早退（aborted + error，jumped 无）→ 必须补跳',
+      breatheRefused({ aborted: true, r: { error: '已让出身体给紧急本能' } }), true);
+    check('★ 没报错但一跳没跳（jumped 0）→ 也要补跳', breatheRefused({ aborted: false, r: { jumped: 0 } }), true);
+    check('★ 被 abort 但 handler 真跳了（jumped>0）→ 不用补跳',
+      breatheRefused({ aborted: true, r: { jumped: 2 } }), false);
+    check('r 为空 → 保守算没跳成', breatheRefused({ aborted: true }), true);
+    check('res 为空 → 保守算没跳成', breatheRefused(null), true);
+    check('★ checkBreath 真的用了 breatheRefused 兜底（不是靠人记得）',
+      /breatheRefused\(\{ r, aborted: bAborted \}\)/.test(srcText), true);
+    check('★ 兜底里直接调 POST /jump（保命路径不能只有一条）',
+      /breatheRefused[\s\S]{0,400}deps\.handlers\['POST \/jump'\]/.test(srcText), true);
+
     console.log(`\n${pass} passed, ${fail} failed`);
     return fail ? 1 : 0;
   });
@@ -2693,7 +2754,7 @@ function selftest () {
 
 // isHostileEntity 是**转导出**（上面从 entity-registry 拿的），不是本能层自己实现的 ——
 // 保留在导出里是为了不破坏既有引用（hands.js / 自测）。
-module.exports = { caveBoundary, settleJob, ownsBodyAtCleanup, syncSleepState, createCheck, CFG, fillCfg, pickEat, pickShore, shoreRingOffsets, needBreath, effectPlan, weatherChange, pickRecovery, pickCommand, homeFootprint, darkReport, mlgStep, pickCaveStep, STRUCTURE_SIGNS, recognizeStructures, pickLoot, pickTidy, isHostileEntity, mobKind, attackCooldownMs, combatPlan, COMBAT_YIELD, TIER, pickaxeTier, carriedNames, carriedTally, needTier, pickOre, pickHarvest, hazardUnder, pickStepOff, armorRank, pickArmor, toolWorn, pickGaze, whoThrew, pickPickup, bodyBusy, install, yieldBody, PASSIVE_POSTS, selftest };
+module.exports = { caveBoundary, settleJob, ownsBodyAtCleanup, breatheRefused, syncSleepState, createCheck, CFG, fillCfg, pickEat, pickShore, shoreRingOffsets, needBreath, effectPlan, weatherChange, pickRecovery, pickCommand, homeFootprint, darkReport, mlgStep, pickCaveStep, STRUCTURE_SIGNS, recognizeStructures, pickLoot, pickTidy, isHostileEntity, mobKind, attackCooldownMs, combatPlan, COMBAT_YIELD, TIER, pickaxeTier, carriedNames, carriedTally, needTier, pickOre, pickHarvest, hazardUnder, pickStepOff, armorRank, pickArmor, toolWorn, pickGaze, whoThrew, pickPickup, bodyBusy, install, yieldBody, PASSIVE_POSTS, selftest };
 
 if (require.main === module && process.argv.includes('--selftest')) {
   selftest().then(code => process.exit(code));
