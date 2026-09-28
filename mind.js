@@ -930,7 +930,10 @@ const GROUPS = {
     'knowledge_search', 'guide_search', 'item_uses', 'how_to_obtain', 'recall', 'learn', 'revise', 'judge', 'use_skill',
     'my_dream', 'report_issue', 'tools', 'goto', 'come_to', 'follow', 'climb', 'climb_down', 'pickup', 'mine', 'craft',
     'use_item', 'wear', 'equip', 'unequip', 'eat', 'attack', 'give', 'nudge', 'motor', 'door', 'sleep_in_bed', 'go_home',
-    'self_rescue', 'focus_on', 'plan_view'],
+    'self_rescue', 'focus_on', 'plan_view',
+    // 2026-09-28 实测回归：主人说"烤羊肉"，smelt 在按需组、关键词里又没有"烤"，她手上没有烧东西的工具，
+    // 只好拿生羊肉右键炉灶试了三次放弃。做饭 / 烧东西 / 完整制作链 / 火把 / 放方块是日常动作，常驻。
+    'smelt', 'cook_pot', 'make_item', 'make_torches', 'light_up', 'place'],
 
   // 按需：建造 / 布置家里
   build: ['place', 'place_nicely', 'place_structure', 'design_build', 'build_work', 'build_status', 'build_cancel',
@@ -971,6 +974,7 @@ W.groupActive = {};   // { [组名]: 到期轮次序号 }
 //    （实测：说"我在远处的地里存了点东西"→ 三组全开）。改成多字的具体词。
 const GROUP_CUES = [
   { re: /钓鱼|釣魚|渔船|漁船|划船|坐船/u, groups: ['farm'] },
+  { re: /做饭|做飯|烤|煮|炒|炖|燉|熔炉|熔爐|烟熏炉|煙熏爐|高炉|高爐|厨锅|廚鍋|炉灶|爐灶|烧成|燒成|冶炼|冶煉|做菜|做吃的/u, groups: ['farm'] },
   { re: /种地|種地|耕地|庄稼|莊稼|农田|農田|小麦|小麥|胡萝卜|胡蘿蔔|马铃薯|馬鈴薯|南瓜|西瓜|甘蔗|养牛|養牛|畜牧|驯服|馴服|喂食|餵食|收割|播种|播種|浇水|澆水/u, groups: ['farm'] },
   { re: /箱子|箱子里|柜子|櫃子|骨粉盒|仓库|倉庫|储藏|儲藏|整理背包|装进背包|裝進背包|放进去|拿出来的/u, groups: ['store'] },
   { re: /建造|盖房|蓋房|盖房子|蓋房子|建房子|造房子|盖起来|蓋起來|盖个|蓋個|盖一面|蓋一面|砌墙|砌牆|搭墙|搭牆|面墙|面牆|铺地板|鋪地板|盖屋顶|蓋屋頂|装修|裝修|布置|佈置|家具|图纸|圖紙|施工|动工|動工/u, groups: ['build', 'store'] },
@@ -2497,7 +2501,8 @@ async function selftest () {
     check('带上所有组 = 原来的全部工具（一个没丢）', fullNames.length === allNames.length && allNames.every(n => fullNames.includes(n)), [fullNames.length, allNames.length]);
     check('没写进组的工具兜底进 core（不会没人管）', allNames.every(n => (TOOL_GROUPS[n] || []).length > 0), allNames.filter(n => !(TOOL_GROUPS[n] || []).length));
     // 二、常驻组大小受控（审计要 ~25，这里含"看/问/身上活"的都要常在，落在 40 上下可接受）
-    check('常驻组没把全部工具都塞进去（确实分出去了）', coreNames.length < allNames.length && coreNames.length <= 50, coreNames.length);
+    check('常驻组没把全部工具都塞进去（确实分出去了）', coreNames.length < allNames.length && coreNames.length <= 55, coreNames.length);
+    check('★ 做饭 / 烧东西 / 制作链常驻（实测：说"烤羊肉"她手上没 smelt）', ['smelt', 'cook_pot', 'make_item'].every(n => coreNames.includes(n)), coreNames.filter(n => /smelt|cook|make/.test(n)));
     check('冷门工具（fish/animal/ride）不在常驻组，但一个都没删', !['fish', 'animal', 'ride'].some(n => coreNames.includes(n)) && ['fish', 'animal', 'ride'].every(n => allNames.includes(n)), coreNames.filter(n => /fish|animal|ride/.test(n)));
     check('常驻里有 tools 这个元工具（她想不起来还能这么干时能查）', coreNames.includes('tools'));
     // 三、SYSTEM 里点名的工具：要么在常驻组，要么"保证拿得到"（属于某个能激活的按需组）。
