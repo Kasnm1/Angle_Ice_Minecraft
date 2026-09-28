@@ -44,7 +44,7 @@ Minecraft 陪伴型 AI。游戏内 ID 固定 **`Angle_ICE`**，跑在 Forge 1.20
 | **③ 脑干**（规则自主循环） | `autopilot.js` `decision.js` `reflex.js` `events.js` `journal.js` | — | `mc-autopilot` |
 | **④ 意识 / 人格**（LLM 层） | `mind.js` `body.js` `memory-store.js` `speech.js` `ambition.js` `self-review.js` `llm-codex.js` `llm-workbuddy.js` `night.js` `plan.js` `brain.js`(旧) `PERSONA.md` | [`memory/`](memory/) | `mc-mind` |
 | **⑤ 知识库**（整合包真值） | `knowledge.js` | [`knowledge/`](knowledge/) | `mc-knowledge` |
-| **⑥ 运维 / 诊断 / 台账** | `scripts/start.sh` `stop.sh` `probe-*.js` | [`scripts/`](scripts/) `logs/` [`memory/field-log.md`](memory/field-log.md) | 主会话自己做 |
+| **⑥ 运维 / 诊断 / 台账** | `scripts/start.sh` `stop.sh`（一次性诊断脚本在 `scripts/_attic/`） | [`scripts/`](scripts/) `logs/` [`memory/field-log.md`](memory/field-log.md) | 主会话自己做 |
 
 依赖方向（改动时注意下游）：
 ```
