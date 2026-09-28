@@ -161,7 +161,24 @@ const CFG = {
   // 吃（主人 2026-09-27：饥饿条掉 2 格就吃 = 饥饿值 ≤16）。身体空着才吃；饿到 urgentAt 以下有命令在跑也吃
   eat: { enabled: process.env.MC_INSTINCT_EAT !== 'false', at: 16, urgentAt: 6, checkMs: 2000, failCooldownMs: 60000 },
   // 憋气：头在水里、氧气 ≤ at（满 20）→ 叫停命令、一直跳上去换气
-  breathe: { enabled: process.env.MC_INSTINCT_BREATHE !== 'false', at: 8, checkMs: 500, jumpMs: 6000 },
+  //
+  // 2026-09-29 实机（在水底挖沙子差点淹死）：**光往上跳不够** —— 头顶被沙子/坑顶/悬垂盖住时，
+  // 跳多少下都上不去（那天 `jumped=38` 氧气还从 8 掉到 0）。现在先看清头顶再决定往哪走
+  // （判据在 survival.js 的 `columnClear` / `breathPlan`）：能上去就跳、旁边有出口就游过去、
+  // 全封死才挖头顶。下面这些数字都是那次加的。
+  breathe: {
+    enabled: process.env.MC_INSTINCT_BREATHE !== 'false',
+    at: 8,                 // 氧气 ≤ 这个就动手（满 20）。见下面"只汇报不改"的说明：挖水底方块时偏晚，靠 /mine 的 dryOxygenAt 提前拦
+    checkMs: 500,
+    jumpMs: 6000,
+    blindMs: 8000,         // 氧气读不到时：头在水里泡够这么久就当该换气（原版满氧约 15 秒，留一半余量）
+    escapeRadius: 6,       // 旁边找出口的水平半径（"旁边 2 格有通路"这种要能被看到）
+    upScan: 24,            // 头顶这一列往上看多少格判"能不能上去"（超过就是读不到，不猜）
+    swimBudgetRatio: 0.5,  // 游过去最多花掉剩余氧气的一半（留一半给上浮和喘气）
+    swimMsPerBlock: 900,   // 水下横游一格大约多久（估"来不来得及"，只用于选目标）
+    digWaitMs: 1200,       // 跳到水面的每一小段最多多久，之后就回看氧气、换下一手
+    stepRetryMs: 1500,     // 一个办法（跳/游/挖）试完没起色，隔多久换下一个
+  },
   // 中毒 / 凋零：告诉 mind；有牛奶且（凋零 或 血 ≤ milkHp）就喝；打架时按"少了几滴血"算，更早撤
   effects: { enabled: process.env.MC_INSTINCT_EFFECTS !== 'false', milkHp: 10, poisonHpCost: 4, witherHpCost: 6, checkMs: 1000 },
   // 上岸（主人 2026-09-27）：身体空着、泡在水里超过 afterMs（或刚上浮换完气）→ 走到最近能站的陆地
@@ -192,6 +209,23 @@ const CFG = {
   },
   minFreeSlots: 2,          // 收获、采矿至少留几个空格
   yieldWaitMs: 1500,        // 让出身体时最多等本能收拾多久
+
+  // `/mine` 的水下保护（2026-09-29 实机：在水底挖沙子差点淹死）。
+  // 这一段的数字被 `src/bridge/routes/mine.js` 读（那里挖每块之前都查一次），
+  // 判据本身在 `instinct/survival.js` 的 `mineShouldStop` / `underwaterKeep` —— 只此一份。
+  //
+  // 为什么放 `CFG.bridge` 而不是另起一段：这里是**挖矿命令**自己的安全线，和本能无关；
+  // 但又不能散在 `mine.js` 里（AGENTS.md §5-4：阈值要能一起看见、一起改）。
+  bridgeMine: {
+    // 挖水下方块时的**安全氧气线**（满 20）。
+    // 为什么是 14：本能动手的线是 `breathe.at: 8`，而 8/20 ≈ 8 秒；判定是 500ms 一拍，
+    // 上浮 + 转头 + 出水还要 2~3 秒 —— 14 比 8 早两个判定周期，正好覆盖这段。
+    // 再早（比如 16）就会在她**刚潜下去**时就劝退，水下的活基本没法干。
+    dryOxygenAt: 14,
+    // 刚换完气多久之内不许再挖水下方块（第 4 条：别马上又潜回去）。
+    // 那天 03:42 上来换完气、03:42:37 就又潜下去挖同一片 —— 30 秒足够让她游开。
+    afterBreathMs: 30000,
+  },
 };
 
 /**

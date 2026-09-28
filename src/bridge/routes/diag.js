@@ -299,16 +299,50 @@ const routes = {
   },
 
   'POST /stop': async () => {
+    // ⚠️⚠️ 2026-09-29 实机：`/stop` 停不住一条**在途的 `POST /go`**，
+    //    她以为"刚才身体自己在走路，不让我传"（日志 03:48–03:50）：
+    //      run_command(home) ✗ 身体正在执行 POST /go（30.7 秒）
+    //      stop() ✓
+    //      run_command(home) ✗ 身体正在执行 POST /go（77.9 秒）   ← stop 之后 /go 还在跑、锁还占着
+    //      stop() ✓ ；go_home() ✗ 走不到（还差 18254.8 格）        ← 第二次 stop 才停下
+    //
+    //    原来这里只有三样：`setGoal(null)` + `clearControlStates()` + `currentAction = null`。
+    //    三样都拦不住 `go()`（`src/body/movement.js`）：它每个 `await` 之后会问一次自己的
+    //    `abort` 谓词，然后**接着走下一步、把 goal 重新设回去**（这就是那三样失效的原因，
+    //    见 `go()` 顶部注释与 `hands.startFollow`）。而那个 `abort` 谓词是
+    //    `http.js` 按"取消线"(`state.cmdCancelledUpTo`) 注进来的 —— `/stop` 从来没碰过它，
+    //    也从来**没有释放身体锁**（`state.bodyCommand`），所以下一条命令收到的是
+    //    "身体正在执行 POST /go（77.9 秒）"。
+    //
+    //    现在按现成的两套机制收口（不另造一套）：
+    //      ① `cancelCommands` 那套取消线 —— 让 handler 在下一个检查点收手；
+    //      ② 身体锁 token 上挂的 `abort`（`http.js` 的 `setAbort`）—— 让 `/go` 立刻抛 aborted。
+    //    然后**释放锁**，下一条命令立刻能进。
+    const stoppedCommand = bodyCommandLock.abortCurrent(state, '被 /stop 叫停');
+    // 取消线推到当前序号：正在跑的 handler 问 `args.abort()` 时会拿到 true。
+    state.cmdCancelledUpTo = state.cmdSeq || 0;
+    state.lastCancel = { t: Date.now(), why: 'POST /stop' };
     state.bot.pathfinder.setGoal(null);
     // ⚠️ 控制位也必须清 —— 否则"急停"停不住一个按住的 W。
     // 这是原始控制层引入后必须补的一环：看门狗的危险急停走的就是这个端点。
     state.bot.clearControlStates();
+    try { state.bot.stopDigging(); } catch (_) {}
     // ⚠️ `currentAction = null` 还是**跟随循环的退出条件**（hands.startFollow 的 alive() 就认这个）：
     // 光清 goal 停不住一条在途路线 —— go() 会接着走下一步、把 goal 重新设回去。
     // 所以 go() 里每一步之后都会问一次 abort 谓词，而这个谓词读的正是 currentAction。
     // 改这里之前先看 hands.startFollow 的注释。
     state.currentAction = null;
-    return { stopped: true, controlsCleared: true };
+    // ★ 释放身体锁（`/stop` 在 http.js 里**绕过锁**进入，所以也不需要 token 就能放）。
+    const released = bodyCommandLock.status(state, Date.now())?.key || null;
+    if (released) bodyCommandLock.release(state, state.bodyCommand);
+    return {
+      stopped: true,
+      controlsCleared: true,
+      // 停掉了哪条命令（null = 当时没有身体命令在跑）。**必须报** ——
+      // "没有命令在跑"和"我停不掉它"是两种完全不同的结果（AGENTS.md §5-1）。
+      stoppedCommand: stoppedCommand ?? null,
+      bodyCommandReleased: !!released,
+    };
   }
 };
 

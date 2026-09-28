@@ -24,6 +24,16 @@ function hazardUnder (...a) { return __ns.hazardUnder.apply(null, a); }
 function pickStepOff (...a) { return __ns.pickStepOff.apply(null, a); }
 function pickEat (...a) { return __ns.pickEat.apply(null, a); }
 function needBreath (...a) { return __ns.needBreath.apply(null, a); }
+function oxygenNum (...a) { return __ns.oxygenNum.apply(null, a); }
+function headInWater (...a) { return __ns.headInWater.apply(null, a); }
+function waterBreathing (...a) { return __ns.waterBreathing.apply(null, a); }
+function blocksWater (...a) { return __ns.blocksWater.apply(null, a); }
+function columnClear (...a) { return __ns.columnClear.apply(null, a); }
+function breathPlan (...a) { return __ns.breathPlan.apply(null, a); }
+function withTimeout (...a) { return __ns.withTimeout.apply(null, a); }
+// `place.js` 的 DEADLY：只用来判"挖开会不会放危险东西进来"（判据只此一份，不另写）
+const placeLogic = require('../world/place');
+const { Vec3 } = require('vec3');
 function effectPlan (...a) { return __ns.effectPlan.apply(null, a); }
 function shoreRingOffsets (...a) { return __ns.shoreRingOffsets.apply(null, a); }
 function pickShore (...a) { return __ns.pickShore.apply(null, a); }
@@ -318,6 +328,101 @@ async function scanColumnsIn (args) {
 function scanColumnsSync (args) {
   const g = scanColumnsGen(args);
   for (;;) { const { value, done } = g.next(); if (done) return value; }
+}
+
+/**
+ * 憋气时往哪走 —— 把世界读成 `breathPlan` 要的形状。
+ *
+ * 她**知道周围每一格是什么**（`bot.blockAt`），所以不许原地瞎跳。
+ * 只在**头在水里**时才有意义（调用方已经确认过）。
+ *
+ * 读世界的方式（全部来自 `bot.blockAt`，不猜）：
+ *   · 自己脚下这一列（dx=0,dz=0）从脚底往上 `upScan` 格 → `columnClear`
+ *   · 周围 escapeRadius 内的每一列，同样从**她现在的脚底高度**往上扫 → `columnClear`
+ *   · 另外把最近的能站的岸也算一个候选（`pickShore` 现成判据，不另写）
+ *
+ * 选谁交给 `breathPlan`（那里按"游过去要多久 vs 还剩多少气"挑）。
+ *
+ * @returns {{how, target?, why, oxygenLeftMs, selfClear}}
+ */
+function breathEscapePlan (bot, I, B) {
+  const oxy = oxygenNum(bot.oxygenLevel ?? null);
+  // 1 点氧气 ≈ 1 秒；读数不可信时给一个保守的 6 秒（宁可只挑近的）
+  const oxygenLeftMs = oxy.reliable ? Math.max(0, oxy.value * 1000) : 6000;
+  const self = bot.entity.position;
+  const baseY = Math.floor(self.y);
+  const cells = [];
+  const colOf = (dx, dz) => {
+    const out = [];
+    for (let dy = 1; dy <= B.upScan; dy++) {
+      const b = bot.blockAt(new Vec3(Math.floor(self.x) + dx, baseY + dy, Math.floor(self.z) + dz));
+      if (!b) return null;   // 读不到这一格 → 不猜
+      out.push({ dy, name: b.name, props: b.getProperties?.() });
+    }
+    return out;
+  };
+  const selfCol = colOf(0, 0);
+  const selfClear = !!selfCol && columnClear(selfCol, B.upScan).clear;
+  for (let dx = -B.escapeRadius; dx <= B.escapeRadius; dx++) {
+    for (let dz = -B.escapeRadius; dz <= B.escapeRadius; dz++) {
+      if (!dx && !dz) continue;
+      const col = colOf(dx, dz);
+      if (!col) continue;
+      const cc = columnClear(col, B.upScan);
+      if (!cc.clear) continue;
+      const dist = Math.hypot(dx, dz);
+      cells.push({ dx, dz, clear: true, kind: 'column', dist, swimMs: Math.round(dist * B.swimMsPerBlock), wx: Math.floor(self.x) + dx, wy: baseY, wz: Math.floor(self.z) + dz });
+    }
+  }
+  // 最近能站的岸（`pickShore` 的判据只此一份，这里只负责把周围一圈读成它的输入）
+  try {
+    const ring = [];
+    for (const o of shoreRingOffsets(2)) {
+      const p = new Vec3(Math.floor(self.x) + o.dx, baseY + o.dy, Math.floor(self.z) + o.dz);
+      const f = bot.blockAt(p); if (!f) continue;
+      const below = bot.blockAt(p.offset(0, -1, 0));
+      ring.push({ pos: { x: p.x, y: p.y, z: p.z }, below: below?.name || null, feet: f.name, head: bot.blockAt(p.offset(0, 1, 0))?.name || null, ok: true });
+    }
+    const shore = pickShore(ring, { x: self.x, y: self.y, z: self.z });
+    if (shore) {
+      const d = Math.hypot(shore.pos.x + 0.5 - self.x, shore.pos.z + 0.5 - self.z);
+      cells.push({ dx: 0, dz: 0, clear: true, kind: 'shore', dist: d, swimMs: Math.round(d * B.swimMsPerBlock), wx: shore.pos.x, wy: shore.pos.y, wz: shore.pos.z });
+    }
+  } catch (_) { /* 岸读不到就不算候选（不是"没有岸"） */ }
+  const plan = breathPlan({ self, selfClear, cells, oxygenLeftMs }, B);
+  return { ...plan, oxygenLeftMs, selfClear };
+}
+
+/**
+ * 四周全封死时的最后一手：把头顶挡住的方块挖掉（第 3 条）。
+ *
+ * 只挖**软的、能挖的**：沙子 / 砂砾 / 泥土 / 黏土 / 雪 / 草方块这类（她那天挖的就是沙子）。
+ * **不挖**会放岩浆/危险东西进来的 —— 判据用 `place.js` 的 `DEADLY`（只此一份），命中就换下一格。
+ * 一格都挖不了 → 如实报 `dug: 0`（**不留静默分支**：调用方照样会去跳，见 `checkBreath`）。
+ */
+async function breathDigOut (bot, state, I, plan, deps) {
+  const DIGGABLE = /(^|:)(sand|red_sand|gravel|dirt|coarse_dirt|rooted_dirt|clay|snow|grass_block|podzol|mud|soul_sand|soul_soil|sandstone|terracotta)$/;
+  const pos = bot.entity.position;
+  const self = { x: Math.floor(pos.x), y: Math.floor(pos.y), z: Math.floor(pos.z) };
+  const triedDirs = [[0, 1], [1, 1], [-1, 1], [0, 2], [1, 2], [-1, 2], [0, 3], [1, 3], [-1, 3]];
+  const dug = [];
+  const skippedDeadly = [];
+  for (const [dx, dy] of triedDirs) {
+    const p = new Vec3(self.x + dx, self.y + dy, self.z);
+    const b = bot.blockAt(p);
+    if (!b || /^(air|cave_air|void_air)$/.test(b.name) || blocksWater(b.name, b.getProperties?.())) continue;
+    if (placeLogic.DEADLY.test(b.name)) { skippedDeadly.push(b.name); continue; }
+    if (!DIGGABLE.test(b.name)) continue;   // 石头/矿石不挖（挖不动也危险）
+    try {
+      await withTimeout(bot.dig(b));
+      const after = bot.blockAt(p);
+      if (after?.name !== b.name) dug.push({ at: { x: p.x, y: p.y, z: p.z }, name: b.name });
+    } catch (e) { /* 挖不动就下一个 */ }
+    if (dug.length) break;   // 开了一个口子就去跳
+  }
+  const r = { dug: dug.length, blocks: dug.slice(0, 3), skippedDeadly, why: plan.why };
+  note({ kind: 'breathe_dig', ...r });
+  return r;
 }
 
 function install (bot, state, deps) {
@@ -1188,7 +1293,7 @@ function install (bot, state, deps) {
     for (let dy = 0; dy <= 40; dy++) {
       const b = bot.blockAt(f.offset(0, -dy, 0));
       if (!b) return null;
-      if (/water/.test(b.name)) return { y: b.position.y + 1, water: true };
+      if (blocksWater(b.name, b.getProperties?.())) return { y: b.position.y + 1, water: true };
       if (b.boundingBox === 'block') return { y: b.position.y + 1, water: false, pos: b.position };
     }
     return null;
@@ -1611,22 +1716,40 @@ function install (bot, state, deps) {
   }, I.diagnostics);
   const eatTimer = setInterval(() => checkEat(), CFG.eat.checkMs);
 
-  // ---- 憋气：头在水里、氧气快没了 → 叫停命令，一直跳上去（寻路算不出水下的路，跳最快）
+  // ---- 憋气：头在水里、氧气快没了 → 叫停命令，**先看清头顶再决定往哪走** ----
+  //
+  // 2026-09-29 实机（在水底挖沙子差点淹死）：原来只会原地往上跳（`POST /jump`），
+  // 而头顶被沙子塌下来 / 坑顶有方块 / 在悬垂下面时，跳多少下都上不去
+  // （那天 `jumped=38`，氧气从 8 一路掉到 -1 开始掉血）。
+  // 她**知道周围每一格是什么**（`bot.blockAt`），所以现在：
+  //   · 脚下这一列往上通到水面     → 照旧往上游（`up`）
+  //   · 旁边（≤ escapeRadius）有出口 → 游过去再上浮（`swim`），或直接去最近的岸
+  //   · 四周全封死                 → 才挖头顶（`dig`，只挖沙子/砂砾/泥土这类，见下）
+  // 每一步都在 `note()` 里写清做了什么、为什么；上浮一段就回看氧气，没起色就换下一手，
+  // **不许在一个办法上耗到淹死**。
   let breathing = false;
   const checkBreath = createCheck('breathe', async (d) => {
     if (ended || !state.connected || !I.cfg.breathe.enabled || breathing || !bot.entity) return;
     if (I.urgent && I.urgent !== 'combat') return;
     if (fighting && I.running?.kind !== 'combat') return; // 战斗装备/收尾期间先等它进入可取消阶段
-    const head = bot.blockAt(bot.entity.position.offset(0, 1.62, 0));
-    const headInWater = !!head && (/water|bubble_column/.test(head.name) || head.getProperties?.().waterlogged === true);
+    const B = I.cfg.breathe;
+    // ⚠️ 氧气先归一（`oxygenNum`）：模组/握手把 metadata 槽位挪过之后
+    //    `bot.oxygenLevel` 会读到 288 这种原始 air ticks 量级（2026-09-29 实机）。
+    //    不可信的读数按"读不到"处理 —— 既不当作"氧气充足"（会漏掉憋气），
+    //    也不传给 `POST /jump` 的 `stopAtOxygen`（288 ≥ 18 会让第一跳就"提前成功"，0.3 秒空转一拍）。
+    const oxy = oxygenNum(bot.oxygenLevel ?? null);
+    const headWet = headInWater(bot);
+    // 头在水里泡了多久：氧气读不到时 needBreath 靠它判（见 survival.js needBreath）
+    if (!headWet) I.headWetSince = null; else if (!I.headWetSince) I.headWetSince = Date.now();
+    const underwaterMs = I.headWetSince ? Date.now() - I.headWetSince : 0;
     const eff = effectNames();
-    if (!needBreath({ oxygen: bot.oxygenLevel ?? null, headInWater, waterBreathing: !!eff?.includes('WaterBreathing') }, I.cfg.breathe)) return;
+    if (!needBreath({ oxygen: oxy.value, headInWater: headWet, waterBreathing: waterBreathing(eff), underwaterMs }, B)) return;
     breathing = true;
     I.urgent = 'breathe';
     try {
       if (I.running) I.running.abort();
       deps.cancelCommands?.('憋不住气了，先上去换气');
-      if (Date.now() - (I.breathToldAt || 0) > 20000) { I.breathToldAt = Date.now(); event('breathe', `在水里憋不住气了（氧气 ${bot.oxygenLevel}/20），先游上去换气`); }
+      if (Date.now() - (I.breathToldAt || 0) > 20000) { I.breathToldAt = Date.now(); event('breathe', `在水里憋不住气了（${oxy.reliable ? `氧气 ${oxy.value}/20` : '氧气读不到'}），先游上去换气`); }
       const old = I.running;
       // 保命不能等：旧动作 800ms 内没收尾也照样往上跳（它已经被 abort、寻路目标也清了；以前这里 return，下一拍再等，会一直等到淹死）
       const settled = await settleJob(old);
@@ -1656,18 +1779,56 @@ function install (bot, state, deps) {
       //      必须照样把这一下跳完。所以这里显式检查 `aborted`/`r.error`，
       //      被拒就**直接调 handler**（不带 owner 也比淹死强 —— 宁可有竞态也不要溺水）。
       if (!settled) d.forced = true;
+
+      // ---- 先看清头顶：这一跳到底跳不跳得上去 ----------------------------------
+      const plan = breathEscapePlan(bot, I, B);
+      d.plan = plan.how;
+      d.planWhy = plan.why;
+      note({ kind: 'breathe', step: plan.how, why: plan.why, forced: d.forced || undefined, oxygen: oxy.value, raw: oxy.reliable ? undefined : oxy.raw });
+
+      // 上一个办法试过没起色 → 记下来，下面按顺序换（up → swim → dig），不反复试同一个
+      const tried = (I.__breathTried = I.__breathTried || {});
+      const sinceTried = (how) => Date.now() - (tried[how] || 0) < B.stepRetryMs;
+      if (sinceTried(plan.how)) d.note = `刚试过 ${plan.how}，这一拍不重复`;
+
+      if (plan.how === 'swim' && !sinceTried('swim')) {
+        // 游到那一列（同列内的上浮由下一拍的 `up` 收尾）。用 `POST /go`：它支持 abort 谓词，
+        // 被打断能立刻收手，也不会像 `POST /jump` 那样只在原地动。
+        tried.swim = Date.now();
+        const t = plan.target;
+        try {
+          const rr = await deps.handlers['POST /go']({ x: t.wx, y: t.wy, z: t.wz, range: 1, maxMs: Math.min(6000, Math.max(1500, (plan.oxygenLeftMs ?? 6000))) });
+          d.swim = { to: { x: t.wx, y: t.wy, z: t.wz }, arrived: !!rr?.arrived, dist: rr?.distance };
+        } catch (e) { d.swimError = e.message; }
+      } else if (plan.how === 'dig' && !sinceTried('dig')) {
+        // 四周全封死：挖头顶挡住的方块。只挖能挖软的（沙子/砂砾/泥土/黏土/雪/草方块），
+        // 而且**不挖会放岩浆/危险东西进来的** —— 判据用 `place.js` 的 `DEADLY`（只此一份）。
+        tried.dig = Date.now();
+        const digRes = await breathDigOut(bot, state, I, plan, deps);
+        d.dig = digRes;
+      }
+
+      // ---- 照旧往上跳（无论走哪条路，最后都要出水；up 就是它本身）--------------
       let { r, aborted: bAborted } = await runJob('breathe', null, (abort) =>
-        deps.handlers['POST /jump']({ durationMs: I.cfg.breathe.jumpMs, stopAtOxygen: 18, abort }));
+        deps.handlers['POST /jump']({ durationMs: (plan.how === 'swim' ? 1500 : B.jumpMs), stopAtOxygen: 18, abort }));
       if (breatheRefused({ r, aborted: bAborted })) {
         // 被 runJob 拒了（urgent 被别人占了 / ended）。保命优先：直接跳。
         d.refused = r?.error || 'aborted';
         try {
-          r = await deps.handlers['POST /jump']({ durationMs: I.cfg.breathe.jumpMs, stopAtOxygen: 18 });
+          r = await deps.handlers['POST /jump']({ durationMs: B.jumpMs, stopAtOxygen: 18 });
           bAborted = false;
         } catch (e2) { I.last = { t: Date.now(), error: `breathe 兜底也失败: ${e2.message}` }; }
       }
-      note({ kind: 'breathe', forced: d.forced || undefined, refused: d.refused, oxygen: r?.oxygen, jumped: r?.jumped });
+      // 这一跳有没有起色？氧气回来了（或读数不可信时至少头不在水里了）就算上去了；
+      // 没起色 → 记下这个办法没成，下一拍 `breathEscapePlan` 会换下手。
+      const after = oxygenNum(bot.oxygenLevel ?? null);
+      const stillWet = headInWater(bot);
+      const improved = !stillWet || (oxy.reliable && after.reliable && after.value > oxy.value);
+      d.improved = improved;
+      if (!improved) tried[plan.how] = Date.now();
+      note({ kind: 'breathe', step: plan.how, jumped: r?.jumped, oxygen: r?.oxygen, improved, refused: d.refused, forced: d.forced || undefined });
       I.breathedAt = Date.now();
+      if (!stillWet) I.__breathTried = null;   // 上来了，清掉"这几个办法都试过"的记录
     } catch (e) { I.last = { t: Date.now(), error: `breathe: ${e.message}` }; } finally { breathing = false; if (I.urgent === 'breathe') I.urgent = null; }
   }, I.diagnostics);
   const breathTimer = setInterval(() => checkBreath(), CFG.breathe.checkMs);
@@ -1678,7 +1839,7 @@ function install (bot, state, deps) {
     const S = I.cfg.shore;
     if (!S.enabled || !bot.entity || bot.vehicle || fighting || breathing || I.urgent || I.running) return;
     const feet = bot.blockAt(bot.entity.position.floored());
-    const wet = !!bot.entity.isInWater || /water|bubble_column/.test(feet?.name || '');
+    const wet = !!bot.entity.isInWater || blocksWater(feet?.name, feet?.getProperties?.());
     if (!wet) { inWaterSince = 0; return; }
     if (!inWaterSince) inWaterSince = Date.now();
     const justBreathed = Date.now() - (I.breathedAt || 0) < 10000;
@@ -1695,7 +1856,7 @@ function install (bot, state, deps) {
       for (const o of shoreRingOffsets(k)) {
         scanned++;
         const p = me.offset(o.dx, o.dy, o.dz);
-        const f = bot.blockAt(p); if (!f || /water/.test(f.name)) continue;
+        const f = bot.blockAt(p); if (!f || blocksWater(f.name, f.getProperties?.())) continue;
         const b = bot.blockAt(p.offset(0, -1, 0)); if (!b || b.boundingBox !== 'block') continue;
         const h = bot.blockAt(p.offset(0, 1, 0));
         cells.push({ pos: p, below: b.name, feet: f.name, head: h?.name, ok: require('../world/place').isStandable(f) && require('../world/place').isStandable(h) });
@@ -1705,7 +1866,7 @@ function install (bot, state, deps) {
     }
     if (!pick) { note({ kind: 'shore', skip: `${S.radius} 格内没找到能上的岸`, rings, scanned }); return; }
     const { r, aborted } = await runJob('shore', null, (abort) => deps.handlers['POST /go']({ x: pick.pos.x, y: pick.pos.y, z: pick.pos.z, range: 1, maxMs: 20000, abort }));
-    const dry = !bot.entity.isInWater && !/water/.test(bot.blockAt(bot.entity.position.floored())?.name || '');
+    const dry = !bot.entity.isInWater && !blocksWater(bot.blockAt(bot.entity.position.floored())?.name, bot.blockAt(bot.entity.position.floored())?.getProperties?.());
     note({ kind: 'shore', to: pick.pos, ok: dry, aborted: aborted || undefined, error: r?.error });
     if (dry) { inWaterSince = 0; event('shore', `从水里上岸了（${pick.pos.x},${pick.pos.y},${pick.pos.z}）`); }
   }, CFG.shore.checkMs);

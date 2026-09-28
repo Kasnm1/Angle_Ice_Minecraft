@@ -1282,12 +1282,49 @@ const TOOLS = {
   },
   go_home: {
     kind: 'action',
-    desc: '回家（回到你认定的家的中心）。',
+    desc: '回家（回到你认定的家的中心）。很远时自己用服务器的 /home 传送，不走路。',
     params: {}, required: [],
     run: async () => {
       const h = mem.getHome();
       if (!h) return { ok: false, error: '还没有家（用 set_home 把现在的地方认定为家）' };
-      return bridge.post('/go', { ...h.center, range: 3 }, 300000);
+      // ⚠️ 2026-09-29 实机（mind 日志 03:48–03:50）：家在 **18000 多格**外，
+      //    `go_home()` 真的开始走（`POST /go`），走不到、还把身体锁占了两分钟，
+      //    她以为"身体自己在走路不让我传"。
+      //    现在：离家够远就先看服务器有没有 `/home`（`GET /commands` 的 teleport 白名单，
+      //    `run_command` 那条白名单是**现成**的，不另编），有就直接传送。
+      //
+      //    阈值 256：`/home` 一秒就到，而 256 格纯走路约两分钟（`go()` 自己的 ETA 是
+      //    `8000 + dist*1200` ms，256 格 ≈ 315 秒）—— 超过这个量级走路没有任何意义。
+      //    25565 之前的近处照旧走回去（传送也要冷却、也不想每挪几步就传送）。
+      //    和本能层 `CFG.cmd.nightFarHome = 160`（夜里走太远就传送）是同一个量级的判断。
+      const FAR = 256;
+      const here = await bridge.get('/status').catch(() => null);
+      const p = here?.position;
+      const dist = p && Number.isFinite(p.x) ? Math.hypot(p.x - (+h.center.x), p.z - (+h.center.z)) : null;
+      // 读不到位置 → **不猜**，也不开始一条注定走不到的 /go：如实说读不到，让她下次再试
+      if (dist == null) return { ok: false, error: '读不到自己现在的位置（没连上？），不知道离家多远，先不走了' };
+      if (dist > FAR) {
+        // 服务器有没有 /home？问了再说（没问就说"能传送"是猜）
+        let hasHome = false;
+        try {
+          const cmds = await bridge.get('/commands');
+          hasHome = Array.isArray(cmds?.teleport) && cmds.teleport.includes('home');
+        } catch (_) { hasHome = false; }
+        if (hasHome) {
+          const r = await bridge.post('/cmd', { command: 'home' }, 20000);
+          return {
+            how: 'teleport',
+            distance: +dist.toFixed(1),
+            // 传送是服务端的事，客户端只能"发了命令 + 记下服务器回了什么"
+            command: r?.ran || '/home',
+            serverSaid: r?.serverSaid || [],
+            note: `离家 ${Math.round(dist)} 格（超过 ${FAR}），直接用 /home 传送，没有走`,
+          };
+        }
+        return { ok: false, error: `离家 ${Math.round(dist)} 格，但服务器没给你 /home，走回去要很久。要我用 /go 走的话再明确说一次` };
+      }
+      const r = await bridge.post('/go', { ...h.center, range: 3 }, 300000);
+      return { ...r, how: 'walk', distance: +dist.toFixed(1), note: `离家 ${Math.round(dist)} 格（不超过 ${FAR}），走回去` };
     },
   },
 

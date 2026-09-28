@@ -148,8 +148,23 @@ const server = http.createServer((req, res) => {
           // 给每个命令一个序号，注入 abort()：cancelCommands() 之后，序号 ≤ 被取消线的命令都该收手。
           // 支持 abort 的 handler（/go /mine /pickup /farm…）在每一步之间问一次；其余的靠停寻路/停挖兜底。
           const mySeq = state.cmdSeq = (state.cmdSeq || 0) + 1;
+          const myAbort = () => (state.cmdCancelledUpTo || 0) >= mySeq;
           if (args && typeof args === 'object' && !Array.isArray(args) && args.abort === undefined) {
-            args.abort = () => (state.cmdCancelledUpTo || 0) >= mySeq;
+            args.abort = myAbort;
+          }
+          // ★ 2026-09-29 实机（`/stop` 停不住在途的 /go，她以为"身体自己在走路不让我传"）：
+          //   把这条命令的 abort 谓词也挂到**身体锁**上 —— `/stop` 调 `abortCurrent()`
+          //   就能让命令真的收手，而不只是 `setGoal(null)`（`go()` 下一步会把 goal 设回去）。
+          //   见 `body-command-lock.js` 的 `setAbort` 与 `movement.js` 的 `go`。
+          if (bodyToken && typeof args === 'object' && !Array.isArray(args)) {
+            const called = args.abort;
+            bodyCommandLock.setAbort(state, bodyToken, () => {
+              // 先把取消线推到这条命令之后（handler 里问 `args.abort` 的路径立刻收手），
+              // 再调 handler 自己的 abort（如果有）。
+              state.cmdCancelledUpTo = Math.max(state.cmdCancelledUpTo || 0, mySeq);
+              try { if (typeof called === 'function') called('被 /stop 叫停'); } catch (_) {}
+              try { state.bot?.pathfinder?.setGoal(null); } catch (_) {}
+            });
           }
           state.instinct.inflight++;
           // 物品账：这个命令执行期间（+ 结束后一小会儿）背包的进出都算它的

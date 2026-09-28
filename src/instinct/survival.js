@@ -31,16 +31,199 @@ function pickEat ({ food = null, busy = null, fighting = false, windowOpen = fal
   return { eat: true, urgent };
 }
 
-function needBreath ({ oxygen = null, headInWater = false, waterBreathing = false } = {}, cfg = CFG.breathe) {
-  if (oxygen == null || !Number.isFinite(oxygen)) return false;
+function needBreath ({ oxygen = null, headInWater = false, waterBreathing = false, underwaterMs = 0 } = {}, cfg = CFG.breathe) {
+  // ⚠️ `oxygen` 必须是**归一过**的读数（`oxygenNum().value`），不是 `bot.oxygenLevel` 原值。
+  //    2026-09-29 实机：模组/握手把 metadata 槽位挪了，`bot.oxygenLevel` 读到 288（原始 air ticks 量级），
+  //    `288 ≤ 8` 为假 → 憋气本能不触发；`288 ≥ 18` 为真 → `POST /jump` 第一跳就"提前成功"退出，
+  //    于是 0.3 秒一拍空转。归一后 288 直接按"读不到"处理，不再是有效氧气。
   if (!headInWater || waterBreathing) return false;
+  // 读不到氧气（null / 288 这类被归一成 null 的）时**不能当"不用换气"**（2026-09-29 Claude 复核抓到：
+  // 原来这里直接 return false，头泡在水里、读数又坏了，她就永远不上浮）。改按"头在水里泡了多久"：
+  // 原版满氧 300 tick ≈ 15 秒，泡够 cfg.blindMs 就当该换气了。
+  if (oxygen == null || !Number.isFinite(oxygen)) return underwaterMs >= (cfg.blindMs ?? 8000);
   return oxygen <= cfg.at;
 }
 
 /**
- * 中毒 / 凋零怎么办。effects：身上的效果名（minecraft-data 的写法：'Poison' 'Wither'）；null = 读不到 → 不猜。
- * @returns null | { bad:[...], milk:boolean, hpCost }
+ * 「这是水」—— **判据只此一处**（AGENTS.md §5-4）。
+ *
+ * 2026-09-29 抽出来：原来 `core.js` 里同时有几份手写的 "水" 正则
+ * （憋气一份、上岸两份、`routes/mine.js` 又一份）—— 现在**只有这里**这一份。
+ * 水方块族：`water` / `flowing_water` / 模组的 `xxx:water`；气泡柱（`bubble_column`）也算
+ * ——它有水的物理，泡在里面一样呛。
+ *
+ * @param {string} name 方块名（`bot.blockAt(...).name`）
+ * @param {object} [props] 方块属性（可省）；`waterlogged` 的方块（半砖、楼梯）头也在水里
+ * @returns {boolean} 读不到名字 → false（不猜）
  */
+function blocksWater (name, props) {
+  const nm = String(name || '');
+  if (/(^|:)water$|flowing_water|bubble_column|seagrass|kelp/.test(nm)) return true;
+  return !!(props && props.waterlogged === true);
+}
+
+/**
+ * 她的头在不在水里（憋气、`/mine` 惜命共用）。
+ * 头部位置 = 脚底 + 1.62（眼睛高度），与 `checkBreath` 原来那份逐字一致。
+ * @param {object} bot mineflayer bot（要 `entity.position` + `blockAt`）
+ * @returns {boolean} 读不到（没连上 / 没位置）→ false
+ */
+function headInWater (bot) {
+  try {
+    const p = bot?.entity?.position;
+    if (!p) return false;
+    const head = bot.blockAt(p.offset(0, 1.62, 0));
+    if (!head) return false;
+    return blocksWater(head.name, head.getProperties?.());
+  } catch (_) { return false; }
+}
+
+/**
+ * 有没有水下呼吸效果。mineflayer 给的效果名是 `WaterBreathing`（minecraft-data 写法）；
+ * 模组可能写成 `water_breathing` —— 大小写/下划线都不敏感地认。
+ */
+function waterBreathing (effects) {
+  if (!Array.isArray(effects)) return false;
+  return effects.some(n => /water[_\s-]?breath/i.test(String(n)));
+}
+
+/**
+ * 氧气读数归一（E：读数不可信时不能当真）。
+ *
+ * mineflayer 版本本身就存疑：`1.8+` 的路径是
+ * `_ref/mineflayer/lib/plugins/entities.js:499` 的 `bot.oxygenLevel = Math.round(metas.air_supply / 15)`，
+ * 而 `air_supply` 的**原始值**是 air ticks（满 300）。1.20.1 走的就是这条分支
+ * （`mineData.supportFeature('mcDataHasEntityMetadata') === true`，实测）。
+ * 也就是说槽位一旦被模组/握手挪动，`metas.air_supply` 会取到别的东西 ——
+ * 2026-09-29 实机日志里的 `oxygen=288` 就是这么来的（288/15≈19，量级对得上原始 ticks）。
+ *
+ * **不替模组猜槽位、不做 288/15 的换算**（猜错会得出一个"看起来正常"的假氧气，比读不到更糟）。
+ * 只认 0..20 这个合法区间；其余一律 `reliable:false`，调用方按"读不到"处理
+ * （`needBreath` 拿到不可信值不会触发，`/mine` 的氧气保护也不会因为假读数放行）。
+ *
+ * @returns {{value:number|null, raw:*, reliable:boolean, why:string}}
+ */
+function oxygenNum (raw, max = 20) {
+  if (raw == null || !Number.isFinite(raw)) return { value: null, raw: raw ?? null, reliable: false, why: '读不到氧气' };
+  if (raw > max) return { value: null, raw, reliable: false, why: `氧气读数 ${raw} 超出 0..${max}（像是原始 air ticks 或槽位被挪），按读不到处理` };
+  if (raw < 0) return { value: null, raw, reliable: false, why: `氧气读数 ${raw} 是负的（已经在掉血或槽位被挪），按读不到处理` };
+  return { value: raw, raw, reliable: true, why: `氧气 ${raw}/${max}` };
+}
+
+/**
+ * `/mine`：还要不要继续挖（第 1 条：水里惜命）。
+ *
+ * 头在水里、氧气低于安全线 → 停。**有水下呼吸效果不受限**（那是真的不呛）。
+ * 读数不可信（`oxygen.reliable === false`）时：头在水里但**读不到气** → 也停
+ * （保命动作保守一侧；AGENTS.md §5-5「找不到证据时保守」）。
+ *
+ * 阈值在 `CFG.bridge.mine.dryOxygenAt`（理由写在那里）。
+ *
+ * @param {object} p
+ * @param {boolean} p.headInWater
+ * @param {{value:number|null, reliable:boolean}} p.oxygen  `oxygenNum()` 的结果
+ * @param {boolean} p.waterBreathing 有水下呼吸
+ * @param {object} cfg `CFG.bridge.mine`
+ * @returns {{stop:boolean, why:string}|{stop:false}}
+ */
+function mineShouldStop ({ headInWater = false, oxygen = null, waterBreathing = false } = {}, cfg = CFG.bridge.mine) {
+  if (waterBreathing) return { stop: false };
+  if (!headInWater) return { stop: false };
+  const at = cfg.dryOxygenAt;
+  if (!oxygen || oxygen.reliable === false) {
+    return { stop: true, why: `在水底，氧气读不到（${oxygen?.why || '没有读数'}），先上去换气` };
+  }
+  if (oxygen.value <= at) {
+    return { stop: true, why: `在水底，气不够了（${oxygen.value}/${20}，安全线 ${at}），先上去换气` };
+  }
+  return { stop: false };
+}
+
+/**
+ * `/mine`：水下的目标该不该挖（第 2 条：默认不挖水里的东西。主人 2026-09-29：
+ * 「不应该优先挖水中的东西，除非那个只在水里或者很重要」）。
+ *
+ * 允许挖水下的三种情况：
+ *   ① **附近只有水下才有**（搜索半径内一块不在水下的都没有）；
+ *   ② **这个东西很重要** —— 是矿石 / 值钱的（`valuable`，由调用方从**现成的矿表** `knowledge/ores.json`
+ *      的 `value` / `tier` 判出来，不另编名单）；
+ *   ③ **调用方明确说要**（`requested`，例如玩家点名让挖、带了显式参数）。
+ * 其余情况一律排除。
+ *
+ * @param {object} p
+ * @param {boolean} p.underwater        这块目标本身泡在水里
+ * @param {boolean} p.drySameCount      搜索半径内**不在水下**的同种方块有几块
+ * @param {boolean} p.valuable          是不是矿石 / 值钱的（看矿表的 value/tier）
+ * @param {boolean} p.requested         调用方明确要挖水下的
+ * @returns {{keep:boolean, why:string}}
+ */
+function underwaterKeep ({ underwater = false, drySameCount = 0, valuable = false, requested = false } = {}) {
+  if (!underwater) return { keep: true, why: '不在水下' };
+  if (requested) return { keep: true, why: '调用方明确要挖水下的' };
+  // 主人原话是"除非只在水里**或者**很重要"：值钱的不看附近有没有干的（2026-09-29 Claude 复核时按原话改序）
+  if (valuable) return { keep: true, why: '值钱的东西（矿表里记着价值），水下的也挖' };
+  if (drySameCount > 0) return { keep: false, why: `附近有 ${drySameCount} 块不在水下的同种，先挖干的` };
+  return { keep: true, why: '只有水下才有' };
+}
+
+/**
+ * 头顶这一列往上一路到水面，是不是**都是水/空气**，并且**顶上（水面之上）是空气**。
+ * 是 → 照旧往上游就能换到气；不是 → 跳多少下都上不去（沙子塌下来 / 坑顶有方块 / 在悬垂下面）。
+ *
+ * @param {Array<{dy:number, name:string, props?:object}>} cells 这一列从**脚底往上**的格子（dy=0 是脚底）
+ * @param {number} maxUp 最多往上看到多少格（`CFG.breathe.upScan`）
+ * @returns {{clear:boolean, at:number|null, blocker:object|null}}
+ */
+function columnClear (cells = [], maxUp = 24) {
+  let sawWater = false;
+  for (let dy = 1; dy <= maxUp; dy++) {
+    const c = cells.find(x => x.dy === dy);
+    if (!c) return { clear: false, at: dy, blocker: null };   // 读不到 → 不猜"能上去"
+    const water = blocksWater(c.name, c.props);
+    if (water) { sawWater = true; continue; }
+    // 第一次遇到非水：它必须**是空气**（水面之上的出口格），且下面是水
+    const air = /^(air|cave_air|void_air)$/.test(String(c.name || ''));
+    if (air && (sawWater || dy === 1)) return { clear: true, at: dy, blocker: null };
+    return { clear: false, at: dy, blocker: { dy, name: c.name } };
+  }
+  // ⚠️ 一路看到 `maxUp` 格**全是水**就停下了 —— 那不是"上不去"，是"水面还在更上面"。
+  //    往下潜几格再上浮是常态（那天沙在水面下 1~5 格），把这种情况判成"头顶被盖住"
+  //    会让她不去跳、转而去挖，正好反了。所以**全是水 = 通**（往上跳就能到今天没看到的出口）。
+  if (sawWater) return { clear: true, at: maxUp, blocker: null };
+  return { clear: false, at: null, blocker: null };
+}
+
+/**
+ * 憋气：先看清头顶再决定往哪走（第 3 条。主人：「头上有方块，他没有尝试向无方块的地方移动。
+ * 他不是知道哪里有什么方块吗？」）。
+ *
+ * 她**知道周围每一格是什么**，所以不许原地瞎跳：
+ *   · `up`   —— 脚下这一列往上一路是水/空气、顶上是空气 → 照旧往上游（现有 `POST /jump`）；
+ *   · `swim` —— 旁边（水平 `radius` 格内）有最近的一列通到水面 → 游过去再上浮；
+ *              也可以直接给最近的能站的岸（`pickShore`）；
+ *   · `dig`  —— 四周都找不到出口，才把头顶挡住的方块挖掉（调用方负责只挖沙子/砂砾/泥土这类，
+ *               且 `place.js` 的 `DEADLY` 不含 —— 会放岩浆/危险东西进来的不挖）。
+ *
+ * 选目标按「游过去要多久 vs 还剩多少气」：气不够远的就选近的；近的也不够 → 返回 `dig`（最近的一手）。
+ * `oxygenLeftMs` 由调用方按读数算（1 点气 ≈ 1 秒 1000ms；读不到时给一个保守值）。
+ *
+ * @param {Array<{dx:number, dz:number, clear:boolean, dist:number, swimMs:number, kind:'column'|'shore'}>} cells
+ * @param {object} cfg `CFG.breathe`
+ * @returns {{how:'up'|'swim'|'dig', target?:object, why:string}}
+ */
+function breathPlan ({ self = null, selfClear = false, cells = [], oxygenLeftMs = null } = {}, cfg = CFG.breathe) {
+  if (selfClear) return { how: 'up', why: '头顶一路通到水面，直接往上跳' };
+  const ok = cells.filter(c => c.clear && c.kind !== 'blocked');
+  if (ok.length) {
+    const budget = oxygenLeftMs == null ? null : oxygenLeftMs;
+    const afford = (c) => budget == null || (c.swimMs ?? 0) <= Math.max(0, budget * cfg.swimBudgetRatio);
+    const near = ok.filter(afford).sort((a, b) => (a.dist - b.dist) || ((a.swimMs ?? 0) - (b.swimMs ?? 0)));
+    if (near.length) return { how: 'swim', target: near[0], why: `头顶被挡，旁边 ${near[0].dist.toFixed(1)} 格有通到水面的地方，游过去` };
+    return { how: 'dig', why: `旁边有出口但都在 ${budget == null ? '?' : Math.round(budget / 1000)} 秒的气以外，来不及游` };
+  }
+  return { how: 'dig', why: '四周都找不到通到水面的地方，只能挖头顶' };
+}
+
 function effectPlan ({ effects = null, hp = 20, hasMilk = false } = {}, cfg = CFG.effects) {
   if (!Array.isArray(effects)) return null;
   const bad = ['Poison', 'Wither'].filter(n => effects.includes(n));
@@ -76,7 +259,7 @@ function shoreRingOffsets (k, dyMin = -2, dyMax = 3) {
  */
 function pickShore (cells = [], self) {
   const ok = cells.filter(c => c.ok && c.below && !/water|lava|magma|fire|cactus|powder_snow|campfire|air$/.test(c.below)
-    && !/water|bubble_column/.test(c.feet || '') && !/water|bubble_column/.test(c.head || ''));
+    && !blocksWater(c.feet) && !blocksWater(c.head));
   if (!ok.length || !self) return null;
   const cost = (c) => Math.hypot(c.pos.x + 0.5 - self.x, c.pos.z + 0.5 - self.z) + Math.max(0, c.pos.y - self.y) * 2;
   return ok.sort((a, b) => cost(a) - cost(b))[0];
@@ -115,7 +298,7 @@ function pickRecovery (c, cfg = CFG.cmd) {
   return { how: 'walk', dist: Math.round(d) };
 }
 
-module.exports = { bind, effectPlan, mlgStep, needBreath, pickEat, pickRecovery, pickShore, shoreRingOffsets };
+module.exports = { bind, blocksWater, breathPlan, columnClear, effectPlan, headInWater, mineShouldStop, mlgStep, needBreath, oxygenNum, pickEat, pickRecovery, pickShore, shoreRingOffsets, underwaterKeep, waterBreathing };
 
 // ------------------------------------------------------------------ 自测
 // 第 3 步重构：这几节原本挤在 instinct.js 的自测段里（同一个 function selftest 外套）。
@@ -206,6 +389,129 @@ const __sections = [
     check('没有水桶 → 什么都做不了', F({ y: 72.5, hasBucket: false }), null);
     check('这次已经倒过 → 不再倒', F({ y: 72.5, placed: true }), null);
     check('只是跳一下（速度小）→ 不管', F({ y: 72.5, vy: -0.1 }), null);
+  }],
+  // ---- 2026-09-29 实机：在水底挖沙子差点淹死 ----------------------------------
+  // 测的是**跑的那份**判据（survival.js 里的实现），不另抄一份。
+  ['水下惜命：/mine 该不该继续挖', async (t) => {
+    const { check, ns } = t;
+    const { mineShouldStop, oxygenNum } = ns;
+    const CFG_ = { dryOxygenAt: 14 };
+    const O = (v) => oxygenNum(v);
+    check('★ 头在水里、氧气 10（低于安全线 14）→ 停', mineShouldStop({ headInWater: true, oxygen: O(10) }, CFG_).stop, true);
+    check('停的理由说清"在水底、气不够"', /在水底/.test(mineShouldStop({ headInWater: true, oxygen: O(10) }, CFG_).why), true);
+    check('★ 头在水里、氧气 20 → 继续挖', mineShouldStop({ headInWater: true, oxygen: O(20) }, CFG_).stop, false);
+    check('氧气正好等于安全线 → 停（≤）', mineShouldStop({ headInWater: true, oxygen: O(14) }, CFG_).stop, true);
+    check('★ 有水下呼吸 → 不受限', mineShouldStop({ headInWater: true, oxygen: O(2), waterBreathing: true }, CFG_).stop, false);
+    check('头不在水里 → 不用管氧气', mineShouldStop({ headInWater: false, oxygen: O(1) }, CFG_).stop, false);
+    check('★ 读数不可信（288）+ 头在水里 → 停（保守）', mineShouldStop({ headInWater: true, oxygen: O(288) }, CFG_).stop, true);
+    check('读不到氧气 + 头在水里 → 停', mineShouldStop({ headInWater: true, oxygen: O(null) }, CFG_).stop, true);
+  }],
+  ['氧气读数归一（E：288 不能当真）', async (t) => {
+    const { check, ns } = t;
+    const { oxygenNum, needBreath } = ns;
+    check('★ 正常 8 → 可信', oxygenNum(8).value, 8);
+    check('正常 8 → reliable', oxygenNum(8).reliable, true);
+    check('★ 正常 20（满）→ 可信', oxygenNum(20).value, 20);
+    check('★ 288（模组/槽位挪了的原始 ticks）→ 读不到', oxygenNum(288).value, null);
+    check('288 → reliable=false', oxygenNum(288).reliable, false);
+    check('288 的理由点明"像是原始 air ticks"', /air ticks/.test(oxygenNum(288).why), true);
+    check('★ -1（已经在掉血）→ 读不到', oxygenNum(-1).value, null);
+    check('-1 → reliable=false', oxygenNum(-1).reliable, false);
+    check('★ null → 读不到', oxygenNum(null).value, null);
+    check('null → reliable=false', oxygenNum(null).reliable, false);
+    check('NaN → 读不到', oxygenNum(NaN).reliable, false);
+    check('字符串 → 读不到', oxygenNum('x').reliable, false);
+    check('原始值仍带回去（便于查）', oxygenNum(288).raw, 288);
+    // 归一后接进 needBreath：288 不该触发（旧代码 288≤8 为假所以本来也不触发，
+    // 但 288 会传给 POST /jump 的 stopAtOxygen:18 让第一跳"提前成功" —— 这里锁的是**读取侧**）
+    check('★ 288 归一后 needBreath 不触发（不是"氧气充足"）', needBreath({ oxygen: oxygenNum(288).value, headInWater: true }), false);
+    check('★ 8 归一后 needBreath 触发', needBreath({ oxygen: oxygenNum(8).value, headInWater: true }), true);
+  }],
+  ['水下的东西默认不挖（第 2 条）', async (t) => {
+    const { check, ns } = t;
+    const { underwaterKeep } = ns;
+    check('★ 氧气读不到（288→null）、头在水里刚 2 秒 → 先不急', needBreath({ oxygen: null, headInWater: true, underwaterMs: 2000 }), false);
+    check('★★ 氧气读不到、头在水里泡了 9 秒 → 要换气（不能当"不用换气"）', needBreath({ oxygen: null, headInWater: true, underwaterMs: 9000 }), true);
+    check('氧气读不到、头不在水里 → 不用', needBreath({ oxygen: null, headInWater: false, underwaterMs: 99999 }), false);
+    check('★ 水下的、附近有干的同种 → 不挖', underwaterKeep({ underwater: true, drySameCount: 3 }).keep, false);
+    check('不挖的理由说清"附近有干的"', /不在水下/.test(underwaterKeep({ underwater: true, drySameCount: 3 }).why), true);
+    check('★ 只有水下才有（附近一块干的都没有）→ 允许挖', underwaterKeep({ underwater: true, drySameCount: 0 }).keep, true);
+    // ⚠️ 顺序：**附近有干的就先挖干的**，哪怕水下的那块值钱 —— 主人要的是"别优先挖水里的"。
+    //    值钱只在"够不到干的"时才成为理由（drySameCount = 0 那一条）。
+    check('★★ 值钱、附近也有干的 → 水下的也允许（主人：只在水里「或者」很重要）', underwaterKeep({ underwater: true, drySameCount: 5, valuable: true }).keep, true);
+    check('★ 水下是值钱的、附近没有干的 → 允许挖', underwaterKeep({ underwater: true, drySameCount: 0, valuable: true }).keep, true);
+    check('★ 调用方明确要水下的 → 允许（哪怕附近有干的）', underwaterKeep({ underwater: true, drySameCount: 5, requested: true }).keep, true);
+    check('不在水下的 → 一律允许', underwaterKeep({ underwater: false }).keep, true);
+  }],
+  ['憋气：先看清头顶再决定往哪走（第 3 条）', async (t) => {
+    const { check, ns } = t;
+    const { breathPlan, columnClear } = ns;
+    const COL = (names) => names.map((n, i) => ({ dy: i + 1, name: n }));
+    // ---- columnClear：头顶这一列到不到水面 ----
+    check('★ 头顶一路是水、最上面是空气 → 通', columnClear(COL(['water', 'water', 'air']), 24).clear, true);
+    const blocked = columnClear(COL(['water', 'sand', 'water', 'air']), 24);
+    check('★ 头顶第二格就是沙子 → 不通', blocked.clear, false);
+    check('不通的位置报在 dy=2', blocked.at, 2);
+    check('不通时说出挡路的是什么', blocked.blocker.name, 'sand');
+    check('★ 头顶就是空气（头探出水面）→ 通', columnClear(COL(['air', 'air']), 24).clear, true);
+    check('★ 一路全是水（水面还在更上面）→ 也算通，照旧往上跳', columnClear(COL(['water', 'water', 'water', 'water']), 4).clear, true);
+    check('读不到某一格 → 不猜"能上去"', columnClear([{ dy: 1, name: 'water' }], 3).clear, false);
+
+    const cfg = { swimBudgetRatio: 0.5, swimMsPerBlock: 900 };
+    // ---- 头顶是水 → 照旧往上跳 ----
+    check('★ 头顶是水 → up（照旧跳）', breathPlan({ selfClear: true }, cfg).how, 'up');
+    // ---- 头顶是沙子、旁边 2 格有一列通到水面 → 游过去（不是原地跳、也不是先挖）----
+    const p = breathPlan({
+      selfClear: false,
+      cells: [{ dx: 2, dz: 0, clear: true, kind: 'column', dist: 2, swimMs: 1800, wx: 2, wy: 60, wz: 0 }],
+      oxygenLeftMs: 8000,
+    }, cfg);
+    check('★ 头顶被沙子盖住、旁边 2 格有出口 → swim', p.how, 'swim');
+    check('★ 游到的是那 2 格外的列（不是原地）', p.target.wx, 2);
+    check('没选"先挖"（挖是最后一手）', p.how !== 'dig', true);
+    // ---- 四周全封死 → 才挖头顶 ----
+    check('★ 四周全封死 → dig', breathPlan({ selfClear: false, cells: [], oxygenLeftMs: 8000 }, cfg).how, 'dig');
+    // ---- 气不够游到出口 → 不硬游，落回 dig ----
+    check('★ 还剩 2 秒气、出口要 18 秒 → 不游，选 dig', breathPlan({
+      selfClear: false, oxygenLeftMs: 2000,
+      cells: [{ dx: 6, dz: 0, clear: true, kind: 'column', dist: 6, swimMs: 18000, wx: 6, wy: 60, wz: 0 }],
+    }, cfg).how, 'dig');
+    check('气够（8 秒，出口 1.8 秒）→ swim', breathPlan({
+      selfClear: false, oxygenLeftMs: 8000,
+      cells: [{ dx: 2, dz: 0, clear: true, kind: 'column', dist: 2, swimMs: 1800, wx: 2, wy: 60, wz: 0 }],
+    }, cfg).how, 'swim');
+    // ---- 两个出口：气只够近的那个，就选近的 ----
+    check('★ 气只够近的 → 选近的（远的够不到就别去）', breathPlan({
+      selfClear: false, oxygenLeftMs: 3000,
+      cells: [
+        { dx: 1, dz: 0, clear: true, kind: 'column', dist: 1, swimMs: 900, wx: 1, wy: 60, wz: 0 },
+        { dx: 5, dz: 0, clear: true, kind: 'column', dist: 5, swimMs: 4500, wx: 5, wy: 60, wz: 0 },
+      ],
+    }, cfg).target.wx, 1);
+  }],
+  ['水里判据只有一份（水方块 / 头在水里 / 水下呼吸）', async (t) => {
+    const { check, instinctSrc, ns } = t;
+    const { blocksWater, waterBreathing } = ns;
+    check('★ water / flowing_water / bubble_column 都算水', [blocksWater('water'), blocksWater('flowing_water')].every(Boolean), true);
+    check('气泡柱也算水', blocksWater('bubble_column'), true);
+    check('★ 模组水（命名空间）也算', blocksWater('upgrade_aquatic:water'), true);
+    check('★ waterlogged 的方块（半砖/楼梯）头在里面也在水里', blocksWater('oak_slab', { waterlogged: true }), true);
+    check('没 waterlogged 的半砖不算', blocksWater('oak_slab', {}), false);
+    check('石头不算水', blocksWater('stone'), false);
+    check('沙子不算水', blocksWater('sand'), false);
+    check('岩浆不算水', blocksWater('lava'), false);
+    check('读不到方块名 → 不猜', blocksWater(null), false);
+    check('★ 水下呼吸效果认（大小写/写法不敏感）', [waterBreathing(['WaterBreathing']), waterBreathing(['water_breathing'])].every(Boolean), true);
+    check('没有水下呼吸效果 → false', waterBreathing(['Speed']), false);
+    check('读不到效果 → false', waterBreathing(null), false);
+    // ---- 源码形状锁：判据真的只写一处 ----
+    const srcText = instinctSrc();
+    // ⚠️ 只看**代码里的用法**（`.test(...)`），不看注释 —— 这段说明本身就写着那个字样。
+    check('★ "水方块"的判据只在 survival.js 的 blocksWater 里（不再有手写的 /water|bubble_column/.test）',
+      !/\/water\|bubble_column\/\s*\.test\(/.test(srcText.replace(/\/\*[\s\S]*?\*\//g, '')), true);    check('★ 头在不在水里只有真身一份（core.js 只留转发壳）',
+      (srcText.match(/function headInWater \(bot\)/g) || []).length, 1);
+    check('★ 憋气真的用了 breathPlan（不再是"直接跳"）', /breathEscapePlan\(bot, I, B\)/.test(srcText), true);
+    check('★ 挖开会放危险东西的不挖（用了 place.js 的 DEADLY）', /placeLogic\.DEADLY\.test/.test(srcText), true);
   }],
 ];
 register('survival', __sections);

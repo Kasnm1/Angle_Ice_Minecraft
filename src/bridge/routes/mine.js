@@ -10,6 +10,7 @@
 const instinct = require('../../instinct/instinct.js');
 const pathing = require('../../world/pathing');
 const placeLogic = require('../../world/place');
+const survival = require('../../instinct/survival.js');
 // 挖之前挑工具（2026-09-29）：判据只此一处（body/tool-choice.js）。
 // 这个包在 Windows 上**没装** mineflayer-tool（启动日志："三个反射插件都没装"），
 // 所以 bot.dig() 手上是什么就用什么 —— 以前她拿镐子挖黏土、拿剑砍树。
@@ -24,6 +25,49 @@ const __ns = {};
 let state;
 let Vec3;
 let goals;
+
+/**
+ * `/mine` 的水下安全线（第 1/4 条）。
+ *
+ * ⚠️ 阈值**只有一份**，在 `src/instinct/config.js` 的 `CFG.bridgeMine`（理由写在那里：
+ * 为什么 `dryOxygenAt` 是 14、为什么换完气要等 30 秒）。
+ * 这里只做"取不到配置就用同一份默认值"的兜底 —— 配置读不到时**不能**退化成"不保护"。
+ * 判据本身在 `instinct/survival.js` 的 `mineShouldStop` / `underwaterKeep`，与本文件无关。
+ */
+const SURVIVE = (() => {
+  const d = { dryOxygenAt: 14, afterBreathMs: 30000 };
+  try {
+    const CFG = require('../../instinct/config.js').CFG;
+    return { ...d, ...(CFG.bridgeMine || {}) };
+  } catch (_) { return d; }
+})();
+
+/**
+ * 矿表 `knowledge/ores.json`（byId 不用，这里要 **byName**）。
+ *
+ * 为什么在这里读：判"水下的东西值不值钱"要它的 `value` / `tier`，而**不许另编一份名单**
+ * （AGENTS.md §5-4）。本能采矿用的是同一份文件（`instinct/core.js` 的 `loadTables`，
+ * `ores.json` → `{ name, tier, value, drops? }`），所以这里按 `name`（去掉 `minecraft:` 前缀）
+ * 建索引，和那边**同一个真值来源**。
+ *
+ * 读不到 → null（= 判不了"值钱"），调用方据此只保留"只有水下才有"这一条放行 ——
+ * **不是**"所有水下的都能挖"（保守一侧）。
+ */
+let _oreTable;
+function oreTable () {
+  if (_oreTable !== undefined) return _oreTable;
+  try {
+    const rows = JSON.parse(require('fs').readFileSync(require('path').join(require('../../paths').KNOWLEDGE, 'ores.json'), 'utf8'));
+    const by = {};
+    for (const r of Array.isArray(rows) ? rows : []) {
+      if (!r || !r.name) continue;
+      by[String(r.name)] = r;
+      by[String(r.name).replace(/^minecraft:/, '')] = r;
+    }
+    _oreTable = by;
+  } catch (_) { _oreTable = null; }
+  return _oreTable;
+}
 
 function gotoWithBudget (...a) { return __ns.gotoWithBudget.apply(null, a); }
 function inventoryCount (...a) { return __ns.inventoryCount.apply(null, a); }
@@ -42,7 +86,7 @@ function withTimeout (...a) { return __ns.withTimeout.apply(null, a); }
  * ⚠️ 上面的清单只是**说明**；真正的键名在下面 routes 对象里，与原 server.js 逐字一致。
  */
 const routes = {
-'POST /mine': async ({ blockName, byItem, count = 1, maxRadius, abort }) => {
+'POST /mine': async ({ blockName, byItem, count = 1, maxRadius, allowUnderwater = false, abort }) => {
     if (!blockName && !byItem) throw new Error('blockName 或 byItem 至少给一个');
     count = Math.min(Math.max(1, +count), 64);
 
@@ -110,6 +154,30 @@ const routes = {
     const vein = new Set();
     const invBefore = inventoryCount(state.bot);
     let mineSeen = null;   // 最后一轮的筛选统计（挖不到时拿来说原因）
+    // 水下的惜命记录（第 1/2 条）。**必须暴露** —— "她没挖水下的"和"规则把她拦住了"
+    // 是两种完全不同的结果，混在一起只能看到"没挖到"。
+    let needAir = null;      // {why, oxygen, at} 满足"该停下换气"时的理由
+    let underwaterInfo = null;
+
+    // ---- 水里惜命：挖每一块之前（以及走过去之前）都查一次（第 1 条）--------------
+    //
+    // 2026-09-29 实机：那片沙子在**水底**（水面 y≈63，沙在 y=58–62），她一块接一块往下挖，
+    // 氧气 8/20 触发憋气本能、上来换完气又潜回去，第二次跳了 38 下没浮上去，氧气掉到 -1 开始掉血。
+    // 判据只在 `instinct/survival.js` 的 `mineShouldStop`（和憋气本能共用一份），这里只负责读世界。
+    const airGuard = () => {
+      try {
+        const oxy = survival.oxygenNum(state.bot.oxygenLevel ?? null);
+        const wetHead = survival.headInWater(state.bot);
+        const eff = state.instinct?.effectNames?.() ?? null;
+        const stop = survival.mineShouldStop({ headInWater: wetHead, oxygen: oxy, waterBreathing: survival.waterBreathing(eff) }, { dryOxygenAt: SURVIVE.dryOxygenAt });
+        return { ...stop, oxygen: oxy, headInWater: wetHead };
+      } catch (_) { return { stop: false }; }
+    };
+    // 刚换完气不许马上又潜回去（第 4 条）：本能上浮成功会记 `state.instinct.breathedAt`。
+    const justBreathedMs = () => {
+      const at = state.instinct?.breathedAt;
+      return at ? Date.now() - at : Infinity;
+    };
 
     try {
       for (;;) {
@@ -120,6 +188,13 @@ const routes = {
         if (typeof abort === 'function' && abort()) {
           aborted = true;
           sweeps.push({ sweep, radius, action: 'aborted', reason: '被新的命令打断' });
+          break;
+        }
+        // ★ 每一轮开始（= 挖下一块之前、走过去之前）先看气
+        const air = airGuard();
+        if (air.stop) {
+          needAir = air;
+          sweeps.push({ sweep, radius, action: 'need-air', reason: air.why });
           break;
         }
         const before = inventoryCount(state.bot);
@@ -144,9 +219,36 @@ const routes = {
         // 看得见 = 视线打得到，或者有一面露在洞里的空气/水里（placeLogic.exposedToOpen；只露一面的矿以前被判成看不见）
         const cands = f2.filter(p => vein.has(`${p.x},${p.y},${p.z}`) || state.bot.canSeeBlock(state.bot.blockAt(p))
           || placeLogic.exposedToOpen(p, (x, y, z) => state.bot.blockAt(new Vec3(x, y, z))));
+
+        // ---- 默认不挖水里的东西（第 2 条。主人 2026-09-29：「不应该优先挖水中的东西，
+        //      除非那个只在水里或者很重要」）------------------------------------------
+        //
+        // 判据只在 `survival.underwaterKeep`（一份）。这里只负责读世界 + 判"值不值钱"。
+        // ⚠️ "值不值钱"用**现成的矿表** `knowledge/ores.json` 的 `value` / `tier`
+        //    （本能采矿用的就是它，见 `instinct/core.js` 的 `loadTables`），
+        //    不另编一份名单。矿表读不到 = 判不了"值钱" → 那就只有"附近只有水下才有"这一条能放行。
+        const bareLabel = String(label).replace(/^minecraft:/, '');
+        const table = oreTable();
+        const oreRow = (table && (table[bareLabel] || table[String(label)])) || null;
+        const valuable = !!oreRow && (oreRow.value === 'high' || oreRow.value === 'mid' || oreRow.tier != null);
+        const isWet = (p) => {
+          // 泡在水里 = 自己这格是水，或者**上方一格是水**（水底的沙子就是这种：它上面是水）
+          const self0 = state.bot.blockAt(p);
+          if (self0 && survival.blocksWater(self0.name, self0.getProperties?.())) return true;
+          const above = state.bot.blockAt(p.offset(0, 1, 0));
+          return !!(above && survival.blocksWater(above.name, above.getProperties?.()));
+        };
+        const dryCount = cands.filter(p => !isWet(p)).length;
+        const wetCands = cands.filter(p => isWet(p));
+        const uwKeep = survival.underwaterKeep({ underwater: true, drySameCount: dryCount, valuable, requested: !!allowUnderwater });
+        if (wetCands.length) {
+          underwaterInfo = { found: wetCands.length, skipped: uwKeep.keep ? 0 : wetCands.length, drySame: dryCount, allowedBy: uwKeep.keep ? uwKeep.why : null, why: uwKeep.why, valuable };
+        }
+        const cands2 = uwKeep.keep ? cands : cands.filter(p => !isWet(p));
+
         // 高低差 4 → 8（2026-09-28 实机：矿洞里天花板上的矿常超过 4 格，全被筛掉，报成"128 格都没有"）
-        const scoredAll = cands.map(p => ({ p, dy: Math.abs(p.y - Math.floor(me.y)), d: p.distanceTo(me), open: exposed(p) }));
-        mineSeen = { radius, found: all.length, skippedBefore: all.length - f1.length, nearHouse: f1.length - f2.length, hidden: f2.length - cands.length, tooHighLow: scoredAll.filter(c => c.dy > 8).length };
+        const scoredAll = cands2.map(p => ({ p, dy: Math.abs(p.y - Math.floor(me.y)), d: p.distanceTo(me), open: exposed(p) }));
+        mineSeen = { radius, found: all.length, skippedBefore: all.length - f1.length, nearHouse: f1.length - f2.length, hidden: f2.length - cands.length, tooHighLow: scoredAll.filter(c => c.dy > 8).length, underwater: wetCands.length, underwaterSkipped: underwaterInfo ? underwaterInfo.skipped : 0 };
         const scored = scoredAll
           .filter(c => c.dy <= 8)
           .sort((a, b) => (b.open - a.open) || (a.d - b.d));
@@ -156,6 +258,28 @@ const routes = {
         if (hit) {
           const where = { x: block.position.x, y: block.position.y, z: block.position.z };
           try {
+            // ★ 这块**在水下**？走过去之前再确认一次气（第 1/4 条）。
+            //
+            // 为什么还要在这里再查一次：上面那一次检查在"选目标"之前，而选完目标
+            // 还要 `gotoWithBudget` 走一段（几秒到几十秒）。玩家日志里她就是
+            // "换完气 → 走过去 → 潜下去"，走到半路气就没了。所以走过去**之前**、
+            // 以及真正 dig 之前，各查一次。
+            const wetTarget = isWet(block.position);
+            if (wetTarget) {
+              // 第 4 条：刚换完气（本能上浮成功记 `breathedAt`）不许马上又潜回去
+              const sinceBreath = justBreathedMs();
+              if (sinceBreath < SURVIVE.afterBreathMs) {
+                needAir = { why: `刚上去换完气 ${Math.round(sinceBreath / 1000)} 秒，这片东西在水下，先别急着潜回去`, justBreathed: true };
+                sweeps.push({ sweep, radius, action: 'just-breathed', reason: needAir.why });
+                break;
+              }
+              const air2 = airGuard();
+              if (air2.stop) {
+                needAir = air2;
+                sweeps.push({ sweep, radius, action: 'need-air', reason: air2.why });
+                break;
+              }
+            }
             // ⚠️ 这里原来用 `GoalLookAtBlock` —— 它要求**能"看到"**那个方块，
             //    也就是必须在同高度或更高处且视线不被挡。而实战里最常挖的木头
             //    长在她**头顶上方 4~5 格**（`(77,68,-128)` vs 她站在 y=64），
@@ -224,6 +348,17 @@ const routes = {
             }
             const beforeBlock = state.bot.blockAt(block.position);
             const beforeName = beforeBlock?.name ?? null;
+
+            // ★ 真正 dig 之前的最后一道气闸（第 1 条）。选了目标、走了一段、挑完工具之后，
+            //   她可能已经在水底待了好几秒 —— 这是"挖这一块之前"的最后一个检查点。
+            if (wetTarget) {
+              const air3 = airGuard();
+              if (air3.stop) {
+                needAir = air3;
+                sweeps.push({ sweep, radius, action: 'need-air', reason: `${air3.why}（开挖前最后一道）` });
+                break;
+              }
+            }
 
             // 挖之前把"这个方块该用的工具"弄到手上（2026-09-29）：
             // 用 block 本体（不是 registry 查出来的 def）判 —— 它带着真实的 material / harvestTools。
@@ -483,15 +618,25 @@ const routes = {
       //   ⚠️ 只在**真正一块都没挖动**时才 false —— 挖到了但没捡起来仍是 ok:true
       //      （"挖"这个动作生效了；"捡"是另一回事，由 `/pickup` 自己负责）。
       ok: mined.length > 0,
+      // ★ 为什么提前收手（第 1/4 条）。**有值 = 这次 /mine 是"我自己停的"，不是失败。**
+      //   `need_air`   —— 在水底、气不够了（挖水下的东西时的惜命线）
+      //   `just_breathed` —— 刚上去换完气，别马上又潜回同一片水下
+      // 与 `aborted` 分开：那个是**别人**叫停（新命令 / 战斗），这个是**她为了保命自己停**。
+      stopped: needAir ? (needAir.justBreathed ? 'just_breathed' : 'need_air') : undefined,
+      stoppedWhy: needAir ? needAir.why : undefined,
+      // 水下方块的筛选结果（第 2 条）。`found` 有几块、`skipped` 按规则没挖几块，
+      // 让 mind 知道"水下有东西、是规则拦住的"，不会以为附近没有。
+      underwater: underwaterInfo || undefined,
       seen: mineSeen || undefined,
       // 一块都没挖到：把原因说成人话带回去（以前只有 ok:false，mind 那边只看到 "failed"）
-      error: mined.length > 0 ? undefined : (aborted ? '被新的命令打断了' : !mineSeen || !mineSeen.found
+      error: mined.length > 0 ? undefined : (needAir ? needAir.why : aborted ? '被新的命令打断了' : !mineSeen || !mineSeen.found
         ? `${mineSeen?.radius ?? radius} 格内没有 ${label}`
         : `${mineSeen.radius} 格内有 ${mineSeen.found} 块 ${label}，但挖不到：${[
           mineSeen.hidden ? `${mineSeen.hidden} 块埋在石头里（没有一面露出来，要挖进去，或者用 delve 往那边挖）` : '',
           mineSeen.tooHighLow ? `${mineSeen.tooHighLow} 块高低差超过 8 格` : '',
           mineSeen.nearHouse ? `${mineSeen.nearHouse} 块挨着人造方块（怕拆到房子）` : '',
           mineSeen.skippedBefore ? `${mineSeen.skippedBefore} 块刚才试过挖不动` : '',
+          mineSeen.underwaterSkipped ? `${mineSeen.underwaterSkipped} 块在水下（默认不挖水里的，除非只有水下才有或值钱）` : '',
         ].filter(Boolean).join('；') || '都试过了，挖不动'}`),
       // 挖完之后对整片区域的**一次**统一清扫（P10 第二轮）。
       // 与每块的 `drops` 分开报：后者是"顺手捞到的"，这里才是"兜底捞到的"。
@@ -505,9 +650,12 @@ const routes = {
       digStalls: digStalls.length ? digStalls.slice(0, 8) : undefined,
       searchedUpTo: radius,
       // "搜了多大"必须如实报 —— 这是"附近没有"与"我找不到"的区别所在
-      note: last?.action === 'give-up'
-        ? `搜到 ${radius} 格仍未拿够：${last.reason}`
-        : !mined.length ? `看得见的地方没有 ${label}（只挖视线里的，不透视）。矿石埋在地下：用 /delve 挖下去找、或进矿洞找` : undefined,
+      note: needAir ? needAir.why
+        : (underwaterInfo && underwaterInfo.skipped && !mined.length)
+          ? `水下有 ${underwaterInfo.found} 块 ${label}、按规则没挖（${underwaterInfo.why}）`
+          : last?.action === 'give-up'
+            ? `搜到 ${radius} 格仍未拿够：${last.reason}`
+            : !mined.length ? `看得见的地方没有 ${label}（只挖视线里的，不透视）。矿石埋在地下：用 /delve 挖下去找、或进矿洞找` : undefined,
       sweeps,
     };
   }

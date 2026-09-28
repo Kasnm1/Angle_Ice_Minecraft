@@ -11,7 +11,7 @@
 | `config.js` | `CFG` / `fillCfg` / `TIER` / `TIER_NAME` / `ARMOR_RANK` / `HURT_FEET` / `HURT_BELOW` / `STRUCTURE_SIGNS` / `COMBAT_YIELD` / `PASSIVE_POSTS` |
 | `core.js` | `install()`（1630 行闭包，整体搬来，内部计时器没拆）、`bodyBusy` / `createCheck` / `settleJob` / `ownsBodyAtCleanup` / `breatheRefused` / `playerHurtPlan` / `victimHealth` / `syncSleepState` / `caveBoundary` / `scanColumns*` / `yieldBody` |
 | `combat.js` | `mobKind` / `attackCooldownMs` / `combatPlan` / `armorRank` / `pickArmor` / `toolWorn` / `hazardUnder` / `pickStepOff` |
-| `survival.js` | `pickEat` / `needBreath` / `effectPlan` / `shoreRingOffsets` / `pickShore` / `mlgStep` / `pickRecovery` |
+| `survival.js` | `pickEat` / `needBreath` / `effectPlan` / `shoreRingOffsets` / `pickShore` / `mlgStep` / `pickRecovery`；**水下判据只此一份**（2026-09-29）：`blocksWater` / `headInWater` / `waterBreathing` / `oxygenNum` / `mineShouldStop` / `underwaterKeep` / `columnClear` / `breathPlan` |
 | `mining.js` | `pickaxeTier` / `needTier` / `bareNameOf` / `pickOre` / `pickCaveStep` / `pickTorchStep` / `darkReport` / `noteDelve` / `pickDelveResume` |
 | `pickup.js` | `hdist` / `whoThrew` / `pickPickup` / `pickHarvest` / `pickLoot` / `pickTidy` / `carriedNames` / `carriedTally` / `pickupFailIds` |
 | `social.js` | `gazeEngaged` / `pickGaze` / `pickCommand` / `weatherChange` / `followIdlePlan` |
@@ -69,15 +69,52 @@
 `playerHurt` 事件的文字写的是"XX 有危险：<理由>"，并带 `reason` 字段（`low_hp`/`burst`/`hits`）。
 mind 侧提示词对应的一小段也已改成"小伤不用每次都问，真危险才关心"。
 
+## 水下的东西（2026-09-29 实机：在水底挖沙子差点淹死）
+
+`/mine` 挖的那片沙子在**水底**（水面 y≈63、沙在 y=58–62）。一会儿的经过：
+逐块往下挖 → 氧气 8/20 触发憋气 → 上浮换气 → 03:42:37 又潜回去挖同一片 →
+03:44 那次跳了 **38 下**没浮上去，氧气掉到 -1 开始掉血（头顶被沙子盖住了）。
+
+判据**只写一份**，在 `survival.js`（`src/bridge/routes/mine.js` 与 `core.js` 共用）：
+
+- `blocksWater(name, props)` —— 「这是水」。以前 `core.js` / `mine.js` 各有手写正则，现在只此一处
+  （`waterlogged` 的半砖/楼梯也算）；
+- `headInWater(bot)` —— 头（脚底 +1.62）在不在水里；
+- `oxygenNum(raw)` —— 氧气归一。**288 这种读数按"读不到"处理**（见下），`clean` 才可信；
+- `mineShouldStop(...)` —— `/mine` 还要不要挖；阈值 `CFG.bridgeMine.dryOxygenAt`（**14**，理由写在配置里）；
+- `underwaterKeep(...)` —— 水下的目标该不该挖：**附近有干的就先挖干的**（哪怕水下那块值钱），
+  只有"只有水下才有" / "值钱且没有干的" / "调用方明确要"才允许。值钱与否查**现成的矿表**
+  `knowledge/ores.json` 的 `value`/`tier`（不另编名单）；
+- `columnClear(cells, maxUp)` + `breathPlan(...)` —— 憋气往哪走：`up`（照旧跳）/ `swim`（游到旁边
+  通到水面的列或最近的岸）/ `dig`（四周全封死才挖头顶，只挖软的、`place.js` 的 `DEADLY` 不挖）。
+
+⚠️ `columnClear` 遇到"一路看到底全是水"判**通**（= 水面还在更上面），不是"被盖住" ——
+反了就会让她不去跳、转而去挖。这条被 `scripts/instinct-scheduling-test.js` 抓到过。
+
+`/mine` 的返回里必须带 `stopped: 'need_air' | 'just_breathed'` + `stoppedWhy` + `underwater`：
+让她/mind 知道"是我为了保命停的"和"水下有几块、按规则没挖"（AGENTS.md §5-1）。
+
+## 憋气时氧气读数是 288（E）
+
+`bot.oxygenLevel` 来自 mineflayer 的 `entities.js:499`
+`Math.round(metas.air_supply / 15)` —— 1.20.1 走的就是这条分支
+（`supportFeature('mcDataHasEntityMetadata') === true`，实测），而 `air_supply` 的**原始值**
+是 air ticks（满 300）。模组/握手一旦挪了这个槽位，就会读到 288 这种量级。
+**不替模组猜槽位、不做 288/15 的换算**（猜错会得出"看起来正常"的假氧气，比读不到更糟），
+统一经 `oxygenNum` 判不可信 → 按"读不到"处理。
+那个"0.3 秒一拍"是同一个根因：`288 ≥ stopAtOxygen:18` 让 `POST /jump` 第一跳就 "提前成功"退出，
+下一拍头还在水里又触发。
+
 ## 自测
 
 ```bash
-$NODE src/instinct/instinct.js --selftest        # 全部小节 —— 345 条（= 拆前条数，一条不少）
+$NODE src/instinct/instinct.js --selftest        # 全部小节 —— 条数以实际输出为准
 $NODE src/instinct/core.js --selftest            # 单个子文件也能跑（config/testkit 没有小节，不写开关分支）
+$NODE src/instinct/survival.js --selftest        # 水下判据（憋气/氧气归一/水下方块/头顶）
 $NODE scripts/smoke/smoke-install.js             # 假 bot 驱动真实的 install()，跑 6 秒不崩
 $NODE scripts/smoke/smoke-eat.js                 # 吃东西冒烟
 $NODE scripts/smoke/smoke-surface.js             # 上岸冒烟
-$NODE scripts/instinct-scheduling-test.js        # 调度/计时器
+$NODE scripts/instinct-scheduling-test.js        # 调度/计时器（含"氧气事件立即上浮"）
 ```
 
 `--selftest` 测的是**纯函数**，真正上线跑的是 `install()` —— 冒烟脚本补的就是这条缝。

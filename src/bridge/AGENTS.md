@@ -36,16 +36,16 @@
 | `routes/body.js` | ~350 | 6 条：`GET /plugins` `/entities`、`POST /look` `/attack` `/equip` `/chat` |
 | `routes/place.js` | ~630 | `POST /place` `/shelter` |
 | `routes/move.js` | ~360 | `POST /drop` `/unstick` `/command` `/move` |
-| `routes/mine.js` | ~520 | `POST /mine`（挖之前先用 `body/tool-choice` 的 `ensureDigTool` 挑工具，回包多一个 `toolsUsed`） |
+| `routes/mine.js` | ~600 | `POST /mine`（挖之前先用 `body/tool-choice` 的 `ensureDigTool` 挑工具，回包多一个 `toolsUsed`）。**水里的惜命**（2026-09-29）：挖每块之前 + 走过去之前 + 真 dig 之前各查一次氧气（判据在 `instinct/survival.js` 的 `mineShouldStop`，阈值 `CFG.bridgeMine`），停就回 `stopped:'need_air'`；水下的目标默认**不挖**（`underwaterKeep`，回包带 `underwater`） |
 | `routes/gather.js` | ~390 | 6 条：`POST /collect` `/craft` `/follow` `/control` `/climb` `/activate` |
 | `routes/palette.js` | ~170 | 5 条：`GET /palette` `/palette/state` `/palette/block` `/palette/climbable`、`POST /registry/import-palette` |
-| `routes/diag.js` | ~330 | 11 条：`GET /debug/registries` `/debug/registry` `/debug/packets` `/inventory/ledger` `/ftbq/completed` `/instinct` `/instinct/events`、`POST /jump` `/flee` `/instinct` `/stop` |
+| `routes/diag.js` | ~360 | 11 条：`GET /debug/registries` `/debug/registry` `/debug/packets` `/inventory/ledger` `/ftbq/completed` `/instinct` `/instinct/events`、`POST /jump` `/flee` `/instinct` `/stop`。`/stop`（2026-09-29）：叫停在途命令（`abortCurrent`）+ 推取消线 + 清 goal/控制位 + **释放身体锁**，回包多 `stoppedCommand` / `bodyCommandReleased` |
 
 ### 无关本次拆分的旧文件
 
 | 文件 | 职责 |
 |---|---|
-| `body-command-lock.js` | 身体命令互斥锁：HTTP 请求可重叠，后来的命令收 `busy`，不排队（`/stop` 绕过） |
+| `body-command-lock.js` | 身体命令互斥锁：HTTP 请求可重叠，后来的命令收 `busy`，不排队（`/stop` 绕过）。**`setAbort` / `abortCurrent`**（2026-09-29）：命令把自己的 abort 谓词挂在锁 token 上，`/stop` 就能叫停在途命令（`/go` 会"续算"、把 goal 设回去，光 `setGoal(null)` 停不住）。`--selftest` 跑**真的** `POST /stop` handler |
 | `reconnect.js` | 断线重连 |
 
 被它 require 的邻居：`../body/*`（hands / commonsense / equip-policy / inventory-ledger /
