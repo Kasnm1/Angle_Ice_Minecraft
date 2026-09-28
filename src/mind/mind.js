@@ -1079,7 +1079,7 @@ const SYSTEM = `你是 Angle_ICE（安琪），住在这个 Minecraft 模组服�
 - 你自己出事了（挨打、掉血、摔了、卡住、差点掉岩浆）一定出声，而且说出是什么事："我去"光叫一声不够，要"我去 苦力怕"。危险一条说完：say 加 urgent=true。
 
 你怎么聊天（像个普通女生，不像在给人汇报工作）：
-- **默认安静做事。** 你做了什么不用说 —— 他就在你旁边，看得见；说不说都一样。播报"我在干嘛 / 干完了什么"（"锄头拿手里了""到地方了""箱子理好了""我去插火把"）他听着像旁白，不像一起玩的人。只有这几种值得开口：他跟你说话、你发现了什么 / 遇到危险、真的要他定（两个选项都合理、后果不一样）、你自己的情绪（开心、害怕、累了）。开口就短。
+- **默认安静做事。** 你做了什么不用说 —— 他就在你旁边，看得见；说不说都一样。播报"我在干嘛"（"锄头拿手里了""到地方了""我去插火把"）他听着像旁白，不像一起玩的人。只有这几种值得开口：他跟你说话、**他交代你的事做完了或做不成（说一声就够，一次）**、你发现了什么 / 遇到危险、真的要他定（两个选项都合理、后果不一样）、你自己的情绪（开心、害怕、累了）。你自己决定去做的事，做完不用说。开口就短。
 - 先接他刚说的那一句（【他刚说的】），再说自己的事。他关心你、夸你、逗你、怼你、发 666 / 哈哈哈，都要接住，一两个字也行。答非所问最伤人。
 - 干活的时候大多不出声。动作做完的回报（✅）不是每次都要说 —— 他看得见，没新鲜事就别报。出事了有情绪才说：摔了、被咬死、东西掉光 —— 先把事说清，再带一句真实的反应（我去 / 呜呜 / 吓死我了 / 疼）。被帮了不止是"谢谢你"。
 - 温柔是具体的：天黑了叫他回屋、他累了让他歇会。**他受伤别每次都问**（摔一下、擦一下你自己也会掉血，每次都问"你没事吧"很烦）—— 只有真危险才关心或去帮：血很少了（不到一半）、一下子掉了很多、或者被怪围着打。那时候再说一声（要他吃东西 / 问他疼不疼 / 我来打），平时不用提。别说客服话（没事的 / 加油哦 / 辛苦啦）。
@@ -1446,6 +1446,8 @@ async function think (why) {
   // 身体刚回报的失败（now.ev 里的 ❌ / ↳ ✗ 行）**每一轮都记下来**，不只在她开口那轮 —— 失败那轮她可能没说话
   { const tNow = Date.now(); W.recentLive = [...(W.recentLive || []).filter(r => tNow - r.t < RECENT_CLAIM_MS), ...liveFails(now.ev).map(r => ({ ...r, t: tNow }))]; }
   const playerSaid = now.ev.filter(e => /说：/.test(e.text)).map(e => e.text.replace(/^[^：]*说：/, '')).join(' ');   // 他这一刻说的话   // 这一轮自己看过周围 / 背包没有（问"X在哪"之前要先看）
+  // 他这句是在交代事情 → 记下时间：之后"做好了 / 做不成"算回他（taskDoneAllowed）
+  if (playerSaid && TASK_ASK_RE.test(playerSaid)) W.lastTaskAskedAt = Date.now();
   const heardPlayer = now.ev.some(e => /说：/.test(e.text) && e.names?.length); let nudgedToSay = false;
   // 他这一刻跟她说话了（【此刻】里"他说："）——说话出口的三个拦截都以它为准：
   // 他刚开口，她要回什么都不拦（任务书："他刚跟她说话时，回答他不受限"）
@@ -1539,7 +1541,11 @@ async function think (why) {
             continue;
           }
         }
-        if (name === 'say' && !heJustSpoke && speech.classify(String(args.text || '')) === 'report' &&
+        // 他交代的事做完了（或做不成）→ 说一声是回他，不是旁白（主人 2026-09-29："箱子理好了这种完成玩家任务的话是可以的"）。
+        // 一次交代只放行一次（见 taskDoneAllowed）。
+        const doneOk = name === 'say' && taskDoneAllowed(String(args.text || ''), { lastTaskAskedAt: W.lastTaskAskedAt, lastTaskDoneSaidAt: W.lastTaskDoneSaidAt });
+        if (doneOk) W.lastTaskDoneSaidAt = Date.now();
+        if (name === 'say' && !heJustSpoke && !doneOk && speech.classify(String(args.text || '')) === 'report' &&
             Date.now() - (W.lastHeardAt || 0) > QUIET_MS) {
           // 播报自己的动作 / 进度，他最近没问她 → 不发（他看得见）。2026-09-29 主人："尽量少汇报自己的动作状态"
           quietNudged++;
@@ -1752,6 +1758,22 @@ function isBareAffirmative (text) {
 const QUIET_MS = 30 * 1000;
 /** "不说没发生的事"看多久以内的工具结果（跨轮）：实机睡觉失败到她说"睡了"隔了 41 秒、一轮 */
 const RECENT_CLAIM_MS = 3 * 60 * 1000;
+/** 他交代事情之后多久以内，"做完了"算回他（不是播报） */
+const TASK_WINDOW_MS = 10 * 60 * 1000;
+/** 他的话像在交代事：帮我 / 你去 / 把… / 给我 / 去… / 整理 / 做个… */
+const TASK_ASK_RE = /(帮我|幫我|你去|去把|把.{1,12}(放|理|整理|做|拿|收|挖|砍|烤|煮|种|種|搬)|给我|給我|整理|收拾|做[个個一把]|拿[个個一些点點]|挖[些点點一]|砍[些点點一]|去[拿挖砍找采採种種收]|来一|來一)/;
+const TASK_DONE_RE = /(好了|好啦|做好|弄好|理好|放好|收好|搞定|完成|做完|挖完|收完|到了|拿到了|没做成|做不了|弄不了|找不到)/;
+/**
+ * 他交代的事做完 / 做不成，说一声 —— 放行（主人 2026-09-29）。条件：是"完成 / 失败"的话，
+ * 他 TASK_WINDOW_MS 内**交代过事**（他的话匹配 TASK_ASK_RE —— 光是说过话不算），而且这次交代之后还没报过（一次交代只报一次）。
+ * 她自己决定去做的事，做完照旧不播报（REPORT_NUDGE）。
+ */
+function taskDoneAllowed (text, { now = Date.now(), lastTaskAskedAt = 0, lastTaskDoneSaidAt = 0 } = {}) {
+  if (!TASK_DONE_RE.test(String(text || ''))) return false;
+  if (!lastTaskAskedAt || now - lastTaskAskedAt > TASK_WINDOW_MS) return false;
+  return !(lastTaskDoneSaidAt && lastTaskDoneSaidAt >= lastTaskAskedAt);
+}
+
 /** 问他的节流：这么久之内第 2 次问就拦（同一个问题他没回、又问一次，也拦） */
 const ASK_COOLDOWN_MS = 5 * 60 * 1000;
 
@@ -2425,6 +2447,15 @@ async function selftest () {
     check('sleep ✗ → 拦，并说明原因', !!why && /现在不是晚上/.test(why), why);
     check('身体刚回报失败也算证据', !!unbackedClaim('我睡了', [], liveFails([{ text: '03:51:27.503    ↳ sleep_in_bed() ✗ 睡不了：black_bed(23,128,9)：现在不是晚上，睡不了' }])) , 'live');
     check('工具没记录 → 不冤枉她（不拦）', unbackedClaim('我睡了呀', []) === null);
+    { const t = Date.now(); const T = (x) => x;
+      check('★ 他 2 分钟前交代过、"箱子理好了" → 放行（回他，不是播报）', taskDoneAllowed('箱子理好了', { now: t, lastTaskAskedAt: t - 120000 }) === true);
+      check('同一次交代报过了、再说"好了" → 不放行', taskDoneAllowed('好了', { now: t, lastTaskAskedAt: t - 120000, lastTaskDoneSaidAt: t - 60000 }) === false);
+      check('没交代过（只是聊过天）、自己理完箱子 → 不放行（自己的事不播报）', taskDoneAllowed('箱子理好了', { now: t, lastTaskAskedAt: 0 }) === false);
+      check('交代是 20 分钟前 → 不放行', taskDoneAllowed('箱子理好了', { now: t, lastTaskAskedAt: t - 1200000 }) === false);
+      check('"我去插火把"不是完成 → 不放行', taskDoneAllowed('我去插火把', { now: t, lastTaskAskedAt: t - 60000 }) === false);
+      check('做不成也要说一声', taskDoneAllowed('做不了 缺铁', { now: t, lastTaskAskedAt: t - 60000 }) === true);
+      check('交代的话认得出：「帮我把箱子理一下」「去砍点木头」「做个铁镐」', ['帮我把箱子理一下', '去砍点木头', '做个铁镐'].every(x => TASK_ASK_RE.test(x)));
+      check('闲聊不算交代：「好累」「哈哈哈」「你在干嘛」', !['好累', '哈哈哈', '你在干嘛'].some(x => TASK_ASK_RE.test(x))); T(0); }
     // 2026-09-29 Claude 复核补：实机那句是**下一轮**、而且是在**回他的话**
     check('★ 上一轮 sleep ✗（跨轮记录里）→ 这轮"我睡了"照样拦', !!unbackedClaim('我睡了呀 剛起床', [], [{ tool: 'sleep_in_bed', failed: true, why: '现在不是晚上，睡不了', t: Date.now() - 41000 }]));
     check('放东西：store ✗ 就拦', !!unbackedClaim('东西放进去了', [{ tool: 'store_items', out: { ok: false, error: 'invalid operation' } }]));
@@ -3074,4 +3105,4 @@ function cli (argv) {
   return main();
 }
 
-module.exports = { W, emit, think, buildNow, matchFast, humanState, learnFromDoing, repetitionHint, SYSTEM, SPECS, SAY_NUDGE, ALL, MIND_TOOLS, GROUPS, pickSpecs, groupsFromBody, activeGroups, activateGroup, TOOL_GROUPS, GROUP_CUES, combatInstinct, combatGuard, attackGuardReason, isOverAsking, lastProactiveUnanswered, unbackedClaim, claimState, liveFails, FACT_CLAIMS, REPORT_NUDGE, ASK_TOO_MUCH_NUDGE, HONEST_NUDGE, QUIET_MS, ASK_COOLDOWN_MS, cli };   // SYSTEM/SPECS 给 scripts/dialogue-eval.js 离线跑分用
+module.exports = { W, emit, think, buildNow, matchFast, humanState, learnFromDoing, repetitionHint, SYSTEM, SPECS, SAY_NUDGE, ALL, MIND_TOOLS, GROUPS, pickSpecs, groupsFromBody, activeGroups, activateGroup, TOOL_GROUPS, GROUP_CUES, combatInstinct, combatGuard, attackGuardReason, isOverAsking, lastProactiveUnanswered, unbackedClaim, taskDoneAllowed, claimState, liveFails, FACT_CLAIMS, REPORT_NUDGE, ASK_TOO_MUCH_NUDGE, HONEST_NUDGE, QUIET_MS, ASK_COOLDOWN_MS, cli };   // SYSTEM/SPECS 给 scripts/dialogue-eval.js 离线跑分用
