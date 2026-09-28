@@ -708,13 +708,27 @@ async function runTool (name, args) {
   // 以前这里只看 TOOLS，于是这些 info 类工具一被调用就回"没有 X 这个动作"（recall 从没被调过，所以一直没被发现）。
   const t = TOOLS[name] || (typeof MIND_TOOLS !== 'undefined' ? MIND_TOOLS[name] : null);
   if (!t || !t.run) return { ok: false, error: `没有 ${name} 这个动作` };
-  try {
-    const r = await t.run(normalizeArgs(name, args) || {});
-    if (r && (r.success === false || r.ok === false)) return { ok: false, error: r.error || 'failed', ...r };
-    return { ok: true, ...r };
-  } catch (e) {
-    return { ok: false, error: e.message };
-  }
+  const out = await (async () => {
+    try {
+      const r = await t.run(normalizeArgs(name, args) || {});
+      if (r && (r.success === false || r.ok === false)) return { ok: false, error: r.error || 'failed', ...r };
+      return { ok: true, ...r };
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  })();
+  // 每个动作的结果记一行（以前 mind.log 只记"做了什么"，失败原因查不到 —— 2026-09-28 烤羊肉那次就是这样）
+  try { console.log(`   ↳ ${toolResultLine(name, args, out)}`); } catch (_) {}
+  return out;
+}
+
+/** 一个动作的结果压成一行（≤180 字）：成败 + 错误 / 关键字段 */
+function toolResultLine (name, args, out) {
+  const a = args && typeof args === 'object' ? Object.entries(args).filter(([k]) => !/^(inner|text|because)$/.test(k)).map(([k, v]) => `${k}=${typeof v === 'object' ? JSON.stringify(v) : v}`).join(' ').slice(0, 60) : '';
+  if (!out?.ok) return `${name}(${a}) ✗ ${String(out?.error || '失败').replace(/\s+/g, ' ').slice(0, 110)}`;
+  const keys = ['got', 'gained', 'crafted', 'made', 'placed', 'mined', 'picked', 'moved', 'arrived', 'ate', 'caught', 'born', 'tilled', 'note', 'message'];
+  const brief = keys.filter(k => out[k] != null && out[k] !== '').map(k => `${k}=${typeof out[k] === 'object' ? JSON.stringify(out[k]) : out[k]}`).join(' ');
+  return `${name}(${a}) ✓ ${brief}`.replace(/\s+/g, ' ').slice(0, 180);
 }
 
 /** 亲手做成的事，自动记成经验 —— 最牢的一种记忆（比"书上看的"可信） */
@@ -933,7 +947,10 @@ const GROUPS = {
     'self_rescue', 'focus_on', 'plan_view',
     // 2026-09-28 实测回归：主人说"烤羊肉"，smelt 在按需组、关键词里又没有"烤"，她手上没有烧东西的工具，
     // 只好拿生羊肉右键炉灶试了三次放弃。做饭 / 烧东西 / 完整制作链 / 火把 / 放方块是日常动作，常驻。
-    'smelt', 'cook_pot', 'make_item', 'make_torches', 'light_up', 'place'],
+    'smelt', 'cook_pot', 'make_item', 'make_torches', 'light_up', 'place',
+    // 同一次复查：背包 / 拿东西（在矿洞里身边没箱子时 store 组不会被带上）、服务器命令（/home /tpa）、
+    // 水桶（灭火、落地水）、长期计划的更新（闲着接着做要用）、查家里库存（只读）—— 都是日常的，常驻
+    'open_backpack', 'take_items', 'home_stock', 'run_command', 'bucket', 'plan_set', 'plan_step'],
 
   // 按需：建造 / 布置家里
   build: ['place', 'place_nicely', 'place_structure', 'design_build', 'build_work', 'build_status', 'build_cancel',
@@ -975,7 +992,7 @@ W.groupActive = {};   // { [组名]: 到期轮次序号 }
 const GROUP_CUES = [
   { re: /钓鱼|釣魚|渔船|漁船|划船|坐船/u, groups: ['farm'] },
   { re: /做饭|做飯|烤|煮|炒|炖|燉|熔炉|熔爐|烟熏炉|煙熏爐|高炉|高爐|厨锅|廚鍋|炉灶|爐灶|烧成|燒成|冶炼|冶煉|做菜|做吃的/u, groups: ['farm'] },
-  { re: /种地|種地|耕地|庄稼|莊稼|农田|農田|小麦|小麥|胡萝卜|胡蘿蔔|马铃薯|馬鈴薯|南瓜|西瓜|甘蔗|养牛|養牛|畜牧|驯服|馴服|喂食|餵食|收割|播种|播種|浇水|澆水/u, groups: ['farm'] },
+  { re: /种地|種地|耕地|庄稼|莊稼|农田|農田|小麦|小麥|胡萝卜|胡蘿蔔|马铃薯|馬鈴薯|南瓜|西瓜|甘蔗|养牛|養牛|畜牧|驯服|馴服|喂食|餵食|收割|播种|播種|浇水|澆水|剪羊毛|剪毛|挤奶|擠奶|牛奶|繁殖|配种|配種|生小|喂动物|餵動物|喂牛|喂羊|喂猪|喂鸡|餵牛|餵羊|餵豬|餵雞/u, groups: ['farm'] },
   { re: /箱子|箱子里|柜子|櫃子|骨粉盒|仓库|倉庫|储藏|儲藏|整理背包|装进背包|裝進背包|放进去|拿出来的/u, groups: ['store'] },
   { re: /建造|盖房|蓋房|盖房子|蓋房子|建房子|造房子|盖起来|蓋起來|盖个|蓋個|盖一面|蓋一面|砌墙|砌牆|搭墙|搭牆|面墙|面牆|铺地板|鋪地板|盖屋顶|蓋屋頂|装修|裝修|布置|佈置|家具|图纸|圖紙|施工|动工|動工/u, groups: ['build', 'store'] },
   { re: /任务|任務|任务书|任務書|任务奖励|FTBQ|提交任务|交任务|章节奖励|章節獎勵/u, groups: ['quest'] },
@@ -2501,8 +2518,11 @@ async function selftest () {
     check('带上所有组 = 原来的全部工具（一个没丢）', fullNames.length === allNames.length && allNames.every(n => fullNames.includes(n)), [fullNames.length, allNames.length]);
     check('没写进组的工具兜底进 core（不会没人管）', allNames.every(n => (TOOL_GROUPS[n] || []).length > 0), allNames.filter(n => !(TOOL_GROUPS[n] || []).length));
     // 二、常驻组大小受控（审计要 ~25，这里含"看/问/身上活"的都要常在，落在 40 上下可接受）
-    check('常驻组没把全部工具都塞进去（确实分出去了）', coreNames.length < allNames.length && coreNames.length <= 55, coreNames.length);
+    check('常驻组没把全部工具都塞进去（确实分出去了）', coreNames.length < allNames.length && coreNames.length <= 62, coreNames.length);
     check('★ 做饭 / 烧东西 / 制作链常驻（实测：说"烤羊肉"她手上没 smelt）', ['smelt', 'cook_pot', 'make_item'].every(n => coreNames.includes(n)), coreNames.filter(n => /smelt|cook|make/.test(n)));
+    check('★ 背包 / 拿东西 / 服务器命令 / 水桶 / 计划更新常驻', ['open_backpack', 'take_items', 'run_command', 'bucket', 'plan_set', 'plan_step', 'home_stock'].every(n => coreNames.includes(n)), true);
+    check('动作结果一行：失败带原因', /✗ 16 格内没有炉子/.test(toolResultLine('smelt', { itemName: 'mutton' }, { ok: false, error: '16 格内没有炉子' })), toolResultLine('smelt', { itemName: 'mutton' }, { ok: false, error: '16 格内没有炉子' }));
+    check('动作结果一行：成功带关键字段、不带心里话', (() => { const l = toolResultLine('smelt', { itemName: 'mutton', inner: '好香' }, { ok: true, got: { cooked_mutton: 3 } }); return /✓ got=/.test(l) && !/好香/.test(l); })(), true);
     check('冷门工具（fish/animal/ride）不在常驻组，但一个都没删', !['fish', 'animal', 'ride'].some(n => coreNames.includes(n)) && ['fish', 'animal', 'ride'].every(n => allNames.includes(n)), coreNames.filter(n => /fish|animal|ride/.test(n)));
     check('常驻里有 tools 这个元工具（她想不起来还能这么干时能查）', coreNames.includes('tools'));
     // 三、SYSTEM 里点名的工具：要么在常驻组，要么"保证拿得到"（属于某个能激活的按需组）。
