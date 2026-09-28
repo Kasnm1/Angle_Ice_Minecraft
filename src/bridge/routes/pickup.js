@@ -7,6 +7,7 @@
  */
 
 'use strict';
+const { isStandable } = require('../../world/place');   // 拆分时漏搬（原 server.js:31 的解构），2026-09-29 补
 const instinct = require('../../instinct/instinct.js');
 const pathing = require('../../world/pathing');
 

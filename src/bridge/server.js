@@ -25,6 +25,7 @@
  */
 
 'use strict';
+require('../log-stamp');   // 拆分时漏搬的顶层语句，2026-09-29 上线崩溃后补
 
 // ---- 子模块（拆自原 server.js；都是"只定义不执行"）--------------------------
 const config = require('./config.js');

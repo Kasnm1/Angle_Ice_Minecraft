@@ -20,6 +20,7 @@ const __ns = {};
 
 let CFG;
 let MAX_BODY_BYTES;
+let BRIDGE_VERSION, BOT_IDENTITY, MEM_DIR, KB_DIR;   // main() 启动日志用；拆分时漏绑，2026-09-29 上线崩溃后补
 let handlers;
 let state;
 
@@ -288,6 +289,10 @@ const csRoutes = require('../body/commonsense.js').routes({ state });
 function bind (ns) {
   for (const k of Object.keys(ns)) if (!(k in __ns)) __ns[k] = ns[k];
   if (ns.CFG !== undefined) CFG = ns.CFG;
+  if (ns.BRIDGE_VERSION !== undefined) BRIDGE_VERSION = ns.BRIDGE_VERSION;
+  if (ns.BOT_IDENTITY !== undefined) BOT_IDENTITY = ns.BOT_IDENTITY;
+  if (ns.MEM_DIR !== undefined) MEM_DIR = ns.MEM_DIR;
+  if (ns.KB_DIR !== undefined) KB_DIR = ns.KB_DIR;
   if (ns.MAX_BODY_BYTES !== undefined) MAX_BODY_BYTES = ns.MAX_BODY_BYTES;
   if (ns.autoImportPalette !== undefined) autoImportPalette = ns.autoImportPalette;
   if (ns.cfg !== undefined) cfg = ns.cfg;

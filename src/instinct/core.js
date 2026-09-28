@@ -10,6 +10,8 @@
  */
 
 const { monitorEventLoopDelay } = require('perf_hooks');
+const storagePolicy = require('../body/storage-policy');   // 拆分时漏搬的顶层语句，2026-09-29 上线崩溃后补
+const { isHostileEntity } = require('../world/entity-registry.js');   // 拆分时漏搬的顶层语句，2026-09-29 上线崩溃后补
 const __ns = {};
 let CFG, TIER, TIER_NAME, STRUCTURE_SIGNS, COMBAT_YIELD;   // 跨文件常量：load 完成后由 bind() 回填
 function fillCfg (...a) { return __ns.fillCfg.apply(null, a); }

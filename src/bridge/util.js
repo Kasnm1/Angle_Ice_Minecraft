@@ -7,6 +7,7 @@
  */
 
 'use strict';
+const { execFile } = require('child_process');   // 拆分时漏搬（原 server.js:2714），2026-09-29 补
 const cfg = require('./config.js').cfg;
 const pathing = require('../world/pathing');
 const placeLogic = require('../world/place');

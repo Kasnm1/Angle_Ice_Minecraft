@@ -11,6 +11,7 @@
 
 const { Vec3 } = require('vec3');   // 原 hands.js 顶层的那个导入，函数体里直接用了 Vec3
 const paths = require('../paths');
+const SEEN_FILE = require('path').join(paths.MEMORY, 'containers-seen.json');   // 拆分时漏搬的顶层语句，2026-09-29 上线崩溃后补
 
 const __ns = {};
 let FOOD_RE, NOT_FOOD_RE, NOT_STORAGE_RE, STORAGE_RE, TIERS;   // 常量：load 完成后由 bind() 回填

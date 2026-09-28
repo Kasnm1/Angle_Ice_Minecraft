@@ -11,6 +11,7 @@
 
 const { Vec3 } = require('vec3');   // 原 hands.js 顶层的那个导入，函数体里直接用了 Vec3
 const paths = require('../paths');
+const MINES_FILE = require('path').join(paths.MEMORY, 'mines.json');   // 拆分时漏搬的顶层语句，2026-09-29 上线崩溃后补
 
 const __ns = {};
 let N6, REACH;   // 常量：load 完成后由 bind() 回填

@@ -9,6 +9,7 @@
 'use strict';
 const hands = require('../../body/hands.js');
 const placeLogic = require('../../world/place');
+const { isStandable } = require('../../world/place');   // 拆分时漏搬（原 server.js:31 的解构），2026-09-29 补
 
 /** 跨文件符号表：由汇总文件 server.js 在两阶段装配时注入（见本文件末尾 bind）。 */
 const __ns = {};

@@ -11,6 +11,8 @@
 
 const { Vec3 } = require('vec3');   // 原 hands.js 顶层的那个导入，函数体里直接用了 Vec3
 const paths = require('../paths');
+const PROJ_FILE = require('path').join(paths.MEMORY, 'projects.json');   // 拆分时漏搬的顶层语句，2026-09-29 上线崩溃后补
+const LAYOUT_FILE = process.env.MC_LAYOUT_FILE || require('path').join(paths.MEMORY, 'layouts.json');   // MC_LAYOUT_FILE：测试用，别写进真的规划（拆分时漏搬，2026-09-29 补）
 
 const __ns = {};
 let BUILT_RE, FURNITURE_RE, N6;   // 常量：load 完成后由 bind() 回填

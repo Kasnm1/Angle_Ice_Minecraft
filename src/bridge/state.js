@@ -69,6 +69,7 @@ const MAX_BODY_BYTES = 64 * 1024;
 const CHATLOG_MAX = 200;
 
 const chatlog = [];
+state.chatlog = chatlog;   // hands.js 的 /cmd 要核对"玩家真的这么说过"（拆分时漏搬，2026-09-29 补）
 
 function pushChat (text, position) {
   chatlog.push({ t: Date.now(), position: position ?? null, text });

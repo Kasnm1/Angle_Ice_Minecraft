@@ -23,10 +23,12 @@ const path = require('path');
 const pathing = require('../world/pathing');
 const paths = require('../paths');
 const placeLogic = require('../world/place');
+const { pickAutoEquip } = require('../body/equip-policy.js');   // 拆分时漏搬（原 server.js:48），2026-09-29 补
 const storagePolicy = require('../body/storage-policy.js');
 
 /** 跨文件符号表：由汇总文件 server.js 在两阶段装配时注入（见本文件末尾 bind）。 */
 const __ns = {};
+function botPos (...a) { return __ns.botPos.apply(null, a); }   // 拆分时漏了转发壳，2026-09-29 补
 
 let CFG;
 let REGISTRY_DIR;
