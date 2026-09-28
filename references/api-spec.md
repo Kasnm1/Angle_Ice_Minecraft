@@ -983,155 +983,31 @@ Fails with `Player not visible: <name>` if that player isn't in range, or
 
 ---
 
-# Autopilot Control Plane
+# Autopilot Control Plane — REMOVED 2026-09-28
 
-A **second, separate** API surface on its own port (default `127.0.0.1:3002`, local only),
-served by `autopilot.js` — the perceive → decide → act loop. Everything above this line is
-`bridge-server.js` on port 3001 (her hands and eyes); this section is her brain stem.
-
-Both planes return the same envelope: `{"success": true, ...}` or `{"error": "..."}`.
-
-## GET /autopilot
-
-Current state, live config, and the most recent decision.
-
-```json
-{
-  "running": true,
-  "action": "following Ka_sum1",
-  "tick": 412,
-  "uptimeSec": 903,
-  "lastSeenPlayer": {"x": 33, "y": 74, "z": -129, "name": "Ka_sum1", "t": 1790104271379},
-  "task": null,
-  "taskResult": null,
-  "lastDecision": {"action": "follow", "backend": "local", "confidence": 0.8, "menu": ["follow","idle"], "criteria": "…", "state": {"hp": 20}},
-  "lastStuck": {"detail": "连续 3 次清路仍无位移", "at": 1790104271379},
-  "taskFailures": [{"sig": "[\"mine\",\"iron_ore\",3,\"\",\"\",\"\",\"\"]", "failures": 3, "attempts": 3}],
-  "decision": {"configured": "local", "willUse": "local", "jevKeyPresent": false, "jevBreakerOpen": false},
-  "pendingQuestions": [],
-  "ears": {"polls": 451, "heard": 3, "errors": 0, "lastError": null, "lastPollAt": 1790104271379, "intervalMs": 2000},
-  "config": {},
-  "log": []
-}
-```
-
-| Field | Meaning |
-|---|---|
-| `lastDecision` | why she did the last thing — action, backend, confidence, the candidate `menu`, the chosen action's `criteria`, and the state it was decided from |
-| `lastStuck` | most recent stuck verdict (`null` if never). Not spoken aloud — the agent decides whether to tell the player |
-| `taskFailures` | per-task-signature failure/attempt counts driving the retry cap |
-| `decision.configured` | the configured backend (`local` / `jev` / `auto`). **Defaults to `local`** — a key present in the env does *not* switch it |
-| `decision.willUse` | which backend is actually in use (`local` / `jev`), and whether the Jev breaker is open |
-| `pendingQuestions` | things the player asked that the autopilot deliberately does **not** answer — it has no language model; the agent answers these |
-| `ears.polls` | attempts by the independent chat-listening loop. **Climbs even while offline** — that is the point: a counter that only advanced on success could not distinguish "running but can't read" from "not running" |
-| `ears.errors` | consecutive read failures (reset on any success); `lastError` says why (typically `Bot not connected`) |
-| `ears.heard` | player messages caught by the ears loop (her own lines are not counted) |
-
-## GET /autopilot/events?n=30
-
-The structured decision trail (`memory/events.jsonl`), most recent last. `n` is clamped to
-1–500, default 30.
-
-```json
-{
-  "count": 30,
-  "events": [
-    {"t": 1790104271379, "ts": "2026-09-22T19:11:11.379Z", "kind": "decision", "tick": 412,
-     "action": "follow", "backend": "local", "confidence": 0.8,
-     "menu": ["follow","idle"], "criteria": "玩家走远了…", "state": {"hp": 20, "threat": null, "task": null, "player": {"name":"Ka_sum1","distance":9}, "isDay": true},
-     "cached": false, "degraded": null, "lowConfidence": false},
-    {"t": 1790104271450, "ts": "…", "kind": "outcome", "tick": 412, "action": "follow",
-     "ok": true, "error": null, "interrupted": false, "stuck": false, "gaveUp": false, "ms": 71, "note": "following Ka_sum1"},
-    {"t": 1790104271520, "ts": "…", "kind": "task", "phase": "done", "type": "mine", "ms": 8400}
-  ]
-}
-```
-
-Three `kind` values:
-
-| `kind` | Written when | Key fields |
-|---|---|---|
-| `decision` | every tick, after choosing | `action`, `backend`, `confidence`, `menu`, `criteria`, `state` |
-| `outcome` | every tick, after acting | `ok`, `error`, `interrupted`, `stuck`, `gaveUp`, `ms` |
-| `task` | task lifecycle | `phase` = `start` \| `done` \| `failed` \| `interrupted` \| `stuck` \| `gave_up` \| `refused` |
-
-The **menu is recorded on purpose**. Logging only the chosen action makes review impossible —
-you cannot tell a good choice from a forced one. The candidate set is what makes "why this
-one?" answerable.
-
-## GET /autopilot/stats
-
-Aggregate over the whole trail — this is the "can we measure it" endpoint.
-
-```json
-{
-  "path": "…/memory/events.jsonl",
-  "total": 1840, "firstTs": "…", "lastTs": "…",
-  "decisions": 920, "byAction": {"idle": 700, "follow": 180, "work": 40},
-  "byBackend": {"local": 920},
-  "cached": 812, "degraded": 0, "lowConfidence": 3, "avgConfidence": 0.84,
-  "outcomes": 918, "ok": 900, "failed": 18, "interrupted": 6, "stuck": 2,
-  "failureRate": 0.02, "avgMs": 143,
-  "tasksDone": 12, "tasksFailed": 3, "tasksGaveUp": 1, "tasksInterrupted": 2
-}
-```
-
-## POST /autopilot/task
-
-Queue a job for her to pick up on the next tick.
-
-```json
-{"type": "mine", "blockName": "iron_ore", "count": 10}
-```
-
-Task types: `mine` · `collect` · `craft` · `goto` · `follow` · `place` · `give` · `say`.
-
-**409 when the task is exhausted** — the retry cap has been hit, so it is refused up front
-rather than letting her fail the same way again:
-
-```json
-{"success": false, "refused": true,
- "reason": "同一个任务已经失败 3 次（上限 3）",
- "hint": "换个目标/参数，或先 POST /autopilot/config {\"maxTaskFailures\":N} 放宽上限"}
-```
-
-Note the subtlety in the counters: **an interruption is not a failure.** Being chased off a
-mining job by a creeper does not count toward `failures`, and the task is *kept* so she
-resumes it once it is safe. Only genuinely impossible outcomes count, and `attempts` (cap 12)
-exists separately to bound the case where she is repeatedly interrupted without ever failing.
-
-## POST /autopilot/say
-
-```json
-{"message": "诶？我在呀～"}
-```
-
-Bypasses the cooldown and the unsolicited-lecture filter — but still only use it in response
-to the player. See PERSONA.md.
-
-## POST /autopilot/config
-
-Runtime retuning. Only keys already in the config are accepted.
-
-```json
-{"followMax": 10}
-```
-
-> ⚠️ The threshold keys (`followMax`, `criticalHp`, `fightRadius`, `dangerRadius`) are mirrored
-> into `decision.js`'s `TUNING`, because the action menu is built from `TUNING`. Setting only
-> one copy gives you a parameter that moves without changing behaviour.
-
-## POST /autopilot/forget
-
-Clear task-failure counts, so a previously exhausted task can be attempted again. Needed
-because the counters otherwise persist for the process lifetime — if the player hands her a
-pickaxe after three "no path" failures, she must be allowed to try again.
-
-```json
-{}                 // clear everything  -> {"cleared": 4}
-{"type": "mine"}   // only mine tasks   -> {"cleared": 2, "type": "mine"}
-```
-
-## POST /autopilot/stop
-
-Stop the loop; the process exits shortly after. `{"stopping": true}`.
+> ⚠️ **This entire section is historical.** The second API surface on port `3002`, served by
+> `autopilot.js` (the perceive → decide → act loop), **no longer exists** — `autopilot.js`
+> and its decision backend `decision.js` were deleted on 2026-09-28. So were:
+>
+> `GET /autopilot` · `GET /autopilot/events` · `GET /autopilot/stats` ·
+> `POST /autopilot/task` · `POST /autopilot/say` · `POST /autopilot/config` ·
+> `POST /autopilot/forget` · `POST /autopilot/stop`
+>
+> **Everything above this line** (port 3001, `bridge-server.js`) and the mind
+> (`mind.js`, port 3003) is still live. Nothing calls port 3002 any more.
+>
+> What replaced the autopilot: the **instinct layer** (`instinct.js`, in-process with the
+> bridge — inspect it with `GET :3001/instinct` and `POST :3001/instinct`) and the **mind**
+> (`mind.js` + `body.js`, :3003).
+>
+> **Two endpoints' worth of behaviour survived**, because something else still needed it:
+>
+> - `pickAutoEquip` (used by `POST /equip {auto:true, want:…}` and by the instinct before a
+>   fight) moved verbatim to `equip-policy.js`.
+> - the read side of the decision trail moved to `events-reader.js` — offline only, no route:
+>   `node events-reader.js --tail 30`. The trail itself (`memory/events.jsonl`) is frozen; the
+>   write side is gone, so the aggregate `--stats` view was not carried over.
+>
+> See `docs/REFACTOR-PLAN-20260928.md` (step 1) for the full list of what was deleted and why.
+>
+> The rationale below is retained for reference only. **Do not build against it.**

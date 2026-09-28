@@ -127,7 +127,7 @@ switch ($cmd) {
   }
   'selftest' {
     Set-Location $Root
-    foreach ($f in 'knowledge.js', 'ambition.js', 'memory-store.js', 'speech.js', 'pathing.js', 'place.js', 'hands.js', 'mind.js', 'palette-registry.js', 'block-palette.js', 'item-registry.js', 'llm-workbuddy.js') {
+    foreach ($f in 'knowledge.js', 'ambition.js', 'memory-store.js', 'speech.js', 'pathing.js', 'place.js', 'hands.js', 'mind.js', 'palette-registry.js', 'block-palette.js', 'item-registry.js', 'equip-policy.js', 'llm-workbuddy.js') {
       $out = (& $Node $f --selftest 2>&1 | Out-String)
       $sum = [regex]::Matches($out, '\d+ */ *\d+ *通过|\d+ passed, \d+ failed') | Select-Object -Last 1
       $fails = ([regex]::Matches($out, '(?m)^\s*FAIL.*$') | ForEach-Object { $_.Value.Trim() }) -join ' | '

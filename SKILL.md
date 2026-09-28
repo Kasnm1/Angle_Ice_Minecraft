@@ -37,7 +37,13 @@ metadata:
 
 > 📌 **2026-09-27 更新说明**：本手册的**底层部分仍然准确**（方块/物品认知、调色板、Forge 握手、寻路安全、API）。
 > 但写它时还没有上面两层：**本能层**（`instinct.js`，bridge 进程内）和**意识层**（`mind.js` + `body.js` + 长期计划 `plan.js`，:3003）。
-> 现在部署只起 `bridge-server.js` + `mind.js`；下文讲 `autopilot.js` 的部分是**旧自主层**，留作参考。
+> 现在部署只起 `bridge-server.js` + `mind.js`。
+>
+> 📌 **2026-09-28 再更新**：旧自主层（`autopilot.js` `decision.js` `reflex.js` `events.js`
+> 写入侧 `journal.js` `brain.js`）**已删除**，`HANDOVER.md` / `STATUS.md` / `skill-card.md`
+> 也删了。下文相关段落已标注为历史，**不再描述在跑的代码**。`pickAutoEquip` 搬到了
+> `equip-policy.js`；`memory/events.jsonl` 留了只读的 `events-reader.js`。
+> 见 [`docs/REFACTOR-PLAN-20260928.md`](docs/REFACTOR-PLAN-20260928.md)。
 > 游戏内 ID 已改名 **`Angle_ICE`**（下文的 `Angel_ICE` 是旧名）。开发入口见 [`AGENTS.md`](AGENTS.md)。
 
 # Minecraft Bridge
@@ -772,59 +778,71 @@ name resolution, re-injection leaving no ghost entries, `clearInjected` restorin
 snapshot. Without something driving it, the bot just stands there — it has hands and eyes
 but no brain stem. Two things provide that:
 
-### `autopilot.js` — the real answer (recommended)
+### `autopilot.js` / `decision.js` — **DELETED 2026-09-28, keep as history**
 
-```bash
-node autopilot.js
-```
+> ⚠️ **This whole section is history.** `autopilot.js` (the rule-based brain stem on :3002),
+> `decision.js` (its action-menu + pluggable `local`/`jev` backend) and the two modules that
+> only served it — `reflex.js`, `events.js` (write side), `journal.js` — were **deleted on
+> 2026-09-28**, together with `brain.js`, `HANDOVER.md`, `STATUS.md`, `skill-card.md` and the
+> dev-only scripts `scripts/jev-contract-test.js` / `scripts/watch-player.js` /
+> `scripts/journal-compact.js`. See `docs/REFACTOR-PLAN-20260928.md` (step 1).
+>
+> What replaced it: the **instinct layer** (`instinct.js`, in-process with the bridge) and the
+> **mind** (`mind.js` + `body.js`, :3003). The bridge still listens for chat, still has a
+> watchdog for long actions, and still records to `memory/journal.md` —
+> those lived in `bridge-server.js`, not in the autopilot.
+>
+> Two things survived the deletion, because they were still in use:
+>
+> - **`pickAutoEquip`** — "what should she be holding" — moved **verbatim** to
+>   [`equip-policy.js`](equip-policy.js). `POST /equip {auto:true, want:…}` uses it, and the
+>   instinct passes it to `instinct.install()` to pick a weapon before a fight.
+>   `node equip-policy.js --selftest` (21 cases).
+> - **the `memory/events.jsonl` read side** — the historical decision trail (a ~900 KB file,
+>   last written 2026-09-25) is still valuable evidence, so a minimal reader lives on as
+>   `events-reader.js`. The **write** side is gone, and the aggregate `--stats` view was not
+>   carried over: nothing generates those records any more. `node events-reader.js --tail 30`.
+>
+> The rest of this section is kept only so the design rationale is not lost — **none of it
+> describes code that runs today.**
 
-A separate process that talks to the bridge over HTTP on a tick loop
-(perceive → decide → act). It is **not** a wrapper around the bridge — you can stop and
-start it without dropping the bot.
+#### Where the decisions *used* to live — `decision.js`
 
-#### Where the decisions live — `decision.js`
-
-The tick does **not** contain a hardcoded priority chain. It asks `decision.js`, which is
+The old tick did **not** contain a hardcoded priority chain. It asked `decision.js`, which was
 built around two ideas borrowed from Jev (TypeSafe AI's System One decision model, 2026-09)
 and from `rmalde/minecraft-agent` (Astra planner + JEV controller, 8m43s Ender Dragon run):
 
 1. **Possible vs advisable are different questions.**
-   `buildActionMenu(state)` returns only the actions that are *physically doable right now*.
-   Impossible ones **never enter the menu** — a creeper at melee range does not get
-   "attack" with a low score, "attack" is simply absent. The backend then picks among the
+   `buildActionMenu(state)` returned only the actions that are *physically doable right now*.
+   Impossible ones **never entered the menu** — a creeper at melee range did not get
+   "attack" with a low score, "attack" was simply absent. The backend then picked among the
    survivors. "Should I" is the model's job; "can I" is not.
-2. **The backend is pluggable, and `local` is the default — it does *not* switch itself.**
+2. **The backend was pluggable, and `local` was the default — it did *not* switch itself.**
    - `local` — deterministic rules, no network, works offline (**the default**)
    - `jev` — real API call, needs a TypeSafe API key
    - `auto` — use Jev if a key is present, else local
 
 ```bash
-node autopilot.js                    # default: local, even if a key is in the env
 MC_DECISION_BACKEND=jev node autopilot.js     # opt in explicitly
-MC_DECISION_BACKEND=auto node autopilot.js    # the old "key present → jev" behaviour
-# JEV_API_KEY is also accepted (this project's earlier name); TYPESAFE_API_KEY is preferred
+# JEV_API_KEY was also accepted (this project's earlier name); TYPESAFE_API_KEY was preferred
 ```
 
-> ⚠️ **The default used to be `auto` (key present → Jev). It is now `local`.** A paid external
-> dependency must be **opted into**, never opted out of — otherwise the day a key appears in
-> the environment, her behaviour changes silently *and* starts costing money. `decision.js`
-> pins this with five assertions that read the default in a clean-env subprocess, including
-> "a key is present but the backend is still `local`".
+> ⚠️ **The default used to be `auto` (key present → Jev), and was changed to `local`.** A paid
+> external dependency must be **opted into**, never opted out of — otherwise the day a key
+> appears in the environment, her behaviour changes silently *and* starts costing money.
+> `decision.js` pinned this with five assertions read in a clean-env subprocess, including
+> "a key is present but the backend is still `local`". **That test is gone with the file** —
+> if the pattern is ever reintroduced, reintroduce the guard with it.
 
-With no key it uses `local` and everything still works — the menu, the guard, the
-confidence gate and the event trail are all backend-independent.
-
-##### The Jev endpoint — get this right, it was wrong once
+##### The Jev endpoint — the shape, if you ever wire a decision model back in
 
 ```bash
 POST https://api.typesafe.ai/v1/systemone
 Authorization: Bearer $TYPESAFE_API_KEY
 ```
 
-**Not** an OpenAI-compatible `chat/completions` shape. The body is
+**Not** an OpenAI-compatible `chat/completions` shape. The body was
 `{model, state, questions}`; `questions` is a map of `{type, instructions, criteria}`.
-Verified against the official quickstart, and pinned by a regression test
-(`scripts/jev-contract-test.js` asserts the default URL, so this cannot silently drift again).
 
 | Type | `criteria` shape | Response fields |
 |---|---|---|
@@ -835,259 +853,48 @@ Verified against the official quickstart, and pinned by a regression test
 `noul` genuinely returns no confidence — that is official behaviour, not a parsing bug, so
 any caller reading `confidence` must tolerate its absence.
 
-Get a key at <https://console.typesafe.ai/> (new accounts get **$5 of credit**, ≈120M input
-tokens at the current rate). Model aliases `jev-latest` / `jev-preview` both resolve to
-`jev-1.13.0`; we **pin the version** rather than use the alias, per the official advice that
-you should pin a version if you have tuned confidence thresholds against it.
-
 > ⚠️ **Chinese criteria are an unmeasured risk.** The official model page says English is the
 > primary training language and where accuracy is best, and that **CJK scripts are handled but
 > not equally well** — test on your own content before relying on Jev for non-English work.
-> Our criteria were all Chinese, which means a bad result could be misread as "Jev is bad"
-> when the real cause is language. So criteria are bilingual and switchable:
->
-> ```bash
-> MC_CRITERIA_LANG=en node autopilot.js     # isolate the language variable in one run
-> ```
->
-> The state itself is mostly English/enum values (`hp`, `threat.name='zombie'`,
-> `task.type='mine'`), so the Chinese exposure is exactly the criteria + instructions —
-> precisely what this switch covers.
+> Our criteria were all Chinese, which meant a bad result could be misread as "Jev is bad"
+> when the real cause was language. That is why the criteria were bilingual and switchable
+> (`MC_CRITERIA_LANG=zh|en`). **Keep this lesson if you reintroduce a model-driven backend.**
 
-**Confidence gate:** if the backend returns confidence below `MC_MIN_CONFIDENCE`
-(default 0.55) she does *not* act on it — she idles. Fail closed, not "pick something".
+**What else the deleted layer did, in one paragraph each — worth reusing if the need comes back:**
 
-> ⚠️ That 0.55 is a guess, not a calibrated threshold. The official docs are explicit that
-> confidence is derived from the probability distribution and is **not** an independent
-> verifier — thresholds must be tested against labelled examples from your own workload.
-> Once there are real decision records in `events.jsonl`, calibrate it from those.
+- **Confidence gate** — below `MC_MIN_CONFIDENCE` (default 0.55) she idled rather than acting.
+  Fail closed, not "pick something". The 0.55 was explicitly a **guess, not calibrated**.
+- **Circuit breaker** — a failing Jev was skipped for 60s so a 6s timeout could not stall a
+  1.5s tick. **Degraded results were never cached** — caching a fallback would freeze one
+  transient blip onto that decision identity.
+- **Watchdog on long actions** — `await post('/mine', …)` blocked the loop for up to 45s, so a
+  creeper could walk up unnoticed; the watchdog polled every 700ms and called `POST /stop` on
+  danger (health ≤ 8 / a creeper within 6 / any hostile within 3). **The instinct layer and
+  the bridge's own guards cover this need now.**
+- **Stuck detection** — *"intent to move, but almost no displacement"*, not merely "didn't
+  move" (standing still while idle is correct). ~21s of intent-without-motion meant stuck.
+- **Ears = a second loop** — chat was read at the *top* of the tick, so during a 45s action she
+  **could not hear you at all**. `earsLoop()` polled `GET /chatlog` alongside. The rule it
+  established: the only legitimate reason to run something in parallel is **to move I/O
+  waiting off a time-sensitive path**. Health was exposed as `polls` / `errors` / `heard`,
+  with `polls` climbing **even while offline** so "running but can't read" was distinguishable
+  from "not running". **This reasoning still applies to `instinct.js`.**
+- **Retry cap** — the classic agent death spiral is spinning forever on an unreachable goal.
+  Two counters: `failures` (genuinely impossible, cap 3) and `attempts` (everything
+  non-successful including interruptions, cap 12). **An interruption did not count as a
+  failure** — a creeper walking past is not the task's fault, and the interrupted task was
+  *kept* so she resumed it. Once exhausted, `POST /autopilot/task` refused it with 409.
+- **Decision trail** — recorded the **menu**, not just the choice, because logging only "she
+  picked `idle`" makes review impossible: maybe nothing else was available. (The same *store
+  the why, not just the what* idea WISE's causal event graph is built on.) `append()` never
+  threw, bad lines were skipped on read, the file self-trimmed past 2 MB.
 
-**Circuit breaker:** if Jev fails, it is skipped for 60s and the local rules take over.
-Without this, a 6s Jev timeout on a 1.5s tick would stall the whole loop.
-
-> ⚠️ **Degraded results are never cached.** A fallback is not a decision — caching it would
-> freeze one transient blip onto that decision identity, so she would keep using the local
-> rules even after Jev recovered, without ever retrying upstream. (Found by the contract test:
-> testing 429 then 500, the second call got the cached 429 result and the 500 path never ran.)
-
-#### ⚠️ Long actions get a watchdog — this is what makes her feel alive
-
-A real player keeps glancing around while mining. The original code did
-`await post('/mine', …)` for **up to 45 seconds** with the loop fully blocked — so a creeper
-could walk up and she would not react until the call returned. **Faster decisions don't help
-if the decision loop is blocked.**
-
-Long actions (`mine` / `collect` / `craft` / `goto` / `place` / `give`) now run with a
-watchdog polling every 700ms; on danger it calls `POST /stop` to interrupt and reports why.
-
-Interruption is deliberately conservative — a zombie 6 blocks away while walking is normal,
-and stopping for it would cause a stop/resume/stop stutter:
-
-| Situation | Interrupt? |
-|---|---|
-| health ≤ 8 | ✅ |
-| a `DO_NOT_MELEE` mob (creeper) within 6 blocks | ✅ |
-| any other hostile within 3 blocks | ✅ |
-| zombie 6 blocks away | ❌ |
-
-Being interrupted is reported as "先躲一下" (danger), not "我做不到" (failure) — different
-branch, different line, because it is not a failure.
-
-**The same watchdog also does stuck detection.** This is not decoration: the main `tick` is
-blocked inside `await runTask()`, so it cannot possibly notice that she has been walking
-into a wall for 20 seconds. Only the concurrent watchdog can see it.
-
-The rule is *"intent to move, but almost no displacement"* — not merely "didn't move",
-because standing still while idle is correct:
-
-| Signal | Meaning |
-|---|---|
-| intent to move + moved ≥ 0.1 blocks | fine, counter resets |
-| intent to move + moved < 0.1 for ~21s | **stuck** → `POST /stop` to clear the path and let the main loop re-plan |
-| idle / not a moving action | not evaluated at all |
-
-A blocked path is not a failure — it is "this route is no good", so `S.task` is **kept** and
-the next tick re-issues it. Three failed clear-outs escalate to a real `stuck` verdict, which
-the retry cap below then handles.
-
-#### ⚠️ Listening is a *second* loop, for the same reason the watchdog is
-
-The watchdog exists because the main `tick` blocks. **Chat has exactly the same problem**, and
-it was worse than it looks: `chatlog` is read at the *top* of `tick`, so while she is inside
-`await perform()` — up to 45s of mining or walking — she is not merely slow to answer, she
-**cannot hear you at all**. You would have to wait for the ore to be mined.
-
-So `earsLoop()` runs alongside the main loop, polling `GET /chatlog` every `MC_EARS_MS`
-(default 2000ms) and feeding the same `watchChat()`.
-
-> **This is not "a third sub-agent", and the distinction matters.** It makes no decisions,
-> touches no body state, and changes nothing — it does one **I/O-bound** thing (read chat).
-> The only legitimate reason to run something in parallel is **to move I/O waiting off a
-> time-sensitive path**, which is the same rule the watchdog follows. There is exactly one
-> body, and only `tick` ever moves it. That is why "acting" cannot be parallelised and
-> "listening" can.
-
-`watchChat()` is **idempotent** (deduped through `S.seenChat`), which is what makes it safe for
-both loops to call it — no double acknowledgements. A self-test pins this, plus the invariant
-that `earsMs` is at least 10× smaller than `actionTimeoutMs` (otherwise moving it off the tick
-would buy nothing).
-
-Health is exposed so you can tell "running but can't read" from "not running at all":
-
-```bash
-curl --noproxy '*' http://127.0.0.1:3002/autopilot | grep -A6 '"ears"'
-# {"polls":4,"heard":0,"errors":4,"lastError":"Bot not connected","intervalMs":2000}
-```
-
-`polls` must keep climbing **even while offline** — if the counter only advanced on success,
-a healthy-but-offline loop would be indistinguishable from a dead one. `errors` (reset on any
-success) then tells you *why* it can't read.
-
-#### ⚠️ The retry cap — how she avoids the classic agent death spiral
-
-The single most common way a long-horizon agent dies is *spinning forever on a goal it can
-never reach*: retry → fail → retry, looking busy while accomplishing nothing. There is now a
-cap, counted two ways because "didn't succeed" has two very different flavours:
-
-| Counter | Counts | Cap | Why |
-|---|---|---|---|
-| `failures` | genuinely impossible (no path, no item, guard blocked) | `maxTaskFailures` (3) | retrying an impossible goal is pointless |
-| `attempts` | *everything* non-successful, including interruptions | `maxTaskAttempts` (12) | bounds the case where she is repeatedly interrupted and never actually fails |
-
-**An interruption does NOT count as a failure.** A creeper walking past is not the task's
-fault, and she should resume the job afterwards — which she now does, because an interrupted
-task is *kept*, not discarded. That is what a real player does; being interrupted once does
-not make you forget what you were doing.
-
-Once a task is exhausted, `POST /autopilot/task` **refuses it immediately (409)** instead of
-letting her walk into the same wall again — the agent learns right away instead of finding out
-from the log 40 seconds later. Clear the record when the situation changes (the player gives
-her a pickaxe, she moves somewhere else):
-
-```bash
-curl --noproxy '*' -X POST http://127.0.0.1:3002/autopilot/forget \
-  -H 'Content-Type: application/json' -d '{"type":"mine"}'
-```
-
-#### Decision trail — `memory/events.jsonl` (measure before optimising)
-
-`memory/journal.md` is her **prose diary** — warm, readable, and completely unparseable:
-
-```
-- [02:36:24] (chat) <Angel_ICE> 唔…我记不清具体是哪几块了啦（心虚低头）
-```
-
-That is fine for humans, but it left a real gap: a dozen improvement ideas were on the table
-and **not one of them could be verified**, because nothing recorded *what she decided, on what
-basis, and how it turned out*. `events.js` fills that half in — one JSON line per decision and
-per outcome, in `memory/events.jsonl`:
-
-```bash
-node events.js --tail 30     # human-readable tail
-node events.js --stats       # action counts, failure rate, stuck count, cache hits
-node events.js --path        # where it writes
-curl --noproxy '*' 'http://127.0.0.1:3002/autopilot/events?n=30'
-curl --noproxy '*' http://127.0.0.1:3002/autopilot/stats
-```
-
-It records the **menu**, not just the choice. Logging only "she picked `idle`" is useless for
-review — maybe nothing else was available. Recording the candidate set is what lets you ask
-"what were her options, and why this one" (the same *store the why, not just the what* idea
-that WISE's causal event graph is built on).
-
-Writing is best-effort by design: `append()` **never throws**, bad lines are skipped on read,
-and the file self-trims past 2 MB. Losing a log line must never stop her from playing.
-
-#### Control plane (`127.0.0.1:3002`, local only)
-
-| Route | What it does |
-|---|---|
-| `GET /autopilot` | current action, tick, pending questions, `lastDecision`, `lastStuck`, `taskFailures`, decision-backend status, **`ears` health**, last 12 log lines, live config |
-| `GET /autopilot/events?n=30` | the structured decision trail (`memory/events.jsonl`) |
-| `GET /autopilot/stats` | aggregate: action counts, failure rate, stuck count, cache hits |
-| `POST /autopilot/task` | queue a job: `{"type":"mine","blockName":"iron_ore","count":10}` |
-| `POST /autopilot/say` | have her say something (bypasses cooldown) |
-| `POST /autopilot/config` | retune at runtime: `{"followMax":10}` |
-| `POST /autopilot/forget` | clear task-failure counts (`{"type":"mine"}`, or all) |
-| `POST /autopilot/stop` | stop the loop |
-
-`lastDecision` answers "why did she do that" — action, backend, confidence, and any
-degradation reason.
-
-> ⚠️ `POST /autopilot/config` mirrors the threshold keys (`followMax`, `criticalHp`,
-> `fightRadius`, `dangerRadius`) into `decision.js`'s `TUNING`. Change only one and you get
-> the worst kind of bug: the parameter moves but the behaviour doesn't.
-
-Task types: `mine` · `collect` · `craft` · `goto` · `follow` · `place` · `give` · `say`.
-`mine` auto-equips the best pickaxe first — without it she digs stone at a crawl.
-`place` needs `{x,y,z}` (she puts a block back); `give` hands an item to `playerName`
-(approaches first, then tosses it toward them).
-
-```bash
-# send her off to mine 10 iron ore, then watch what she's doing
-curl --noproxy '*' -X POST http://127.0.0.1:3002/autopilot/task \
-  -H 'Content-Type: application/json' -d '{"type":"mine","blockName":"iron_ore","count":10}'
-curl --noproxy '*' http://127.0.0.1:3002/autopilot
-
-# have her put a block back, or hand one over
-curl --noproxy '*' -X POST http://127.0.0.1:3002/autopilot/task \
-  -H 'Content-Type: application/json' -d '{"type":"place","itemName":"white_wool","x":35,"y":74,"z":-135}'
-curl --noproxy '*' -X POST http://127.0.0.1:3002/autopilot/task \
-  -H 'Content-Type: application/json' -d '{"type":"give","itemName":"white_wool","playerName":"Ka_sum1"}'
-```
-
-#### Speaking discipline — the whole point
-
-`speak()` is the only way she talks, and it enforces:
-
-- a cooldown between utterances
-- no repeating herself
-- **a `looksLikeLecture()` filter that drops unsolicited tutorial text**
-
-She speaks only when asked, or when there is real danger / she is the one in trouble.
-A companion that recites the quest book at you unprompted is a bad companion.
-Verify the filter after touching the patterns:
-
-```bash
-node autopilot.js --selftest            # 54 cases — speech filter, watchdog, stuck detection, retry cap, ears contract
-node decision.js --selftest             # 37 cases — action menu, backend, guard, bilingual criteria, default-backend regression
-node events.js --selftest               # 17 cases — trail write/read/aggregate, corrupt-line tolerance
-node place.js --selftest                # 23 cases — the four placement conditions
-node pathing.js --selftest              # 119 cases — protected blocks, cost invariants, policy assembly, registry probe, climbable blocks
-node scripts/jev-contract-test.js       # 34 cases — Jev endpoint, request/response contract, degradation
-```
-
-All six exit non-zero on failure — **284 assertions total**. Run them after touching decision
-logic; the whole point of extracting `decision.js` / `place.js` / `events.js` was to make this
-testable without a live server.
-
-Two of these exist specifically because the logic they cover **cannot be reached offline**:
-
-- `place.js` — the four placement conditions are pure geometry, but `/place` can only be
-  exercised against a live server, and placement is the operation most prone to *silent*
-  failure (the client predicts success that the server never accepted). Extracting the
-  geometry lets all six faces × four failure modes be enumerated with no server at all.
-  **`bridge-server.js` requires this module** — the tested code is the shipped code.
-- `pathing.js` — the movement policy only exists after `spawn` (it needs
-  `bot.registry.blocksByName`), so `GET /config` returns `pathfinder: null` while the world
-  is closed and the policy is unreachable by hand. Two things were checked offline instead:
-  the 87-assertion suite over the pure functions, **and** an assembly dry-run against the
-  real `minecraft-data` 1.20.1 registry — 613 of 1003 blocks protected, zero false
-  positives on natural terrain. `bridge-server.js` requires this module too.
-- the retry cap in `autopilot.js` — `tick()` returns before deciding while the server is
-  down, so the cap would otherwise never run until the player logs in.
-- the **ears contract** — `earsLoop()` is an async I/O loop that cannot run offline, so the
-  self-test pins what it *depends on* instead: that `watchChat()` is idempotent (both loops
-  call it), that her own lines are not counted as "heard", and that `earsMs` stays ≥10×
-  smaller than `actionTimeoutMs`. Without that last one, moving chat off the tick buys nothing.
-
-`jev-contract-test.js` starts a **fake Jev server**, so it verifies the request body shape
-(`criteria` must be `{optionName: criteria}` for `choice` and an ordered **array** for `score`
-— not our internal array with `priority`), the auth header, the response parsing including
-`noul`'s missing `confidence`, and degradation on 429 / 500 / malformed-200 plus the circuit
-breaker. It also **asserts the default endpoint URL**, because that value was wrong once and
-silently cost a full integration. **All of that without an API key.** When a real key arrives,
-the only thing left to verify is whether the model actually decides well.
+> **The historical `--selftest` numbers, for reference:** `autopilot.js` 54 / `decision.js` 37 /
+> `events.js` 17 / `place.js` 23 / `pathing.js` 119 / `scripts/jev-contract-test.js` 34.
+> The `place.js` and `pathing.js` suites are **still live** (`node place.js --selftest`,
+> `node pathing.js --selftest`) — those modules were not touched by the deletion.
+> `bridge-server.js` still requires both, so in those two cases the tested code is still the
+> shipped code.
 
 ### `scripts/scan-blocks.py` — verifying what you placed
 
@@ -1099,16 +906,17 @@ Because block *names* are unreliable on modded servers (see below), the way to c
 placement is to scan before and after and diff the **changed set** — never trust a single
 coordinate's name.
 
-### `scripts/watch-player.js` — minimal alternative
+### `scripts/watch-player.js` — **DELETED 2026-09-28**
 
-```bash
-node scripts/watch-player.js Ka_sum1            # follow on login, say nothing
-node scripts/watch-player.js Ka_sum1 --greet    # also greet (off by default)
-```
-
-Narrower and older: it only follows (and optionally greets). Superseded by `autopilot.js`
-unless you want exactly this one action. Greeting is **opt-in** — see PERSONA.md on why
-she does not greet unprompted.
+> ⚠️ This script is gone. It was the narrowest possible automation ("player logs in → follow,
+> optionally greet") and was already superseded by `autopilot.js`, which is itself gone.
+> **What to use now:** the instinct layer picks up on players on its own (it looks at whoever
+> `noteSelfSpoke` marked as a recent interaction), and `mind.js` decides whether to walk over.
+> See the *Being Present* section above.
+>
+> The one idea worth keeping: greeting was **opt-in** — see `PERSONA.md` on why she does not
+> greet unprompted. She expresses attention with her body (turning her head, walking over),
+> not with her mouth.
 
 > Pair either one with a scheduled automation if the agent should *also* be told the
 > player came online — neither script notifies anyone.
@@ -1490,11 +1298,16 @@ Core endpoints:
 - `POST /chat` — send in-game chat
 - `POST /command` — send arbitrary slash commands; use with caution
 
-The **autopilot control plane** lives on its own port (default `3002`) — see
-[`### autopilot.js`](#autopilotjs--the-real-answer-recommended) above:
-- `GET /autopilot` — action, tick, pending questions, `lastDecision`, `lastStuck`, `taskFailures`, `ears` health, live config
-- `GET /autopilot/events?n=30` / `GET /autopilot/stats` — the structured decision trail
-- `POST /autopilot/task` / `POST /autopilot/say` / `POST /autopilot/config` / `POST /autopilot/forget` / `POST /autopilot/stop`
+The **autopilot control plane** (port 3002) is **gone** — `autopilot.js` was deleted
+2026-09-28, so none of `GET /autopilot`, `/autopilot/events`, `/autopilot/stats`,
+`POST /autopilot/{task,say,config,forget,stop}` exist any more. The historical decision trail
+it wrote to `memory/events.jsonl` is still readable offline:
+
+```bash
+node events-reader.js --tail 30
+```
+
+Live state lives on the bridge (`:3001`, see above) and the mind (`:3003`).
 
 > `POST /command` returns only `{"executed": "/list"}`. To see what a command actually
 > printed, call `GET /chatlog` afterwards.
@@ -1538,5 +1351,4 @@ Auto-reconnect is built in — bridge retries every 5 s after disconnect.
 - `references/forge-fml-handshake.md` — Forge FML login handshake: wire format, reverse-engineering method, per-mod reply derivation
 - `fml-handshake.js` — The FML handshake implementation (enable with `MC_FORGE=1`)
 - `scripts/scan-login-channels.py` — Scan a mods dir for login-handshake registrations
-- `scripts/watch-player.js` — Watch for a player joining, greet them, optionally follow
 - `scripts/start.sh` / `scripts/stop.sh` — Convenience wrappers

@@ -41,10 +41,11 @@ function installReplaceable () {
 // 寻路策略（"绕路优先、拆方块是最后手段"）住在 pathing.js 里 —— 同样是纯函数、
 // 可离线穷举，见 `node pathing.js --selftest`。这里只负责把它装到 Movements 上。
 const pathing = require('./pathing');
-// 「该换什么到手上来」的判据住在 decision.js 里 —— 纯函数、可离线穷举，
-// 见 `node decision.js --selftest`（第 6 段）。放那边而不是这里，是因为
-// autopilot 也要用同一份判据来表达"我想换手"，两边各写一遍必然漂移。
-const { pickAutoEquip } = require('./decision.js');
+// 「该换什么到手上来」的判据住在 equip-policy.js 里 —— 纯函数、可离线穷举，
+// 见 `node equip-policy.js --selftest`。单独一个模块而不是塞进这里，是因为
+// 本能层（instinct.js 打怪前挑武器）也要用同一份判据，两边各写一遍必然漂移。
+// （2026-09-28 重构第 1 步：原来它在 decision.js 里，旧脑干删除时**原样**搬出来。）
+const { pickAutoEquip } = require('./equip-policy.js');
 // 「全局 state id → 真实方块名 + 属性值」。数据来自客户端导出的调色板 dump，
 // 见 block-palette.js 顶部对"为什么方块名拿不到、为什么只能这么拿"的完整说明。
 const blockPalette = require('./block-palette.js');
@@ -3704,7 +3705,7 @@ const handlers = {
     //
     // 这不是"多加一个字段"，是**把判断搬到数据旁边**：
     //   · 上层拿到 `harvestable` 就能直接决策，不用再发一轮请求
-    //   · 判断规则只写一遍，不会出现"decision.js 和 autopilot.js 各有一套"
+    //   · 判断规则只写一遍，不会出现"两个模块各有一套"
     //
     // `worthMining` 的判据：这个方块**能挖动**，且**挖了真的有产出**。
     //
@@ -4420,9 +4421,9 @@ const handlers = {
   //   ① `{ itemName: 'diamond_pickaxe' }` —— 明确指定换哪件（原行为，未变）
   //   ② `{ auto: true, want: 'tool'|'weapon'|'any' }` —— 让服务端**按当下情境**决定
   //
-  // 为什么要有 ②：判据只能住在看得见 `heldItem` 的那一侧。autopilot 那边
-  // 只表达"我想换"（它在决策菜单里没有"换哪件"这个维度），
-  // 真正的挑选在 decision.js 的 `pickAutoEquip` 里，可离线穷举。
+  // 为什么要有 ②：判据只能住在看得见 `heldItem` 的那一侧。本能在决策时
+  // 只表达"我想换"（它没有"换哪件"这个维度），
+  // 真正的挑选在 equip-policy.js 的 `pickAutoEquip` 里，可离线穷举。
   'POST /equip': async ({ itemName, destination = 'hand', auto = false, want = 'any' }) => {
     if (auto) {
       const held = state.bot.heldItem?.name ?? null;

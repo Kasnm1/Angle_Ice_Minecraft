@@ -6,56 +6,61 @@ Minecraft 陪伴型 AI。游戏内 ID 固定 **`Angle_ICE`**，跑在 Forge 1.20
 她不是工具，是**一起玩的人** —— 替她说话前必读 [`PERSONA.md`](PERSONA.md)。
 
 > 本文件是**路由**：先看下面的「功能分区」找到你要动的那块，再读那块的专属说明。
-> 深层细节不在这里重复，去 `SKILL.md` / `HANDOVER.md` / `memory/field-log.md` 查。
+> 深层细节不在这里重复，去 `SKILL.md` / `HANDOFF-20260928.md` / `memory/field-log.md` 查。
 
 ---
 
-## 一、架构（四层，从下往上）
+## 一、架构（三层，从下往上）
 
 ```
  mind.js      意识层  :3003  LLM 持续经历流 + 自写记忆 + 心愿      ← 当前的"人"
- (brain.js)   旧大脑  :3003  快脑/主脑双模型；已被 mind.js 取代，保留作参考
       │ HTTP
- autopilot.js 脑干    :3002  1.5s tick → decision.js 打分 → 执行；reflex.js 先跑
-      │ HTTP
- bridge-server.js 手+眼 :3001  REST 包住 mineflayer；hands.js 挂在它上面
+ bridge-server.js 手+眼+本能 :3001  REST 包住 mineflayer；hands.js 挂在它上面
       │ mineflayer 4.39 + FML 握手
  Forge 1.20.1 服务器（地址在 config.json，不入库）
 ```
 
 - **必须先起 `bridge-server.js`**，它持有游戏连接；上层都通过 3001 驱动它。
-- **身体归谁**：`mind.js` 醒着就一直持有身体 —— 每 8s 续一次 `POST /autopilot/yield`（20s），并关掉脑干的罐头应答；
-  脑干此时只跑反射（吃、浮），不做决策。`mind.js` 正常退出立即归还；崩了脑干 20s 后自动接回。脑干没起 `mind.js` 也能单独跑。
-- **本能**（`instinct.js`，bridge 进程内，不走 HTTP）谁持有身体都在：身体空着时自己捡东西、收庄稼、挖看得见的矿、夜里在家睡；任何会动身体的 POST 一到就让出（路由里的 `yieldBody`）。
-  **唯一反过来的是战斗本能**：怪冲她或玩家来时叫停正在跑的命令（`cancelCommands`），打的时候大部分命令回"在打架"。
-- `mind.js` 与 `brain.js` 共用 3003，只能起一个。
+- **身体归谁**：`mind.js` 醒着就持有身体 —— 它说话 / 做事时，本能让路。
+  `mind.js` 没起时本能也能单独跑（本能就在 bridge 进程里，不走 HTTP）。
+- **本能**（`instinct.js`，bridge 进程内，不走 HTTP）：身体空着时自己捡东西、收庄稼、
+  挖看得见的矿、夜里在家睡、换护甲、危险方块退开；任何会动身体的 POST 一到就让出
+  （路由里的 `yieldBody`）。
+  **唯一反过来的是战斗本能**：怪冲她或玩家来时叫停正在跑的命令（`cancelCommands`），
+  打的时候大部分命令回"在打架"。
+- **旧脑干已于 2026-09-28 删除**（`autopilot.js` / `brain.js` / `decision.js` /
+  `reflex.js` / `journal.js` / `events.js`）：那是"规则自主循环 + 快脑/主脑双模型"的
+  上一版设计，已被 `mind.js`（意识）+ `instinct.js`（本能）取代。详见
+  `docs/REFACTOR-PLAN-20260928.md`。原来的 `pickAutoEquip` 判据**没有被删**，
+  原样搬到了 `equip-policy.js`。
 
 ---
 
 ## 二、功能分区（路由表）
 
-根目录的 `.js` 是扁平摆放的（`require('./x')` 相对路径互相引用，**不要为了"整齐"挪文件**）。
-按功能分成 6 区，每区有一个专属 subagent（`.claude/agents/`）：
+根目录的 `.js` 是扁平摆放的（`require('./x')` 相对路径互相引用）。
+**重构期间不要为了"整齐"挪文件** —— 第 2 步会统一挪进 `src/` 分区，届时按那里的方案走。
+按功能分成 5 区，每区有一个专属 subagent（`.claude/agents/`）：
 
 | 分区 | 文件 | 相关目录 | Subagent |
 |---|---|---|---|
-| **① 桥 / 协议 / 注册表**（手+眼） | `bridge-server.js` `hands.js` `fml-handshake.js` `registry-probe.js` `block-palette.js` `palette-registry.js` `item-registry.js` `entity-registry.js` `instinct.js` `inventory-ledger.js` `commonsense.js` `ftbq-sync.js` `reconnect.js` | [`registry/`](registry/) [`references/`](references/) | `mc-bridge` |
+| **① 桥 / 协议 / 注册表**（手+眼） | `bridge-server.js` `hands.js` `fml-handshake.js` `registry-probe.js` `block-palette.js` `palette-registry.js` `item-registry.js` `entity-registry.js` `instinct.js` `inventory-ledger.js` `commonsense.js` `ftbq-sync.js` `reconnect.js` `equip-policy.js` | [`registry/`](registry/) [`references/`](references/) | `mc-bridge` |
 | **② 寻路 / 放置 / 站位**（几何） | `pathing.js` `place.js` | — | `mc-pathing` |
-| **③ 脑干**（规则自主循环） | `autopilot.js` `decision.js` `reflex.js` `events.js` `journal.js` | — | `mc-autopilot` |
-| **④ 意识 / 人格**（LLM 层） | `mind.js` `body.js` `memory-store.js` `speech.js` `ambition.js` `self-review.js` `llm-codex.js` `llm-workbuddy.js` `night.js` `plan.js` `brain.js`(旧) `PERSONA.md` | [`memory/`](memory/) | `mc-mind` |
-| **⑤ 知识库**（整合包真值） | `knowledge.js` | [`knowledge/`](knowledge/) | `mc-knowledge` |
-| **⑥ 运维 / 诊断 / 台账** | `scripts/start.sh` `stop.sh`（一次性诊断脚本在 `scripts/_attic/`） | [`scripts/`](scripts/) `logs/` [`memory/field-log.md`](memory/field-log.md) | 主会话自己做 |
+| **③ 意识 / 人格**（LLM 层） | `mind.js` `body.js` `memory-store.js` `speech.js` `ambition.js` `self-review.js` `llm-codex.js` `llm-workbuddy.js` `night.js` `plan.js` `PERSONA.md` | [`memory/`](memory/) | `mc-mind` |
+| **④ 知识库**（整合包真值） | `knowledge.js` | [`knowledge/`](knowledge/) | `mc-knowledge` |
+| **⑤ 运维 / 诊断 / 台账** | `scripts/start.sh` `stop.sh`（一次性诊断脚本在 `scripts/_attic/`） | [`scripts/`](scripts/) `logs/` [`memory/field-log.md`](memory/field-log.md) | 主会话自己做 |
 
 依赖方向（改动时注意下游）：
 ```
-bridge-server ← hands, pathing, place, decision, fml-handshake, registry-probe,
+bridge-server ← hands, pathing, place, equip-policy, fml-handshake, registry-probe,
                 block-palette, palette-registry, item-registry, entity-registry,
                 instinct, inventory-ledger, night
-autopilot     ← decision, reflex, events
 mind          ← body, memory-store, knowledge, ambition, night, inventory-ledger(只用 render)      body ← knowledge, speech, memory-store
 hands / ambition ← knowledge, memory-store
+instinct      ← equip-policy（打怪前挑武器）
 ```
-⚠️ `decision.js` 同时被 `bridge-server` 和 `autopilot` 引用 —— 改它要两边都测。
+⚠️ `equip-policy.js` 同时被 `bridge-server`（`POST /equip` 的 auto 分支）和
+`instinct`（`deps.pickAutoEquip`）引用 —— 改它要两边都测。
 
 每个子目录有自己的 `AGENTS.md`（进入该目录工作时会自动加载）。
 
@@ -69,9 +74,9 @@ hands / ambition ← knowledge, memory-store
 NODE=/Users/starwish/.workbuddy-ai/binaries/node/versions/22.22.2-2/bin/node
 ```
 
-- `node_modules/` 已在项目目录内，**不需要** `NODE_PATH`（`HANDOVER.md` 里的 `NODE_PATH` / `C:\...` 路径是 Windows 旧环境，已不适用）。
+- `node_modules/` 已在项目目录内，**不需要** `NODE_PATH`。
 - 访问本地端口一律 `curl --noproxy '*'`（环境里可能有代理劫持 localhost）。
-- 长驻进程（bridge / autopilot / mind）用后台方式起，日志写 `logs/`。
+- 长驻进程（bridge / mind）用后台方式起，日志写 `logs/`。
 - LLM 配置在 `.env`（`LLM_BASE_URL` / `LLM_API_KEY` / `MIND_MODEL` / …）—— **不要打印、不要提交**。
 - 模型调用链（`body.js` 的 `llm()`）：**只用 susu 上的 `gemini-3.8-flash`（主）⇄ `deepseek-v4.1-flash`（备）**。
   本机命令行兜底默认关闭（`LOCAL_FALLBACKS` 默认空）；显式设 `LOCAL_FALLBACKS=codex,workbuddy` 才会启用：
@@ -90,6 +95,8 @@ $NODE entity-registry.js --selftest                         # 模组生物补名
 $NODE instinct.js --selftest; $NODE inventory-ledger.js --selftest   # 本能（拾取 / 让出身体）；物品账
 $NODE commonsense.js --selftest; $NODE ftbq-sync.js --selftest      # 装水倒水锄地、钓鱼、动物、载具；任务书进度包（按反编译格式造包读回）
 $NODE palette-registry.js --selftest; $NODE reconnect.js --selftest
+$NODE equip-policy.js --selftest                            # 该换什么到手上来（空手 / 拿错东西）
+$NODE events-reader.js --selftest                           # 读 memory/events.jsonl（旧脑干留痕的历史证据）
 $NODE scripts/fml-snapshot-test.js; $NODE scripts/palette-guard-test.js
 $NODE scripts/angelpal-to-palette.js --selftest
 $NODE scripts/angelpal-encoder-parity-test.js               # KubeJS 侧与 Node 侧的形状编码必须逐字节一致
@@ -97,16 +104,16 @@ $NODE hands.js --selftest                                  # 假 bot 驱动真�
 $NODE --check bridge-server.js                             # ⚠️ 这个**只能 --check**
 # ② 寻路
 $NODE pathing.js --selftest; $NODE place.js --selftest
-# ③ 脑干
-$NODE autopilot.js --selftest; $NODE decision.js --selftest; $NODE reflex.js --selftest
-$NODE events.js --selftest; $NODE journal.js --selftest; $NODE scripts/jev-contract-test.js
-# ④ 意识
-$NODE mind.js --selftest; $NODE brain.js --selftest; $NODE memory-store.js --selftest
+# ③ 意识
+$NODE mind.js --selftest; $NODE memory-store.js --selftest
 $NODE night.js --selftest; $NODE plan.js --selftest; $NODE speech.js --selftest; $NODE ambition.js --selftest; $NODE self-review.js --selftest; $NODE --check body.js
 $NODE llm-codex.js --selftest; $NODE llm-workbuddy.js --selftest   # --live 会真调一次（花额度）
-# ⑤ 知识
+# ④ 知识
 $NODE knowledge.js --selftest
 ```
+
+- 全套一起跑用 `npm test`（`scripts/test-all.js`）：自动发现根目录带 `--selftest` 的文件 +
+  `scripts/*-test.js` + 冒烟，汇总成一张表，已知失败单列且**不许新增**。
 
 - ⚠️ **`bridge-server.js` 绝不能 `--selftest`**：一 `require` 就去连服务器、抢 3001 端口。只能 `--check`。
 - 自测红了，**先怀疑断言**（`check` 是严格相等，不能比对象）—— 项目里多次差点去改正确的代码。
@@ -138,14 +145,15 @@ $NODE knowledge.js --selftest
 
 ---
 
-## 七、现状与待办（截至 2026-09-27）
+## 七、现状与待办（截至 2026-09-28）
 
 | 项 | 状态 |
 |---|---|
-| **P48** 不会持续发育（缺工具链目标：采木→木镐→石→石镐/剑→打猎） | ✅ 由 `plan.js` 长期计划解决（部署只起 bridge + mind，脑干不跑；不另写第二个声音）。实机未验 |
+| **重构第 1 步：删除旧脑干** | ✅ 已完成（2026-09-28，分支 `refactor/structure`）：`autopilot.js` `reflex.js` `journal.js` `brain.js` `decision.js` `events.js` 与 `HANDOVER.md` `STATUS.md` `skill-card.md` 已删（git 历史可查）；`pickAutoEquip` 原样搬到 `equip-policy.js`；`events.jsonl` 留只读的 `events-reader.js`。详见 `docs/REFACTOR-PLAN-20260928.md` |
+| **P48** 不会持续发育（缺工具链目标：采木→木镐→石→石镐/剑→打猎） | ✅ 由 `plan.js` 长期计划解决（部署只起 bridge + mind；不另写第二个声音）。实机未验 |
 | **本能层**（`instinct.js`） | 战斗、拾取、收获、采矿、睡觉、换护甲、危险方块退开、转头看人、工具快坏提醒 **已写完、离线自测全绿，未上实机，未推送**（2026-09-27）。战斗锚点：跟人时=人，自己干活时=开打位置，leash 12（主人 2026-09-27 确认）。另有随身物品/背包、开宝箱、洞穴、搭路、落地水、寻路挖天然地形、家范围自动扩大、指令本能。2026-09-27 晚又加：饿了就吃（饥饿 ≤16）、憋气上浮、中毒凋零（喝牛奶）、天气、玩家挨打提醒、家里暗处提醒 |
 | **P50** / **P53** 站在草上被判"位置被占"；写死的名单认不出草方块和模组土石 | ✅ 已修（2026-09-27）：可替换方块按 `minecraft:replaceable` 标签；搭脚方块、天然地面、锄地按整合包标签。离线自测全绿，实机未验 |
-| `README.md` / `SKILL.md` / `HANDOVER.md` / `STATUS.md` | README 已按四层架构更新（2026-09-27）；SKILL 顶部加了现状说明（底层部分仍准）；HANDOVER / STATUS 标为 2026-09-25 历史快照 |
+| `README.md` / `SKILL.md` | README 已按架构更新（2026-09-27）；SKILL 顶部加了现状说明（底层部分仍准） |
 
 ## 八、按需阅读
 
@@ -153,10 +161,9 @@ $NODE knowledge.js --selftest
 |---|---|
 | **最新交接：本能修复与实机调试（2026-09-28），没做完的清单** | [`HANDOFF-20260928.md`](HANDOFF-20260928.md) |
 | **本能层 / 长期计划 / 物品账 / 天黑 的交接（2026-09-27），以及接下来的路线** | [`HANDOFF-20260927.md`](HANDOFF-20260927.md) |
-| 现状一页纸 | `STATUS.md` |
-| 架构 / 本轮修复 / 环境坑 | `HANDOVER.md` |
+| 重构计划（为什么要拆、各阶段、主人 2026-09-28 的决定） | [`docs/REFACTOR-PLAN-20260928.md`](docs/REFACTOR-PLAN-20260928.md) |
 | 某个具体问题的证据与根因（P1–P50） | `memory/field-log.md` |
 | 她玩的时候自己察觉 / 程序记下的不对劲（新问题的线索） | `node self-review.js [--since 2h\|--all]` 或 `GET :3003/mind/review` |
-| 技术手册（方块/物品认知、输入层、调色板、寻路、autopilot 机制） | `SKILL.md`（1500 行，按标题跳读） |
+| 技术手册（方块/物品认知、输入层、调色板、寻路、本能机制） | `SKILL.md`（按标题跳读） |
 | HTTP 接口 | `references/api-spec.md` |
 | 版本变更 | `_meta.json` |
