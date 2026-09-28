@@ -1,0 +1,23 @@
+{
+  "_comment": [
+    "test-all.js 的已知失败白名单。改这里 = 承认某份测试在当前分支上就是红的。",
+    "knownFailures[<测试的 path>].maxFail = 允许的失败条数上限。",
+    "判定规则：实测失败条数 > maxFail → 记为『新失败』（退出码 1）；",
+    "          实测失败条数 ≤ maxFail → 记为『已知失败』（不拉红总判定）。",
+    "",
+    "⚠️ 新增一条进这里之前先问：它是**本来就红**，还是**我这次改红的**？",
+    "   本任务的硬规矩是『已知失败不增』—— 这份文件是账本，不是消音器。",
+    "",
+    "reason 写清为什么挂、谁负责修，方便下一个人判断能不能删。"
+  ],
+  "knownFailures": {
+    "scripts/palette-guard-test.js": {
+      "maxFail": 7,
+      "reason": "真实调色板 dump 与旧断言不一致（cluttered/upgrade_aquatic 的 state id 偏移）。与本次重构无关，属调色板守卫的历史红。"
+    },
+    "scripts/angelpal-encoder-parity-test.js": {
+      "maxFail": 2,
+      "reason": "KubeJS 侧与 Node 侧 ladder 形状编码（0:0:0:0.8125:1:1 vs 期望 0:0:0.8125:1:1:1）有 2 条不一致，待编码侧核对。与本次重构无关。"
+    }
+  }
+}

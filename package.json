@@ -2,6 +2,9 @@
   "name": "angle_ice_minecraft",
   "private": true,
   "version": "1.12.0",
+  "scripts": {
+    "test": "node scripts/test-all.js"
+  },
   "dependencies": {
     "mineflayer": "^4.39.0",
     "mineflayer-pathfinder": "^2.4.5",

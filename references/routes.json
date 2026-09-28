@@ -1,0 +1,554 @@
+[
+  {
+    "key": "GET /block",
+    "source": "bridge"
+  },
+  {
+    "key": "GET /chatlog",
+    "source": "bridge"
+  },
+  {
+    "key": "GET /chests/unseen",
+    "source": "hands"
+  },
+  {
+    "key": "GET /commands",
+    "source": "hands"
+  },
+  {
+    "key": "GET /config",
+    "source": "bridge"
+  },
+  {
+    "key": "GET /container",
+    "source": "hands"
+  },
+  {
+    "key": "GET /containers/seen",
+    "source": "hands"
+  },
+  {
+    "key": "GET /curios",
+    "source": "hands"
+  },
+  {
+    "key": "GET /debug/craftgrid",
+    "source": "hands"
+  },
+  {
+    "key": "GET /debug/follow",
+    "source": "hands"
+  },
+  {
+    "key": "GET /debug/mvblock",
+    "source": "hands"
+  },
+  {
+    "key": "GET /debug/packets",
+    "source": "bridge"
+  },
+  {
+    "key": "GET /debug/pathfinder",
+    "source": "bridge"
+  },
+  {
+    "key": "GET /debug/payloads",
+    "source": "hands"
+  },
+  {
+    "key": "GET /debug/registries",
+    "source": "bridge"
+  },
+  {
+    "key": "GET /debug/registry",
+    "source": "bridge"
+  },
+  {
+    "key": "GET /debug/route",
+    "source": "bridge"
+  },
+  {
+    "key": "GET /debug/shape-fixes",
+    "source": "hands"
+  },
+  {
+    "key": "GET /debug/shelter-probe",
+    "source": "bridge"
+  },
+  {
+    "key": "GET /debug/soph",
+    "source": "hands"
+  },
+  {
+    "key": "GET /doors",
+    "source": "hands"
+  },
+  {
+    "key": "GET /entities",
+    "source": "bridge"
+  },
+  {
+    "key": "GET /equipment",
+    "source": "hands"
+  },
+  {
+    "key": "GET /ftbq/completed",
+    "source": "bridge"
+  },
+  {
+    "key": "GET /ftbq/recent",
+    "source": "hands"
+  },
+  {
+    "key": "GET /health",
+    "source": "bridge"
+  },
+  {
+    "key": "GET /instinct",
+    "source": "bridge"
+  },
+  {
+    "key": "GET /instinct/events",
+    "source": "bridge"
+  },
+  {
+    "key": "GET /inventory",
+    "source": "bridge"
+  },
+  {
+    "key": "GET /inventory/ledger",
+    "source": "bridge"
+  },
+  {
+    "key": "GET /item",
+    "source": "bridge"
+  },
+  {
+    "key": "GET /knowledge",
+    "source": "bridge"
+  },
+  {
+    "key": "GET /knowledge/search",
+    "source": "bridge"
+  },
+  {
+    "key": "GET /landmarks",
+    "source": "hands"
+  },
+  {
+    "key": "GET /layout/status",
+    "source": "hands"
+  },
+  {
+    "key": "GET /light",
+    "source": "hands"
+  },
+  {
+    "key": "GET /look_around",
+    "source": "hands"
+  },
+  {
+    "key": "GET /memory",
+    "source": "bridge"
+  },
+  {
+    "key": "GET /nearby",
+    "source": "bridge"
+  },
+  {
+    "key": "GET /palette",
+    "source": "bridge"
+  },
+  {
+    "key": "GET /palette/block",
+    "source": "bridge"
+  },
+  {
+    "key": "GET /palette/climbable",
+    "source": "bridge"
+  },
+  {
+    "key": "GET /palette/state",
+    "source": "bridge"
+  },
+  {
+    "key": "GET /players",
+    "source": "bridge"
+  },
+  {
+    "key": "GET /plugins",
+    "source": "bridge"
+  },
+  {
+    "key": "GET /position",
+    "source": "bridge"
+  },
+  {
+    "key": "GET /project/status",
+    "source": "hands"
+  },
+  {
+    "key": "GET /recipes",
+    "source": "bridge"
+  },
+  {
+    "key": "GET /scan",
+    "source": "bridge"
+  },
+  {
+    "key": "GET /state",
+    "source": "bridge"
+  },
+  {
+    "key": "GET /status",
+    "source": "bridge"
+  },
+  {
+    "key": "GET /survey",
+    "source": "hands"
+  },
+  {
+    "key": "POST /activate",
+    "source": "bridge"
+  },
+  {
+    "key": "POST /animal",
+    "source": "commonsense"
+  },
+  {
+    "key": "POST /attack",
+    "source": "bridge"
+  },
+  {
+    "key": "POST /backpack/open",
+    "source": "hands"
+  },
+  {
+    "key": "POST /backpack/tidy",
+    "source": "hands"
+  },
+  {
+    "key": "POST /bucket",
+    "source": "commonsense"
+  },
+  {
+    "key": "POST /chat",
+    "source": "bridge"
+  },
+  {
+    "key": "POST /chests/check",
+    "source": "hands"
+  },
+  {
+    "key": "POST /climb",
+    "source": "bridge"
+  },
+  {
+    "key": "POST /climb_down",
+    "source": "hands"
+  },
+  {
+    "key": "POST /climb_up",
+    "source": "hands"
+  },
+  {
+    "key": "POST /cmd",
+    "source": "hands"
+  },
+  {
+    "key": "POST /collect",
+    "source": "bridge"
+  },
+  {
+    "key": "POST /command",
+    "source": "bridge"
+  },
+  {
+    "key": "POST /container/close",
+    "source": "hands"
+  },
+  {
+    "key": "POST /container/deposit",
+    "source": "hands"
+  },
+  {
+    "key": "POST /container/open",
+    "source": "hands"
+  },
+  {
+    "key": "POST /container/put",
+    "source": "hands"
+  },
+  {
+    "key": "POST /container/sort",
+    "source": "hands"
+  },
+  {
+    "key": "POST /container/take",
+    "source": "hands"
+  },
+  {
+    "key": "POST /container/withdraw",
+    "source": "hands"
+  },
+  {
+    "key": "POST /control",
+    "source": "bridge"
+  },
+  {
+    "key": "POST /cook_pot",
+    "source": "hands"
+  },
+  {
+    "key": "POST /craft",
+    "source": "bridge"
+  },
+  {
+    "key": "POST /craft2",
+    "source": "hands"
+  },
+  {
+    "key": "POST /curios/equip",
+    "source": "hands"
+  },
+  {
+    "key": "POST /curios/unequip",
+    "source": "hands"
+  },
+  {
+    "key": "POST /debug/click",
+    "source": "hands"
+  },
+  {
+    "key": "POST /debug/payload",
+    "source": "hands"
+  },
+  {
+    "key": "POST /debug/returngrid",
+    "source": "hands"
+  },
+  {
+    "key": "POST /debug/seq",
+    "source": "hands"
+  },
+  {
+    "key": "POST /delve",
+    "source": "hands"
+  },
+  {
+    "key": "POST /door",
+    "source": "hands"
+  },
+  {
+    "key": "POST /doors/forget-left-open",
+    "source": "hands"
+  },
+  {
+    "key": "POST /drop",
+    "source": "bridge"
+  },
+  {
+    "key": "POST /eat",
+    "source": "hands"
+  },
+  {
+    "key": "POST /equip",
+    "source": "bridge"
+  },
+  {
+    "key": "POST /farm",
+    "source": "hands"
+  },
+  {
+    "key": "POST /fish",
+    "source": "commonsense"
+  },
+  {
+    "key": "POST /flee",
+    "source": "bridge"
+  },
+  {
+    "key": "POST /follow",
+    "source": "bridge"
+  },
+  {
+    "key": "POST /ftbq/claim",
+    "source": "hands"
+  },
+  {
+    "key": "POST /ftbq/claim_all",
+    "source": "hands"
+  },
+  {
+    "key": "POST /ftbq/claim_choice",
+    "source": "hands"
+  },
+  {
+    "key": "POST /ftbq/submit",
+    "source": "hands"
+  },
+  {
+    "key": "POST /give",
+    "source": "hands"
+  },
+  {
+    "key": "POST /go",
+    "source": "hands"
+  },
+  {
+    "key": "POST /instinct",
+    "source": "bridge"
+  },
+  {
+    "key": "POST /inventory/sort",
+    "source": "hands"
+  },
+  {
+    "key": "POST /jump",
+    "source": "bridge"
+  },
+  {
+    "key": "POST /knowledge/search",
+    "source": "bridge"
+  },
+  {
+    "key": "POST /layout/cancel",
+    "source": "hands"
+  },
+  {
+    "key": "POST /layout/furnish",
+    "source": "hands"
+  },
+  {
+    "key": "POST /layout/save",
+    "source": "hands"
+  },
+  {
+    "key": "POST /layout/zone",
+    "source": "hands"
+  },
+  {
+    "key": "POST /light_up",
+    "source": "hands"
+  },
+  {
+    "key": "POST /look",
+    "source": "bridge"
+  },
+  {
+    "key": "POST /make_torches",
+    "source": "hands"
+  },
+  {
+    "key": "POST /memory",
+    "source": "bridge"
+  },
+  {
+    "key": "POST /mine",
+    "source": "bridge"
+  },
+  {
+    "key": "POST /motor",
+    "source": "hands"
+  },
+  {
+    "key": "POST /move",
+    "source": "bridge"
+  },
+  {
+    "key": "POST /nudge",
+    "source": "hands"
+  },
+  {
+    "key": "POST /pickup",
+    "source": "bridge"
+  },
+  {
+    "key": "POST /place",
+    "source": "bridge"
+  },
+  {
+    "key": "POST /place_structure",
+    "source": "hands"
+  },
+  {
+    "key": "POST /project/cancel",
+    "source": "hands"
+  },
+  {
+    "key": "POST /project/save",
+    "source": "hands"
+  },
+  {
+    "key": "POST /project/work",
+    "source": "hands"
+  },
+  {
+    "key": "POST /reconnect",
+    "source": "bridge"
+  },
+  {
+    "key": "POST /registry/import-palette",
+    "source": "bridge"
+  },
+  {
+    "key": "POST /ride",
+    "source": "commonsense"
+  },
+  {
+    "key": "POST /self_rescue",
+    "source": "hands"
+  },
+  {
+    "key": "POST /shelter",
+    "source": "bridge"
+  },
+  {
+    "key": "POST /sleep",
+    "source": "hands"
+  },
+  {
+    "key": "POST /smelt",
+    "source": "hands"
+  },
+  {
+    "key": "POST /stop",
+    "source": "bridge"
+  },
+  {
+    "key": "POST /storage/loot",
+    "source": "hands"
+  },
+  {
+    "key": "POST /storage/organize",
+    "source": "hands"
+  },
+  {
+    "key": "POST /till",
+    "source": "commonsense"
+  },
+  {
+    "key": "POST /unequip",
+    "source": "hands"
+  },
+  {
+    "key": "POST /unstick",
+    "source": "bridge"
+  },
+  {
+    "key": "POST /use",
+    "source": "hands"
+  },
+  {
+    "key": "POST /wake",
+    "source": "hands"
+  },
+  {
+    "key": "POST /wear",
+    "source": "hands"
+  },
+  {
+    "key": "POST /wiggle",
+    "source": "hands"
+  }
+]

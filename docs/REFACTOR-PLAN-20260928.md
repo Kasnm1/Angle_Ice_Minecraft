@@ -27,10 +27,11 @@
 - **路由清单测试**：require bridge（不连服），断言 58 + 75 + 5 条路由都在、每条是函数；存一份 `references/routes.json` 快照，路由增减必须改快照。
 - **搬移核对脚本** `scripts/refactor/check-moved.js`：给定拆前拆后的文件，按函数名比对源码文本，报告"改了内容的函数"。
 
-### 第 1 步：退役旧脑干（需主人点头，见文末）
-- `autopilot.js` `reflex.js` `journal.js` `brain.js` → `_attic/legacy-brainstem/`（git mv）。
-- `decision.js` 里被 bridge 用的 `pickAutoEquip` 搬到装备相关模块，`decision.js` 其余归档。
-- `events.js`：`/events` 端点在读它的格式 —— 留一个最小读取器，写入部分归档。
+### 第 1 步：删除旧脑干（主人 2026-09-28：没必要保存 —— `git rm`，git 历史里还在）
+- `autopilot.js` `reflex.js` `journal.js` `brain.js` 直接 `git rm`。
+- `decision.js` 里被 bridge 用的 `pickAutoEquip` 搬到装备相关模块（连同它的自测），`decision.js` 其余删除。
+- `events.js`：`/events` 端点在读它的格式 —— 留一个最小读取器，写入部分删除。
+- `HANDOVER.md` `STATUS.md` `skill-card.md` 删除（主人定的），AGENTS.md / README 里指向它们的地方同步改。
 - 同步改 AGENTS.md 架构图、功能分区、自测命令；`angel.ps1` 名单。
 
 ### 第 2 步：目录结构（只挪位置）
@@ -66,13 +67,12 @@ angleice/
 
 ### 第 5 步：文档
 - AGENTS.md 路由表按新目录重写；README 目录结构；`references/api-spec.md` 从路由快照生成。
-- HANDOVER / STATUS / skill-card 归档（需主人点头）。
+
 
 ## 验收（每步）
 `npm test` 全绿（已知失败不增）+ `check-moved.js` 零差异（第 2、3 步）+ 路由快照不变 + 冒烟通过；
 阶段结束部署到 Windows 看 10 分钟：本能日志正常、`scheduler.loopMs` 不变差、mind 能正常说话和动作。
 
-## 要主人拍板的
-1. 旧脑干（autopilot / reflex / journal / brain）整族归档？（`brain.js` 在 AGENTS.md 里写着"保留作参考" —— git 历史里永远找得到）
-2. HANDOVER.md / STATUS.md / skill-card.md 归档？
-3. 目录方案（`src/` + 根目录两个转发入口）可以吗？AGENTS.md 里有一句"不要为了整齐挪文件"—— 这次是主人要求的重构，挪完那句改成"按 src/ 分区放"。
+## 主人的决定（2026-09-28）
+- 旧脑干、HANDOVER / STATUS / skill-card：**没必要保存**，直接删（git 历史可查）。
+- 目录方案按上面的 `src/` 走；挪完把 AGENTS.md 里"不要为了整齐挪文件"改成"按 src/ 分区放"。

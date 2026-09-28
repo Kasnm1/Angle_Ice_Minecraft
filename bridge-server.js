@@ -30,12 +30,14 @@ require('./log-stamp');
 const placeLogic = require('./place');
 const { DEADLY, isStandable, reachableStandY, findStandY } = placeLogic;
 // P50：模组的草、藤之类"可被替换"的方块（整合包标签 `minecraft:replaceable`）注入 place.js；读不到知识库就只认原版的
-setImmediate(() => {
+// ⚠️ 这一段原来在模块顶层用 `setImmediate` 跑 —— 那样**一 require 就去读知识库并起一个宏任务**，
+//    属于"有副作用"（虽然只读、不起端口）。第 0 步重构后挪进 installReplaceable()，只在 main() 里调用。
+function installReplaceable () {
   try {
     const n = placeLogic.setReplaceable(require('./knowledge').load().tags.get('block:minecraft:replaceable'));
     console.log(`[place] 可替换方块：从整合包标签补了 ${n} 个模组的`);
   } catch (e) { console.log(`[place] 读不到整合包标签，可替换方块只认原版的（${e.message}）`); }
-});
+}
 // 寻路策略（"绕路优先、拆方块是最后手段"）住在 pathing.js 里 —— 同样是纯函数、
 // 可离线穷举，见 `node pathing.js --selftest`。这里只负责把它装到 Movements 上。
 const pathing = require('./pathing');
@@ -81,23 +83,32 @@ let mineflayer, pathfinderPlugin, Movements, goals, Vec3;
 //    而不在项目目录，别人 clone 这个仓库时不会有它们；直接 `require` 会让整个
 //    网桥起不来，而这只影响"能不能自动吃"这种次要能力。降级要可控。
 let autoEatPlugin = null, toolPlugin = null, collectBlockPlugin = null;
-try {
-  mineflayer = require('mineflayer');
-  const doorPatch = require('./scripts/patch-pathfinder-door').ensure();
-  if (doorPatch.changed) console.log('[pathing] 已修复寻路库开门后空队列导致的崩溃');
-  const pf = require('mineflayer-pathfinder');
-  pathfinderPlugin = pf.pathfinder;
-  Movements = pf.Movements;
-  goals = pf.goals;
-  Vec3 = require('vec3').Vec3;
-} catch (e) {
-  console.error('[bridge] Missing dependencies. Install them first:');
-  console.error('  npm install mineflayer mineflayer-pathfinder vec3');
-  process.exit(1);
+
+// 依赖加载。⚠️ 这一段原来在模块顶层：`require('mineflayer')` 本身无副作用，
+//    但里面 `require('./scripts/patch-pathfinder-door').ensure()` **会写文件**
+//    （给 node_modules/mineflayer-pathfinder 打补丁），而且失败时 `process.exit(1)`
+//    —— 那样一 require 这个模块就可能直接退出进程，不符合"可以被安全 require"。
+//    第 0 步重构：补丁 + 依赖加载挪进 loadDependencies()，只在 main() 里调用。
+//    patched 结果由 main() 打印（顺序与原顶层一致：补丁日志 → 其余加载）。
+function loadDependencies () {
+  try {
+    mineflayer = require('mineflayer');
+    const doorPatch = require('./scripts/patch-pathfinder-door').ensure();
+    if (doorPatch.changed) console.log('[pathing] 已修复寻路库开门后空队列导致的崩溃');
+    const pf = require('mineflayer-pathfinder');
+    pathfinderPlugin = pf.pathfinder;
+    Movements = pf.Movements;
+    goals = pf.goals;
+    Vec3 = require('vec3').Vec3;
+  } catch (e) {
+    console.error('[bridge] Missing dependencies. Install them first:');
+    console.error('  npm install mineflayer mineflayer-pathfinder vec3');
+    process.exit(1);
+  }
+  try { autoEatPlugin = require('mineflayer-auto-eat').loader; } catch (_) {}
+  try { toolPlugin = require('mineflayer-tool').plugin; } catch (_) {}
+  try { collectBlockPlugin = require('mineflayer-collectblock').plugin; } catch (_) {}
 }
-try { autoEatPlugin = require('mineflayer-auto-eat').loader; } catch (_) {}
-try { toolPlugin = require('mineflayer-tool').plugin; } catch (_) {}
-try { collectBlockPlugin = require('mineflayer-collectblock').plugin; } catch (_) {}
 
 // ---- 配置：config.json + 环境变量 -------------------------------------------
 // 优先级：环境变量 > config.json > 内置默认值
@@ -356,6 +367,12 @@ function cfg (key, fallback) {
 //   "This server has mods that require Forge to be installed on the client."
 // 这里在 mineflayer 创建底层客户端之前，替换 minecraft-protocol 的 createClient，
 // 给每个新客户端挂上 FML 握手实现（见 ./fml-handshake.js）。
+// ⚠️ 这一段原来在模块顶层无条件执行。它**不改端口 / 不连网 / 不起定时器**，
+//    只改 minecraft-protocol 的一个函数（monkey-patch），照理可以留在顶层；
+//    但它是"服务端跑起来才需要"的装配，且日志会打一行"已启用" —— 被 require 时
+//    打出这句是误导。第 0 步重构挪进 installForgeHandshake()，由 main() 调用。
+//    判据不变（仍看 MC_FORGE），行为不变。
+function installForgeHandshake () {
 if (cfg('MC_FORGE', '0') === '1') {
   const nmp = require('minecraft-protocol');
   const fml = require('./fml-handshake.js');
@@ -490,6 +507,7 @@ if (cfg('MC_FORGE', '0') === '1') {
     return client;
   };
   console.log('[bridge] Forge/FML 握手已启用（declare_commands 已改为原样收字节）' + (probeStats ? '（含包统计探针）' : ''));
+}
 }
 // --------------------------------------------------------------------------
 
@@ -6759,50 +6777,94 @@ const server = http.createServer((req, res) => {
   });
 });
 
-server.listen(CFG.bridge.port, '127.0.0.1', () => {
-  const forgeOn = cfg('MC_FORGE', '0') === '1';
-  const cfgFile = path.join(__dirname, 'config.json');
-  console.log(`Minecraft Bridge v${BRIDGE_VERSION}`);
-  console.log(`  身份 (bot identity) : ${CFG.mc.username}${CFG.mc.username === BOT_IDENTITY ? ' (固定)' : ' (被覆盖)'}`);
-  console.log(`  HTTP API            : http://127.0.0.1:${CFG.bridge.port}`);
-  console.log(`  Minecraft           : ${CFG.mc.host}:${CFG.mc.port}  version=${CFG.mc.version} auth=${CFG.mc.auth}`);
-  console.log(`  Forge/FML 握手      : ${forgeOn ? 'ENABLED' : 'disabled'}`);
-  console.log(`  config.json         : ${fs.existsSync(cfgFile) ? cfgFile : '(不存在，使用环境变量/默认值)'}`);
-  console.log('  Bound to 127.0.0.1 only — do not expose this service publicly.');
-  console.log('  Note: CORS headers are not sent — only same-origin or non-browser clients can access this API.');
-  console.log(`  记忆 (memory)       : ${MEM_DIR}`);
-  console.log(`  知识库 (knowledge)  : ${fs.existsSync(KB_DIR) ? KB_DIR : '(未安装)'}`);
-  // 方块调色板：有就导入（让模组方块能叫出名字），没有就如实说没有。
-  // 放在 createBot 之前只是为了让日志顺序好看 —— 名字解析器是**按引用**读
-  // state.palette 的，所以之后用 POST /registry/import-palette 补上一样立刻生效。
-  autoImportPalette();
-  // 物品注册表快照：同样是"有就载入、没有就如实说没有"。
-  // 必须在 createBot 之前读，因为注入要发生在本次连接的 inject_allowed 阶段。
-  loadItemSnapshot();
-  state.entitySnapshot = entityRegistry.loadSnapshot();
-  console.log(state.entitySnapshot
-    ? `[entities] 实体快照已载入：${state.entitySnapshot.entryCount} 条（抓取于 ${state.entitySnapshot.capturedAt}）`
-    : '[entities] 还没有实体快照 —— 这次登录握手时会收到并落盘，之后刷出的模组生物就有名字了');
-  createBot();
+/**
+ * 服务端主流程。**唯一**会开端口 / 连服务器 / 起定时器的地方。
+ *
+ * 第 0 步重构前，下面这些都在模块顶层 —— 后果是 `require('./bridge-server.js')`
+ * 会立刻 `server.listen(3001)` + `createBot()`，于是这个模块**无法被任何测试
+ * require**（58 条路由因此一条都测不到，见 REFACTOR-PLAN-20260928 的问题表）。
+ * 现在整块收进 main()，只在 `require.main === module`（直接 `node bridge-server.js`）时执行。
+ *
+ * main() 内部的**顺序与重构前逐条一致**（这是"行为不变"的关键）：
+ *   ① 装 Forge 握手（原本在顶层、createBot 之前，必须先于 createClient 生效）
+ *   ② 加载依赖 + pathfinder 补丁（原本在顶层，先于 createBot）
+ *   ③ installReplaceable（原本是顶层 setImmediate，早于/并行于 listen 回调）
+ *   ④ server.listen → 启动日志 → autoImportPalette → loadItemSnapshot
+ *      → entityRegistry.loadSnapshot → createBot → 30s 落盘定时器
+ *   ⑤ server.on('error') / process.on('SIGINT')
+ */
+function main () {
+  installReplaceable();
+  loadDependencies();
+  installForgeHandshake();
 
-  // 每 30 秒把"当前状态"落盘一次，这样即使进程被强杀，state.json 也是新的。
-  setInterval(() => {
-    if (state.connected) saveState();
-  }, 30_000).unref();
-});
+  server.listen(CFG.bridge.port, '127.0.0.1', () => {
+    const forgeOn = cfg('MC_FORGE', '0') === '1';
+    const cfgFile = path.join(__dirname, 'config.json');
+    console.log(`Minecraft Bridge v${BRIDGE_VERSION}`);
+    console.log(`  身份 (bot identity) : ${CFG.mc.username}${CFG.mc.username === BOT_IDENTITY ? ' (固定)' : ' (被覆盖)'}`);
+    console.log(`  HTTP API            : http://127.0.0.1:${CFG.bridge.port}`);
+    console.log(`  Minecraft           : ${CFG.mc.host}:${CFG.mc.port}  version=${CFG.mc.version} auth=${CFG.mc.auth}`);
+    console.log(`  Forge/FML 握手      : ${forgeOn ? 'ENABLED' : 'disabled'}`);
+    console.log(`  config.json         : ${fs.existsSync(cfgFile) ? cfgFile : '(不存在，使用环境变量/默认值)'}`);
+    console.log('  Bound to 127.0.0.1 only — do not expose this service publicly.');
+    console.log('  Note: CORS headers are not sent — only same-origin or non-browser clients can access this API.');
+    console.log(`  记忆 (memory)       : ${MEM_DIR}`);
+    console.log(`  知识库 (knowledge)  : ${fs.existsSync(KB_DIR) ? KB_DIR : '(未安装)'}`);
+    // 方块调色板：有就导入（让模组方块能叫出名字），没有就如实说没有。
+    // 放在 createBot 之前只是为了让日志顺序好看 —— 名字解析器是**按引用**读
+    // state.palette 的，所以之后用 POST /registry/import-palette 补上一样立刻生效。
+    autoImportPalette();
+    // 物品注册表快照：同样是"有就载入、没有就如实说没有"。
+    // 必须在 createBot 之前读，因为注入要发生在本次连接的 inject_allowed 阶段。
+    loadItemSnapshot();
+    state.entitySnapshot = entityRegistry.loadSnapshot();
+    console.log(state.entitySnapshot
+      ? `[entities] 实体快照已载入：${state.entitySnapshot.entryCount} 条（抓取于 ${state.entitySnapshot.capturedAt}）`
+      : '[entities] 还没有实体快照 —— 这次登录握手时会收到并落盘，之后刷出的模组生物就有名字了');
+    createBot();
 
-server.on('error', err => {
-  if (err.code === 'EADDRINUSE') {
-    console.error(`[bridge] Port ${CFG.bridge.port} already in use — bridge may already be running.`);
-    console.error(`  Check: curl http://localhost:${CFG.bridge.port}/status`);
-  } else {
-    console.error('[bridge] Server error:', err);
-  }
-  process.exit(1);
-});
+    // 每 30 秒把"当前状态"落盘一次，这样即使进程被强杀，state.json 也是新的。
+    setInterval(() => {
+      if (state.connected) saveState();
+    }, 30_000).unref();
+  });
 
-process.on('SIGINT', () => {
-  console.log('\n[bridge] Shutting down...');
-  try { state.bot?.end(); } catch (_) {}
-  server.close(() => process.exit(0));
-});
+  server.on('error', err => {
+    if (err.code === 'EADDRINUSE') {
+      console.error(`[bridge] Port ${CFG.bridge.port} already in use — bridge may already be running.`);
+      console.error(`  Check: curl http://localhost:${CFG.bridge.port}/status`);
+    } else {
+      console.error('[bridge] Server error:', err);
+    }
+    process.exit(1);
+  });
+
+  process.on('SIGINT', () => {
+    console.log('\n[bridge] Shutting down...');
+    try { state.bot?.end(); } catch (_) {}
+    server.close(() => process.exit(0));
+  });
+}
+
+// —— 导出：给测试（routes-test）与后续拆文件用。state / handlers 是**活引用**，
+//    测试枚举 handlers 的键时不连服务器、不开端口。
+module.exports = {
+  handlers,
+  state,
+  main,
+  CFG,
+  server,
+  createBot,
+  // 下面这些是拆文件/测试可能用到的工具与常量，一并导出便于复用（不改行为）
+  json,
+  withTimeout,
+  fixMojibake,
+  saveState,
+  botPos,
+  requireConnected,
+  BRIDGE_VERSION,
+};
+
+// 只有直接 `node bridge-server.js` 才起服务；被 require 时什么都不做（无副作用）。
+if (require.main === module) main();
