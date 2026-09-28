@@ -181,12 +181,19 @@ const CFG = {
   },
   mine: {
     enabled: process.env.MC_INSTINCT_MINE !== 'false',
-    radius: 12,             // 只挖这么近的（/mine 的 maxRadius）
-    maxDy: 4,
+    // 2026-09-28 第 8 批 第 3 条：主人说"遇到矿石也不挖"。
+    // 12 格只够"脚边顺手"，实机 `有矿但不挖（far=10~22）` 全是 12~22 格里看得见的矿，
+    // 她够不着就当成没事 —— 视野里明明有铁矿，却去挖了同一个洞里价值更低的油矿。
+    // 现在按"看得见就挖"算 16 格（配合 visible 判定，不会隔墙乱挖），跟 delve 的 16 格一致。
+    radius: 16,             // 只挖这么近的（/mine 的 maxRadius）
+    maxDy: 6,               // 高低差也放宽一点（16 格的球里 y 差 6 以内都算"眼前"）
     maxVein: 8,             // 一次最多挖几块（一条矿脉）
     lowWhenBelow: 16,       // low 价值的矿（煤…）：身上掉落物少于这个才挖
     failCooldownMs: 600000,
     cooldownMs: 5000,
+    // 被战斗/命令打断的矿**不复用 failCooldown** —— 打断不是"挖不动"，
+    // 下一拍身体空了就该接着挖（见 tryMine 的 aborted 分支）。
+    resumeMs: 0,
   },
   sleep: { enabled: process.env.MC_INSTINCT_SLEEP !== 'false', retryMs: 180000 },
   armor: { enabled: process.env.MC_INSTINCT_ARMOR !== 'false', everyMs: 15000 },
@@ -252,8 +259,33 @@ const CFG = {
   // 只有显式打开才交给 pathfinder 使用。
   bridge: { enabled: process.env.MC_INSTINCT_BRIDGE === 'true' },
   dig: { enabled: process.env.MC_INSTINCT_DIG !== 'false' },
-  // 家的范围随基地长大：默认关（2026-09-28 实机：同步大扫描单段 13 秒，每 5 分钟整个进程冻住；第 8 批真修前先止血）。MC_HOME_GROW=true 打开
-  home: { grow: process.env.MC_HOME_GROW === 'true', everyMs: 300000, gap: 8, margin: 6, cap: 128, near: 32 },
+  // 家的范围随基地长大（2026-09-28 第 8 批真修后重新打开）：
+  // 以前默认关是因为同步大扫描单段 13 秒（`slow home.scanBuilt d=91 13049`），每 5 分钟整个进程冻住。
+  // 现在扫描改成**逐 chunk 列**（列间 await setImmediate）+ section palette 预筛，
+  // 而且只扫"当前半径外的环带"（生长前沿）不扫整个圆盘 —— 单次同步片段压在 50ms 内（基准见
+  // modpack-study/fix8-20260928/bench-scanchunks.js）。everyMs 仍是 30 分钟一次。
+  // MC_HOME_GROW=false 可以关掉。
+  // 家的范围随基地长大：默认关，实机验证逐列扫描不卡之后再打开（MC_HOME_GROW=true）
+  home: { grow: process.env.MC_HOME_GROW === 'true', everyMs: 1800000, gap: 8, margin: 6, cap: 128, near: 32 },
+  // 暗处插火把（2026-09-28 第 8 批 第 4 条，新本能，无 LLM）。
+  // 判据见 pickTorchStep：地下 + 脚下方块光 ≤ darkMax + 身上有火把 + 7 格内没光源。
+  torch: {
+    enabled: process.env.MC_INSTINCT_TORCH !== 'false',
+    darkMax: 7,          // 脚下方块光 ≤ 这个就插（原版怪在方块光 0 刷，留余量）
+    spacing: 7,          // 这么近有光源就不插（和 hands.lightUp 的 spacing 一致）
+    everyBlocks: 6,      // 每走这么多格检查一次（别每拍都点）
+    checkMs: 700,        // 检查最快多久一次
+  },
+  // 跟着的玩家站着不动时顺手做点事（第 6 条）：不动超过 idleMs 才允许
+  follow: { idleMs: 8000, reach: 12 },
+  // 接着把 mind 交待的下矿走完（第 5 条）。cave 本能仍默认关；这条只看"mind 明确下过 /delve"。
+  delve: {
+    enabled: process.env.MC_INSTINCT_DELVE !== 'false',
+    resumeMs: 300000,   // 5 分钟内被打断的，本能自己接着挖
+    reach: 96,          // 记录里那个地方在这么近才接着挖（不跨半个地图）
+    seconds: 90,        // 每次续挖最多多久（和 mind 下矿的默认时长一致）
+    minHp: 12,
+  },
   mlg: { enabled: process.env.MC_INSTINCT_MLG !== 'false', minFall: 3.5, placeAt: 3.0 },
   cmd: {
     enabled: process.env.MC_INSTINCT_CMD !== 'false',
@@ -402,24 +434,29 @@ function pickPickup (ctx, cfg = CFG.pickup) {
  * @param ctx.ores   [{ name, pos, value, tier, drops?, visible, hazard }]  hazard = 旁边有岩浆/水
  * @param ctx.self   她的位置；ctx.pick = pickaxeTier()；ctx.have = 物品名 → 数量（判断 low 矿缺不缺）
  * @param ctx.fails  Map "x,y,z" → until
+ * @param ctx.followIdle  跟着的玩家**原地不动**（>8s）时给她当前位置；null = 不在跟随模式
+ *                        这时用的是 cfg.followRadius（跟着人时别跑太远，跟丢了她会追不上）
  * @returns { target, count } | { skip, lacking? }   lacking = [{ name, pos, need }] 看得见但镐子不够的（告诉 mind）
  */
 function pickOre (ctx, cfg = CFG.mine) {
-  const { ores = [], self, pick = -1, have = {}, fails = new Map(), now = Date.now() } = ctx;
+  const { ores = [], self, pick = -1, have = {}, fails = new Map(), now = Date.now(), followIdle = null } = ctx;
   const early = pick < TIER.iron;   // 还没有铁镐：前期，铁和煤就是最值钱的
   if (!self) return { skip: '没有位置' };
+  const radius = followIdle ? Math.min(cfg.radius, cfg.followRadius ?? cfg.radius) : cfg.radius;
   const key = (p) => `${p.x},${p.y},${p.z}`;
   const lacking = [];
-  const why = { far: 0, hidden: 0, hazard: 0, failed: 0, cheap: 0, tool: 0, shovel: 0 };
+  const why = { far: 0, hidden: 0, hazard: 0, failed: 0, cheap: 0, tool: 0, shovel: 0, follow: 0 };
   const ok = [];
   for (const o of ores) {
     if (!o?.pos) continue;
-    if (hdist(o.pos, self) > cfg.radius || Math.abs(o.pos.y - self.y) > cfg.maxDy) { why.far++; continue; }
+    if (hdist(o.pos, self) > radius || Math.abs(o.pos.y - self.y) > cfg.maxDy) { why.far++; continue; }
     if (!o.visible) { why.hidden++; continue; }
     if (o.hazard) { why.hazard++; continue; }
     if (o.notPickaxe) { why.shovel++; continue; }   // 不是镐子挖的（化石矿要铲子）—— 矿表里标出来的
     const f = fails.get(key(o.pos));
     if (f && now < f) { why.failed++; continue; }
+    // 跟着人时：矿不能离**他**太远（不然挖完她在远处，人走了就丢）
+    if (followIdle && hdist(o.pos, followIdle.pos) > (cfg.followLeash ?? 16)) { why.follow++; continue; }
     const isIron = (o.drops || []).some(d => /(^|:)(raw_iron|iron_ingot|iron_nugget)$/.test(d));
     if (o.value === 'low') {
       const got = (o.drops || []).reduce((n, d) => n + (have[d] || 0), 0);
@@ -427,7 +464,15 @@ function pickOre (ctx, cfg = CFG.mine) {
     }
     const need = needTier(o.tier);
     if (pick < need) { why.tool++; lacking.push({ name: o.name, pos: o.pos, need }); continue; }
-    ok.push({ ...o, dist: hdist(o.pos, self), rank: (o.value === 'high' || (early && isIron)) ? 0 : o.value === 'mid' ? 1 : (early ? 1 : 2) });
+    // 价值排序（第 3 条：按 knowledge/ores.json 的 value 排，没价值/很低价值的排最后）：
+    //   0 = high（钻石、铁…，以及前期最缺的铁）
+    //   1 = mid（铜、金、油矿…）
+    //   2 = low（煤、青金石…，够用就不挖，上面已经筛过一遍）
+    //   3 = 没有 value 字段 / value 不认识 —— **排最后但不永久排除**（可能是新模组矿、矿表还没补；
+    //       排最后意味着"附近只有它时才挖"，不会为了它放弃铁矿，也不会因为表里没记就彻底看不见）
+    const v = o.value === 'high' ? 0 : o.value === 'mid' ? 1 : o.value === 'low' ? 2 : 3;
+    const rank = (early && isIron && v > 0) ? 0 : v;   // 前期：铁优先于一切（含钻石那档，因为挖不动）
+    ok.push({ ...o, dist: hdist(o.pos, self), rank, unknownValue: v === 3 });
   }
   if (!ok.length) {
     const parts = Object.entries(why).filter(([, n]) => n).map(([k, n]) => `${k}=${n}`);
@@ -897,6 +942,69 @@ function weatherChange (prev, now) {
 }
 
 /**
+ * 跟着的玩家**站着不动**时，她可以顺手干点什么（2026-09-28 第 8 批 第 6 条）。
+ *
+ * 实机证据：`follow(Ka_sum1)` 之后 tick 走到 `if (followName) { … '跟着 X，只捡东西'; return; }`，
+ * 只要 mind 给的 currentAction 还是 `following Ka_sum1`，她就**整段时间只捡东西**；
+ * 采样里大量 `skip: 有 1 个命令在跑`，人不动她也不动 —— 主人看到的就是"站着不动"。
+ *
+ * 判据：玩家这一帧和**上一帧**的位置几乎没变，且已经连续不动 > idleMs（默认 8 秒）。
+ * 站着不动 = 他在挂机/在看背包/在交易 → 她可以就地做点有用的事；
+ * **他一动就立刻停下**（下一帧 movedAt 归零，本函数返回 null，tick 回到"只捡东西"）。
+ *
+ * @param {{now:number, idleMs:number, lastPos:?{x,y,z}, pos:?{x,y,z}, movedAt:number}} c
+ *        lastPos = 上一次记下的玩家位置；movedAt = 上一次"他动过"的时间戳（0 = 还没见过）
+ * @returns {null|{idleMs:number, since:number}} null = 他还在动 / 数据不足 → 别自作主张
+ */
+function followIdlePlan ({ now = Date.now(), idleMs = 8000, lastPos = null, pos = null, movedAt = 0 } = {}) {
+  if (!pos) return null;                      // 读不到他的位置：不猜
+  if (lastPos) {
+    const moved = Math.hypot(pos.x - lastPos.x, pos.y - lastPos.y, pos.z - lastPos.z);
+    if (moved > 0.35) return null;            // 他在走 / 在跳：跟上，别做别的
+  }
+  if (!movedAt) return null;                  // 还不知道他站了多久 → 下一帧再说
+  const idle = now - movedAt;
+  if (idle < idleMs) return null;
+  return { idleMs: idle, since: movedAt };
+}
+
+/**
+ * 该不该在这儿插个火把（2026-09-28 第 8 批 第 4 条，纯函数）。
+ *
+ * 主人："插火把很慢。" 实机：`light_up() ✗ 正在执行紧急本能：combat` ——
+ * 火把只有 mind 想起来调 `light_up`、或 `delve` 每 8 格插一根时才插；
+ * 本能层根本没有"暗了就点灯"这一条。这条顶上。
+ *
+ * 判据（全部满足才插）：
+ *   ① 在地下 / 洞里：exposure.kind === 'underground' 或（sheltered 且头顶有顶 roofAt != null）
+ *      —— 露天的黑（夜里）不算，那是该回家睡觉的事，不是点灯的事；
+ *   ② 脚下那格的**方块光**读得到（block 是数字）且 ≤ darkMax（默认 7，原版怪物在方块光 0 刷，留余量）
+ *      —— 读不到就不插（主人：区分"没有"和"读不到"，读不到不猜）；
+ *   ③ 身上有火把（torches > 0）；
+ *   ④ 最近的光源 > spacing 格（默认 7）—— 和 `lightUp` 的判据一致，不重复插。
+ * **打架时不插**（由调用方保证，不在这个纯函数里）。
+ *
+ * @returns {{place:true, why:string}|{place:false, why:string}}
+ */
+function pickTorchStep (c = {}, cfg = CFG.torch) {
+  const { exposure = null, light = null, torches = 0, nearestLight = null, movedSince = Infinity } = c;
+  if (!(torches > 0)) return { place: false, why: '身上没火把' };
+  // ① 地下？
+  const kind = exposure?.kind;
+  if (!(kind === 'underground' || (kind === 'sheltered' && exposure?.roofAt != null))) {
+    return { place: false, why: kind ? `不在洞里（exposure=${kind}）` : '不知道头顶有没有遮挡' };
+  }
+  // ④ 移动够了才检查（每 ~6 格一次，别每拍都点）
+  if (movedSince < cfg.everyBlocks) return { place: false, why: `才走了 ${movedSince.toFixed(1)} 格，还没到 ${cfg.everyBlocks}` };
+  // ② 亮度读得到才算暗
+  if (!Number.isFinite(light)) return { place: false, why: '脚下亮度读不到，不插' };
+  if (light > cfg.darkMax) return { place: false, why: `脚下不暗（方块光 ${light}）` };
+  // ③ 附近已经有光源就不插
+  if (nearestLight && nearestLight.distance <= cfg.spacing) return { place: false, why: `${nearestLight.distance} 格内已经有光源` };
+  return { place: true, why: `脚下暗（方块光 ${light}）且 ${cfg.spacing} 格内没光源` };
+}
+
+/**
  * 身体空不空。返回 null = 空着；否则是一句"为什么不空"。
  * following 的时候算空（本能会打断跟随，干完再接上）。
  */
@@ -1031,6 +1139,82 @@ function breatheRefused (res) {
   return false;
 }
 
+/**
+ * 按区块柱逐个扫方块（2026-09-28 Claude 重写：第 8 批的版本用错了 mineflayer 的接口 ——
+ *   `bot.world.getColumn({x,z})` 传对象（真接口是 `getColumn(chunkX, chunkZ)`）、`sections[sy]` 没减 minY，
+ *   实机永远拿不到区块 → **什么都扫不到、也不报错**；它的自测用的假世界照同一套错接口写，所以是绿的）。
+ * 现在：`world.getColumn(cx, cz)`（WorldSync 同步版）→ `column.getBlockStateId({x:局部, y:绝对, z:局部})`；
+ *   section 下标 `(y - column.minY) >> 4`，section 的调色板（`section.data.palette` / 单值 `section.data.value`）
+ *   里一个目标状态都没有就整节跳过。每扫完一柱 `await yieldFn()` 让出事件循环。
+ * 没加载的柱记进 `unloaded`（"读不到"和"没有"分开报）。
+ * @returns {Promise<{pts, sections, cells, columns, unloaded, worstMs}>}
+ */
+function * scanColumnsGen ({ world, registry, c, ids, maxDist, cap = 0, opts = {} }) {
+  const { Vec3 } = require('vec3');
+  const dy = opts.dy ?? 16; const minDist = opts.minDist || 0;
+  const states = new Set();
+  for (const id of ids || []) {
+    const b = registry?.blocks?.[id];
+    if (b && Number.isFinite(b.minStateId) && Number.isFinite(b.maxStateId)) for (let st = b.minStateId; st <= b.maxStateId; st++) states.add(st);
+  }
+  const out = []; let sections = 0; let cells = 0; let columns = 0; let unloaded = 0; let worstMs = 0;
+  const r2 = maxDist * maxDist; const rMin2 = minDist * minDist;
+  const cx0 = Math.floor(c.x / 16); const cz0 = Math.floor(c.z / 16); const cCols = Math.ceil(maxDist / 16) + 1;
+  const yLo = Math.floor(c.y - dy); const yHi = Math.floor(c.y + dy);
+  for (let dx = -cCols; dx <= cCols; dx++) {
+    for (let dz = -cCols; dz <= cCols; dz++) {
+      const sx = cx0 + dx; const sz = cz0 + dz;
+      const ddx = Math.max(0, Math.abs(sx * 16 + 8 - c.x) - 8); const ddz = Math.max(0, Math.abs(sz * 16 + 8 - c.z) - 8);
+      if (ddx * ddx + ddz * ddz > r2) continue;
+      const t0 = process.hrtime.bigint();
+      const col = world?.getColumn?.(sx, sz);
+      if (!col) { unloaded++; continue; }
+      const minY = Number.isFinite(col.minY) ? col.minY : -64;
+      for (let sy = Math.floor(yLo / 16); sy <= Math.floor(yHi / 16); sy++) {
+        const sec = col.sections?.[(sy * 16 - minY) >> 4];
+        if (!sec) continue;
+        sections++;
+        const pc = sec.data;
+        const pal = Array.isArray(pc?.palette) ? pc.palette : (pc && Number.isFinite(pc.value) ? [pc.value] : null);
+        if (pal && !pal.some(st => states.has(st))) continue;   // 调色板里没有目标 → 整节跳过
+        for (let lx = 0; lx < 16; lx++) {
+          for (let lz = 0; lz < 16; lz++) {
+            const wx = sx * 16 + lx; const wz = sz * 16 + lz;
+            const hx = wx + 0.5 - c.x; const hz = wz + 0.5 - c.z; const h2 = hx * hx + hz * hz;
+            if (h2 > r2 || (minDist && h2 < rMin2)) continue;
+            for (let y = Math.max(sy * 16, yLo); y <= Math.min(sy * 16 + 15, yHi); y++) {
+              cells++;
+              if (!states.has(col.getBlockStateId({ x: lx, y, z: lz }))) continue;
+              out.push(new Vec3(wx, y, wz));
+              if (cap && out.length >= cap) break;
+            }
+            if (cap && out.length >= cap) break;
+          }
+          if (cap && out.length >= cap) break;
+        }
+        if (cap && out.length >= cap) break;
+      }
+      worstMs = Math.max(worstMs, Number(process.hrtime.bigint() - t0) / 1e6);
+      columns++;
+      yield null;   // 一柱扫完：让调用方有机会让出事件循环
+      if (cap && out.length >= cap) return { pts: out, sections, cells, columns, unloaded, worstMs };
+    }
+  }
+  return { pts: out, sections, cells, columns, unloaded, worstMs };
+}
+/** 实机用：每扫完一柱 await 一次（让出事件循环） */
+async function scanColumnsIn (args) {
+  const yieldFn = args.yieldFn || (() => new Promise(res => setImmediate(res)));
+  const g = scanColumnsGen(args);
+  for (;;) { const { value, done } = g.next(); if (done) return value; await yieldFn(); }
+}
+/** 自测用：同一个生成器同步跑完（测的就是跑的那份） */
+function scanColumnsSync (args) {
+  const g = scanColumnsGen(args);
+  for (;;) { const { value, done } = g.next(); if (done) return value; }
+}
+
+
 function install (bot, state, deps) {
   const I = state.instinct = state.instinct || {
     cfg: {},
@@ -1047,6 +1231,11 @@ function install (bot, state, deps) {
   // 跨重连保留状态；新加的本能补上默认配置（老的 state.instinct 里没有）
   fillCfg(I.cfg);
   I.gazeEngagedUntil ||= new Map();   // 老 state 里没有（见 gazeEngaged）；趁早建好，礼物钩子要用
+  I.torchAnchor ||= null;             // 暗处插火把：上次检查时她在哪（走够 everyBlocks 才再检查）—— 第 8 批第 4 条
+  I.followSeen ||= null;              // 跟随中：上一帧看到的玩家位置（判断他动不动）—— 第 8 批第 6 条
+  I.followMovedAt ||= 0;              // 跟随中：他上一次"动过"的时间戳
+  I.delve ||= null;                   // 正在进行的下矿记录（mind 发起 / 本能续探）—— 第 8 批第 5 条
+  I.noteDelve = (a, r, now) => noteDelve(I, a, r, now);   // hands.js 的 /delve 路由回调（接线只此一处）
   I.diagnostics = {};
   I.urgent = null;
 
@@ -1307,7 +1496,7 @@ function install (bot, state, deps) {
     return { did: 'harvest' };
   }
 
-  async function tryMine () {
+  async function tryMine (followIdle = null) {
     const M = I.cfg.mine;
     if (!M.enabled || Date.now() - (I.lastMineAt || 0) < M.cooldownMs) return null;
     if (bot.inventory.emptySlotCount() < CFG.minFreeSlots) return { skip: '背包快满了，不挖' };
@@ -1324,7 +1513,7 @@ function install (bot, state, deps) {
     const carry = carriedNames(bot, state);
     const tally = carriedTally(bot, state);
     const have = tally.have;
-    const pick = pickOre({ ores, self: bot.entity.position, pick: pickaxeTier(carry.names), have, fails: mineFails });
+    const pick = pickOre({ ores, self: bot.entity.position, pick: pickaxeTier(carry.names), have, fails: mineFails, followIdle });
     // 看得见、值钱、但镐子不够：告诉 mind（一个位置只说一次）
     for (const l of pick.lacking || []) {
       const k = `${l.pos.x},${l.pos.y},${l.pos.z}`;
@@ -1337,16 +1526,83 @@ function install (bot, state, deps) {
       if (!carry.readable && pick.skip) return { ...pick, skip: `${pick.skip}；背包读不到（只算了身上的）` };
       return pick;
     }
+    // ★ 挖之前先把镐子拿在身上（2026-09-28 第 8 批 第 2 条的后半）：
+    //   pickaxeTier 把背包里的镐子也算"有"，但真去挖时手里没镐子会白跑一趟。
+    //   ensureCarried 按"随身装备"同一套判据（re /pickaxe$/）从背包拿出来。
+    if (deps.hands.ensureCarried) {
+      try { await deps.hands.ensureCarried(bot, state, (it) => /pickaxe$/.test(it.name), 1); } catch (_) {}
+    }
     I.lastMineAt = Date.now();
     const { r, aborted } = await runJob('mine', { route: 'POST /mine' }, (abort) => deps.handlers['POST /mine']({
       blockName: pick.target.name, count: pick.count, maxRadius: M.radius, abort,
     }));
     const got = typeof r?.mined === 'number' ? r.mined : 0;   // /mine 回的是挖掉的块数
     const k = `${pick.target.pos.x},${pick.target.pos.y},${pick.target.pos.z}`;
+    // 被打断（战斗/命令）**不记失败冷却** —— 打断不是"挖不动"，
+    // 下一拍身体空了要接着挖同一个矿（这就是"遇到矿石也不挖"的另一半原因：
+    // 以前战斗插进来一次，这个矿位就被 failCooldownMs=10 分钟封掉了）。
     if (!got && !aborted) mineFails.set(k, Date.now() + M.failCooldownMs);
+    if (aborted) mineFails.delete(k);   // 清掉早先可能记下的失败，让它下一拍能接着来
     note({ kind: 'mine', ore: pick.target.name, aborted: aborted || undefined, mined: got, error: r?.error });
     if (got) event('mine', `看见 ${pick.target.name} 就顺手挖了 ${got} 块`, { ore: pick.target.name });
-    return { did: 'mine' };
+    return aborted ? { skip: '挖矿被战斗或命令打断，下一拍接着挖' } : { did: 'mine' };
+  }
+
+  // ---- 接着把 mind 交待的下矿走完（第 5 条）
+  // cave 本能仍然默认关；这条只对"mind 明确下过 /delve 且 5 分钟内被打断"的情况生效。
+  async function tryResumeDelve () {
+    const D = I.cfg.delve;
+    const plan = pickDelveResume({
+      delve: I.delve, self: bot.entity.position, now: Date.now(),
+      resumeMs: D.resumeMs, reach: D.reach, enabled: D.enabled,
+    });
+    if (!plan.resume) { if (!I.delve) return null; return { skip: plan.why }; }
+    if ((bot.health ?? 20) < D.minHp) return { skip: `血 ${bot.health}，先不接着挖` };
+    if (bot.inventory.emptySlotCount() < CFG.minFreeSlots) return { skip: '背包快满了，先不接着挖' };
+    if (!I.caveDone) I.caveDone = new Set();
+    // 从记录里的洞口接着走 —— delve 自己会读取 state 里的 mines.json / heading 接着挖
+    I.lastDelveAt = Date.now();
+    const { r, aborted } = await runJob('delve', { route: 'POST /delve' }, (abort) => deps.handlers['POST /delve']({
+      target: plan.target, targetY: I.delve?.targetY ?? undefined, seconds: Math.round(D.seconds), abort,
+    }));
+    if (aborted) return { skip: '续挖被战斗或命令打断' };
+    noteDelve(I, { target: plan.target, seconds: D.seconds, resumed: true }, r || {}, Date.now());   // 本能自己接着下的：计数，封顶见 pickDelveResume
+    note({ kind: 'delve', resume: true, reason: r?.reason, gained: r?.gained, error: r?.error });
+    event('delve_resume', `接着把上次没挖完的矿挖下去：${String(r?.reason || '').slice(0, 60)}${r?.gained ? `（进账 ${Object.entries(r.gained).map(([k, v]) => `${k}×${v}`).join(' ')}）` : ''}`, { gained: r?.gained });
+    return { did: 'delve' };
+  }
+
+  // ---- 暗处插火把（第 4 条，新本能，无 LLM）
+  // 不在战斗里插（调用方 tick 已经在 fighting 时早退；这里再兜一层），每 ~6 格检查一次。
+  async function tryTorch () {
+    const TC = I.cfg.torch;
+    if (!TC.enabled) return null;
+    if (Date.now() - (I.lastTorchCheck || 0) < TC.checkMs) return null;
+    I.lastTorchCheck = Date.now();
+    // ④ 走了多少格：按水平位移累计（原地不动不插）
+    let ex = null; try { ex = deps.exposureOf?.(bot); } catch (_) { ex = null; }
+    const here = bot.entity.position;
+    const moved = I.torchAnchor ? Math.hypot(here.x - I.torchAnchor.x, here.z - I.torchAnchor.z) : Infinity;
+    const li = (() => { try { return deps.hands.lightAt?.(bot); } catch (_) { return null; } })();
+    const near = (() => { try { return deps.hands.nearestLight?.(bot, TC.spacing); } catch (_) { return null; } })();
+    const torches = (() => { try { return deps.hands.torchCount?.(bot) ?? 0; } catch (_) { return 0; } })();
+    const plan = pickTorchStep({
+      exposure: ex, light: li?.block ?? null, torches, nearestLight: near, movedSince: moved,
+    }, TC);
+    if (!plan.place) {
+      // 走了够远就把锚点挪过来，免得一直在"还没走够"里打转
+      if (moved >= TC.everyBlocks) I.torchAnchor = { x: here.x, z: here.z };
+      return { skip: plan.why };
+    }
+    // 火把可能在精妙背包里 → 先补到身上（和 hands.lightUp 的判据同一处）
+    if (deps.hands.ensureCarried) { try { await deps.hands.ensureCarried(bot, state, (it) => /(^|:)torch$/.test(it.name), 1); } catch (_) {} }
+    const { r, aborted } = await runJob('torch', null, (abort) => deps.handlers['POST /light_up']({ max: 1, abort }));
+    I.torchAnchor = { x: here.x, z: here.z };
+    if (aborted) return { skip: '插火把被战斗或命令打断' };
+    const placed = typeof r?.placed === 'number' ? r.placed : 0;
+    note({ kind: 'torch', placed, why: plan.why, error: r?.error });
+    if (placed > 0) { event('torch', `这里暗，插了 ${placed} 根火把`, { placed }); return { did: 'torch' }; }
+    return { skip: `想插火把没插成（${r?.error || r?.note || '没有合适的位置'}）` };
   }
 
   // ---- 危险方块退开（保命：连"刚被叫停"也不拦它）
@@ -1670,37 +1926,43 @@ function install (bot, state, deps) {
   // 现在：每个大扫描之间 `await yieldLoop()` 让出事件循环；扫描本身按**竖直分段**（小 maxDistance）
   // 拆成多轮，单轮同步占用控制在 50ms 以内。目标是"任何一个计时器回调单次同步 < 50ms"。
   const yieldLoop = () => new Promise(res => setImmediate(res));
+
+  // 方块 id → 它在"人造方块名单"里。用 Set 而不是 Array.includes：逐格判定是热路径（几百万次）
+
   /**
-   * 分段扫人造方块：竖着一段段找，每段之间让出事件循环。
-   * 为什么竖着分：`findBlocks` 的层是**八面体**扩的（blocks.js:164），maxDistance 越大层数越多、
-   * 扫的 section 越多 —— 把一次大扫描拆成多个小 maxDistance，每轮同步成本就线性下来。
-   * @returns 所有段命中的点（已按 |y - cy| <= 16 过滤，和原来的 filter 一致）
+   * 逐 **chunk 列**（16×16 的水平柱）扫人造方块 —— 2026-09-28 第 8 批真修。
+   *
+   * 为什么不是 `findBlocks`：它是**同步**函数，而且候选 section 是按八面体一层层往外扩的
+   * （mineflayer/lib/plugins/blocks.js:164），maxDistance 越大层数越多、扫的 section 越多 ——
+   * 批次 6 按距离拆成 32/64/91 三段，每段仍是**一次同步调用**，体积随半径三次方长，
+   * 实机一条 `slow home.scanBuilt d=91 13049` = 单次同步 13 秒。
+   *
+   * 现在：把扫描拆成"一列一列"，列与列之间 `await yieldLoop()` 让出事件循环，
+   * 单列的同步成本 = 列内 section 数 × 每 section 的逐格成本，和整圆半径无关。
+   * 列内**先看 section.palette**：这节里一个目标 id 都没有就整节跳过（不逐格扫 4096 格）。
+   *
+   * @param {object} c        扫描中心（Vec3 形状即可：有 x/y/z）
+   * @param {number[]} ids    目标方块 id 列表（人造方块名单）
+   * @param {number} maxDist  水平半径（列的选择用圆柱，竖直范围另给）
+   * @param {number} cap      最多返回几个（0 = 不限）
+   * @param {object} [opts]
+   * @param {number|null} [opts.minDist]  只扫这么远**之外**的列（家生长的前沿环带）；null/0 = 从中心开始
+   * @param {number} [opts.dy]            竖直范围：|y - c.y| <= dy 才算（和原来的 filter 一致）
+   * @param {string} [opts.label]         slow 日志里的名字
+   * @returns {Promise<{pts: Array, sections: number, cells: number, columns: number, worstMs: number}>}
    */
-  async function scanBuiltChunks (bot, c, builtIdList, maxDist, cap) {
-    const { Vec3 } = require('vec3');
-    // 每段 32 格：基准实测单段同步 ~10–28ms（比 48 格那段还保守），真实基地再密一倍也还压在 50ms 内。
-    const segs = Math.max(1, Math.ceil(maxDist / 32));
-    const out = []; const seen = new Set();
-    for (let i = 0; i < segs; i++) {
-      const d = Math.min(maxDist, (i + 1) * 32);
-      const pts = timed(`home.scanBuilt d=${d}`, () => bot.findBlocks({ point: c, matching: builtIdList, maxDistance: d, count: cap }));
-      for (const p of pts) {
-        if (Math.abs(p.y - c.y) > 16) continue;          // 和原来的 filter 一致
-        const k = `${p.x},${p.y},${p.z}`;
-        if (seen.has(k)) continue;                        // 段之间有重叠，去重
-        seen.add(k); out.push(p);
-        if (out.length >= cap) return out;                // 到 cap 就停（原来是 count=4000）
-      }
-      await yieldLoop();
-    }
-    return out;
+  async function scanColumns (bot, c, ids, maxDist, cap = 0, opts = {}) {
+    const r = await scanColumnsIn({ world: bot.world, registry: bot.registry, c, ids, maxDist, cap, opts, yieldFn: yieldLoop });
+    if (r.worstMs > 200) slow(`${opts.label || 'home.scanColumns'} n=${r.pts.length}`, r.worstMs);
+    return r;
   }
   let homeScanBusy = false;
   const homeTimer = setInterval(async () => {
-    if (homeScanBusy) return;                             // 上一轮还没跑完（分轮后可能跨多拍）：别叠
+    if (homeScanBusy) return;                             // 上一轮还没跑完（分列后可能跨多拍）：别叠
     try {
       const H = I.cfg.home; const h = I.home;
-      if (!H.grow || !h || !bot.entity) return;
+      // grow 只管“家的范围随基地长大”那一段；耕地干了 / 暗处提醒不受它影响（以前一起被挡掉）
+      if (!h || !bot.entity) return;
       if (Date.now() - (I.lastHomeScan || 0) < H.everyMs) return;
       if (Math.hypot(bot.entity.position.x - h.center.x, bot.entity.position.z - h.center.z) > h.radius + H.near) return;   // 不在家附近：区块可能没加载，数不准
       homeScanBusy = true;
@@ -1709,13 +1971,21 @@ function install (bot, state, deps) {
         if (!builtIds) builtIds = Object.values(bot.registry.blocksByName).filter(b => deps.isPlayerBuilt?.(b.name) || /farmland/.test(b.name)).map(b => b.id);
         const { Vec3 } = require('vec3');
         const c = new Vec3(h.center.x, h.center.y, h.center.z);
-        // ① 数人造方块的范围（分段 + 让出）
-        const pts = await scanBuiltChunks(bot, c, builtIds, Math.min(H.cap, h.radius + H.near), 4000);
-        const r = homeFootprint(pts.map(p => Math.hypot(p.x - h.center.x, p.z - h.center.z)), h.radius, H);
+        // ① 家的范围：每 30 分钟只扫**当前半径外的环带**（生长前沿），不再扫整个圆盘。
+        //    理由：家里的方块上次已经数过，反复扫整个圆盘是 99% 的重复劳动（也是 13 秒冻结的来源）。
+        //    环带 = 半径 (h.radius - 4) 之外、到 cap 为止；只要前沿还在长，半径就会继续涨，
+        //    下一轮环带自然往外推（r-4 的重叠保证不会因为一格之差漏掉）。
+        const geoR = Math.min(H.cap, h.radius + H.near);
+        const band = { minDist: Math.max(0, Math.min(h.radius, geoR) - 4), dy: 16, label: 'home.scanRing' };
+        const scan = H.grow ? await scanColumns(bot, c, builtIds, geoR, 4000, band) : { pts: [] };
+        const pts = scan.pts;
+        const r = H.grow ? homeFootprint(pts.map(p => Math.hypot(p.x - h.center.x, p.z - h.center.z)), h.radius, H) : h.radius;
         await yieldLoop();
         // ② 家里的耕地湿不湿（moisture=0 = 4 格内没水，会退化回泥土、庄稼长得慢）—— 只告诉 mind，不自己引水（会动主人的布局）
+        //    半径封顶 32 + 分列扫描：以前用 findBlocks 一次同步扫 h.radius（最大 128）格半径的圆盘。
         const dryIds = ['farmland'].map(n => bot.registry.blocksByName[n]?.id).filter(v => v != null);
-        const dryPts = timed('home.scanFarmland', () => bot.findBlocks({ point: c, matching: dryIds, maxDistance: h.radius, count: 400 }));
+        const dryScan = await scanColumns(bot, c, dryIds, Math.min(geoR, 32), 400, { dy: 16, label: 'home.scanFarmland' });
+        const dryPts = dryScan.pts;
         // 每个点都要 blockAt 读 moisture：分段让出，别一次全读完
         const dry = [];
         for (let i = 0; i < dryPts.length; i++) {
@@ -1734,11 +2004,12 @@ function install (bot, state, deps) {
         if (I.darkToldDay !== day) {
           const LIGHT_RE = /(^|:|_)(torch|lantern|glowstone|shroomlight|froglight|campfire|redstone_lamp|end_rod|candle|light)$/;
           const srcIds = Object.values(bot.registry.blocksByName).filter(b => LIGHT_RE.test(b.name) && !/redstone_torch|soul_torch_off/.test(b.name)).map(b => b.id);
-          const sourceLights = timed('home.scanLights', () => bot.findBlocks({ point: c, matching: srcIds, maxDistance: h.radius, count: 64 }))
-            .filter(p => Math.abs(p.y - h.center.y) <= 8).map(p => bot.blockAt(p)?.light);
+          const srcScan = await scanColumns(bot, c, srcIds, Math.min(geoR, 32), 64, { dy: 8, label: 'home.scanLights' });
+          const sourceLights = srcScan.pts.filter(p => Math.abs(p.y - h.center.y) <= 8).map(p => bot.blockAt(p)?.light);
           await yieldLoop();
           const airIds = ['air', 'cave_air'].map(n => bot.registry.blocksByName[n]?.id).filter(v => v != null);
-          const airPts = timed('home.scanAir', () => bot.findBlocks({ point: c, matching: airIds, maxDistance: Math.min(h.radius, 32), count: 3000 }));
+          const airScan = await scanColumns(bot, c, airIds, Math.min(h.radius, 32), 3000, { dy: 4, label: 'home.scanAir' });
+          const airPts = airScan.pts;
           // cells 循环里每格要 3 次 blockAt：分段让出（原来一次性同步跑 3000 格）
           const cells = [];
           for (let i = 0; i < airPts.length; i++) {
@@ -1763,7 +2034,7 @@ function install (bot, state, deps) {
         if (r > h.radius + 2) {
           const old = h.radius;
           h.radius = r;
-          event('home_grow', `家的范围跟着房子长大了：半径 ${old} → ${r} 格（数到 ${pts.length} 块人造方块）`, { radius: r, center: h.center });
+          event('home_grow', `家的范围跟着房子长大了：半径 ${old} → ${r} 格（环带扫到 ${pts.length} 块人造方块）`, { radius: r, center: h.center });
         }
       } finally { homeScanBusy = false; }
     } catch (_) { homeScanBusy = false; }
@@ -2457,8 +2728,37 @@ function install (bot, state, deps) {
       last.pickup = pick.skip || `捡 ${pick.ids.length} 堆`;
       if (pick.ids) { I.last = { t: now, ...last }; await runPickup(pick.ids, followName); return; }
     }
-    // 跟着人走：只捡东西
-    if (followName) { I.last = { t: now, ...last, other: `跟着 ${followName}，只捡东西` }; return; }
+    // 跟着人走。2026-09-28 第 8 批 第 6 条：以前这里无条件 `return`，
+    // 于是"跟着 X"期间她只会捡东西 —— 人站着不动（挂机看背包）她也跟着干站着。
+    // 现在：他**站着不动超过 idleMs（默认 8 秒）**时，允许就地做点"顺手的事"
+    // （插火把 / 挖看得见的矿 / 开看得见的箱子）；他一动（followIdlePlan 返回 null）立刻回到"只捡东西"。
+    if (followName) {
+      let idle = null;
+      if (followEnt) {
+        const prev = I.followSeen?.name === followName ? I.followSeen.pos : null;
+        const movedNow = prev ? Math.hypot(followEnt.position.x - prev.x, followEnt.position.y - prev.y, followEnt.position.z - prev.z) : 0;
+        if (prev && movedNow > 0.35) I.followMovedAt = now;              // 他在动 → 刷新"动过"的时刻
+        if (!I.followMovedAt) I.followMovedAt = now;                     // 第一次见到：先记下
+        I.followSeen = { name: followName, pos: { x: followEnt.position.x, y: followEnt.position.y, z: followEnt.position.z } };
+        idle = followIdlePlan({ now, idleMs: I.cfg.follow.idleMs, lastPos: prev, pos: followEnt.position, movedAt: I.followMovedAt });
+      } else {
+        I.followSeen = null; I.followMovedAt = 0;
+      }
+      if (!idle) { I.last = { t: now, ...last, other: `跟着 ${followName}，只捡东西` }; return; }
+      // 他站着不动：顺手的事按"最急"排 —— 插火把（防刷怪）→ 挖看得见的矿 → 开看得见的箱子。
+      // 都离她/他不远（follow.reach / 采集本能自己的半径）。做完一件就回 tick，下一拍再看他还动没动。
+      last.follow = `${followName} 站着不动 ${(idle.idleMs / 1000).toFixed(0)}s，顺手做点事`;
+      const tf = await tryTorch();
+      if (tf?.did) { I.last = { t: now, ...last, torch: '做了' }; return; }
+      const tm = await tryMine({ pos: followEnt.position });
+      if (tm?.did) { I.last = { t: now, ...last, mine: '做了' }; return; }
+      if (tm?.skip) last.mine = tm.skip;
+      const tl = await tryLoot(nightOut);
+      if (tl?.did) { I.last = { t: now, ...last, loot: '做了' }; return; }
+      if (tl?.skip) last.loot = tl.skip;
+      I.last = { t: now, ...last }; return;
+    }
+    I.followSeen = null; I.followMovedAt = 0;
     // ② 夜里在家就睡（在自家院子的露天处也算 —— 所以放在"夜里露天不做事"之前）
     const sl = await trySleep();
     if (sl?.did) { I.last = { t: now, ...last, sleep: '做了' }; return; }
@@ -2474,7 +2774,9 @@ function install (bot, state, deps) {
 
     // ④ 收获  ⑤ 开宝箱 / 进建筑  ⑥ 采矿  ⑦ 换护甲
     // ⑧ 洞穴探险（最后：先把看得见的矿挖了、箱子开了，再往里走）
-    for (const [k, f] of [['harvest', tryHarvest], ['loot', () => tryLoot(nightOut)], ['mine', tryMine], ['cave', tryCave]]) {
+    // ★ 插火把放在最前：地下暗处会刷怪，比收获更该先做（第 8 批第 4 条）。身体空着才轮到它。
+    // ★ delve 续挖排在采矿**之后**：先挖脚边看得见的矿（收获最快），再接着往洞里走。
+    for (const [k, f] of [['torch', tryTorch], ['harvest', tryHarvest], ['loot', () => tryLoot(nightOut)], ['mine', tryMine], ['delve', tryResumeDelve], ['cave', tryCave]]) {
       const r = await f();
       if (!r) continue;
       if (r.did) { I.last = { t: now, ...last, [k]: '做了' }; return; }
@@ -2541,6 +2843,72 @@ function install (bot, state, deps) {
   bot.on('health', wakeChecks);
   bot.on('entityUpdate', onUpdate);
   bot.once('end', () => { ended = true; bot.removeListener('entityHurt', wakeChecks); bot.removeListener('breath', wakeChecks); bot.removeListener('health', wakeChecks); bot.removeListener('entityUpdate', onUpdate); clearInterval(hazardTimer); clearInterval(timer); clearInterval(gazeTimer); clearInterval(toolTimer); clearInterval(combatTimer); clearInterval(kitTimer); clearInterval(oreWatch); clearInterval(policyTimer); clearInterval(homeTimer); clearInterval(eatTimer); clearInterval(breathTimer); clearInterval(shoreTimer); clearInterval(effectTimer); });
+}
+
+/**
+ * mind 让下矿（`POST /delve`）之后，本能记下"正在下矿"（2026-09-28 第 8 批 第 5 条）。
+ *
+ * 实机证据：`delve(seconds=90 …) ✓ gained={raw_copper:5, cobblestone:21}` 只跑了 50 秒
+ * 就因为战斗中断，然后她**站在原地等 mind 再想起来** —— 那段洞里看得见的矿就白瞎了。
+ *
+ * 这里只记"目标 / 方向 / 开始时刻 / 上次被打断的时刻"，不自己决定什么时候下矿。
+ * 是否续探的判据在 `pickDelveResume`（纯函数，可离线自测）：
+ *   · 5 分钟内（resumeMs）有 mind 发起的下矿记录；
+ *   · 记录里的洞口离她现在不远（不跨维度、不跨半个世界）；
+ *   · 体力/背包/mind 没有别的安排（由 tick 的顺序保证）；
+ *   · 中途没有"她自己要走的事"（由调用点保证）。
+ *
+ * @param {object} I      state.instinct
+ * @param {object} a      `POST /delve` 的参数（target / targetY / seconds）
+ * @param {object} r      delve 的返回（reason / at / entry / deepest / heading）
+ * @param {number} now
+ */
+function noteDelve (I, a = {}, r = {}, now = Date.now()) {
+  if (!I) return null;
+  const tgt = a.target || null; const ty = a.targetY != null ? +a.targetY : null;
+  const rec = {
+    target: tgt, targetY: ty, seconds: +a.seconds || +a.maxMs ? Math.round((+a.seconds || +a.maxMs / 1000)) : null,
+    at: r.at ? { x: r.at.x, y: r.at.y, z: r.at.z } : null,
+    entry: r.entry || null,
+    heading: r.heading || null,
+    startedAt: I.delve?.target === tgt ? (I.delve.startedAt || now) : now,
+    resumes: a.resumed ? (I.delve?.target === tgt ? (I.delve.resumes || 0) + 1 : 1) : 0,   // mind 自己发起的下矿：计数归零
+    lastAt: now,
+    reason: r.reason || null,
+    // 被战斗/怪打断：delve 的 reason 里会写"僵尸/骷髅 在 N 格外"这种
+    interrupted: /在 \d+(\.\d+)? 格外/.test(String(r.reason || '')) ? String(r.reason) : null,
+    // 这些原因停下的不自己接着下（Claude 复查）：血少回洞里危险；背包满 / 火把用完接着下会马上又停，来回抖
+    noResume: /血只剩|背包快满|火把用完|没有火把|镐子不够/.test(String(r.reason || '')) ? String(r.reason) : null,
+  };
+  I.delve = rec;
+  return rec;
+}
+
+/**
+ * 该不该由**本能**把被打断的下矿接着走下去（第 5 条，纯函数）。
+ *
+ * cave 本能保持默认关（Codex 的理由成立：会把"人在洞里"误当成"主人让我探险"）。
+ * 但**mind 明确发起过的下矿**不算"误当成" —— 有目标、有时间、有记录，接着走是照吩咐办事。
+ *
+ * @param {{delve:?object, self:?{x,y,z}, now:number, resumeMs:number, reach:number, enabled:boolean, caveEnabled:boolean}} c
+ * @returns {null|{resume:true, why:string, target:?string, entry:?object}|{resume:false, why:string}}
+ */
+function pickDelveResume (c = {}) {
+  const { delve = null, self = null, now = Date.now(), resumeMs = 300000, reach = 96 } = c;
+  if (!c.enabled) return { resume: false, why: '续探本能关着' };
+  if (!delve) return { resume: false, why: '最近没有下过矿' };
+  if (delve.noResume) return { resume: false, why: `上次是因为「${delve.noResume}」停的，不自己接着下` };
+  if ((delve.resumes || 0) >= (c.maxResumes ?? 3)) return { resume: false, why: `已经自己接着下了 ${delve.resumes} 次，等 mind 决定` };
+  if (!self) return { resume: false, why: '没有位置' };
+  const since = now - (delve.lastAt || delve.startedAt || 0);
+  if (!(since < resumeMs)) return { resume: false, why: `上次下矿已是 ${Math.round(since / 1000)} 秒前（超过 ${Math.round(resumeMs / 1000)} 秒就不主动接着走了）` };
+  // 离记录里的地方太远 → 不跨半张地图去"接着挖"
+  const p = delve.at || delve.entry;
+  if (p && Number.isFinite(p.x)) {
+    const d = Math.hypot(self.x - p.x, self.z - p.z);
+    if (d > reach) return { resume: false, why: `上次下矿的地方在 ${Math.round(d)} 格外（超过 ${reach} 格）` };
+  }
+  return { resume: true, why: delve.interrupted ? `上次因为「${delve.interrupted}」断了 ${Math.round(since / 1000)} 秒，接着把它挖完` : `上次下矿结束 ${Math.round(since / 1000)} 秒，还能接着挖`, target: delve.target, entry: delve.entry };
 }
 
 /**
@@ -2937,6 +3305,109 @@ function selftest () {
   check('★ 刚被叫停 → 站着别动', typeof bodyBusy({ quietUntil: 100, now: 50 }), 'string');
   check('停的时间过了 → 空', bodyBusy({ quietUntil: 100, now: 150 }), null);
 
+  // ---- 跟随的玩家站着不动（第 8 批 第 6 条）----
+  {
+    const P3 = { x: 10, y: 64, z: 10 };
+    check('他还在走 → 不顺手做事', followIdlePlan({ now: 100000, idleMs: 8000, lastPos: { x: 10, y: 64, z: 10 }, pos: { x: 14, y: 64, z: 10 }, movedAt: 0 }), null);
+    check('他刚停下 3 秒 → 还不到 8 秒', followIdlePlan({ now: 100000, idleMs: 8000, lastPos: P3, pos: P3, movedAt: 97000 }), null);
+    check('★ 他站住 9 秒 → 可以顺手做事', !!followIdlePlan({ now: 100000, idleMs: 8000, lastPos: P3, pos: P3, movedAt: 91000 }), true);
+    check('★ 读不到他的位置 → 不猜', followIdlePlan({ now: 100000, idleMs: 8000, lastPos: P3, pos: null, movedAt: 0 }), null);
+    check('只知道他站着但不知道站多久 → 先等一帧', followIdlePlan({ now: 100000, idleMs: 8000, lastPos: null, pos: P3, movedAt: 0 }), null);
+    check('小小抖动（<0.35 格，例如坐船/被推）→ 还算站着', !!followIdlePlan({ now: 100000, idleMs: 8000, lastPos: P3, pos: { x: 10.2, y: 64, z: 10 }, movedAt: 91000 }), true);
+    check('★ 他一动就停（10 秒后又走了）→ 不顺手做事', followIdlePlan({ now: 100000, idleMs: 8000, lastPos: P3, pos: { x: 12, y: 64, z: 10 }, movedAt: 91000 }), null);
+  }
+
+  // ---- 暗处插火把（第 8 批 第 4 条）----
+  {
+    const T = { ...CFG.torch };
+    const under = { kind: 'underground', roofAt: 5, solidAbove: 9 };
+    check('★ 地下 + 脚下黑 + 有火把 + 附近没光源 → 插', pickTorchStep({ exposure: under, light: 0, torches: 5, nearestLight: null, movedSince: 10 }, T).place, true);
+    check('没火把 → 不插', pickTorchStep({ exposure: under, light: 0, torches: 0, nearestLight: null, movedSince: 10 }, T).place, false);
+    check('★ 亮度读不到 → 不插（不猜）', pickTorchStep({ exposure: under, light: null, torches: 5, nearestLight: null, movedSince: 10 }, T).place, false);
+    check('★ 地面露天（kind=open）→ 不插（夜里黑该回家睡）', pickTorchStep({ exposure: { kind: 'open', skyLight: 15 }, light: 0, torches: 5, nearestLight: null, movedSince: 10 }, T).place, false);
+    check('露天但头顶有顶（sheltered + roofAt）→ 就当洞里，照插', pickTorchStep({ exposure: { kind: 'sheltered', roofAt: 3, skyLight: 5 }, light: 3, torches: 5, nearestLight: null, movedSince: 10 }, T).place, true);
+    check('sheltered 但读不出 roofAt → 不插', pickTorchStep({ exposure: { kind: 'sheltered', roofAt: null }, light: 3, torches: 5, nearestLight: null, movedSince: 10 }, T).place, false);
+    check('★ 脚下够亮（方块光 9）→ 不插', pickTorchStep({ exposure: under, light: 9, torches: 5, nearestLight: null, movedSince: 10 }, T).place, false);
+    check('★ 7 格内已经有光源 → 不插', pickTorchStep({ exposure: under, light: 0, torches: 5, nearestLight: { distance: 5 }, movedSince: 10 }, T).place, false);
+    check('最近光源在 9 格（>7）→ 插', pickTorchStep({ exposure: under, light: 0, torches: 5, nearestLight: { distance: 9 }, movedSince: 10 }, T).place, true);
+    check('★ 才走了 2 格（没到 6）→ 先不检查', pickTorchStep({ exposure: under, light: 0, torches: 5, nearestLight: null, movedSince: 2 }, T).place, false);
+    check('★ 第一次（movedSince=Infinity）→ 也算走够了', pickTorchStep({ exposure: under, light: 0, torches: 5, nearestLight: null, movedSince: Infinity }, T).place, true);
+    check('亮度刚好在阈值上（7）→ 插（判据是 ≥ 阈值才不插）', pickTorchStep({ exposure: under, light: 7, torches: 5, nearestLight: null, movedSince: 10 }, T).place, true);
+    check('亮度 8（阈值上一个）→ 不插', pickTorchStep({ exposure: under, light: 8, torches: 5, nearestLight: null, movedSince: 10 }, T).place, false);
+    check('亮度 6 → 插', pickTorchStep({ exposure: under, light: 6, torches: 5, nearestLight: null, movedSince: 10 }, T).place, true);
+    check('不插时说的理由里含"火把/光/暗"', /火把|光|暗|洞|走/.test(pickTorchStep({ exposure: under, light: 0, torches: 0, nearestLight: null, movedSince: 10 }, T).why), true);
+  }
+
+  // ---- 续挖下矿（第 8 批 第 5 条）----
+  {
+    const now = 2000000;
+    const drec = { target: 'iron_ore', targetY: 16, at: { x: 100, y: 20, z: 100 }, entry: { x: 100, y: 64, z: 100 }, lastAt: now - 60000, interrupted: '僵尸 在 3 格外' };
+    check('★ 3 分钟前被打断的下矿 → 接着挖', pickDelveResume({ delve: drec, self: { x: 105, y: 20, z: 105 }, now, resumeMs: 300000, reach: 96, enabled: true }).resume, true);
+    check('★ 8 分钟前断的（超过 5 分钟）→ 不主动接着走', pickDelveResume({ delve: drec, self: { x: 105, y: 20, z: 105 }, now: now + 300000, resumeMs: 300000, reach: 96, enabled: true }).resume, false);
+    check('★ 记录的地方在 200 格外 → 不跨地图去接', pickDelveResume({ delve: drec, self: { x: 400, y: 20, z: 400 }, now, resumeMs: 300000, reach: 96, enabled: true }).resume, false);
+    check('从没下过矿 → 不续', pickDelveResume({ delve: null, self: { x: 0, y: 64, z: 0 }, now, resumeMs: 300000, reach: 96, enabled: true }).resume, false);
+    check('续挖本能关着 → 不续', pickDelveResume({ delve: drec, self: { x: 105, y: 20, z: 105 }, now, resumeMs: 300000, reach: 96, enabled: false }).resume, false);
+    check('没有位置 → 不续', pickDelveResume({ delve: drec, self: null, now, resumeMs: 300000, reach: 96, enabled: true }).resume, false);
+    check('★ 续挖时带上原来的目标矿', pickDelveResume({ delve: drec, self: { x: 105, y: 20, z: 105 }, now, resumeMs: 300000, reach: 96, enabled: true }).target, 'iron_ore');
+    // noteDelve：mind 下矿后被喂一条记录
+    {
+      const I2 = {};
+      noteDelve(I2, { target: 'iron_ore', targetY: 16, seconds: 90 }, { reason: '时间到（90 秒），可以接着挖', at: { x: 1, y: 30, z: 2 }, entry: { x: 1, y: 64, z: 2 }, heading: [1, 0] }, now);
+      check('★ noteDelve 记下目标', I2.delve.target, 'iron_ore');
+      { const I3 = { cfg: {} }; const t = now;
+        noteDelve(I3, { target: 'iron_ore' }, { reason: '血只剩 6', at: { x: 1, y: 30, z: 2 } }, t);
+        check('★ 血少停下的 → 不自己接着下', pickDelveResume({ enabled: true, delve: I3.delve, self: { x: 1, y: 30, z: 2 }, now: t + 1000 }).resume, false);
+        noteDelve(I3, { target: 'iron_ore' }, { reason: '背包快满了', at: { x: 1, y: 30, z: 2 } }, t);
+        check('★ 背包满停下的 → 不自己接着下（会来回抖）', pickDelveResume({ enabled: true, delve: I3.delve, self: { x: 1, y: 30, z: 2 }, now: t + 1000 }).resume, false);
+        const I4 = { cfg: {} };
+        noteDelve(I4, { target: 'coal_ore' }, { reason: '僵尸 在 4 格外', at: { x: 1, y: 30, z: 2 } }, t);
+        for (let i = 0; i < 3; i++) noteDelve(I4, { target: 'coal_ore', resumed: true }, { reason: '僵尸 在 4 格外', at: { x: 1, y: 30, z: 2 } }, t);
+        check('★ 自己接着下了 3 次 → 不再接', pickDelveResume({ enabled: true, delve: I4.delve, self: { x: 1, y: 30, z: 2 }, now: t + 1000 }).resume, false);
+        const I5 = { cfg: {} };
+        noteDelve(I5, { target: 'coal_ore' }, { reason: '僵尸 在 4 格外', at: { x: 1, y: 30, z: 2 } }, t);
+        noteDelve(I4, { target: 'coal_ore' }, { reason: '僵尸 在 4 格外', at: { x: 1, y: 30, z: 2 } }, t);
+        check('★ mind 自己又下一次矿 → 计数归零，又能接着下', pickDelveResume({ enabled: true, delve: I4.delve, self: { x: 1, y: 30, z: 2 }, now: t + 1000 }).resume, true);
+        check('被怪打断一次 → 接着下', pickDelveResume({ enabled: true, delve: I5.delve, self: { x: 1, y: 30, z: 2 }, now: t + 1000 }).resume, true); }
+      check('noteDelve 记下位置', I2.delve.at.x, 1);
+      check('★ 正常结束（时间到）不算 interrupted', I2.delve.interrupted, null);
+      noteDelve(I2, { target: 'iron_ore' }, { reason: '僵尸 在 4 格外', at: { x: 3, y: 20, z: 4 } }, now + 1000);
+      check('★ 被怪打断 → 记 interrupted', /僵尸/.test(String(I2.delve.interrupted)), true);
+      check('★ 被怪打断后 5 分钟内续挖的判据成立', pickDelveResume({ delve: I2.delve, self: { x: 3, y: 20, z: 4 }, now: now + 6000, resumeMs: 300000, reach: 96, enabled: true }).resume, true);
+      const I3 = {};
+      noteDelve(I3, { target: 'diamond' }, { reason: '没带火把，不下去（没有煤/木炭）' }, now);
+      check('失败也记一笔（免得当成从没下过矿）', I3.delve.target, 'diamond');
+    }
+  }
+
+  // ---- 遇到矿就挖：价值排序（第 8 批 第 3 条）----
+  {
+    const mkCfg = { radius: 16, maxDy: 6, maxVein: 8, lowWhenBelow: 16, followLeash: 16 };
+    const self = { x: 0, y: 30, z: 0 };
+    const O = (name, value, dist, extra = {}) => ({ name, value, tier: 'stone', pos: { x: dist, y: 30, z: 0 }, visible: true, drops: [name], ...extra });
+    // 近处 mid（油矿）vs 远处 high（铁矿）→ 该选 high（第 3 条的现场：她挖了油矿没挖铁矿）
+    const r1 = pickOre({ ores: [O('ltc2:underground_oil_ore', 'mid', 2), O('minecraft:iron_ore', 'high', 9)], self, pick: 2 }, mkCfg);
+    check('★ 近处 mid 油矿 vs 远处 high 铁矿 → 挖 high（价值优先于距离）', r1.target.name, 'minecraft:iron_ore');
+    // 同档才比距离
+    const r2 = pickOre({ ores: [O('a:high1', 'high', 9), O('b:high2', 'high', 3)], self, pick: 2 }, mkCfg);
+    check('同一档 → 近的先挖', r2.target.name, 'b:high2');
+    // 没有 value 字段的 → 排最后
+    const r3 = pickOre({ ores: [O('mystery:ore', undefined, 2), O('minecraft:iron_ore', 'high', 9)], self, pick: 2 }, mkCfg);
+    check('★ 矿表里没有 value 的排在 high 后面', r3.target.name, 'minecraft:iron_ore');
+    // 只有没价值的 → 还是挖（比什么都不做强，且能顺手补矿表）
+    const r4 = pickOre({ ores: [O('mystery:ore', undefined, 3)], self, pick: 2 }, mkCfg);
+    check('★ 附近只有"没价值的"矿 → 也挖（不挑三拣四）', r4.target.name, 'mystery:ore');
+    // 半径从 12 放到 16：15 格外的矿现在算"眼前"
+    const r5 = pickOre({ ores: [O('minecraft:iron_ore', 'high', 15)], self, pick: 2 }, mkCfg);
+    check('★ 15 格外的铁矿（>旧半径 12）→ 现在挖得到', r5.target.name, 'minecraft:iron_ore');
+    const r6 = pickOre({ ores: [O('minecraft:iron_ore', 'high', 18)], self, pick: 2 }, mkCfg);
+    check('18 格外（>新半径 16）→ 还是太远', r6.target, undefined);
+    // 跟随模式：矿不能离被跟的人太远
+    const r7 = pickOre({ ores: [O('minecraft:iron_ore', 'high', 14)], self, pick: 2, followIdle: { pos: { x: 0, y: 30, z: 0 } } }, mkCfg);
+    check('跟着人时：矿在她脚下（离人也近）→ 能挖', r7.target.name, 'minecraft:iron_ore');
+    const r8 = pickOre({ ores: [O('minecraft:iron_ore', 'high', 14)], self, pick: 2, followIdle: { pos: { x: -14, y: 30, z: 0 } } }, mkCfg);
+    check('★ 跟着人时：矿离他 28 格（>跟随半径）→ 不挖（挖完追不上）', r8.target, undefined);
+  }
+
   // ---- 让出身体 ----
   const st = { instinct: { cfg: { pickup: { ...P } }, running: null, quietUntil: 0 } };
   let aborted = false;
@@ -3009,6 +3480,59 @@ function selftest () {
     check('★ 兜底里直接调 POST /jump（保命路径不能只有一条）',
       /breatheRefused[\s\S]{0,400}deps\.handlers\['POST \/jump'\]/.test(srcText), true);
 
+    const scanRealOk = (() => {
+      const mcd = require('minecraft-data')('1.20.1');
+      const Chunk = require('prismarine-chunk')('1.20.1');
+      const { Vec3 } = require('vec3');
+      const cols = new Map();
+      const colAt = (cx, cz) => { const k = `${cx},${cz}`; if (!cols.has(k)) cols.set(k, new Chunk({ minY: -64, worldHeight: 384 })); return cols.get(k); };
+      const put = (x, y, z, name) => colAt(Math.floor(x / 16), Math.floor(z / 16)).setBlockStateId(new Vec3(((x % 16) + 16) % 16, y, ((z % 16) + 16) % 16), mcd.blocksByName[name].defaultState);
+      put(3, 64, 3, 'oak_planks'); put(20, 70, -5, 'oak_planks'); put(-10, 60, 12, 'torch'); put(5, -20, 5, 'oak_planks'); put(90, 64, 0, 'oak_planks');
+      colAt(-2, 0);   // 一个加载了但没东西的区块
+      const world = { getColumn: (cx, cz) => cols.get(`${cx},${cz}`) || null };
+      const ids = [mcd.blocksByName.oak_planks.id, mcd.blocksByName.torch.id];
+      const r = scanColumnsSync({ world, registry: mcd, c: { x: 0, y: 64, z: 0 }, ids, maxDist: 40, opts: { dy: 16 } });
+      const has = (x, y, z) => r.pts.some(p => p.x === x && p.y === y && p.z === z);
+      const deep = scanColumnsSync({ world, registry: mcd, c: { x: 0, y: -20, z: 0 }, ids, maxDist: 40, opts: { dy: 4 } });
+      return {
+        found: has(3, 64, 3) && has(20, 70, -5) && has(-10, 60, 12),
+        deep: deep.pts.some(p => p.x === 5 && p.y === -20 && p.z === 5),
+        skipped: r.sections > 0 && r.cells < r.sections * 4096,
+        unloaded: r.unloaded > 0,
+        radius: !has(90, 64, 0),
+      };
+    })();
+
+    // ---- 第 8 批的源码形状锁 ----
+    check('★ 冻结真修：home 扫描用 scanColumns（逐 chunk 列），不再用 findBlocks 扫整圆',
+      /scanColumns\(bot, c, builtIds/.test(srcText) && !/findBlocks\(\{ point: c, matching: builtIds/.test(srcText), true);
+    check('★ 逐列之间让出事件循环（await yieldLoop 在列循环里）',
+      /scanColumns[\s\S]{0,2600}await yieldLoop\(\)/.test(srcText), true);
+    // 行为测试（用**真的** 1.20.1 区块数据，不是照着实现写的假世界 —— 第 8 批的假世界照错接口写，所以绿着上线也扫不到东西）
+    check('★ 逐列扫描：真区块（prismarine-chunk 1.20.1）里放的方块都找得到', scanRealOk.found, true);
+    check('★ 逐列扫描：y 为负（minY=-64）的层也找得到', scanRealOk.deep, true);
+    check('★ 逐列扫描：没目标的区段整节跳过（只扫到有东西的那几节）', scanRealOk.skipped, true);
+    check('★ 逐列扫描：没加载的区块记成 unloaded（读不到 ≠ 没有）', scanRealOk.unloaded, true);
+    check('逐列扫描：半径外的不算', scanRealOk.radius, true);
+    check('★ 家生长只扫环带（minDist 前沿），不再扫整个圆盘',
+      /minDist: Math\.max\(0, Math\.min\(h\.radius, geoR\) - 4\)/.test(srcText), true);
+    check('★ 暗处/耕地扫描半径封顶 32',
+      /Math\.min\(geoR, 32\)/.test(srcText) && /Math\.min\(h\.radius, 32\)/.test(srcText), true);
+    check('★ 家生长 30 分钟一次',
+      /everyMs: 1800000/.test(srcText), true);
+    check('★ 存东西时不存随身装备的判据在 hands.js（那里也有源码锁）',
+      /isLoadoutItem/.test(require('fs').readFileSync(require('path').join(__dirname, 'hands.js'), 'utf8')), true);
+    check('★ 挖之前先把镐子拿到身上（ensureCarried /pickaxe$/）',
+      /ensureCarried\(bot, state, \(it\) => \/pickaxe\$\/\.test\(it\.name\)/.test(srcText), true);
+    check('★ 挖矿被打断 → 清失败冷却、下一拍接着挖',
+      /if \(aborted\) mineFails\.delete\(k\)/.test(srcText), true);
+    check('★ pickTorchStep 在 tick 的本能循环里（torch 那一条）',
+      /\['torch', tryTorch\]/.test(srcText), true);
+    check('★ 跟随时"他站着不动才顺手做事"（followIdlePlan 在 tick 里）',
+      /followIdlePlan\(\{ now, idleMs: I\.cfg\.follow\.idleMs/.test(srcText), true);
+    check('★ delve 续挖在 tick 的本能循环里',
+      /\['delve', tryResumeDelve\]/.test(srcText), true);
+
     console.log(`\n${pass} passed, ${fail} failed`);
     return fail ? 1 : 0;
   });
@@ -3016,7 +3540,7 @@ function selftest () {
 
 // isHostileEntity 是**转导出**（上面从 entity-registry 拿的），不是本能层自己实现的 ——
 // 保留在导出里是为了不破坏既有引用（hands.js / 自测）。
-module.exports = { caveBoundary, settleJob, ownsBodyAtCleanup, breatheRefused, syncSleepState, createCheck, CFG, fillCfg, pickEat, pickShore, shoreRingOffsets, needBreath, effectPlan, weatherChange, pickRecovery, pickCommand, homeFootprint, darkReport, mlgStep, pickCaveStep, STRUCTURE_SIGNS, recognizeStructures, pickLoot, pickTidy, isHostileEntity, mobKind, attackCooldownMs, combatPlan, COMBAT_YIELD, TIER, pickaxeTier, carriedNames, carriedTally, needTier, pickOre, pickHarvest, hazardUnder, pickStepOff, armorRank, pickArmor, toolWorn, pickGaze, gazeEngaged, whoThrew, pickPickup, bodyBusy, install, yieldBody, PASSIVE_POSTS, selftest };
+module.exports = { scanColumnsIn, scanColumnsSync, caveBoundary, settleJob, ownsBodyAtCleanup, breatheRefused, syncSleepState, createCheck, CFG, fillCfg, pickEat, pickShore, shoreRingOffsets, needBreath, effectPlan, weatherChange, pickRecovery, pickCommand, homeFootprint, darkReport, mlgStep, pickCaveStep, STRUCTURE_SIGNS, recognizeStructures, pickLoot, pickTidy, isHostileEntity, mobKind, attackCooldownMs, combatPlan, COMBAT_YIELD, TIER, pickaxeTier, carriedNames, carriedTally, needTier, pickOre, pickHarvest, hazardUnder, pickStepOff, armorRank, pickArmor, toolWorn, pickGaze, gazeEngaged, whoThrew, pickPickup, bodyBusy, followIdlePlan, pickTorchStep, noteDelve, pickDelveResume, install, yieldBody, PASSIVE_POSTS, selftest };
 
 if (require.main === module && process.argv.includes('--selftest')) {
   selftest().then(code => process.exit(code));

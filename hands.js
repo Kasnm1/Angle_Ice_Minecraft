@@ -2461,6 +2461,7 @@ async function containerPut (bot, state, { slot, itemName, count }) {
   for (let i = w.inventoryStart; i < w.inventoryEnd; i++) if (w.slots[i] && fullId(w.slots[i].name) === want) src.push(i);
   if (!src.length) throw new Error(`背包里没有 ${itemName}`);
   const item = w.slots[src[0]];
+  if (isLoadoutItem(bot, item)) throw new Error(`${fullId(item.name)} 是随身装备，留在身上（工具/武器/火把/吃的/水桶不存进箱子）`);
   const n = Math.min(count || item.count, src.reduce((a, i) => a + w.slots[i].count, 0));
   await safeTransfer(bot, { window: w, itemType: item.type, metadata: null, count: n, sourceStart: w.inventoryStart, sourceEnd: w.inventoryEnd, destStart: slot, destEnd: slot + 1 });
   await sleep(200);
@@ -2658,9 +2659,15 @@ async function deposit (bot, state, { items, all = false, keep = [] } = {}) {
   // 点完立刻看会以为没放进去（实测：其实放进去了，却报"放不进"）
   const mine = () => { const m = {}; for (let i = w.inventoryStart; i < w.inventoryEnd; i++) { const x = w.slots[i]; if (x) m[fullId(x.name)] = (m[fullId(x.name)] || 0) + x.count; } return m; };
   const before = mine(); const tried = {};
+  // ★ 随身装备一件都不存（2026-09-28 第 8 批 第 2 条）。
+  //   mind 明确点名 `store_items(["铁斧","石镐"])` 也要拒绝：手上留着能挖铁的镐子，
+  //   比"把背包腾空"重要得多（实机 13:05:36 存完镐子，13:05 之后 mine ore=iron_ore 连挂三次）。
+  //   这里不放行"mind 显式要求"这条口子 —— 判据只有 isLoadoutItem 一处。
+  const protectedItems = [];
   for (let i = w.inventoryStart; i < w.inventoryEnd; i++) {
     const it = w.slots[i];
     if (!it || !want(it) || (keep.length && keepM(it))) continue;
+    if (isLoadoutItem(bot, it)) { protectedItems.push(fullId(it.name)); continue; }
     tried[fullId(it.name)] = true;
     await click(bot, i, 0, 1);   // shift+左键：整组送进箱子
   }
@@ -2672,7 +2679,13 @@ async function deposit (bot, state, { items, all = false, keep = [] } = {}) {
     if (d > 0) stored[k] = d;
     if (after[k] > 0) notStored[k] = after[k];
   }
-  return { stored, notStored: Object.keys(notStored).length ? { reason: '箱子满了或放不进', items: notStored } : null, stacks: Object.keys(stored).length };
+  return {
+    stored,
+    notStored: Object.keys(notStored).length ? { reason: '箱子满了或放不进', items: notStored } : null,
+    stacks: Object.keys(stored).length,
+    // 被留下的随身装备：如实告诉她（免得她以为"我说了她没照做"）
+    ...(protectedItems.length ? { protected: [...new Set(protectedItems)], protectedNote: `${[...new Set(protectedItems)].join('、')} 是随身装备，留在身上` } : {}),
+  };
 }
 
 /** 从当前箱子拿：items=[名字/分类] 或 [{item, count}]；all=true 全拿 */
@@ -2830,6 +2843,58 @@ function kitMatch (bot, L, it) {
   if (L.kind === 'id') return fullId(it.name) === L.id;
   if (L.kind === 'any') return L.ids.includes(fullId(it.name));
   return L.m(it);
+}
+
+/**
+ * 这件东西是不是**随身装备**（不该被存进箱子 / 塞进背包的那几样）。
+ *
+ * 主人 2026-09-28 实机：`13:05:36 mind store_items(items=[…"铁斧","石镐"…])` ——
+ * mind 明确点名要她把镐子/斧子存起来，她照做了；之后 `mine ore=iron_ore aborted=true mined=0` 连挂三次，
+ * 因为**手上已经没有能挖铁的镐子**了。
+ *
+ * 判据**只有这一处**：直接复用 `kitMatch` + `defaultLoadout()`，
+ * 所以装备单改了（加一件"盾"之类）这里自动跟着变，不会再出现"两处名单不一致"。
+ * 覆盖：最好的镐 / 斧 / 剑（有一样就行）、吃的、火把、搭脚方块、水桶。
+ * **注意**：`kind: 'best'` 的项是"身上最好的那一件"，所以这里必须按**具体那一件**去比，
+ * 不能只说"某种类型" —— 否则会把备用的第二把镐也留下、永远清不出去。
+ * 这正是我们要的：随身装备 = 装备单要她带的那几件，正好留下这几件。
+ *
+ * @param {object} bot
+ * @param {{name:string, count?:number}} it  要判的物品（物品栏格或 `{name}` 形状就够了）
+ * @returns {boolean} true = 随身装备，不能存/不能塞背包
+ */
+function isLoadoutItem (bot, it) {
+  if (!it?.name) return false;
+  const fake = { name: it.name, count: it.count ?? 1 };
+  for (const L of [...defaultLoadout(), WEAPON_CHECK]) {
+    // foodScore / categoryOf 只读 name，用 fake 就够；best 的 re 也只读 name。
+    // categoryOf 会读 bot.registry（真 bot 一定有）；万一没有就当"不是吃的"，
+    // 不让一个拿不准的食物判定把"不存工具"整个兜底判据搞崩（工具/火把/水桶这些不依赖 registry）。
+    let hit = false;
+    try { hit = kitMatch(bot, L, fake); } catch (_) { hit = L.kind === 'best' || L.kind === 'id' || L.kind === 'any' ? kitMatch({ registry: { blocksByName: {}, itemsByName: {} } }, L, fake) : false; }
+    if (hit) return true;
+  }
+  return false;
+}
+
+/**
+ * 从"要存的东西"里挑出随身装备，并把它们剔掉。
+ * @returns {{kept: string[], reasons: string[]}} kept = 被留下的物品名；reasons = 给 mind 的话
+ */
+function protectLoadout (bot, items) {
+  const kept = []; const keptSet = new Set();
+  for (const x of [].concat(items || [])) {
+    const name = typeof x === 'string' ? x : (x?.item || x?.name);
+    if (!name) continue;
+    // 分类 / 标签也能当 spec 传进来（store_items 支持）；只有"点名到具体物品"时才逐件判
+    if (typeof x === 'object' && !x.name && !x.item) continue;
+    if (isLoadoutItem(bot, { name })) { kept.push(name); keptSet.add(fullId(name)); }
+  }
+  // 分类项（"矿物"这种）也可能把工具卷进去 —— 用 matcher 反查一次
+  const reasons = kept.length
+    ? [`${kept.join('、')} 是随身装备，留在身上`]
+    : [];
+  return { kept, keptSet, reasons };
 }
 
 /**
@@ -4819,7 +4884,22 @@ function routes ({ state, withTimeout }) {
     'POST /storage/organize': async (b = {}) => organizeStorage(bot(), state, b),
     'POST /backpack/tidy': async (b = {}) => backpackTidy(bot(), state, b),
     'POST /storage/loot': async (b = {}) => lootNearby(bot(), state, b),
-    'POST /delve': async (b = {}) => delve(bot(), state, b),
+    // 2026-09-28 第 8 批 第 5 条：mind 明确下矿之后，本能要知道"刚才在下矿"，
+    // 被战斗打断才能在 5 分钟内自己接着挖（判据见 instinct.js 的 noteDelve / pickDelveResume）。
+    // 接线只此一处 —— 本能不自己发起下矿，只在这里被喂一条"下过矿"的记录。
+    'POST /delve': async (b = {}) => {
+      const before = state.delve?.entry || null;
+      try {
+        const r = await delve(bot(), state, b);
+        try { state.instinct?.noteDelve?.(b, r || {}); } catch (_) {}
+        return r;
+      } catch (e) {
+        // 失败也记一笔（比如"没带火把，不下去"）—— 免得下次又当成"从没下过矿"。
+        // 记的是"想在哪儿下"，入口位置从 state.delve 里读（delve 走之前会建好）。
+        try { state.instinct?.noteDelve?.(b, { reason: e.message, entry: state.delve?.entry || before }); } catch (_) {}
+        throw e;
+      }
+    },
     'GET /debug/craftgrid': async () => ({ serverInv: state.invItems || null, clientSlots: bot().inventory.slots.length, clientFilled: bot().inventory.slots.map((it, i) => it && `${i}:${it.type}x${it.count}`).filter(Boolean), grid: bot().inventory.slots.slice(0, 5).map((it, i) => it ? { slot: i, name: it.name, count: it.count } : null), window: bot().currentWindow?.type || null, stateId: bot().inventory.stateId, slotLog: (state.slotLog || []).slice(-20) }),
     'POST /debug/click': async (b = {}) => { const w = bot().currentWindow || bot().inventory; await bot().clickWindow(+b.slot, +b.button || 0, +b.mode || 0); await sleep(300); return { cursor: w.selectedItem && `${w.selectedItem.name}×${w.selectedItem.count}`, grid: w.slots.slice(0, 5).map(it => it && `${it.name}×${it.count}`), slot: w.slots[+b.slot] && `${w.slots[+b.slot].name}×${w.slots[+b.slot].count}`, log: (state.slotLog || []).slice(-4) }; },
     'POST /debug/seq': async (b = {}) => {
@@ -5354,6 +5434,42 @@ if (require.main === module && process.argv.includes('--selftest')) {
       check('已是规范 ID 的不改变旧行为', resolveCarryId('minecraft:torch'), 'minecraft:torch');
       check('中文名也能在 ensureCarried 里对上（身上就有 → carried）',
         (await ensureCarried(mkBot([{ name: 'minecraft:stone_pickaxe', count: 1 }]), {}, '石镐', 1)).source, 'carried');
+
+      // ---- ★ 第 8 批 第 2 条：随身装备一件都不许存（判据只有 isLoadoutItem 一处）
+      //      假 bot 的 categoryOf 会走 registry（这里给一个空的），食物靠 foodScore 的 name 判
+      const kb = { registry: { blocksByName: {}, itemsByName: {} } };
+      const LO = (name) => isLoadoutItem(kb, { name });
+      check('★ 最好的镐 → 随身装备', LO('minecraft:iron_pickaxe'), true);
+      check('★ 木镐也是镐（工具一律不存）', LO('minecraft:wooden_pickaxe'), true);
+      check('★ 模组镐也认（整合包）', LO('ltc2:steel_pickaxe'), true);
+      check('★ 斧 → 随身装备', LO('minecraft:iron_axe'), true);
+      check('★ 剑 → 随身装备', LO('minecraft:diamond_sword'), true);
+      check('★ 火把 → 随身装备', LO('minecraft:torch'), true);
+      check('★ 水桶 → 随身装备（落地水，保命的）', LO('minecraft:water_bucket'), true);
+      check('★ 圆石 → 随身装备（搭脚方块）', LO('minecraft:cobblestone'), true);
+      check('★ 铁锭 → 不是随身装备（该存起来）', LO('minecraft:iron_ingot'), false);
+      // 吃的走 categoryOf → 需要真 registry；这里用 minecraft-data 造一个真 bot 验一遍
+      {
+        let realBot = null;
+        try { const md = require('minecraft-data')('1.20.1'); realBot = { registry: { blocksByName: md.blocksByName, itemsByName: md.itemsByName } }; } catch (_) {}
+        if (realBot) {
+          check('★ 熟牛排 → 随身装备（吃的）', isLoadoutItem(realBot, { name: 'minecraft:cooked_beef' }), true);
+          check('★ 面包 → 随身装备（吃的）', isLoadoutItem(realBot, { name: 'minecraft:bread' }), true);
+          check('★ 钻石 → 不随身（该存）', isLoadoutItem(realBot, { name: 'minecraft:diamond' }), false);
+          check('★ 木棍 → 不随身（该存）', isLoadoutItem(realBot, { name: 'minecraft:stick' }), false);
+        } else {
+          check('minecraft-data 不在 → 跳过食物判据（记一条）', true, true);
+        }
+      }
+      check('★ 泥土里的石头？不 —— 石头算搭脚方块，随身', LO('minecraft:stone'), true);
+      check('★ 钻石 → 不是随身装备', LO('minecraft:diamond'), false);
+      check('★ 没名字的物品 → 不当随身装备（不误留）', isLoadoutItem(kb, {}), false);
+      check('★ 判据是"复用 defaultLoadout"，不是另一份名单',
+        /function isLoadoutItem[\s\S]{0,400}defaultLoadout\(\)/.test(require('fs').readFileSync(__filename, 'utf8')), true);
+      check('★ deposit 里对每件要存的东西都过一遍 isLoadoutItem',
+        /isLoadoutItem\(bot, it\)[\s\S]{0,120}protectedItems\.push/.test(require('fs').readFileSync(__filename, 'utf8')), true);
+      check('★ containerPut（mind 点名塞某格）也拒绝随身装备',
+        /isLoadoutItem\(bot, item\)\) throw/.test(require('fs').readFileSync(__filename, 'utf8')), true);
     }
 
     console.log('\n[0d] 熔炼的燃料判据（R-fix3-1 未声明 state / R-fix3-5 燃料正则漏掉命名空间）');
@@ -5475,4 +5591,4 @@ if (require.main === module && process.argv.includes('--selftest')) {
   })();
 }
 
-module.exports = { rankRecipesFor, shortfallText, zoneArea, zoneWants, install, installDoorHabit, routes, slotByName, foodScore, fullId, botName, startFollow, farm, kitShortfall, kitAvailable, defaultLoadout, wearingBackpack, backpackTidy, fetchFromBackpack, ensureCarried, decideCarry, countInBackpackSeen, resolveCarryId, winInvCount, lookIntoBackpack, fuelValue, smelt, unseenChests, unseenCarts, inHomeArea, inCave, SCAFFOLD_IDS, scaffoldIds, isFiller, canUseFrom, canUseNow, approach, blockVisible, eyeDist };   // farm：收获本能直接调（instinct.js）
+module.exports = { rankRecipesFor, shortfallText, zoneArea, zoneWants, install, installDoorHabit, routes, slotByName, foodScore, fullId, botName, startFollow, farm, kitShortfall, kitAvailable, defaultLoadout, isLoadoutItem, protectLoadout, wearingBackpack, backpackTidy, fetchFromBackpack, ensureCarried, decideCarry, countInBackpackSeen, resolveCarryId, winInvCount, lookIntoBackpack, fuelValue, smelt, unseenChests, unseenCarts, inHomeArea, inCave, SCAFFOLD_IDS, scaffoldIds, isFiller, canUseFrom, canUseNow, approach, blockVisible, eyeDist, lightAt, nearestLight, torchCount, torchItem, lightUp, delve };   // farm：收获本能直接调（instinct.js）；lightAt/nearestLight/torchCount/lightUp：暗处插火把本能（第 8 批第 4 条）直接调
