@@ -14,14 +14,29 @@ const ok = (value, message) => { assert.ok(value, message); passed++; };
 const flush = async () => { for (let i = 0; i < 20; i++) await Promise.resolve(); };
 function setup () {
   const timers = new Map(); const immediates = [];
-  const module = { exports: {} };
-  vm.runInNewContext(fs.readFileSync(file, 'utf8'), {
-    require: createRequire(file), module, exports: module.exports, __dirname: path.dirname(file),
+  // 第 3 步把 instinct.js 拆成 src/instinct/*.js：子文件也得在**同一个沙箱**里跑，
+  // 否则它们的 setInterval 是宿主的真计时器（install() 在 core.js 里），桩接不到、进程也不退出。
+  const ctx = vm.createContext({
     process, console, Date, setTimeout: (fn, ms) => { const t = setTimeout(fn, ms); t.unref(); return t; }, clearTimeout,
     setInterval: (fn, ms) => { const t = { fn, ms }; timers.set(t, t); return t; },
     clearInterval: t => timers.delete(t), setImmediate: fn => immediates.push(fn),
-  }, { filename: file });
-  const api = module.exports;
+  });
+  const dir = path.dirname(file);
+  const cache = new Map();
+  const load = (f) => {
+    if (cache.has(f)) return cache.get(f).exports;
+    const module = { exports: {} };
+    cache.set(f, module);
+    const hostRequire = createRequire(f);
+    const req = (id) => {
+      const r = hostRequire.resolve(id);
+      return path.dirname(r) === dir ? load(r) : hostRequire(id);
+    };
+    const wrapped = vm.runInContext(`(function (require, module, exports, __filename, __dirname) {${fs.readFileSync(f, 'utf8')}\n})`, ctx, { filename: f });
+    wrapped(req, module, module.exports, f, dir);
+    return module.exports;
+  };
+  const api = load(file);
   const bot = new EventEmitter();
   Object.assign(bot, {
     registry: { entitiesByName: { player: { metadataKeys: ['pose'] } }, blocksByName: {}, itemsByName: {} },

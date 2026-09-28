@@ -314,6 +314,47 @@ function checkHandsExports () {
   return PROBLEMS;
 }
 
+/**
+ * instinct.js 对外接口快照（第 3 步拆巨石用的防线）。
+ *
+ * 为什么要有：`src/instinct/instinct.js` 被拆成 `src/instinct/*.js` 之后，它自己变成
+ * 汇总（普通文件，不是符号链接）。`src/bridge/server.js`（`require('../instinct/instinct.js')`）
+ * 和 bridge-server.js / 各 smoke 脚本照旧从同一个路径取 —— 只要有一个导出名丢了/改名了，
+ * 那些模块会在**运行到那一条**时才炸（运行时 undefined），全套自测未必覆盖得到。
+ * 这里把 `Object.keys(require('.../instinct'))` 钉成快照：名字、**顺序**都要一模一样。
+ *
+ * 与 checkHandsExports 同一套判据，只是对象换成本能层。
+ */
+function checkInstinctExports () {
+  const PROBLEMS = [];
+  const snapFile = path.join(ROOT, 'references', 'exports-instinct.json');
+  let want;
+  try {
+    want = JSON.parse(fs.readFileSync(snapFile, 'utf8'));
+  } catch (e) {
+    return [`references/exports-instinct.json 读不到：${e.message}`];
+  }
+  let instinct;
+  try {
+    instinct = require(path.join(ROOT, 'src', 'instinct', 'instinct.js'));
+  } catch (e) {
+    return [`src/instinct/instinct.js 加载失败：${e.message}`];
+  }
+  const got = Object.keys(instinct);
+  if (got.length !== want.length) PROBLEMS.push(`导出个数变了：快照 ${want.length}，现在 ${got.length}`);
+  const missing = want.filter(n => !got.includes(n));
+  const added = got.filter(n => !want.includes(n));
+  if (missing.length) PROBLEMS.push(`快照里有、现在没了：${missing.join(', ')}`);
+  if (added.length) PROBLEMS.push(`快照里没有、现在多了：${added.join(', ')}`);
+  // 顺序也要一致（原来的 module.exports 是什么顺序，现在还得是什么顺序）
+  const sameOrder = want.every((n, i) => got[i] === n);
+  if (!missing.length && !added.length && !sameOrder) {
+    const at = want.findIndex((n, i) => got[i] !== n);
+    PROBLEMS.push(`导出顺序变了（第 ${at + 1} 个：快照 ${want[at]}，现在 ${got[at]}）`);
+  }
+  return PROBLEMS;
+}
+
 // ---- 主流程 ----------------------------------------------------------------
 
 async function main () {
@@ -433,15 +474,26 @@ async function main () {
     console.log('\n  [exports] hands.js 的 47 个导出名与顺序和快照一致');
   }
 
+  // ---- instinct.js 导出快照 --------------------------------------------------
+  // 同一条防线，对象是本能层（见 references/exports-instinct.json）。
+  const instinctProblems = checkInstinctExports();
+  if (instinctProblems.length) {
+    console.log('\n  ✗ instinct.js 导出快照对不上（bridge/smoke 的 require 会拿到 undefined）：');
+    for (const p of instinctProblems) console.log(`      ${p}`);
+  } else {
+    console.log('\n  [exports] instinct.js 的 56 个导出名与顺序和快照一致');
+  }
+
   // ---- 总判定 ---------------------------------------------------------------
   const passed = rows.filter(r => r.kind === 'pass').length;
   console.log('');
   console.log(`  合计：${passed} 通过 · ${known.length} 已知失败 · ${newFails.length} 新失败 · 总用时 ${elapsed.toFixed(1)}s`);
 
-  if (pathProblems.length || exportProblems.length || newFails.length) {
+  if (pathProblems.length || exportProblems.length || instinctProblems.length || newFails.length) {
     if (newFails.length) console.log('  ✗ 有非已知失败，退出码 1');
     else if (pathProblems.length) console.log('  ✗ paths.js 数据路径检查失败，退出码 1');
-    else console.log('  ✗ hands.js 导出快照对不上，退出码 1');
+    else if (exportProblems.length) console.log('  ✗ hands.js 导出快照对不上，退出码 1');
+    else console.log('  ✗ instinct.js 导出快照对不上，退出码 1');
     process.exit(1);
   }
   console.log('  ✓ 全绿（已知失败未增加）');
