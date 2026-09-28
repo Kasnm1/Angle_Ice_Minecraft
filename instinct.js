@@ -1874,8 +1874,6 @@ function install (bot, state, deps) {
   async function tryRecover () {
     const d = I.death;
     if (!I.cfg.cmd.enabled || !d || d.recovered || !d.told) return null;
-    // 打架中 / 有怪冲她来：先别 /back 传走（实机 13:44:42 重生后骷髅在打她，这时 /back 把她传回死的地方）
-    if (I.running?.kind === 'combat' || I.urgent === 'combat' || threatened()) return { skip: '附近有怪在打她，打完再回去捡' };
     const cmds = await serverCmds();
     const pick = pickRecovery({ death: d, here: bot.entity.position, dim: dimNow(), hasBack: cmds.has('back'), hasTp: cmds.has('tp'), sinceMs: Date.now() - d.at }, I.cfg.cmd);
     // 先置位，别让同一次死在下一拍又发一遍。但**被打断不算回收过了** ——

@@ -5430,6 +5430,7 @@ const handlers = {
     // 以前直接查方块表，隔着几十格石头也知道哪有铁 —— 主人说"这不就是矿物透视吗"（2026-09-27）。找矿用 POST /delve
     const vein = new Set();
     const invBefore = inventoryCount(state.bot);
+    let mineSeen = null;   // 最后一轮的筛选统计（挖不到时拿来说原因）
 
     try {
       for (;;) {
@@ -5457,12 +5458,16 @@ const handlers = {
           if (!dx && !dy && !dz) continue;
           const b = state.bot.blockAt(p.offset(dx, dy, dz)); if (b && isPlayerBuilt(b.name)) return true;
         } return false; };
-        const cands = state.bot.findBlocks({ matching: blockId, maxDistance: radius, count: 64 })
-          .filter(p => !skipped.has(`${p.x},${p.y},${p.z}`))
-          .filter(p => !guardHome || !nearBuilt(p))
-          .filter(p => vein.has(`${p.x},${p.y},${p.z}`) || state.bot.canSeeBlock(state.bot.blockAt(p)));
-        const scored = cands.map(p => ({ p, dy: Math.abs(p.y - Math.floor(me.y)), d: p.distanceTo(me), open: exposed(p) }))
-          .filter(c => c.dy <= 4)
+        // 每一关筛掉几块都记下来：一块都挖不到时要说清楚是"没有"还是"看不见 / 太高太低 / 挨着房子"（AGENTS.md §5-1）
+        const all = state.bot.findBlocks({ matching: blockId, maxDistance: radius, count: 64 });
+        const f1 = all.filter(p => !skipped.has(`${p.x},${p.y},${p.z}`));
+        const f2 = f1.filter(p => !guardHome || !nearBuilt(p));
+        const cands = f2.filter(p => vein.has(`${p.x},${p.y},${p.z}`) || state.bot.canSeeBlock(state.bot.blockAt(p)));
+        // 高低差 4 → 8（2026-09-28 实机：矿洞里天花板上的矿常超过 4 格，全被筛掉，报成"128 格都没有"）
+        const scoredAll = cands.map(p => ({ p, dy: Math.abs(p.y - Math.floor(me.y)), d: p.distanceTo(me), open: exposed(p) }));
+        mineSeen = { radius, found: all.length, skippedBefore: all.length - f1.length, nearHouse: f1.length - f2.length, hidden: f2.length - cands.length, tooHighLow: scoredAll.filter(c => c.dy > 8).length };
+        const scored = scoredAll
+          .filter(c => c.dy <= 8)
           .sort((a, b) => (b.open - a.open) || (a.d - b.d));
         const block = scored.length ? state.bot.blockAt(scored[0].p) : null;
         const hit = Boolean(block);
@@ -5786,6 +5791,16 @@ const handlers = {
       //   ⚠️ 只在**真正一块都没挖动**时才 false —— 挖到了但没捡起来仍是 ok:true
       //      （"挖"这个动作生效了；"捡"是另一回事，由 `/pickup` 自己负责）。
       ok: mined.length > 0,
+      seen: mineSeen || undefined,
+      // 一块都没挖到：把原因说成人话带回去（以前只有 ok:false，mind 那边只看到 "failed"）
+      error: mined.length > 0 ? undefined : (aborted ? '被新的命令打断了' : !mineSeen || !mineSeen.found
+        ? `${mineSeen?.radius ?? radius} 格内没有 ${label}`
+        : `${mineSeen.radius} 格内有 ${mineSeen.found} 块 ${label}，但挖不到：${[
+          mineSeen.hidden ? `${mineSeen.hidden} 块埋在石头里看不见（要挖进去，或者用 delve 往那边挖）` : '',
+          mineSeen.tooHighLow ? `${mineSeen.tooHighLow} 块高低差超过 8 格` : '',
+          mineSeen.nearHouse ? `${mineSeen.nearHouse} 块挨着人造方块（怕拆到房子）` : '',
+          mineSeen.skippedBefore ? `${mineSeen.skippedBefore} 块刚才试过挖不动` : '',
+        ].filter(Boolean).join('；') || '都试过了，挖不动'}`),
       // 挖完之后对整片区域的**一次**统一清扫（P10 第二轮）。
       // 与每块的 `drops` 分开报：后者是"顺手捞到的"，这里才是"兜底捞到的"。
       bulkSweep: bulkSweep || undefined,
