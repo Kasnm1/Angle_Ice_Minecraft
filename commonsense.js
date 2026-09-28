@@ -132,7 +132,8 @@ async function till (bot, { x, z, radius = 4, count: want = 9, allowDry = false,
     if (tilled >= want || (typeof abort === 'function' && abort())) break;
     const wet = hydrated(bot, b.position);
     if (!wet && !allowDry) { dry++; continue; }
-    if (!await walkNear(bot, b.position, 3, 15000)) { notes.push(`走不到 ${b.position}`); continue; }
+    // 锄地也是"用方块"：先走到跟前、视线要通（判据只写在 hands.js 的 approach 里）
+    try { await require('./hands').approach(bot, b); } catch (e) { notes.push(`锄不到 ${b.position}：${e.message}`); continue; }
     if (bot.heldItem?.name !== hoe.name) await bot.equip(hoe, 'hand');
     try {
       await bot.lookAt(b.position.offset(0.5, 1, 0.5), true);

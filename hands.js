@@ -731,8 +731,8 @@ async function use (bot, state, { itemName, target = 'air', x, y, z, entity, han
     if ([x, y, z].some(v => v == null)) throw new Error('target=block 要给 x y z');
     const block = bot.blockAt(new Vec3(x, y, z));
     if (!block) throw new Error(`(${x},${y},${z}) 那里的区块没加载`);
-    const dist = bot.entity.position.offset(0, 1.62, 0).distanceTo(block.position.offset(0.5, 0.5, 0.5));
-    if (dist > 4.5) throw new Error(`太远了（${dist.toFixed(1)} 格，要 4.5 以内）—— 先走过去`);
+    // "先走到跟前、视线要通"是同一个判据（canUseFrom），不在这里另写一份距离判断
+    await approach(bot, block);
     await bot.lookAt(block.position.offset(0.5, 0.5, 0.5), true);
     await bot.activateBlock(block);
   } else if (target === 'entity') {
@@ -825,23 +825,69 @@ function nearestBlock (bot, names, maxDistance = 4.4) {
 }
 
 const REACH = 4.2;
+
+/**
+ * "能不能站在原地直接用这个方块"的判据 —— **只写这一处**（AGENTS.md §5）。
+ *
+ * 主人 2026-09-28 实机：用熔炉这类方块时她没走过去，隔着几格就操作了（旧代码只要
+ * `eyeDist <= REACH(4.2)` 就原地开）。要求是"4 格内可以，但需要中间没有阻挡"。
+ *
+ * @param {number} dist    眼睛到方块那一面的距离
+ * @param {null|boolean} los 视线通不通（true 通 / false 被挡 / **null 读不到**）
+ * @returns {{use:boolean, why:string}}
+ *   use=true  → 原地就能用
+ *   use=false → 必须走过去 / 走不过去就用不了，why 说清是"太远"还是"挡着"还是"读不到"
+ */
+function canUseFrom (dist, los) {
+  if (!(dist <= 4)) return { use: false, why: `离着 ${dist.toFixed(1)} 格（要 4 格内）` };
+  // 读不到视线（没有 raycast / canSeeBlock）→ 保守当成"挡着"，先走过去（§5：找不到证据保守为 false）
+  if (los !== true) return { use: false, why: `4 格内但视线${los === null ? '读不到' : '被挡住'}` };
+  return { use: true, why: '' };
+}
+
 function eyeDist (bot, block) {
   return bot.entity.position.offset(0, 1.62, 0).distanceTo(block.position.offset(0.5, 0.5, 0.5));
 }
 
 /**
- * 走到方块旁边（够得着为止）。真人要用熔炉会自己走过去 —— 不该让大脑先算好坐标再 goto。
+ * 眼睛到方块那一面中间有没有东西挡着。
+ * 优先用 mineflayer 的 `bot.canSeeBlock`（blocks.js:229，world.raycast 打的视线）；
+ * 没有它 / 它抛错 → 返回 **null（读不到）**，绝不猜成"通"。
+ */
+function blockVisible (bot, block) {
+  if (typeof bot.canSeeBlock !== 'function') return null;
+  try { return !!bot.canSeeBlock(block); } catch (_) { return null; }
+}
+
+/** 现在能不能站着直接用这个方块：把距离 + 视线交给 canUseFrom（判据只那一份） */
+function canUseNow (bot, block) {
+  return canUseFrom(eyeDist(bot, block), blockVisible(bot, block));
+}
+
+/**
+ * 走到方块旁边（够得着**而且看得见**为止）。真人要用熔炉会自己走过去 —— 不该让大脑先算好坐标再 goto。
  * 16 格内的才走；更远的交回给大脑（那是"去某处"的规划问题，不是"伸手"）。
+ *
+ * @returns {{walked:boolean, lineOfSight:boolean|null, dist:number, ms?:number, via?:string}}
+ * walked=      真的移动过（原地能用是 false）
+ * lineOfSight= 结束时眼睛到方块通不通（null = 读不到）
+ * dist=        结束时的 eyeDist
+ * 走不过去且原地也用不了（太远 / 中间挡着）→ 抛错，别硬点（服务器会拒，还会出幽灵结果）
  */
 async function approach (bot, block) {
-  if (eyeDist(bot, block) <= REACH) return { walked: false };
-  const { goals } = require('mineflayer-pathfinder');
+  // 先看"现在能不能直接用"：4 格内**且**视线通才原地用
+  const start = canUseNow(bot, block);
   const p = block.position;
+  const pack = (walked, ms, via) => ({ walked, lineOfSight: blockVisible(bot, block), dist: eyeDist(bot, block), ...(ms != null ? { ms } : {}), ...(via ? { via } : {}) });
+  if (start.use) return pack(false);
+
+  const { goals } = require('mineflayer-pathfinder');
   const t0 = Date.now();
   // 不在同一层（锅在一楼厨房、她在三楼仓库）：用会爬梯子、开门的路线走过去
   if (Math.abs(p.y - bot.entity.position.y) >= 2.5 && HSTATE) {
     await go(bot, HSTATE, { x: p.x, y: p.y, z: p.z, range: 2 });
-    if (eyeDist(bot, block) <= REACH) return { walked: true, ms: Date.now() - t0, via: 'route' };
+    const r = canUseNow(bot, block);
+    if (r.use) return pack(true, Date.now() - t0, 'route');
   }
   try {
     await Promise.race([
@@ -850,10 +896,14 @@ async function approach (bot, block) {
     ]);
   } catch (e) {
     bot.pathfinder.setGoal(null);
-    if (eyeDist(bot, block) > REACH) throw new Error(`走不到 ${block.name}(${p.x},${p.y},${p.z}) 旁边：${e.message}`);
+    // 走不过去：原地能用（含视线通）就照样用；否则如实报"够不着 / 中间挡着"
+    const r = canUseNow(bot, block);
+    if (r.use) return pack(false, Date.now() - t0, 'goto-failed-but-in-reach');
+    throw new Error(`走不到 ${block.name}(${p.x},${p.y},${p.z}) 旁边：${e.message}；${r.why}`);
   }
-  if (eyeDist(bot, block) > REACH) throw new Error(`走到了但还是够不着 ${block.name}（${eyeDist(bot, block).toFixed(1)} 格）`);
-  return { walked: true, ms: Date.now() - t0 };
+  const r = canUseNow(bot, block);
+  if (!r.use) throw new Error(`走到了还是用不了 ${block.name}：${r.why}`);
+  return pack(true, Date.now() - t0);
 }
 
 /** 找最近的某种方块：先看伸手范围内，没有再看 16 格内（找到就走过去） */
@@ -4540,7 +4590,11 @@ async function sleepInBed (bot, state, { home = null, abort } = {}) {
     const onMsg = (m, pos) => { if (pos === 'game_info' || pos === 'system') said.push(String(m.toString())); };
     bot.on('message', onMsg);
     try {
-      if (bot.entity.position.distanceTo(bed.position) > 3) await go(bot, state, { x: bed.position.x, y: bed.position.y, z: bed.position.z, range: 2, abort });
+      // 先走到床跟前（4 格内 + 视线通才算够得着；用同一个 approach 判据）
+      try { await approach(bot, bed); } catch (e) {
+        why.push(`${bed.name}(${doorKey(bed.position)})：${e.message}`);
+        continue;
+      }
       if (abort?.()) return { ok: false, aborted: true };
       if (bot.isABed(bed)) {
         await bot.sleep(bed);
@@ -4637,7 +4691,7 @@ async function farm (bot, state, { radius = 12, replant = true, plantEmpty = tru
       const sd = seedFor(bot, b.name);
       const soil = bot.blockAt(b.position.offset(0, -1, 0));
       if (sd && soil && /farmland|soul_sand|rich_soil/.test(soil.name)) {
-        try { await bot.equip(sd, 'hand'); await bot.activateBlock(soil, new Vec3(0, 1, 0)); replanted++; } catch (e) { notes.push(`补种失败：${e.message}`); }
+        try { await approach(bot, soil); await bot.equip(sd, 'hand'); await bot.activateBlock(soil, new Vec3(0, 1, 0)); replanted++; } catch (e) { notes.push(`补种失败：${e.message}`); }
       }
     }
     if (harvested % 8 === 0) await collectDrops(bot, 5);
@@ -4652,8 +4706,7 @@ async function farm (bot, state, { radius = 12, replant = true, plantEmpty = tru
       if (stop()) break;
       const sd = sdItem();
       if (!sd) { if (lands.length) notes.push(`还有 ${lands.length - planted} 块空地，背包里没种子了`); break; }
-      if (eyeDist(bot, land) > REACH) { const err = await pathTo(bot, land.position, 2, 12000); if (err && eyeDist(bot, land) > REACH) continue; }
-      try { await bot.equip(sd, 'hand'); await bot.activateBlock(land, new Vec3(0, 1, 0)); planted++; await sleep(100); } catch (_) {}
+      try { await approach(bot, land); await bot.equip(sd, 'hand'); await bot.activateBlock(land, new Vec3(0, 1, 0)); planted++; await sleep(100); } catch (e) { notes.push(`种不了 ${doorKey(land.position)}：${e.message}`); }
     }
   }
   const d = delta(inv0, invCounts(bot));
@@ -5323,9 +5376,103 @@ if (require.main === module && process.argv.includes('--selftest')) {
       check('石头不算燃料', fuelValue(fb, { name: 'minecraft:stone' }), 0);
     }
 
+    console.log('\n[0e] 用方块前先走到跟前（任务书 fix7：4 格内 + 视线通 才原地用）');
+    {
+      // ---- 纯函数 canUseFrom（判据只这一份）：3 格远视线通 → 用；3 格远中间挡着 → 不用；5 格远 → 不用；读不到 → 保守不用
+      check('3 格远、视线通 → 原地可用', canUseFrom(3, true).use, true);
+      check('★ 3 格远、中间隔着一堵墙（los=false）→ 不可用', canUseFrom(3, false).use, false);
+      check('★ 视线挡着时说"挡着"', /挡/.test(canUseFrom(3, false).why), true);
+      check('★ 读不到视线（null）→ 保守当挡着（先走过去）', canUseFrom(3, null).use, false);
+      check('读不到时说"读不到"（不说成挡住）', /读不到/.test(canUseFrom(3, null).why), true);
+      check('★ 5 格远、视线通 → 不可用（超 4 格）', canUseFrom(5, true).use, false);
+      check('超 4 格时说"太远"', /格/.test(canUseFrom(5, true).why), true);
+      check('正好 4 格、视线通 → 可用（含边界）', canUseFrom(4, true).use, true);
+      check('4.01 格、视线通 → 不可用', canUseFrom(4.01, true).use, false);
+
+      // ---- 假 bot 驱动**真实的 approach**（不另抄一份实现）
+      //     世界：方块在 (4,64,0)（中心 4.5,64.5,0.5），她站在 (sx,64,0)，眼睛 y=65.62
+      const V = (x, y, z) => new Vec3(x, y, z);
+      const mkApproachBot = ({ self, blockAtPos = V(4, 64, 0), visible, goto }) => {
+        const block = { name: 'minecraft:furnace', position: blockAtPos.clone(), boundingBox: 'block' };
+        const bot = {
+          entity: { position: self.clone(), eyeHeight: 1.62 },
+          canSeeBlock: () => visible,
+          blockAt: () => block,
+          lookAt: async () => {},
+          pathfinder: { setGoal () {}, goto: goto || (async () => { throw new Error('走不到（假 bot）'); }) },
+        };
+        return { bot, block };
+      };
+
+      // ① 3 格远、视线通 → 不走（walked=false）
+      {
+        const { bot, block } = mkApproachBot({ self: V(1.5, 64, 0.5), visible: true });
+        const r = await approach(bot, block);
+        check('① 3 格远视线通 → 不寻路', r.walked, false);
+        check('① 返回带 lineOfSight/dist', [r.lineOfSight, typeof r.dist], [true, 'number']);
+      }
+      // ② 3 格远但中间隔一堵墙 → 先走（goto 被调用）
+      {
+        let moved = false;
+        const { bot, block } = mkApproachBot({
+          self: V(1.5, 64, 0.5), visible: false,
+          goto: async () => { moved = true; bot.entity.position = V(3.5, 64, 0.5); bot.canSeeBlock = () => true; },
+        });
+        const r = await approach(bot, block);
+        check('② 3 格远中间挡着 → 真的寻路了', moved, true);
+        check('② 走到了 → walked=true 且视线通了', [r.walked, r.lineOfSight], [true, true]);
+      }
+      // ③ 5 格远视线通 → 先走
+      {
+        let moved = false;
+        const { bot, block } = mkApproachBot({
+          self: V(-1, 64, 0.5), visible: true,
+          goto: async () => { moved = true; bot.entity.position = V(3.5, 64, 0.5); },
+        });
+        const r = await approach(bot, block);
+        check('③ 5 格远（超 4 格）→ 寻路', moved, true);
+        check('③ 走一步后 3 格内视线通 → 可用', [r.walked, r.lineOfSight], [true, true]);
+      }
+      // ④ 射线上有读不到的格子（canSeeBlock 返回 null）→ 当挡着 → 先走
+      {
+        let moved = false;
+        const { bot, block } = mkApproachBot({
+          self: V(2.5, 64, 0.5), visible: null,
+          goto: async () => { moved = true; bot.entity.position = V(3.5, 64, 0.5); bot.canSeeBlock = () => true; },
+        });
+        const r = await approach(bot, block);
+        check('④ 读不到视线 → 当挡着，先走', moved, true);
+        check('④ 走通了 → 可用', r.lineOfSight, true);
+      }
+      // ⑤ 走不过去，但 4 格内视线通 → 照样可用（不抛）
+      //    起点视线读不到（先判"用不了"）→ 寻路失败 → 这时视线已能读到且距离仍在 4 格内 → 照样用
+      {
+        const { bot, block } = mkApproachBot({ self: V(1.5, 64, 0.5), visible: null, goto: async () => { bot.canSeeBlock = () => true; throw new Error('GoalChanged'); } });
+        let err = null; let r = null;
+        try { r = await approach(bot, block); } catch (e) { err = e; }
+        check('⑤ 走不过去但原地 4 格内视线通 → 不抛错', err, null);
+        check('⑤ 返回 walked=false 且 via 说清是寻路失败但够得着', [r?.walked, r?.via], [false, 'goto-failed-but-in-reach']);
+      }
+      // ⑥ 走不过去、中间又挡着 → 如实报"够不着 / 挡着"，绝不硬点
+      {
+        const { bot, block } = mkApproachBot({ self: V(1.5, 64, 0.5), visible: false, goto: async () => { throw new Error('GoalChanged'); } });
+        let err = null;
+        try { await approach(bot, block); } catch (e) { err = e; }
+        check('⑥ 走不过去且挡着 → 抛错（不硬点）', !!err, true);
+        check('⑥ 错误里说清走不到 + 为什么用不了', /走不到.*挡/.test(err?.message || ''), true);
+      }
+      // ⑦ 走到了还是够不着（goto 成功但人没动、仍 5 格 + 挡着）→ 抛错
+      {
+        const { bot, block } = mkApproachBot({ self: V(-1, 64, 0.5), visible: false, goto: async () => {} });
+        let err = null;
+        try { await approach(bot, block); } catch (e) { err = e; }
+        check('⑦ 走到跟前仍用不了 → 抛错', /用不了/.test(err?.message || ''), true);
+      }
+    }
+
     console.log(`\n  ${pass}/${total} 通过`);
     process.exit(pass === total ? 0 : 1);
   })();
 }
 
-module.exports = { rankRecipesFor, shortfallText, zoneArea, zoneWants, install, installDoorHabit, routes, slotByName, foodScore, fullId, botName, startFollow, farm, kitShortfall, kitAvailable, defaultLoadout, wearingBackpack, backpackTidy, fetchFromBackpack, ensureCarried, decideCarry, countInBackpackSeen, resolveCarryId, winInvCount, lookIntoBackpack, fuelValue, smelt, unseenChests, unseenCarts, inHomeArea, inCave, SCAFFOLD_IDS, scaffoldIds, isFiller };   // farm：收获本能直接调（instinct.js）
+module.exports = { rankRecipesFor, shortfallText, zoneArea, zoneWants, install, installDoorHabit, routes, slotByName, foodScore, fullId, botName, startFollow, farm, kitShortfall, kitAvailable, defaultLoadout, wearingBackpack, backpackTidy, fetchFromBackpack, ensureCarried, decideCarry, countInBackpackSeen, resolveCarryId, winInvCount, lookIntoBackpack, fuelValue, smelt, unseenChests, unseenCarts, inHomeArea, inCave, SCAFFOLD_IDS, scaffoldIds, isFiller, canUseFrom, canUseNow, approach, blockVisible, eyeDist };   // farm：收获本能直接调（instinct.js）

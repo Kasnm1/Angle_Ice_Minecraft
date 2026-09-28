@@ -4445,9 +4445,13 @@ const handlers = {
   //   {message}               一条（旧调用方、危险提示都走这个 —— 不拆）
   //   {messages:[..], gapMs}  几条短消息连发，条间有停顿（真人打字是"几条短句"，不是"一段话"，见 speech.js）
   //   gapMs 可以是数字，也可以是 [最小,最大] 区间（每次随机 —— 固定间隔反而机械）
+  //
+  // 她开口说话也算一次互动（主人 2026-09-28："只有说话或者互动的时候需要看他"）——
+  // 通知本能，对 16 格内最近的玩家开一个短暂的"可以看他"窗口；窗口外本能不主动转头。
   'POST /chat': async ({ message, messages, gapMs }) => {
     if (message) {
       state.bot.chat(String(message).slice(0, 256));
+      try { state.instinct?.noteSelfSpoke?.(); } catch (_) {}
       return { sent: 1, messages: [String(message).slice(0, 256)] };
     }
     if (!Array.isArray(messages) || !messages.length) throw new Error('需要 message 或 messages[]');
@@ -4463,6 +4467,7 @@ const handlers = {
       state.bot.chat(t);
       sent.push(t);
     }
+    if (sent.length) { try { state.instinct?.noteSelfSpoke?.(); } catch (_) {} }
     return { sent: sent.length, messages: sent };
   },
 

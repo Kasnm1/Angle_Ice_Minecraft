@@ -190,7 +190,19 @@ const CFG = {
   },
   sleep: { enabled: process.env.MC_INSTINCT_SLEEP !== 'false', retryMs: 180000 },
   armor: { enabled: process.env.MC_INSTINCT_ARMOR !== 'false', everyMs: 15000 },
-  gaze: { enabled: process.env.MC_INSTINCT_GAZE !== 'false', radius: 6, minGapMs: 3000, maxGapMs: 6000, chatRadius: 16 },
+  gaze: {
+    enabled: process.env.MC_INSTINCT_GAZE !== 'false',
+    radius: 6,
+    minGapMs: 3000,
+    maxGapMs: 6000,
+    chatRadius: 16,
+    // 主人 2026-09-28："不要总突然看着玩家，只有说话或者互动的时候需要。"
+    // 只在"互动窗口"里看人：刚跟她说话 / 刚有礼物往来 / 她自己刚开口。
+    // 窗口外**不主动转头**（6 格内有近处玩家也不看）。
+    talkMs: 20000,      // 这个玩家刚跟她说话（聊天）→ 之后 20 秒内可以看他
+    giftMs: 15000,      // 他刚扔东西给她 / 她刚捡到他给的 → 15 秒
+    selfTalkMs: 15000,  // 她自己开口说话 → 对 16 格内最近的玩家 15 秒
+  },
   toolWarn: { ratio: 0.1, enchantedRatio: 0.2, everyMs: 10000 },
   combat: {
     enabled: process.env.MC_INSTINCT_COMBAT !== 'false',
@@ -240,7 +252,8 @@ const CFG = {
   // 只有显式打开才交给 pathfinder 使用。
   bridge: { enabled: process.env.MC_INSTINCT_BRIDGE === 'true' },
   dig: { enabled: process.env.MC_INSTINCT_DIG !== 'false' },
-  home: { grow: process.env.MC_HOME_GROW !== 'false', everyMs: 300000, gap: 8, margin: 6, cap: 128, near: 32 },
+  // 家的范围随基地长大：默认关（2026-09-28 实机：同步大扫描单段 13 秒，每 5 分钟整个进程冻住；第 8 批真修前先止血）。MC_HOME_GROW=true 打开
+  home: { grow: process.env.MC_HOME_GROW === 'true', everyMs: 300000, gap: 8, margin: 6, cap: 128, near: 32 },
   mlg: { enabled: process.env.MC_INSTINCT_MLG !== 'false', minFall: 3.5, placeAt: 3.0 },
   cmd: {
     enabled: process.env.MC_INSTINCT_CMD !== 'false',
@@ -509,11 +522,34 @@ function toolWorn (it, cfg = CFG.toolWarn) {
   return ratio <= (it.enchanted ? cfg.enchantedRatio : cfg.ratio) ? { left, max: it.maxDurability } : null;
 }
 
-/** 看谁：6 格内最近的玩家；没到下次看的时间就不看 */
-function pickGaze ({ players = [], self, now = Date.now(), next = 0 }, cfg = CFG.gaze) {
+/**
+ * 这个玩家现在在不在"互动窗口"里 —— 判据**只写这一处**（AGENTS.md §5）。
+ *
+ * 主人 2026-09-28："不要总突然看着玩家，只有说话或者互动的时候需要。"
+ * 窗口来源（都由 install 里的钩子写入 engagedUntil）：
+ *   · 他刚跟她说话（chat）→ 20 秒
+ *   · 他刚扔东西给她 / 她刚捡到他给的（whoThrew / playerCollect 的 gift）→ 15 秒
+ *   · 她自己开口说话（bridge 的 POST /chat）→ 对 16 格内最近的玩家 15 秒
+ *
+ * @param {{player:string, engagedUntil:Object|Map, now:number}} ctx
+ *   engagedUntil：玩家名 → 到什么时候为止（毫秒时间戳）；玩家名按原样也不区分大小写地查一次
+ * @returns {boolean}
+ */
+function gazeEngaged ({ player, engagedUntil, now = Date.now() } = {}) {
+  if (!player || !engagedUntil) return false;
+  const at = typeof engagedUntil.get === 'function' ? engagedUntil.get(player) : engagedUntil[player];
+  if (at == null) return false;
+  return now < +at;   // 严格小于：窗口到点就是到点，不再看他
+}
+
+/** 看谁：只在**互动窗口内**的玩家里挑最近的（窗户关了就不看，哪怕就站在跟前） */
+function pickGaze ({ players = [], self, now = Date.now(), next = 0, engagedUntil = null }, cfg = CFG.gaze) {
   if (!self || now < next) return null;
   const d = (p) => Math.hypot(p.pos.x - self.x, p.pos.y - self.y, p.pos.z - self.z);
-  const near = players.filter(p => p?.pos && d(p) <= cfg.radius).sort((a, b) => d(a) - d(b));
+  const near = players
+    .filter(p => p?.pos && d(p) <= cfg.radius)
+    .filter(p => gazeEngaged({ player: p.name, engagedUntil, now }))
+    .sort((a, b) => d(a) - d(b));
   return near[0] || null;
 }
 
@@ -1006,9 +1042,11 @@ function install (bot, state, deps) {
     events: [], evSeq: 0,   // 给 mind 的事（GET /instinct/events?since=）
     told: new Set(),        // 已经告诉过 mind 的"镐子不够"的矿位
     home: null,             // { center:{x,y,z}, radius }，mind 通过 POST /instinct {home} 告诉
+    gazeEngagedUntil: new Map(),   // 玩家名 → 到什么时候为止还可以看他（见 gazeEngaged）
   };
   // 跨重连保留状态；新加的本能补上默认配置（老的 state.instinct 里没有）
   fillCfg(I.cfg);
+  I.gazeEngagedUntil ||= new Map();   // 老 state 里没有（见 gazeEngaged）；趁早建好，礼物钩子要用
   I.diagnostics = {};
   I.urgent = null;
 
@@ -1072,11 +1110,13 @@ function install (bot, state, deps) {
     } catch (_) {}
   });
   // 她捡起了别人扔的东西：告诉物品账"这是谁给的"（collect 包点名了是哪个实体，是确证）
+  // 同时开一个"可以看他"的窗口（主人 2026-09-28：有人给她东西是互动）
   bot.on('playerCollect', (collector, collected) => {
     try {
       if (collector !== bot.entity) return;
       const s = spawned.get(collected?.id);
       if (!s?.thrower || s.thrower === 'self') return;
+      I.gazeEngagedUntil.set(String(s.thrower), Date.now() + (I.cfg.gaze.giftMs || 15000));
       const item = deps.droppedItemOf(collected)?.name;
       if (item) state.ledger?.note({ gift: { from: s.thrower, item } });
     } catch (_) {}
@@ -1933,6 +1973,13 @@ function install (bot, state, deps) {
   }
 
   // ---- 转头看人（独立的小节拍：只转头，不占身体、不打断任何动作）
+  //
+  // 主人 2026-09-28："不要总突然看着玩家，只有说话或者互动的时候需要。"
+  // 所以这里**只对"刚和我互动过"的玩家**转头（窗口见 gazeEngaged）。窗口外 6 格内有人也不看。
+  const engage = (player, ms) => {
+    if (!player) return;
+    try { I.gazeEngagedUntil.set(String(player), Date.now() + ms); } catch (_) {}
+  };
   let nextGaze = 0;
   const lookAtPlayer = (ent) => {
     try { bot.lookAt(ent.position.offset(0, (ent.height || 1.8) * 0.9, 0), true); } catch (_) {}
@@ -1942,23 +1989,47 @@ function install (bot, state, deps) {
     try {
       const G = I.cfg.gaze;
       if (!G.enabled || !bot.entity || !idleEyes()) return;
-      const players = Object.values(bot.players || {}).filter(p => p.entity && p.entity !== bot.entity).map(p => ({ ent: p.entity, pos: p.entity.position }));
-      const g = pickGaze({ players, self: bot.entity.position, now: Date.now(), next: nextGaze }, G);
+      // 过期窗口定期清掉，Map 不无限长
+      const now = Date.now();
+      for (const [k, at] of I.gazeEngagedUntil) if (now >= +at) I.gazeEngagedUntil.delete(k);
+      const players = Object.values(bot.players || {}).filter(p => p.entity && p.entity !== bot.entity).map(p => ({ name: p.username, ent: p.entity, pos: p.entity.position }));
+      const g = pickGaze({ players, self: bot.entity.position, now, next: nextGaze, engagedUntil: I.gazeEngagedUntil }, G);
       if (!g) return;
       lookAtPlayer(g.ent);
-      nextGaze = Date.now() + G.minGapMs + Math.random() * (G.maxGapMs - G.minGapMs);
+      nextGaze = now + G.minGapMs + Math.random() * (G.maxGapMs - G.minGapMs);
     } catch (_) {}
   }, 1000);
+  // 他跟她说话 → 立刻看一眼，并在 G.talkMs 内保持"可以看他"
   bot.on('chat', (username) => {
     try {
       const G = I.cfg.gaze;
-      if (!G.enabled || username === bot.username || !idleEyes()) return;
+      if (!G.enabled || username === bot.username) return;
       const ent = bot.players[username]?.entity;
       if (!ent || ent.position.distanceTo(bot.entity.position) > G.chatRadius) return;
+      engage(username, G.talkMs);
+      if (!idleEyes()) return;
       lookAtPlayer(ent);
       nextGaze = Date.now() + G.maxGapMs;
     } catch (_) {}
   });
+  /**
+   * 她自己开口说话（bridge 的 `POST /chat` 调）—— 对 16 格内**最近的玩家**开一个 selfTalkMs 的互动窗口。
+   * 她刚说完话，看的是"在听她说话的人"，不一定是最近的谁；只有一个玩家时就是他。
+   */
+  I.noteSelfSpoke = () => {
+    try {
+      const G = I.cfg.gaze;
+      if (!G.enabled || !bot.entity) return null;
+      const near = Object.values(bot.players || {})
+        .filter(p => p.entity && p.entity !== bot.entity)
+        .map(p => ({ name: p.username, ent: p.entity, d: p.entity.position.distanceTo(bot.entity.position) }))
+        .filter(p => p.d <= G.chatRadius)
+        .sort((a, b) => a.d - b.d);
+      if (!near.length) return null;
+      engage(near[0].name, G.selfTalkMs);
+      return near[0].name;
+    } catch (_) { return null; }
+  };
 
   // ---- 工具快坏了：告诉 mind（一件只说一次；修好 / 换了新的再坏会再说）
   const toolTimer = setInterval(() => {
@@ -2599,7 +2670,7 @@ function selftest () {
   check('★ 煤够多了 → 不为煤停下', coal(40).target, undefined);
   check('一条矿脉一起挖（同名的数）', O([ore('iron_ore', 3, 0), ore('iron_ore', 3, 1), ore('iron_ore', 4, 1)]).count, 3);
   check('要铲子的矿（化石矿）→ 不用镐去敲', O([ore('fossil_ore', 3, 0, { notPickaxe: true })]).target, undefined);
-  check('失败过的格子冷却中 → 不挖', O([ore('iron_ore', 3, 0)], { fails: new Map([['3,64,0', 1e15]]), now: 0 }).target, undefined);
+  check('失败过的格子冷却中 → 不挖', O([ore('iron_ore', 3, 0)], { fails: new Map([['3,64,0', 9e9]]), now: 0 }).target, undefined);
 
   // ---- 按进度 ----
   const early = (ores, have = {}) => pickOre({ ores, self: me, pick: 1, have });   // 石镐：前期
@@ -2831,11 +2902,31 @@ function selftest () {
   check('★ 附魔的剩 15% 就提醒（更早）', !!toolWorn({ maxDurability: 1561, durabilityUsed: 1330, enchanted: true }), true);
   check('没有耐久数据（模组物品）→ 不说（不猜）', toolWorn({ durabilityUsed: 10 }), null);
 
-  // ---- 转头看人 ----
+  // ---- 转头看人（任务书 fix7：只在互动窗口里看，窗口外不看）
   const V = (x, y, z) => ({ x, y, z });
-  check('6 格内有人 → 看他', pickGaze({ players: [{ pos: V(3, 64, 0) }], self: V(0, 64, 0) })?.pos.x, 3);
-  check('太远 → 不看', pickGaze({ players: [{ pos: V(20, 64, 0) }], self: V(0, 64, 0) }), null);
-  check('刚看过（没到下次）→ 不看', pickGaze({ players: [{ pos: V(3, 64, 0) }], self: V(0, 64, 0), now: 0, next: 100 }), null);
+  const near3 = { name: 'Ann', pos: V(3, 64, 0) };
+  // gazeEngaged：窗口内/外/没记录/到点
+  check('没互动过的玩家 → 不在窗口里', gazeEngaged({ player: 'Ann', engagedUntil: new Map(), now: 1000 }), false);
+  check('刚说过话（窗口未到点）→ 在窗口里', gazeEngaged({ player: 'Ann', engagedUntil: new Map([['Ann', 2000]]), now: 1000 }), true);
+  check('★ 窗口过了（now == 到点）→ 不看', gazeEngaged({ player: 'Ann', engagedUntil: new Map([['Ann', 1000]]), now: 1000 }), false);
+  check('★ 窗口过了（now 超过）→ 不看', gazeEngaged({ player: 'Ann', engagedUntil: new Map([['Ann', 999]]), now: 1000 }), false);
+  check('读不到玩家名 → 不猜，不看', gazeEngaged({ player: null, engagedUntil: new Map([['Ann', 1e15]]), now: 0 }), false);
+  check('没有窗口表（老 state）→ 不看', gazeEngaged({ player: 'Ann', engagedUntil: null, now: 0 }), false);
+  check('普通对象也能当窗口表（不强制 Map）', gazeEngaged({ player: 'Ann', engagedUntil: { Ann: 2000 }, now: 1000 }), true);
+  // pickGaze：只在窗口内的玩家里挑最近的
+  check('★ 近处玩家没互动 → 不看（6 格内有也不看）', pickGaze({ players: [near3], self: V(0, 64, 0), engagedUntil: new Map() }), null);
+  check('★ 刚说话的近处玩家 → 看他', pickGaze({ players: [near3], self: V(0, 64, 0), engagedUntil: new Map([['Ann', 1e15]]) })?.pos.x, 3);
+  check('★ 窗口过了 → 不看', pickGaze({ players: [near3], self: V(0, 64, 0), now: 1000, engagedUntil: new Map([['Ann', 999]]) }), null);
+  check('两个都在窗口里 → 挑最近的', pickGaze({
+    players: [{ name: 'Ann', pos: V(5, 64, 0) }, { name: 'Bob', pos: V(2, 64, 0) }],
+    self: V(0, 64, 0), engagedUntil: new Map([['Ann', 1e15], ['Bob', 1e15]]),
+  })?.name, 'Bob');
+  check('只有一个在窗口里 → 挑窗口里的那个（哪怕更远）', pickGaze({
+    players: [{ name: 'Ann', pos: V(2, 64, 0) }, { name: 'Bob', pos: V(5, 64, 0) }],
+    self: V(0, 64, 0), engagedUntil: new Map([['Bob', 1e15]]),
+  })?.name, 'Bob');
+  check('窗口里但太远（>radius）→ 不看', pickGaze({ players: [{ name: 'Ann', pos: V(20, 64, 0) }], self: V(0, 64, 0), engagedUntil: new Map([['Ann', 1e15]]) }), null);
+  check('刚看过（没到下次）→ 不看', pickGaze({ players: [near3], self: V(0, 64, 0), now: 0, next: 100, engagedUntil: new Map([['Ann', 1e15]]) }), null);
 
   // ---- 身体空不空 ----
   check('什么都没在做 → 空', bodyBusy({}), null);
@@ -2925,7 +3016,7 @@ function selftest () {
 
 // isHostileEntity 是**转导出**（上面从 entity-registry 拿的），不是本能层自己实现的 ——
 // 保留在导出里是为了不破坏既有引用（hands.js / 自测）。
-module.exports = { caveBoundary, settleJob, ownsBodyAtCleanup, breatheRefused, syncSleepState, createCheck, CFG, fillCfg, pickEat, pickShore, shoreRingOffsets, needBreath, effectPlan, weatherChange, pickRecovery, pickCommand, homeFootprint, darkReport, mlgStep, pickCaveStep, STRUCTURE_SIGNS, recognizeStructures, pickLoot, pickTidy, isHostileEntity, mobKind, attackCooldownMs, combatPlan, COMBAT_YIELD, TIER, pickaxeTier, carriedNames, carriedTally, needTier, pickOre, pickHarvest, hazardUnder, pickStepOff, armorRank, pickArmor, toolWorn, pickGaze, whoThrew, pickPickup, bodyBusy, install, yieldBody, PASSIVE_POSTS, selftest };
+module.exports = { caveBoundary, settleJob, ownsBodyAtCleanup, breatheRefused, syncSleepState, createCheck, CFG, fillCfg, pickEat, pickShore, shoreRingOffsets, needBreath, effectPlan, weatherChange, pickRecovery, pickCommand, homeFootprint, darkReport, mlgStep, pickCaveStep, STRUCTURE_SIGNS, recognizeStructures, pickLoot, pickTidy, isHostileEntity, mobKind, attackCooldownMs, combatPlan, COMBAT_YIELD, TIER, pickaxeTier, carriedNames, carriedTally, needTier, pickOre, pickHarvest, hazardUnder, pickStepOff, armorRank, pickArmor, toolWorn, pickGaze, gazeEngaged, whoThrew, pickPickup, bodyBusy, install, yieldBody, PASSIVE_POSTS, selftest };
 
 if (require.main === module && process.argv.includes('--selftest')) {
   selftest().then(code => process.exit(code));
