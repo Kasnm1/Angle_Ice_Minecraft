@@ -1135,10 +1135,12 @@ function ownsBodyAtCleanup (I, myJob) {
  * @param {{aborted?:boolean, r?:{error?:string, jumped?:number}}} res runJob 的返回
  * @returns {boolean} true = 这一下没真跳成，必须补跳
  */
-function breatheRefused (res) {
+function breatheRefused (res, cfg = CFG.breathe) {
   if (!res) return true;
-  if (!Number.isFinite(res.r?.jumped) || res.r.jumped <= 0) return true;
-  return false;
+  if (res.r?.error) return true;                                                   // 被拒 / 出错
+  if (Number.isFinite(res.r?.oxygen) && res.r.oxygen > cfg.at) return false;       // 氧气回来了 = 成了（不管报没报跳了几下）
+  if (Number.isFinite(res.r?.jumped)) return res.r.jumped <= 0;                    // 报了跳几下：0 下就是没成
+  return !!res.aborted;                                                            // 什么都没报：被打断才算没成
 }
 
 /**
@@ -3484,6 +3486,8 @@ function selftest () {
       breatheRefused({ aborted: true, r: { jumped: 2 } }), false);
     check('r 为空 → 保守算没跳成', breatheRefused({ aborted: true }), true);
     check('res 为空 → 保守算没跳成', breatheRefused(null), true);
+    check('★ 没报跳了几下但氧气回来了 → 成了，不重复跳', breatheRefused({ aborted: false, r: { oxygen: 20 } }), false);
+    check('氧气还低、跳了 0 下 → 补跳', breatheRefused({ aborted: false, r: { oxygen: 3, jumped: 0 } }), true);
     check('★ checkBreath 真的用了 breatheRefused 兜底（不是靠人记得）',
       /breatheRefused\(\{ r, aborted: bAborted \}\)/.test(srcText), true);
     check('★ 兜底里直接调 POST /jump（保命路径不能只有一条）',

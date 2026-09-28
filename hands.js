@@ -840,6 +840,8 @@ const REACH = 4.2;
  */
 function canUseFrom (dist, los) {
   if (!(dist <= 4)) return { use: false, why: `离着 ${dist.toFixed(1)} 格（要 4 格内）` };
+  // 贴在身边（眼睛到方块中心 ≤ 2 格：脚下、身旁一格）：不用再看视线 —— 走也没处可走（2026-09-28 排程测试：床就在脚下还非要寻路）
+  if (dist <= 2) return { use: true, why: '' };
   // 读不到视线（没有 raycast / canSeeBlock）→ 保守当成"挡着"，先走过去（§5：找不到证据保守为 false）
   if (los !== true) return { use: false, why: `4 格内但视线${los === null ? '读不到' : '被挡住'}` };
   return { use: true, why: '' };
@@ -5498,6 +5500,7 @@ if (require.main === module && process.argv.includes('--selftest')) {
       check('3 格远、视线通 → 原地可用', canUseFrom(3, true).use, true);
       check('★ 3 格远、中间隔着一堵墙（los=false）→ 不可用', canUseFrom(3, false).use, false);
       check('★ 视线挡着时说"挡着"', /挡/.test(canUseFrom(3, false).why), true);
+      check('★ 贴在身边（≤2 格，床在脚下）→ 直接用，不看视线', canUseFrom(1.2, null).use, true);
       check('★ 读不到视线（null）→ 保守当挡着（先走过去）', canUseFrom(3, null).use, false);
       check('读不到时说"读不到"（不说成挡住）', /读不到/.test(canUseFrom(3, null).why), true);
       check('★ 5 格远、视线通 → 不可用（超 4 格）', canUseFrom(5, true).use, false);
