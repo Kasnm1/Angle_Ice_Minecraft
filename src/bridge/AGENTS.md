@@ -82,7 +82,7 @@ registry-probe）、`../instinct/instinct`、`../mind/night`、`../knowledge/kno
 >    `TypeError: Cannot set property … which has only a getter`。用"跳过已存在键"的循环。
 > ② 读取方**不能**提前写 `const { goals } = __ns` —— 那是快照，永远 `undefined`。
 > ③ 一个可重赋值变量**只能有一个持有者**。`lastHealth` 最初被同时声明在 `state.js` 和
->    `connect.js`，两份永不同步 —— 好在 `tools/selftest-reloadable.js` 抓到了。
+>    `connect.js`，两份永不同步 —— 拆分时的临时工具抓到了（现由 `scripts/bridge-reload-test.js` 守）。
 > ④ `exposeReloadable(__ns)` 必须把访问器装在 **server.js 的** `__ns` 上（2026-09-28 验收时抓到：装在 connect.js 自己那份上，
 >    离线测试全绿，但 `loadDependencies()` 之后各路由文件的 `Vec3` / `goals` 全是 undefined）。守它的是 `scripts/bridge-reload-test.js`。
 >    `BLOCK_NAME_TO_ID` 是第一次 `blockNameToId()` 时才建的，`GET /config` 在 server.js 里包了一层、每次先 rebind。
@@ -113,12 +113,12 @@ $NODE scripts/routes-test.js        # 路由清单契约（138 条）+ bridge �
 $NODE scripts/test-all.js           # 全套；含 checkBridgeExports（13 导出名 + 58 路由键序）
 ```
 
-拆文件本身的自检工具在 `modpack-study/refactor-p3c/tools/`（不进产品代码）：
+拆文件本身的核对用仓库里的：
 
 ```bash
-$NODE modpack-study/refactor-p3c/tools/verify.js             # 逐段核对"原文一字不改"
-$NODE modpack-study/refactor-p3c/tools/check-scope.js        # 有没有"用了但没拿到"的名字
-$NODE modpack-study/refactor-p3c/tools/selftest-reloadable.js # 9 个可重赋值变量：单一持有者 + rebind 覆盖
+$NODE scripts/refactor/check-moved.js --before <拆前 ref> --files src/bridge/server.js --after-dir src/bridge/   # 函数/路由原文一字不改
+$NODE scripts/bridge-reload-test.js   # 可重赋值变量：loadDependencies() 之后每个持有者都读得到真值
 ```
+
 
 根目录 `bridge-server.js` 是转发壳，`node --check` 它也能过，但真正的语法检查对 `src/bridge/server.js`。

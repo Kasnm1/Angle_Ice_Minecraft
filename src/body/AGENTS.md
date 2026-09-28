@@ -66,6 +66,6 @@ $NODE scripts/test-all.js                                # 全绿：含 [exports
 ## 第 3 步已完成（2026-09-28）
 
 原先 5598 行、75 条路由的 `hands.js` 已按上面表格拆开。**函数体一字未改**（唯一例外：
-`containers.install` 第一行 `HSTATE = state` 改读 getter，已在 `modpack-study/refactor-p3a/report.md` 登记）。
+`containers.install` 第一行 `HSTATE = state` 改读 getter；`util.approach` 里两处 `HSTATE` 改成 `getHandsState()`（读同一份，行为不变；2026-09-28 用修好的 check-moved 复核时补登）。前者已在 `modpack-study/refactor-p3a/report.md` 登记）。
 新增导出/改导出名会让 `scripts/test-all.js` 的 `[exports]` 快照拉红 —— 接口是契约，改它要有意为之。
 
