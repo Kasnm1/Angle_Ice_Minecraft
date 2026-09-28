@@ -48,7 +48,11 @@ async function main () {
   bot.entity.metadata[0] = 2;
   ok(api.syncSleepState(bot).sleeping, '真正睡觉仍保持睡眠');
   bot.entity.metadata = [];
-  ok(!api.syncSleepState(bot).corrected && bot.isSleeping, '姿态未知不擅自唤醒');
+  bot.time.timeOfDay = 15000;   // 夜里：姿态读不到就不擅自唤醒
+  ok(!api.syncSleepState(bot).corrected && bot.isSleeping, '姿态未知（夜里）不擅自唤醒');
+  bot.time.timeOfDay = 1000;    // 白天床睡不了：缓存里的"在睡"一定是旧的（d3633db 的设计）
+  ok(api.syncSleepState(bot).corrected && !bot.isSleeping, '姿态未知但天亮了 → 纠正成醒');
+  bot.isSleeping = true;
   bot.entity.position = new Vec3(3,64,0);
   ok(api.syncSleepState(bot, new Vec3(0,64,0)).corrected && !bot.isSleeping, '姿态缺失但已走离床位时纠正睡眠缓存');
   bot.entity.position = new Vec3(0,64,0);
