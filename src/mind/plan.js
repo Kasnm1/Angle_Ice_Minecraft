@@ -173,6 +173,50 @@ function mainlineStatus ({ completed = null, items = [] } = {}, data = mainline(
   return { known: !!completed, done: doneSet.size, total: qs.length, next, prereq };
 }
 
+// ------------------------------------------------------------------ 游玩路线（knowledge/campaign.json）
+//
+// 主人 2026-09-29：目标要"正常玩、符合本整合包的体验"。campaign.json 是一条自然游玩路线的 132 个目标
+// （WorkBuddy 起草、Claude 复核；来源见文件头）。和 mainline 同一个思路：只给"下一步可以做什么"，顺序她自己定。
+// 做没做完：有 done.have 的看背包；没有的（GUI / 击败 Boss / 认知类）读不到就算"不知道"，
+// 且**不挡后面的路**（查不到，不猜成"没做"）。
+
+let CP = null;
+function campaign () {
+  if (CP) return CP;
+  try { CP = JSON.parse(fs.readFileSync(path.join(paths.KNOWLEDGE, 'campaign.json'), 'utf8')); } catch (_) { CP = { goals: [] }; }
+  return CP;
+}
+
+/** @returns { done, total, autoTotal, next:[{id,title,hint,stage,track,feasible}] } —— next 只含前置已做完（或前置查不到）、自己还没做的，按阶段排 */
+function campaignStatus ({ items = [] } = {}, data = campaign()) {
+  const gs = data.goals || [];
+  const byId = new Map(gs.map(g => [g.id, g]));
+  const own = (g) => !!g.done && doneBy(g.done, items);
+  // 超前了：后面的目标做成了，它依赖的前置（一路往上）就当作做过 —— 不然直接拿到铁镐的人还会被叫去做石镐
+  const doneMemo = new Map();
+  const isDone = (g) => {
+    if (doneMemo.has(g.id)) return doneMemo.get(g.id);
+    const d = own(g) || gs.some(h => (h.deps || []).includes(g.id) && (own(h) || isDone(h)));
+    doneMemo.set(g.id, d);
+    return d;
+  };
+  // 前置：做完了算过；没有标志的（查不到）不挡路，但它自己的前置还得过 —— 不然后面的目标会越过它提前冒出来
+  const memo = new Map();
+  const depOk = (id) => {
+    if (memo.has(id)) return memo.get(id);
+    memo.set(id, false);   // 防环
+    const d = byId.get(id);
+    const ok = !d || isDone(d) || (!d.done && (d.deps || []).every(depOk));
+    memo.set(id, ok);
+    return ok;
+  };
+  const ORDER = ['start', 'early', 'mid', 'late', 'end'];
+  const next = gs.filter(g => !isDone(g) && g.feasible !== 'no' && (g.deps || []).every(depOk))
+    .sort((a, b) => ORDER.indexOf(a.stage) - ORDER.indexOf(b.stage))
+    .map(g => ({ id: g.id, title: g.title, hint: g.hint, stage: g.stage, track: g.track, feasible: g.feasible }));
+  return { done: gs.filter(isDone).length, total: gs.length, autoTotal: gs.filter(g => g.done).length, next };
+}
+
 // ------------------------------------------------------------------ 计划
 
 /** "做成的标志"达成了没有。have 的物品名按"名字结尾"比（sword → iron_sword 也算，log → oak_log 也算） */
@@ -329,6 +373,27 @@ function selftest () {
   check('★ 什么都没做 → 给准备阶段的第一步', ms.prereq?.title, '撸原木');
   check('读到了进度 → known', ms.known, true);
 
+  // 游玩路线
+  const C = { goals: [
+    { id: 'a', title: '砍树', stage: 'start', deps: [], done: { have: { log: 3 } } },
+    { id: 'b', title: '工作台', stage: 'start', deps: ['a'], done: { have: { crafting_table: 1 } } },
+    { id: 'c', title: '读小屋任务书', stage: 'start', deps: ['b'] },
+    { id: 'd', title: '安家', stage: 'early', deps: ['c'], done: { have: { red_bed: 1 } } },
+    { id: 'e', title: '打 Boss', stage: 'mid', deps: ['d'], feasible: 'no' },
+  ] };
+  let cs = campaignStatus({ items: [] }, C);
+  check('★ 路线：什么都没有 → 只有砍树可做', cs.next.map(g => g.id).join(','), 'a');
+  cs = campaignStatus({ items: I({ oak_log: 3 }) }, C);
+  check('砍完树 → 下一步工作台', cs.next.map(g => g.id).join(','), 'b');
+  cs = campaignStatus({ items: I({ oak_log: 3, crafting_table: 1 }) }, C);
+  check('★ 没有 done 标志的目标不挡后面（查不到不猜）', cs.next.map(g => g.id).join(','), 'c,d');
+  check('做不到的（feasible no）不列', cs.next.some(g => g.id === 'e'), false);
+  check('进度 2/4 有标志的算', `${cs.done}/${cs.autoTotal}`, '2/3');
+  cs = campaignStatus({ items: I({ red_bed: 1 }) }, C);
+  check('★ 超前：直接有床 → 前置（砍树/工作台/小屋）都不再列', cs.next.length, 0);
+  check('…前置也算做完了（a,b,d 三个有标志里 2 个 + 床 = 计入）', cs.done >= 3, true);
+  check('★ 真实 campaign.json 读得出来且有目标', campaign().goals.length > 100, true);
+
   let threw = false; try { setPlan({}); } catch (_) { threw = true; }
   check('没目标 → 报错', threw, true);
   try { fs.unlinkSync(process.env.MC_PLAN_FILE); } catch (_) {}
@@ -337,6 +402,6 @@ function selftest () {
   return fail ? 1 : 0;
 }
 
-module.exports = { mainline, mainlineStatus, facts, renderFacts, ideas, doneBy, setPlan, updateStep, current, autoCheck, render, get, history, _reset, selftest };
+module.exports = { mainline, mainlineStatus, campaign, campaignStatus, facts, renderFacts, ideas, doneBy, setPlan, updateStep, current, autoCheck, render, get, history, _reset, selftest };
 
 if (require.main === module && process.argv.includes('--selftest')) process.exit(selftest());

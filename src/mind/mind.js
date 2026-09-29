@@ -1248,11 +1248,17 @@ function knownStations () {
 
 const shortName = (id) => knowledge.label(id).replace(/\([^)]*\)$/, '');
 
+/** 家里箱子记得的存货 [{name,count}]（做过的东西收进箱子，目标不该退回"没做"） */
+function homeStockItems () {
+  const h = mem.getHome();
+  return Object.values(h?.stock || {}).flatMap(b => Object.entries(b.items || {}).map(([name, count]) => ({ name, count })));
+}
+
 /** 给 plan.js 的现状（背包 + 穿着的 + 家里记得的） */
 function planFacts () {
   const s = W.state || {};
   const h = mem.getHome();
-  const homeItems = Object.values(h?.stock || {}).flatMap(b => Object.entries(b.items || {}).map(([name, count]) => ({ name, count })));
+  const homeItems = homeStockItems();
   const food = (s.items || []).filter(i => { try { return /食物/.test(knowledge.label(i.name.includes(':') ? i.name : `minecraft:${i.name}`)) || /bread|cooked|apple|carrot|potato|beef|pork|chicken|mutton|salmon|cod|stew|soup|pie|cookie|berries|melon_slice/.test(i.name); } catch (_) { return false; } })
     .reduce((a, i) => a + i.count, 0);
   return plan.facts({ items: s.items || [], worn: Object.values(s.equipment || {}), homeItems, hasHome: !!h, foodCount: food });
@@ -1282,7 +1288,11 @@ function planExtras () {
     const c = ambition.candidates({ inventory: W.state?.items || [], knownStations: knownStations(), limit: 2 });
     if (c?.length) out.push({ text: `心愿：做一道没做过的菜（比如 ${c.map(x => knowledge.label(x.id).replace(/\(.*\)$/, '')).join('、')}）`, why: `做遍食物的心愿 ${ambition.progress().made}/${ambition.progress().total}` });
   } catch (_) {}
-  return out.slice(0, 7);
+  // 游玩路线（knowledge/campaign.json）：跟着这个整合包的节奏玩，前置都做完的头几个
+  try {
+    for (const g of plan.campaignStatus({ items: [...(W.state?.items || []), ...homeStockItems()] }).next.slice(0, 2)) out.push({ text: `路线：${g.title}`, why: g.hint || '' });
+  } catch (_) {}
+  return out.slice(0, 9);   // 路线排在工程 / 布置 / 心愿之后，只补 2 条
 }
 
 /**

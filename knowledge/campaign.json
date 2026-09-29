@@ -1,0 +1,2473 @@
+{
+ "source": "modpack-study/goals-20260929/06-goals-v2.json（WorkBuddy 2026-09-29，Claude 复核；done 物品 id 已对 registry/minecraft-item.json 核对）",
+ "goals": [
+  {
+   "id": "g2-open-quest",
+   "title": "打开任务书，把【新手礼包and游玩须知】看完",
+   "track": "mainline",
+   "stage": "start",
+   "deps": [],
+   "hint": "进游戏第一件事：开任务书读【游玩须知】9 个任务。",
+   "feasible": "no",
+   "mods": [
+    "ftbquests"
+   ]
+  },
+  {
+   "id": "g2-open-home",
+   "title": "领新手小屋蓝图画到地上",
+   "track": "home",
+   "stage": "start",
+   "deps": [
+    "g2-open-quest"
+   ],
+   "hint": "任务书【新手小屋】领取蓝图，右键地面预览，Alt+滚轮调位置，潜行+右键落地。",
+   "feasible": "no",
+   "mods": [
+    "ftbquests",
+    "minecraft"
+   ]
+  },
+  {
+   "id": "g2-open-ring",
+   "title": "戴上七咒之戒，之后不要摘",
+   "track": "survival",
+   "stage": "start",
+   "deps": [
+    "g2-open-quest"
+   ],
+   "hint": "开局发下来的戒指戴好，别摘、别走救赎路线。",
+   "feasible": "partial",
+   "mods": [
+    "enigmaticlegacy"
+   ],
+   "done": {
+    "have": {
+     "enigmaticlegacy:cursed_ring": 1
+    }
+   }
+  },
+  {
+   "id": "g2-open-keys",
+   "title": "学会 R / U / B / O / ~ 这几个键",
+   "track": "mainline",
+   "stage": "start",
+   "deps": [
+    "g2-open-quest"
+   ],
+   "hint": "R 看来源、U 看用途、B 跳百科、O 开商店、按住 ~ 连锁挖掘。",
+   "feasible": "no",
+   "mods": [
+    "ftbquests"
+   ]
+  },
+  {
+   "id": "g2-open-bag",
+   "title": "领新手礼包，把背包换成本包的精妙背包",
+   "track": "survival",
+   "stage": "start",
+   "deps": [
+    "g2-open-quest"
+   ],
+   "hint": "先用铜级精妙背包，B 键打开，能放饰品栏。",
+   "feasible": "partial",
+   "mods": [
+    "sophisticatedbackpacks"
+   ],
+   "done": {
+    "have": {
+     "sophisticatedbackpacks:backpack": 1
+    }
+   }
+  },
+  {
+   "id": "g2-s1-wood",
+   "title": "砍第一棵树",
+   "track": "survival",
+   "stage": "start",
+   "deps": [],
+   "hint": "找棵树长按左键，凑 8 个原木，顺手捡树苗。",
+   "feasible": "yes",
+   "mods": [
+    "minecraft"
+   ],
+   "done": {
+    "have": {
+     "minecraft:oak_log": 8
+    }
+   }
+  },
+  {
+   "id": "g2-s2-table",
+   "title": "做工作台",
+   "track": "survival",
+   "stage": "start",
+   "deps": [
+    "g2-s1-wood"
+   ],
+   "hint": "原木→木板（2×2）→工作台。",
+   "feasible": "yes",
+   "mods": [
+    "minecraft"
+   ],
+   "done": {
+    "have": {
+     "minecraft:crafting_table": 1
+    }
+   }
+  },
+  {
+   "id": "g2-s3-pick",
+   "title": "木镐 → 石镐石剑",
+   "track": "survival",
+   "stage": "start",
+   "deps": [
+    "g2-s2-table"
+   ],
+   "hint": "木镐挖圆石，再做石镐石剑。",
+   "feasible": "yes",
+   "mods": [
+    "minecraft"
+   ],
+   "done": {
+    "have": {
+     "minecraft:stone_pickaxe": 1
+    }
+   }
+  },
+  {
+   "id": "g2-s4-furnace",
+   "title": "熔炉 + 一组火把",
+   "track": "survival",
+   "stage": "start",
+   "deps": [
+    "g2-s3-pick"
+   ],
+   "hint": "熔炉=圆石×8；火把=煤或木炭+木棍。",
+   "feasible": "yes",
+   "mods": [
+    "minecraft"
+   ],
+   "done": {
+    "have": {
+     "minecraft:furnace": 1,
+     "minecraft:torch": 16
+    }
+   }
+  },
+  {
+   "id": "g2-s5-iron",
+   "title": "挖铁、烧出第一批铁锭",
+   "track": "survival",
+   "stage": "start",
+   "deps": [
+    "g2-s4-furnace"
+   ],
+   "hint": "地下找铁矿，熔炉烧成铁锭。",
+   "feasible": "yes",
+   "mods": [
+    "minecraft"
+   ],
+   "done": {
+    "have": {
+     "minecraft:iron_ingot": 3
+    }
+   }
+  },
+  {
+   "id": "g2-s6-ironpick",
+   "title": "打一把铁镐",
+   "track": "survival",
+   "stage": "early",
+   "deps": [
+    "g2-s5-iron"
+   ],
+   "hint": "铁镐=铁锭×3+木棍×2。",
+   "feasible": "yes",
+   "mods": [
+    "minecraft"
+   ],
+   "done": {
+    "have": {
+     "minecraft:iron_pickaxe": 1
+    }
+   }
+  },
+  {
+   "id": "g2-s7-armor",
+   "title": "一套铁甲 + 盾",
+   "track": "survival",
+   "stage": "early",
+   "deps": [
+    "g2-s5-iron"
+   ],
+   "hint": "铁甲=铁锭×24 左右；盾=木板×6+铁锭。",
+   "feasible": "yes",
+   "mods": [
+    "minecraft"
+   ],
+   "done": {
+    "have": {
+     "minecraft:iron_chestplate": 1,
+     "minecraft:shield": 1
+    }
+   }
+  },
+  {
+   "id": "g2-s8-bed",
+   "title": "放床、睡一觉设重生点",
+   "track": "home",
+   "stage": "early",
+   "deps": [
+    "g2-s2-table"
+   ],
+   "hint": "羊毛×3+木板×3。睡醒设重生点。",
+   "feasible": "yes",
+   "mods": [
+    "minecraft"
+   ],
+   "done": {
+    "have": {
+     "minecraft:red_bed": 1
+    }
+   }
+  },
+  {
+   "id": "g2-s9-bucket",
+   "title": "做水桶",
+   "track": "survival",
+   "stage": "early",
+   "deps": [
+    "g2-s5-iron"
+   ],
+   "hint": "铁锭×3。浇田、灭火、做无限水。",
+   "feasible": "yes",
+   "mods": [
+    "minecraft"
+   ],
+   "done": {
+    "have": {
+     "minecraft:water_bucket": 1
+    }
+   }
+  },
+  {
+   "id": "g2-s10-diamond",
+   "title": "拿到第一颗钻石，做钻石镐",
+   "track": "survival",
+   "stage": "early",
+   "deps": [
+    "g2-s6-ironpick"
+   ],
+   "hint": "Y=-59 层挖钻石。主线「钻石」节点也在这里。",
+   "feasible": "yes",
+   "mods": [
+    "minecraft"
+   ],
+   "done": {
+    "have": {
+     "minecraft:diamond_pickaxe": 1
+    }
+   }
+  },
+  {
+   "id": "g2-s11-storage",
+   "title": "做一个储物区（箱子墙 + 木桶）",
+   "track": "home",
+   "stage": "early",
+   "deps": [
+    "g2-s8-bed"
+   ],
+   "hint": "木桶同 27 格、上面不挡，可叠成一面墙；木桶=木板×6+台阶×2。",
+   "feasible": "partial",
+   "mods": [
+    "minecraft",
+    "quark",
+    "expandedstorage"
+   ],
+   "done": {
+    "have": {
+     "minecraft:chest": 4,
+     "minecraft:barrel": 2
+    }
+   }
+  },
+  {
+   "id": "g2-ec1-bin",
+   "title": "做出货箱，开始攒财产点数",
+   "track": "economy",
+   "stage": "early",
+   "deps": [
+    "g2-s11-storage"
+   ],
+   "hint": "把可出售的作物丢进出货箱，等一会儿变财产点数。",
+   "feasible": "partial",
+   "mods": [
+    "xiangcaomengjia"
+   ],
+   "done": {
+    "have": {
+     "xiangcaomengjia:wood_selling_bin": 1
+    }
+   }
+  },
+  {
+   "id": "g2-ec2-shop",
+   "title": "按 O 逛一次商店，知道能买什么",
+   "track": "economy",
+   "stage": "early",
+   "deps": [
+    "g2-ec1-bin"
+   ],
+   "hint": "O 键开商店。**大部分材料都能买**，少部分要先推进任务解锁。",
+   "feasible": "no",
+   "mods": [
+    "xiangcaomengjia"
+   ]
+  },
+  {
+   "id": "g2-ec3-money",
+   "title": "攒到 1000 财产点数（财大气粗）",
+   "track": "economy",
+   "stage": "early",
+   "deps": [
+    "g2-ec1-bin"
+   ],
+   "hint": "靠卖作物攒到 1000 点，主线「财大气粗」就是这个。",
+   "feasible": "partial",
+   "mods": [
+    "xiangcaomengjia"
+   ]
+  },
+  {
+   "id": "g2-f1-plot",
+   "title": "开第一块田并种下去",
+   "track": "farming",
+   "stage": "start",
+   "deps": [
+    "g2-s9-bucket"
+   ],
+   "hint": "锄头翻土→播种→浇水。本包**农田不会被踩坏**，随便走。",
+   "feasible": "yes",
+   "mods": [
+    "minecraft",
+    "farmersdelight"
+   ],
+   "done": {
+    "have": {
+     "minecraft:wheat_seeds": 3
+    }
+   }
+  },
+  {
+   "id": "g2-f2-harvest",
+   "title": "收第一茬作物",
+   "track": "farming",
+   "stage": "early",
+   "deps": [
+    "g2-f1-plot"
+   ],
+   "hint": "等作物长成，收进背包。",
+   "feasible": "yes",
+   "mods": [
+    "minecraft"
+   ],
+   "done": {
+    "have": {
+     "minecraft:wheat": 3
+    }
+   }
+  },
+  {
+   "id": "g2-f3-crops-book",
+   "title": "按【作物图鉴】核对本地作物怎么获取",
+   "track": "farming",
+   "stage": "early",
+   "deps": [
+    "g2-f2-harvest"
+   ],
+   "hint": "作物来源**被作者魔改**了，别按原模组攻略找，以【作物图鉴】为准。",
+   "feasible": "no",
+   "mods": [
+    "ftbquests"
+   ]
+  },
+  {
+   "id": "g2-f4-knife",
+   "title": "备一把小刀，用它打生物拿特殊掉落",
+   "track": "farming",
+   "stage": "early",
+   "deps": [
+    "g2-s6-ironpick"
+   ],
+   "hint": "大部分能出食材的生物，用**小刀类**击杀才有特殊掉落。",
+   "feasible": "partial",
+   "mods": [
+    "aquaculture"
+   ],
+   "done": {
+    "have": {
+     "aquaculture:iron_fillet_knife": 1
+    }
+   }
+  },
+  {
+   "id": "g2-f5-animals",
+   "title": "圈养第一批动物",
+   "track": "farming",
+   "stage": "early",
+   "deps": [
+    "g2-f2-harvest"
+   ],
+   "hint": "用小麦引牛/羊回家，拴绳牵一只。",
+   "feasible": "partial",
+   "mods": [
+    "minecraft",
+    "farm_and_charm"
+   ],
+   "done": {
+    "have": {
+     "minecraft:lead": 1,
+     "minecraft:milk_bucket": 1
+    }
+   }
+  },
+  {
+   "id": "g2-f6-forestry",
+   "title": "把农牧做成产线（刀耕火种）",
+   "track": "farming",
+   "stage": "early",
+   "deps": [
+    "g2-f5-animals"
+   ],
+   "hint": "看「刀耕火种」章，把种植/养殖串成稳定产出。",
+   "feasible": "partial",
+   "mods": [
+    "farm_and_charm",
+    "minecraft"
+   ],
+   "done": {
+    "have": {
+     "farm_and_charm:butter": 1
+    }
+   }
+  },
+  {
+   "id": "g2-c1-board",
+   "title": "摆好砧板 + 厨锅 + 炉灶（农民乐事三件套）",
+   "track": "cooking",
+   "stage": "early",
+   "deps": [
+    "g2-f2-harvest"
+   ],
+   "hint": "砧板切菜 → 厨锅炖 → 炉灶加热。这是本包的厨房核心。",
+   "feasible": "partial",
+   "mods": [
+    "farmersdelight"
+   ],
+   "done": {
+    "have": {
+     "farmersdelight:cutting_board": 1,
+     "farmersdelight:cooking_pot": 1,
+     "farmersdelight:stove": 1
+    }
+   }
+  },
+  {
+   "id": "g2-c2-firstdish",
+   "title": "做出第一道热菜",
+   "track": "cooking",
+   "stage": "early",
+   "deps": [
+    "g2-c1-board"
+   ],
+   "hint": "厨锅里放蔬菜+水，炖一碗蔬菜汤。",
+   "feasible": "partial",
+   "mods": [
+    "farmersdelight"
+   ],
+   "done": {
+    "have": {
+     "farmersdelight:vegetable_soup": 1
+    }
+   }
+  },
+  {
+   "id": "g2-c3-kitchen",
+   "title": "把傻瓜厨房连成一片（烹饪桌/烤箱/水槽/冰箱）",
+   "track": "cooking",
+   "stage": "early",
+   "deps": [
+    "g2-c1-board"
+   ],
+   "hint": "cookingforblockheads 的台面/烤箱/水槽/冰箱连成一片才算一个厨房，可用厨房地板拉距离。",
+   "feasible": "partial",
+   "mods": [
+    "cookingforblockheads",
+    "farmersdelight"
+   ],
+   "done": {
+    "have": {
+     "cookingforblockheads:cooking_table": 1
+    }
+   }
+  },
+  {
+   "id": "g2-c4-stomach",
+   "title": "认识次元之胃，开始往里塞不同食物",
+   "track": "cooking",
+   "stage": "early",
+   "deps": [
+    "g2-c2-firstdish"
+   ],
+   "hint": "把食物放进次元之胃，按饱食度给属性加成；**同种食物只算一次**。",
+   "feasible": "partial",
+   "mods": [
+    "dimensional_stomach"
+   ]
+  },
+  {
+   "id": "g2-c5-crops2",
+   "title": "按作物图鉴补第二、第三种作物",
+   "track": "farming",
+   "stage": "early",
+   "deps": [
+    "g2-c3-kitchen"
+   ],
+   "hint": "回【主世界作物】章，对着图鉴逐个补；番茄是这一章常见的作物之一。",
+   "feasible": "partial",
+   "mods": [
+    "ftbquests",
+    "fruitsdelight"
+   ],
+   "done": {
+    "have": {
+     "farmersdelight:tomato": 1
+    }
+   }
+  },
+  {
+   "id": "g2-c6-foodlog",
+   "title": "打开【食录逸闻】，当作长期图鉴慢慢填",
+   "track": "cooking",
+   "stage": "early",
+   "deps": [
+    "g2-c2-firstdish"
+   ],
+   "hint": "食录逸闻 20 章 / 2574 个食物任务，是这包最大的「图鉴」。",
+   "feasible": "no",
+   "mods": [
+    "ftbquests",
+    "bountifulfares",
+    "kaleidoscope_cookery",
+    "collectorsreap",
+    "alexsmobsdelight",
+    "twilightdelight",
+    "mynethersdelight",
+    "rusticdelight",
+    "delightful",
+    "exquisito",
+    "oceanic_delight",
+    "casualness_delight",
+    "seeddelight",
+    "veggiesdelight",
+    "festive_delight",
+    "jellyfishingdelight",
+    "beachparty",
+    "ramadandelight",
+    "cavedelight",
+    "largemeals",
+    "crabbersdelight",
+    "slime_delight",
+    "undergardendelight",
+    "extrameat",
+    "farmersrespite",
+    "sunflowerdelight",
+    "abnormals_delight",
+    "arsdelight",
+    "delighto_flight",
+    "muffins_thaidelight",
+    "caves_delight",
+    "cornexpansion",
+    "sniffer",
+    "quarkdelight",
+    "galospheric_delight",
+    "aquamirae_delight",
+    "trailandtales_delight",
+    "nethervinery",
+    "kaleidoscope_nether",
+    "kaleidoscope_tavern",
+    "drinkbeer",
+    "atmospheric",
+    "alexsmobs"
+   ]
+  },
+  {
+   "id": "g2-c7-bakery",
+   "title": "开一家烘焙角（面包炉 + 备料台）",
+   "track": "cooking",
+   "stage": "early",
+   "deps": [
+    "g2-c3-kitchen"
+   ],
+   "hint": "brick_stove 是 bakery 的烤炉，还要备料台 baker_station。",
+   "feasible": "partial",
+   "mods": [
+    "bakery",
+    "farm_and_charm"
+   ]
+  },
+  {
+   "id": "g2-e1-compass",
+   "title": "做出自然罗盘和探险家指南针",
+   "track": "explore",
+   "stage": "early",
+   "deps": [
+    "g2-s10-diamond"
+   ],
+   "hint": "自然罗盘找生物群系，探险家指南针找结构。",
+   "feasible": "partial",
+   "mods": [
+    "naturescompass",
+    "explorerscompass"
+   ],
+   "done": {
+    "have": {
+     "naturescompass:naturescompass": 1
+    }
+   }
+  },
+  {
+   "id": "g2-e2-scout",
+   "title": "找到第一座村庄或矿洞",
+   "track": "explore",
+   "stage": "early",
+   "deps": [
+    "g2-e1-compass"
+   ],
+   "hint": "沿罗盘方向走，找到村庄就有床和农夫，还能认领区块。",
+   "feasible": "yes",
+   "mods": [
+    "minecraft",
+    "waystones"
+   ]
+  },
+  {
+   "id": "g2-e3-nether",
+   "title": "造下界传送门，第一次去下界",
+   "track": "explore",
+   "stage": "mid",
+   "deps": [
+    "g2-s10-diamond"
+   ],
+   "hint": "黑曜石×10 搭门，打火石点燃。",
+   "feasible": "yes",
+   "mods": [
+    "minecraft",
+    "netherexp",
+    "bygonenether"
+   ],
+   "done": {
+    "have": {
+     "minecraft:blaze_rod": 1
+    }
+   }
+  },
+  {
+   "id": "g2-e4-end",
+   "title": "去末地，打下末影龙",
+   "track": "boss",
+   "stage": "mid",
+   "deps": [
+    "g2-e3-nether"
+   ],
+   "hint": "找要塞、填末影之眼、进末地打龙。",
+   "feasible": "no",
+   "mods": [
+    "minecraft",
+    "ends_delight"
+   ],
+   "done": {
+    "have": {
+     "minecraft:dragon_breath": 1
+    }
+   }
+  },
+  {
+   "id": "g2-e5-unusualend",
+   "title": "探索末地外岛与末地城",
+   "track": "explore",
+   "stage": "mid",
+   "deps": [
+    "g2-e4-end"
+   ],
+   "hint": "末地城、末地船、龙蛋、鞘翅。",
+   "feasible": "partial",
+   "mods": [
+    "unusualend",
+    "enlightened_end",
+    "minecraft"
+   ],
+   "done": {
+    "have": {
+     "minecraft:elytra": 1
+    }
+   }
+  },
+  {
+   "id": "g2-e6-bird",
+   "title": "把飞行器造出来（上天入地）",
+   "track": "explore",
+   "stage": "mid",
+   "deps": [
+    "g2-e5-unusualend"
+   ],
+   "hint": "immersive_aircraft 的飞行器 + rustic_engineer 的部件。",
+   "feasible": "partial",
+   "mods": [
+    "immersive_aircraft",
+    "rustic_engineer"
+   ],
+   "done": {
+    "have": {
+     "immersive_aircraft:hull": 1
+    }
+   }
+  },
+  {
+   "id": "g2-e7-ecosystem",
+   "title": "逛一遍主世界奇妙生态",
+   "track": "explore",
+   "stage": "mid",
+   "deps": [
+    "g2-e2-scout"
+   ],
+   "hint": "「奇妙生态」章 34 个任务，边走边拍照（exposure 相机）。",
+   "feasible": "partial",
+   "mods": [
+    "exposure",
+    "minecraft"
+   ]
+  },
+  {
+   "id": "g2-e8-dimensions",
+   "title": "进【异界故事】的第一个独立维度",
+   "track": "explore",
+   "stage": "mid",
+   "deps": [
+    "g2-e4-end"
+   ],
+   "hint": "暮色森林 / 幽邃黑暗 / 深暗之园 / 蜜蜂领域 / 梦域 / Alex 的洞穴，六选一即可。",
+   "feasible": "partial",
+   "mods": [
+    "twilightforest",
+    "deeperdarker",
+    "undergarden",
+    "the_bumblezone",
+    "pasterdream",
+    "alex_caves_dimensions"
+   ]
+  },
+  {
+   "id": "g2-b1-boss",
+   "title": "打第一个 Boss 前的准备（装备 + 药 + 罗盘）",
+   "track": "boss",
+   "stage": "mid",
+   "deps": [
+    "g2-e4-end"
+   ],
+   "hint": "先做全套铁/钻装、带够药和食物，再用指南针定位 Boss。",
+   "feasible": "partial",
+   "mods": [
+    "minecraft",
+    "explorerscompass",
+    "meetyourfight",
+    "bosses_delight",
+    "bosses_of_mass_destruction",
+    "legendary_monsters",
+    "makit_better"
+   ]
+  },
+  {
+   "id": "g2-b2-kill",
+   "title": "击败第一个 Boss（敲钟人等）",
+   "track": "boss",
+   "stage": "mid",
+   "deps": [
+    "g2-b1-boss"
+   ],
+   "hint": "「逐级击破-末影龙前」里挑一个，打完拿掉落物。",
+   "feasible": "no",
+   "mods": [
+    "meetyourfight"
+   ]
+  },
+  {
+   "id": "g2-b3-bossdish",
+   "title": "把 Boss 掉落物做成 Boss 专属料理",
+   "track": "cooking",
+   "stage": "mid",
+   "deps": [
+    "g2-b2-kill"
+   ],
+   "hint": "本包 Boss 线的核心：**做出 Boss 专属菜肴**才算推进。",
+   "feasible": "partial",
+   "mods": [
+    "meetyourfight",
+    "ends_delight",
+    "farmersdelight"
+   ],
+   "done": {
+    "have": {
+     "ends_delight:dragon_leg_with_sauce_block": 1
+    }
+   }
+  },
+  {
+   "id": "g2-b4-unlock",
+   "title": "在任务书领 Boss 任务，解锁商店新商品",
+   "track": "economy",
+   "stage": "mid",
+   "deps": [
+    "g2-b3-bossdish"
+   ],
+   "hint": "做完料理回任务书领任务 → 商店解锁 → 再买 Boss 掉落物。",
+   "feasible": "no",
+   "mods": [
+    "ftbquests",
+    "xiangcaomengjia"
+   ]
+  },
+  {
+   "id": "g2-b5-warden",
+   "title": "打监守者，做监守者料理",
+   "track": "boss",
+   "stage": "mid",
+   "deps": [
+    "g2-b3-bossdish"
+   ],
+   "hint": "监守者 → silentsdelight 的心脏料理。",
+   "feasible": "partial",
+   "mods": [
+    "silentsdelight"
+   ],
+   "done": {
+    "have": {
+     "silentsdelight:heartburger": 1
+    }
+   }
+  },
+  {
+   "id": "g2-b6-simplyswords",
+   "title": "攒一批神兵（simplyswords / armamentarium）",
+   "track": "boss",
+   "stage": "late",
+   "deps": [
+    "g2-b2-kill"
+   ],
+   "hint": "「I-神兵宝鉴」51 任务 + 「II-厨神真谛」54 任务，遗剑系列要做出来。",
+   "feasible": "partial",
+   "mods": [
+    "simplyswords",
+    "armamentarium"
+   ],
+   "done": {
+    "have": {
+     "simplyswords:iron_sai": 1
+    }
+   }
+  },
+  {
+   "id": "g2-b7-postdragon",
+   "title": "末影龙之后的讨伐（焰魔/利维坦等）",
+   "track": "boss",
+   "stage": "late",
+   "deps": [
+    "g2-b3-bossdish"
+   ],
+   "hint": "「讨伐之路-末影龙后」27 任务：大法师甘道夫、虚空蠕虫、焰魔、利维坦……",
+   "feasible": "no",
+   "mods": [
+    "cataclysm",
+    "terramity",
+    "lendersdelight"
+   ]
+  },
+  {
+   "id": "g2-b8-bossphone",
+   "title": "用 Boss 电话本召唤链打 Boss",
+   "track": "boss",
+   "stage": "late",
+   "deps": [
+    "g2-b7-postdragon"
+   ],
+   "hint": "「Boss电话本」章：用 cataclysm:*_eye 在指定结构召唤。",
+   "feasible": "no",
+   "mods": [
+    "cataclysm",
+    "enlightened_end"
+   ]
+  },
+  {
+   "id": "g2-m1-create",
+   "title": "机械动力入门：安山合金 → 机壳 → 齿轮",
+   "track": "create",
+   "stage": "late",
+   "deps": [
+    "g2-s10-diamond"
+   ],
+   "hint": "「初识机械动力」章 18 任务，从安山合金、机壳、传动杆、大小齿轮起步。",
+   "feasible": "partial",
+   "mods": [
+    "create"
+   ],
+   "done": {
+    "have": {
+     "create:andesite_alloy": 1
+    }
+   }
+  },
+  {
+   "id": "g2-m2-power",
+   "title": "接动力源：水车或风车轴承",
+   "track": "create",
+   "stage": "late",
+   "deps": [
+    "g2-m1-create"
+   ],
+   "hint": "「动力与传动」章 16 任务：水车/大型水车/风车轴承 → 齿轮箱 → 离合换挡。",
+   "feasible": "partial",
+   "mods": [
+    "create"
+   ],
+   "done": {
+    "have": {
+     "create:water_wheel": 1
+    }
+   }
+  },
+  {
+   "id": "g2-m3-process",
+   "title": "做第一台加工机器：粉碎轮（要成对）",
+   "track": "create",
+   "stage": "late",
+   "deps": [
+    "g2-m2-power"
+   ],
+   "hint": "「机械加工」章：粉碎轮成对用，还有动力锯/钻头/滚压机。",
+   "feasible": "partial",
+   "mods": [
+    "create"
+   ],
+   "done": {
+    "have": {
+     "create:crushing_wheel": 1
+    }
+   }
+  },
+  {
+   "id": "g2-m4-brass",
+   "title": "进黄铜线（黄铜锭 + 精密构件）",
+   "track": "create",
+   "stage": "late",
+   "deps": [
+    "g2-m3-process"
+   ],
+   "hint": "黄铜锭 → 精密构件 → 电子管、玫瑰石英，是中期机器的通用件。",
+   "feasible": "partial",
+   "mods": [
+    "create"
+   ],
+   "done": {
+    "have": {
+     "create:brass_ingot": 1
+    }
+   }
+  },
+  {
+   "id": "g2-m5-autocook",
+   "title": "让机器自动做菜（create_central_kitchen）",
+   "track": "create",
+   "stage": "late",
+   "deps": [
+    "g2-m4-brass"
+   ],
+   "hint": "「自动化做菜」章 26 任务：把厨锅/切菜板接上机械动力。",
+   "feasible": "partial",
+   "mods": [
+    "create_central_kitchen",
+    "create",
+    "farmersdelight"
+   ],
+   "done": {
+    "have": {
+     "create_central_kitchen:cooking_guide": 1
+    }
+   }
+  },
+  {
+   "id": "g2-m6-steam",
+   "title": "上蒸汽与流体",
+   "track": "create",
+   "stage": "late",
+   "deps": [
+    "g2-m4-brass"
+   ],
+   "hint": "「蒸汽与流体」「热源与锅炉」两章。",
+   "feasible": "partial",
+   "mods": [
+    "create"
+   ],
+   "done": {
+    "have": {
+     "create:mechanical_press": 1
+    }
+   }
+  },
+  {
+   "id": "g2-m7-electric",
+   "title": "进电气时代",
+   "track": "create",
+   "stage": "late",
+   "deps": [
+    "g2-m6-steam"
+   ],
+   "hint": "「电气时代」章 20 任务，全部属于 create_new_age。",
+   "feasible": "partial",
+   "mods": [
+    "create_new_age"
+   ],
+   "done": {
+    "have": {
+     "create_new_age:overcharged_iron": 1
+    }
+   }
+  },
+  {
+   "id": "g2-m8-excavation",
+   "title": "做自动矿机（createoreexcavation）",
+   "track": "create",
+   "stage": "late",
+   "deps": [
+    "g2-m3-process"
+   ],
+   "hint": "「矿石开掘」章 16 任务：自动挖矿，省掉手挖。",
+   "feasible": "partial",
+   "mods": [
+    "createoreexcavation"
+   ],
+   "done": {
+    "have": {
+     "createoreexcavation:drill": 1
+    }
+   }
+  },
+  {
+   "id": "g2-m9-gun",
+   "title": "铳械协议：把手搓枪做出来",
+   "track": "create",
+   "stage": "late",
+   "deps": [
+    "g2-m4-brass"
+   ],
+   "hint": "「铳械协议」章 18 任务（TaCZ 枪械线）。",
+   "feasible": "no",
+   "mods": [
+    "tacz",
+    "lrarmor",
+    "lrtactical"
+   ]
+  },
+  {
+   "id": "g2-m10-rest",
+   "title": "把机械动力剩下的线铺开",
+   "track": "create",
+   "stage": "late",
+   "deps": [
+    "g2-m4-brass"
+   ],
+   "hint": "机械动力剩下 12 章：咖啡甜食产线、装饰建材、创意传动、附魔工业、序列组装、酿造、烘焙烛光、酒馆、夜雀食堂、仓储自动化、旧模组机械化、官方集成。",
+   "feasible": "partial",
+   "mods": [
+    "createcafe",
+    "create_confectionery",
+    "createdeco",
+    "create_connected",
+    "create_mechanical_spawner",
+    "create_enchantment_industry",
+    "createutilities",
+    "create_power_loader"
+   ],
+   "done": {
+    "have": {
+     "create:sail_frame": 1
+    }
+   }
+  },
+  {
+   "id": "g2-h1-furniture",
+   "title": "把家翻新一遍（家具 mod 随便挑）",
+   "track": "home",
+   "stage": "mid",
+   "deps": [
+    "g2-s11-storage"
+   ],
+   "hint": "「装饰家居」章 + cluttered(1000+ 家具)/cozy_home/tanukidecor。bot 能帮你摆方块。",
+   "feasible": "partial",
+   "mods": [
+    "cluttered",
+    "cozy_home",
+    "tanukidecor",
+    "whimsy_deco",
+    "handcrafted",
+    "decorative_blocks",
+    "beautify",
+    "royalvariations"
+   ]
+  },
+  {
+   "id": "g2-h2-doll",
+   "title": "摆几个毛绒玩偶",
+   "track": "home",
+   "stage": "mid",
+   "deps": [
+    "g2-h1-furniture"
+   ],
+   "hint": "「毛绒玩偶」章 3 任务，抽奖机出玩偶。",
+   "feasible": "partial",
+   "mods": [
+    "kaleidoscope_doll"
+   ],
+   "done": {
+    "have": {
+     "kaleidoscope_doll:doll_machine": 1
+    }
+   }
+  },
+  {
+   "id": "g2-h3-paper",
+   "title": "纸鸢庄园：搭一套纸艺装饰",
+   "track": "home",
+   "stage": "mid",
+   "deps": [
+    "g2-h1-furniture"
+   ],
+   "hint": "「纸鸢庄园」章 56 任务，整章只用一个 mod。",
+   "feasible": "partial",
+   "mods": [
+    "papercraft_magic_decoration"
+   ]
+  },
+  {
+   "id": "g2-h4-pet",
+   "title": "养宠物：女仆 / 仓鼠 / 更多异兽",
+   "track": "home",
+   "stage": "mid",
+   "deps": [
+    "g2-h1-furniture"
+   ],
+   "hint": "X+右键可以空手抱起生物搬回家（提示 1）。",
+   "feasible": "partial",
+   "mods": [
+    "touhou_little_maid",
+    "adorablehamsterpets",
+    "more_critters"
+   ]
+  },
+  {
+   "id": "g2-h5-fishing",
+   "title": "钓鱼养老（Aquaculture / Starcatcher）",
+   "track": "fishing",
+   "stage": "mid",
+   "deps": [
+    "g2-c1-board"
+   ],
+   "hint": "「钓鱼生活」章 13 任务 + 三套钓具体系。",
+   "feasible": "yes",
+   "mods": [
+    "aquaculture",
+    "starcatcher",
+    "tide",
+    "netherdepthsupgrade"
+   ],
+   "done": {
+    "have": {
+     "minecraft:fishing_rod": 1
+    }
+   }
+  },
+  {
+   "id": "g2-h6-display",
+   "title": "把食物摆盘展示（展示乐事）",
+   "track": "home",
+   "stage": "mid",
+   "deps": [
+    "g2-c2-firstdish"
+   ],
+   "hint": "displaydelight 专门把做好的菜摆出来看。",
+   "feasible": "partial",
+   "mods": [
+    "displaydelight",
+    "farmersdelight"
+   ],
+   "done": {
+    "have": {
+     "displaydelight:food_plate": 1
+    }
+   }
+  },
+  {
+   "id": "g2-x1-ars",
+   "title": "新生魔艺入门（附魔装置）",
+   "track": "magic",
+   "stage": "mid",
+   "deps": [
+    "g2-s10-diamond"
+   ],
+   "hint": "「新生魔艺与农田」章 21 任务，全部属于 ars_nouveau。",
+   "feasible": "partial",
+   "mods": [
+    "ars_nouveau"
+   ],
+   "done": {
+    "have": {
+     "ars_nouveau:imbuement_chamber": 1
+    }
+   }
+  },
+  {
+   "id": "g2-x2-enchant",
+   "title": "做附魔台，给主力装备附魔",
+   "track": "magic",
+   "stage": "mid",
+   "deps": [
+    "g2-s10-diamond"
+   ],
+   "hint": "原版附魔台起步，主线后面有「高级附魔台 / 进阶高级附魔台」。",
+   "feasible": "partial",
+   "mods": [
+    "enchantinginfuser",
+    "minecraft"
+   ],
+   "done": {
+    "have": {
+     "minecraft:enchanting_table": 1
+    }
+   }
+  },
+  {
+   "id": "g2-x3-refined",
+   "title": "上精致存储，做自动化仓储",
+   "track": "economy",
+   "stage": "mid",
+   "deps": [
+    "g2-s11-storage"
+   ],
+   "hint": "主线「精致存储」节点；出货箱也能连它的输出面板做全自动。",
+   "feasible": "partial",
+   "mods": [
+    "refinedstorage",
+    "sophisticatedstorage",
+    "expandedstorage"
+   ],
+   "done": {
+    "have": {
+     "refinedstorage:grid": 1
+    }
+   }
+  },
+  {
+   "id": "g2-x4-sim",
+   "title": "玩一把模拟经营（ordertocook）",
+   "track": "economy",
+   "stage": "mid",
+   "deps": [
+    "g2-ec1-bin"
+   ],
+   "hint": "「模拟经营」章 13 任务，ordertocook 开小店接单。",
+   "feasible": "no",
+   "mods": [
+    "ordertocook"
+   ]
+  },
+  {
+   "id": "g2-x5-trade",
+   "title": "学会钱坤大挪移（财产点数 ↔ 实体货币）",
+   "track": "economy",
+   "stage": "mid",
+   "deps": [
+    "g2-ec3-money"
+   ],
+   "hint": "「钱坤大挪移」章 5 任务，polaristrading 做交易。",
+   "feasible": "no",
+   "mods": [
+    "polaristrading",
+    "xiangcaomengjia"
+   ]
+  },
+  {
+   "id": "g2-x6-ways",
+   "title": "铺传送石网络",
+   "track": "explore",
+   "stage": "mid",
+   "deps": [
+    "g2-e2-scout"
+   ],
+   "hint": "主线「传送石 / 传送卷轴」节点，回家不用跑。",
+   "feasible": "partial",
+   "mods": [
+    "waystones"
+   ],
+   "done": {
+    "have": {
+     "waystones:warp_stone": 1
+    }
+   }
+  },
+  {
+   "id": "g2-x7-ancient",
+   "title": "挖远古残骸，烧下界合金",
+   "track": "survival",
+   "stage": "late",
+   "deps": [
+    "g2-e3-nether"
+   ],
+   "hint": "下界 Y=15 附近挖远古残骸 → 下界合金锭。",
+   "feasible": "yes",
+   "mods": [
+    "minecraft"
+   ],
+   "done": {
+    "have": {
+     "minecraft:netherite_ingot": 1
+    }
+   }
+  },
+  {
+   "id": "g2-z1-memento",
+   "title": "收纪念品长廊的「永恒的回忆」",
+   "track": "collection",
+   "stage": "end",
+   "deps": [
+    "g2-h4-pet"
+   ],
+   "hint": "「永恒的回忆」章 21 任务：生物帽子等收集物。",
+   "feasible": "no",
+   "mods": [
+    "animalhatmod",
+    "midashunger",
+    "more_critters"
+   ]
+  },
+  {
+   "id": "g2-z2-artifacts",
+   "title": "收「异界神器库」的神器",
+   "track": "collection",
+   "stage": "end",
+   "deps": [
+    "g2-b6-simplyswords"
+   ],
+   "hint": "「异界神器库」章 20 任务。",
+   "feasible": "no",
+   "mods": [
+    "lethality",
+    "smc",
+    "zenith"
+   ]
+  },
+  {
+   "id": "g2-z3-godproof",
+   "title": "冲刺「厨神之证」",
+   "track": "collection",
+   "stage": "end",
+   "deps": [
+    "g2-c2-firstdish"
+   ],
+   "hint": "「厨神之证」章 112 任务是全包最大的单项收集。",
+   "feasible": "no",
+   "mods": [
+    "immortalers_delight",
+    "enigmaticdelicacy"
+   ]
+  },
+  {
+   "id": "g2-z4-tea",
+   "title": "把【食录逸闻】补到一半以上",
+   "track": "cooking",
+   "stage": "end",
+   "deps": [
+    "g2-c6-foodlog"
+   ],
+   "hint": "食录逸闻 20 章，是本包的终局图鉴。",
+   "feasible": "partial",
+   "mods": [
+    "farmersdelight",
+    "youkaishomecoming",
+    "candlelight"
+   ]
+  },
+  {
+   "id": "g2-z5-thanks",
+   "title": "翻完【致谢名单】",
+   "track": "collection",
+   "stage": "end",
+   "deps": [
+    "g2-z3-godproof"
+   ],
+   "hint": "「致谢名单」章 38 任务，是任务书的片尾。",
+   "feasible": "no",
+   "mods": [
+    "smc",
+    "cluttered"
+   ]
+  },
+  {
+   "id": "g2-z6-mainline",
+   "title": "把 ⭐主线任务⭐ 推到底",
+   "track": "mainline",
+   "stage": "end",
+   "deps": [
+    "g2-s10-diamond",
+    "g2-x6-ways"
+   ],
+   "hint": "⭐指引-主线任务⭐ 64 条是本包的骨干路线图；每完成一个节点会在商店解锁新物品。",
+   "feasible": "partial",
+   "mods": [
+    "terramity",
+    "composite_material",
+    "enigmaticlegacy"
+   ]
+  },
+  {
+   "id": "g2-s0-punch",
+   "title": "先徒手掏点木头和泥土",
+   "track": "survival",
+   "stage": "start",
+   "deps": [],
+   "hint": "出生点附近先掏泥土垫脚、掏木头，注意天黑前得有火把。",
+   "feasible": "yes",
+   "mods": [
+    "minecraft"
+   ],
+   "done": {
+    "have": {
+     "minecraft:dirt": 8
+    }
+   }
+  },
+  {
+   "id": "g2-s2b-planks",
+   "title": "把原木换成木板和木棍",
+   "track": "survival",
+   "stage": "start",
+   "deps": [
+    "g2-s1-wood"
+   ],
+   "hint": "原木→木板；木板×2 竖着=木棍。",
+   "feasible": "yes",
+   "mods": [
+    "minecraft"
+   ],
+   "done": {
+    "have": {
+     "minecraft:oak_planks": 16
+    }
+   }
+  },
+  {
+   "id": "g2-s5b-coal",
+   "title": "挖煤或烧木炭",
+   "track": "survival",
+   "stage": "start",
+   "deps": [
+    "g2-s4-furnace"
+   ],
+   "hint": "有煤挖煤，没煤用熔炉烧木头出木炭。",
+   "feasible": "yes",
+   "mods": [
+    "minecraft"
+   ],
+   "done": {
+    "have": {
+     "minecraft:coal": 8
+    }
+   }
+  },
+  {
+   "id": "g2-s8b-food",
+   "title": "备一批能吃饱的食物",
+   "track": "cooking",
+   "stage": "early",
+   "deps": [
+    "g2-s5b-coal"
+   ],
+   "hint": "三个小麦做面包，或烤肉。",
+   "feasible": "yes",
+   "mods": [
+    "minecraft",
+    "farmersdelight"
+   ],
+   "done": {
+    "have": {
+     "minecraft:bread": 4
+    }
+   }
+  },
+  {
+   "id": "g2-s8c-smelt",
+   "title": "做一个高炉 + 烟熏炉",
+   "track": "home",
+   "stage": "early",
+   "deps": [
+    "g2-s4-furnace"
+   ],
+   "hint": "高炉只烧矿速度翻倍，烟熏炉只烧食物也翻倍，放厨房旁。",
+   "feasible": "yes",
+   "mods": [
+    "minecraft"
+   ],
+   "done": {
+    "have": {
+     "minecraft:blast_furnace": 1,
+     "minecraft:smoker": 1
+    }
+   }
+  },
+  {
+   "id": "g2-c2b-skillet",
+   "title": "用煎锅煎块肉",
+   "track": "cooking",
+   "stage": "early",
+   "deps": [
+    "g2-c1-board"
+   ],
+   "hint": "skillet 煎锅放灶上，丢肉进去煎。",
+   "feasible": "partial",
+   "mods": [
+    "farmersdelight"
+   ],
+   "done": {
+    "have": {
+     "farmersdelight:cooked_mutton_chops": 1
+    }
+   }
+  },
+  {
+   "id": "g2-c2c-cabinet",
+   "title": "给厨房配矮柜和冰箱",
+   "track": "home",
+   "stage": "early",
+   "deps": [
+    "g2-c3-kitchen"
+   ],
+   "hint": "农夫乐事矮柜 27 格；傻瓜厨房冰箱存原料。",
+   "feasible": "partial",
+   "mods": [
+    "farmersdelight",
+    "cookingforblockheads"
+   ],
+   "done": {
+    "have": {
+     "cookingforblockheads:fridge": 1
+    }
+   }
+  },
+  {
+   "id": "g2-e2b-waystone",
+   "title": "找到第一座传送石并激活",
+   "track": "explore",
+   "stage": "early",
+   "deps": [
+    "g2-e2-scout"
+   ],
+   "hint": "村庄/遗迹常有传送石，激活后就能来回跳。",
+   "feasible": "partial",
+   "mods": [
+    "waystones"
+   ]
+  },
+  {
+   "id": "g2-f2b-composter",
+   "title": "做堆肥桶，把多余作物变骨粉",
+   "track": "farming",
+   "stage": "early",
+   "deps": [
+    "g2-f2-harvest"
+   ],
+   "hint": "堆肥桶=木板×7（阶梯形）。",
+   "feasible": "yes",
+   "mods": [
+    "minecraft"
+   ],
+   "done": {
+    "have": {
+     "minecraft:composter": 1
+    }
+   }
+  },
+  {
+   "id": "g2-f2c-scaffold",
+   "title": "搭一圈围栏把田围起来",
+   "track": "farming",
+   "stage": "early",
+   "deps": [
+    "g2-f2b-composter"
+   ],
+   "hint": "围栏=木棍×4+木板×2，做 3 个得 9 个栅栏。",
+   "feasible": "yes",
+   "mods": [
+    "minecraft"
+   ],
+   "done": {
+    "have": {
+     "minecraft:oak_fence": 8
+    }
+   }
+  },
+  {
+   "id": "g2-ec1b-price",
+   "title": "认一认「哪些作物能卖钱」",
+   "track": "economy",
+   "stage": "early",
+   "deps": [
+    "g2-ec1-bin"
+   ],
+   "hint": "可出售的作物物品上会显示价格，丢进出货箱才变成点数。",
+   "feasible": "partial",
+   "mods": [
+    "xiangcaomengjia"
+   ]
+  },
+  {
+   "id": "g2-h1b-workbench-room",
+   "title": "把工作区摆齐（工作台/切石机/锻造台/铁砧）",
+   "track": "home",
+   "stage": "early",
+   "deps": [
+    "g2-s11-storage"
+   ],
+   "hint": "工作台+切石机+锻造台一组；铁砧+砂轮+附魔台一组。",
+   "feasible": "yes",
+   "mods": [
+    "minecraft"
+   ],
+   "done": {
+    "have": {
+     "minecraft:stonecutter": 1,
+     "minecraft:anvil": 1
+    }
+   }
+  },
+  {
+   "id": "g2-h1c-lightup",
+   "title": "把家里铺满火把/灯笼，别刷怪",
+   "track": "home",
+   "stage": "early",
+   "deps": [
+    "g2-s11-storage"
+   ],
+   "hint": "火把最便宜先插满；灯笼更亮，挂天花板。",
+   "feasible": "yes",
+   "mods": [
+    "minecraft",
+    "supplementaries"
+   ],
+   "done": {
+    "have": {
+     "minecraft:lantern": 4
+    }
+   }
+  },
+  {
+   "id": "g2-c3b-herb",
+   "title": "开一个香料/茶角（herbalbrews）",
+   "track": "cooking",
+   "stage": "mid",
+   "deps": [
+    "g2-c3-kitchen"
+   ],
+   "hint": "「茶烟袅袅」章 74 任务：herbalbrews 的茶与香草。",
+   "feasible": "partial",
+   "mods": [
+    "herbalbrews",
+    "farm_and_charm"
+   ],
+   "done": {
+    "have": {
+     "herbalbrews:stove": 1
+    }
+   }
+  },
+  {
+   "id": "g2-c3c-bbq",
+   "title": "支起烤架做烧烤",
+   "track": "cooking",
+   "stage": "mid",
+   "deps": [
+    "g2-c1-board"
+   ],
+   "hint": "「整点烧烤」章 33 任务，barbequesdelight 的烤串体系。",
+   "feasible": "partial",
+   "mods": [
+    "barbequesdelight",
+    "farmersdelight"
+   ],
+   "done": {
+    "have": {
+     "barbequesdelight:grill": 1
+    }
+   }
+  },
+  {
+   "id": "g2-c3d-pickle",
+   "title": "学腌制（vintagedelight）",
+   "track": "cooking",
+   "stage": "mid",
+   "deps": [
+    "g2-c1-board"
+   ],
+   "hint": "「腌制工艺」章 21 任务：泡菜、腌菜。",
+   "feasible": "partial",
+   "mods": [
+    "vintagedelight",
+    "farmersdelight"
+   ],
+   "done": {
+    "have": {
+     "vintagedelight:salt": 1
+    }
+   }
+  },
+  {
+   "id": "g2-c3e-wine",
+   "title": "酿第一批酒（vinery / brewery）",
+   "track": "cooking",
+   "stage": "mid",
+   "deps": [
+    "g2-c3-kitchen"
+   ],
+   "hint": "「酒林诗韵」章 165 任务，本包最大的饮品线。",
+   "feasible": "partial",
+   "mods": [
+    "vinery",
+    "brewery",
+    "brewinandchewin"
+   ],
+   "done": {
+    "have": {
+     "vinery:mead": 1
+    }
+   }
+  },
+  {
+   "id": "g2-c3f-seafood",
+   "title": "做一顿海鲜大餐",
+   "track": "cooking",
+   "stage": "mid",
+   "deps": [
+    "g2-h5-fishing"
+   ],
+   "hint": "「海鲜大餐」章 215 任务，全包最大的单章之一。",
+   "feasible": "partial",
+   "mods": [
+    "aquaculturedelight",
+    "untameddelight",
+    "netherdepthsupgrade"
+   ],
+   "done": {
+    "have": {
+     "aquaculturedelight:bass_stew": 1
+    }
+   }
+  },
+  {
+   "id": "g2-c3g-sushi",
+   "title": "开一家寿司小屋",
+   "track": "cooking",
+   "stage": "mid",
+   "deps": [
+    "g2-c2-firstdish"
+   ],
+   "hint": "「寿司小屋」章 97 任务。",
+   "feasible": "partial",
+   "mods": [
+    "youkaishomecoming",
+    "culturaldelights",
+    "jellyfishing",
+    "jellyfishingdelight"
+   ],
+   "done": {
+    "have": {
+     "culturaldelights:squid": 1
+    }
+   }
+  },
+  {
+   "id": "g2-c3h-sweet",
+   "title": "做甜点：蛋糕 / 冰淇淋 / 糖果",
+   "track": "cooking",
+   "stage": "mid",
+   "deps": [
+    "g2-c3-kitchen"
+   ],
+   "hint": "「香软蛋糕 / 冷饮甜点 / 糖果世界」三章共 321 个任务。",
+   "feasible": "partial",
+   "mods": [
+    "bakery",
+    "cosmopolitan",
+    "simple_cream",
+    "neapolitan"
+   ]
+  },
+  {
+   "id": "g2-c3i-dessert4",
+   "title": "做四季甜品",
+   "track": "cooking",
+   "stage": "mid",
+   "deps": [
+    "g2-c3h-sweet"
+   ],
+   "hint": "「四季甜品」章 330 任务，是全包任务数最多的食录章。",
+   "feasible": "partial",
+   "mods": [
+    "kitchenkarrot",
+    "vanillacookbook",
+    "immortalers_delight"
+   ]
+  },
+  {
+   "id": "g2-c3j-multicook",
+   "title": "玩多元烹饪（多模组联动）",
+   "track": "cooking",
+   "stage": "mid",
+   "deps": [
+    "g2-c2-firstdish"
+   ],
+   "hint": "「多元烹饪」章 207 任务：crockpot 慢炖锅等。",
+   "feasible": "partial",
+   "mods": [
+    "crockpot",
+    "dungeonsdelight",
+    "ubesdelight",
+    "dumplings_delight"
+   ],
+   "done": {
+    "have": {
+     "crockpot:corn": 1
+    }
+   }
+  },
+  {
+   "id": "g2-c3k-noodle",
+   "title": "做面食与主食（饺子/面）",
+   "track": "cooking",
+   "stage": "mid",
+   "deps": [
+    "g2-c2-firstdish"
+   ],
+   "hint": "「豪华汉堡」章 90 任务 + dumplings_delight。",
+   "feasible": "partial",
+   "mods": [
+    "dumplings_delight",
+    "moredelight",
+    "farmersdelight"
+   ],
+   "done": {
+    "have": {
+     "farmersdelight:rice": 1
+    }
+   }
+  },
+  {
+   "id": "g2-c3l-canned",
+   "title": "做罐头保存食物",
+   "track": "cooking",
+   "stage": "mid",
+   "deps": [
+    "g2-c1-board"
+   ],
+   "hint": "「即食罐头」章 18 任务。",
+   "feasible": "partial",
+   "mods": [
+    "kitchenkarrot",
+    "luncheonmeatsdelight"
+   ]
+  },
+  {
+   "id": "g2-c3m-veggie",
+   "title": "认真做一轮蔬果菜",
+   "track": "cooking",
+   "stage": "mid",
+   "deps": [
+    "g2-f2b-composter"
+   ],
+   "hint": "「健康蔬果」章 158 任务。",
+   "feasible": "partial",
+   "mods": [
+    "youkaishomecoming",
+    "immortalers_delight",
+    "braziliandelight"
+   ]
+  },
+  {
+   "id": "g2-c3n-miningfood",
+   "title": "备一套下矿干粮（miners_delight）",
+   "track": "cooking",
+   "stage": "mid",
+   "deps": [
+    "g2-s5b-coal"
+   ],
+   "hint": "「下矿必备」章 46 任务，专为下矿做的食物。",
+   "feasible": "partial",
+   "mods": [
+    "miners_delight"
+   ],
+   "done": {
+    "have": {
+     "miners_delight:milk_cup": 1
+    }
+   }
+  },
+  {
+   "id": "g2-e8b-deeperdarker",
+   "title": "去幽邃黑暗（深暗之域）",
+   "track": "explore",
+   "stage": "mid",
+   "deps": [
+    "g2-e8-dimensions"
+   ],
+   "hint": "「幽邃黑暗」章 8 任务 + 专属作物。",
+   "feasible": "partial",
+   "mods": [
+    "deeperdarker",
+    "silentsdelight"
+   ]
+  },
+  {
+   "id": "g2-e8c-undergarden",
+   "title": "去深暗之园",
+   "track": "explore",
+   "stage": "mid",
+   "deps": [
+    "g2-e8-dimensions"
+   ],
+   "hint": "「深暗之园」章 25 任务。",
+   "feasible": "partial",
+   "mods": [
+    "undergarden"
+   ],
+   "done": {
+    "have": {
+     "undergarden:goo": 1
+    }
+   }
+  },
+  {
+   "id": "g2-e8d-bumblezone",
+   "title": "去蜜蜂领域",
+   "track": "explore",
+   "stage": "mid",
+   "deps": [
+    "g2-e8-dimensions"
+   ],
+   "hint": "「蜜蜂领域」章 38 任务，整章一个 mod。",
+   "feasible": "partial",
+   "mods": [
+    "the_bumblezone"
+   ],
+   "done": {
+    "have": {
+     "the_bumblezone:bee_soup": 1
+    }
+   }
+  },
+  {
+   "id": "g2-e8e-pasterdream",
+   "title": "去梦域奇旅",
+   "track": "explore",
+   "stage": "mid",
+   "deps": [
+    "g2-e8-dimensions"
+   ],
+   "hint": "「梦域奇旅」章 98 任务，pasterdream 占了 139 个任务物品。",
+   "feasible": "partial",
+   "mods": [
+    "pasterdream"
+   ],
+   "done": {
+    "have": {
+     "pasterdream:flour": 1
+    }
+   }
+  },
+  {
+   "id": "g2-e8f-alexcaves",
+   "title": "去 Alex 的洞穴（六个独立维度）",
+   "track": "explore",
+   "stage": "mid",
+   "deps": [
+    "g2-e8-dimensions"
+   ],
+   "hint": "「Alex的洞穴」章 50 任务；本包把 Alex 的洞穴拆成了六个独立维度。",
+   "feasible": "partial",
+   "mods": [
+    "alex_caves_dimensions",
+    "alexscaves"
+   ],
+   "done": {
+    "have": {
+     "alex_caves_dimensions:toxic_caves_key": 1
+    }
+   }
+  },
+  {
+   "id": "g2-cropnether",
+   "title": "收一遍下界作物",
+   "track": "farming",
+   "stage": "mid",
+   "deps": [
+    "g2-e3-nether"
+   ],
+   "hint": "「下界作物」章 31 任务。",
+   "feasible": "partial",
+   "mods": [
+    "netherexp",
+    "nethers_exoticism",
+    "ltc2"
+   ],
+   "done": {
+    "have": {
+     "netherexp:hogham": 1
+    }
+   }
+  },
+  {
+   "id": "g2-cropend",
+   "title": "收一遍末地作物",
+   "track": "farming",
+   "stage": "mid",
+   "deps": [
+    "g2-e5-unusualend"
+   ],
+   "hint": "「末地作物」章 26 任务。",
+   "feasible": "partial",
+   "mods": [
+    "unusualend",
+    "enlightened_end",
+    "endersdelight"
+   ],
+   "done": {
+    "have": {
+     "ends_delight:bubble_tea": 1
+    }
+   }
+  },
+  {
+   "id": "g2-cropindex",
+   "title": "把作物图鉴的收集进度做完",
+   "track": "farming",
+   "stage": "mid",
+   "deps": [
+    "g2-cropnether",
+    "g2-cropend"
+   ],
+   "hint": "「图鉴收集」章 5 任务，是作物图鉴的收尾。",
+   "feasible": "no",
+   "mods": [
+    "ftbquests"
+   ]
+  },
+  {
+   "id": "g2-croptwilight",
+   "title": "收其它维度作物（暮色/深暗之园）",
+   "track": "farming",
+   "stage": "mid",
+   "deps": [
+    "g2-e8c-undergarden"
+   ],
+   "hint": "「其它作物」3 任务 + 「深暗之园作物」9 任务。",
+   "feasible": "partial",
+   "mods": [
+    "twilightforest",
+    "undergarden",
+    "ltc2"
+   ],
+   "done": {
+    "have": {
+     "twilightforest:root": 1
+    }
+   }
+  },
+  {
+   "id": "g2-x5b-difficulty",
+   "title": "调一调难度设置",
+   "track": "survival",
+   "stage": "mid",
+   "deps": [
+    "g2-s10-diamond"
+   ],
+   "hint": "「难度调节」章 3 任务，本包允许玩家自己调难度。",
+   "feasible": "no",
+   "mods": [
+    "ftbquests"
+   ]
+  },
+  {
+   "id": "g2-x4b-gdp",
+   "title": "参与一次 GDP 排行/统计",
+   "track": "economy",
+   "stage": "late",
+   "deps": [
+    "g2-ec3-money"
+   ],
+   "hint": "任务书里有经济排行类内容（见 mainline 的 GDP 相关，01-audit 提及）。",
+   "feasible": "no",
+   "mods": [
+    "ftbquests"
+   ]
+  },
+  {
+   "id": "g2-x2b-grindstone",
+   "title": "做砂轮洗附魔",
+   "track": "magic",
+   "stage": "mid",
+   "deps": [
+    "g2-x2-enchant"
+   ],
+   "hint": "砂轮=木棍×2+石头台阶×2+木板×4，能洗掉附魔返还经验。",
+   "feasible": "yes",
+   "mods": [
+    "minecraft"
+   ],
+   "done": {
+    "have": {
+     "minecraft:grindstone": 1
+    }
+   }
+  },
+  {
+   "id": "g2-x2c-brewing",
+   "title": "做酿造台，会酿药水",
+   "track": "magic",
+   "stage": "mid",
+   "deps": [
+    "g2-e3-nether"
+   ],
+   "hint": "酿造台=烈焰棒×1+圆石×3。",
+   "feasible": "yes",
+   "mods": [
+    "minecraft"
+   ],
+   "done": {
+    "have": {
+     "minecraft:brewing_stand": 1
+    }
+   }
+  },
+  {
+   "id": "g2-x2d-loot",
+   "title": "给工具附耐久/效率/保护",
+   "track": "magic",
+   "stage": "mid",
+   "deps": [
+    "g2-x2-enchant"
+   ],
+   "hint": "附魔台周围摆书架能到 30 级；后面还有「高级附魔台」。",
+   "feasible": "partial",
+   "mods": [
+    "minecraft",
+    "enchantinginfuser"
+   ],
+   "done": {
+    "have": {
+     "enchantinginfuser:enchanting_infuser": 1
+    }
+   }
+  },
+  {
+   "id": "g2-x3b-sophisticated",
+   "title": "把储物升级成精妙存储",
+   "track": "economy",
+   "stage": "mid",
+   "deps": [
+    "g2-s11-storage"
+   ],
+   "hint": "精妙存储的箱子更大还能升级（升级要 GUI）。",
+   "feasible": "partial",
+   "mods": [
+    "sophisticatedstorage",
+    "expandedstorage"
+   ],
+   "done": {
+    "have": {
+     "expandedstorage:wood_chest": 1
+    }
+   }
+  },
+  {
+   "id": "g2-m1b-goggles",
+   "title": "做出工程师护目镜和扳手",
+   "track": "create",
+   "stage": "late",
+   "deps": [
+    "g2-m1-create"
+   ],
+   "hint": "护目镜看应力转速，扳手调机器朝向。",
+   "feasible": "partial",
+   "mods": [
+    "create"
+   ],
+   "done": {
+    "have": {
+     "create:goggles": 1,
+     "create:wrench": 1
+    }
+   }
+  },
+  {
+   "id": "g2-m3b-saw",
+   "title": "上动力锯和动力钻头",
+   "track": "create",
+   "stage": "late",
+   "deps": [
+    "g2-m3-process"
+   ],
+   "hint": "动力锯切木头、动力钻头挖矿，都要接上动力。",
+   "feasible": "partial",
+   "mods": [
+    "create"
+   ],
+   "done": {
+    "have": {
+     "create:mechanical_saw": 1
+    }
+   }
+  },
+  {
+   "id": "g2-m4b-tube",
+   "title": "做电子管和玫瑰石英",
+   "track": "create",
+   "stage": "late",
+   "deps": [
+    "g2-m4-brass"
+   ],
+   "hint": "电子管、玫瑰石英是黄铜机器的零件。",
+   "feasible": "partial",
+   "mods": [
+    "create"
+   ],
+   "done": {
+    "have": {
+     "create:electron_tube": 1
+    }
+   }
+  },
+  {
+   "id": "g2-m4c-casing",
+   "title": "做黄铜机壳与智能物流件",
+   "track": "create",
+   "stage": "late",
+   "deps": [
+    "g2-m4-brass"
+   ],
+   "hint": "黄铜机壳、黄铜漏斗/隧道，是自动化物流的基础。",
+   "feasible": "partial",
+   "mods": [
+    "create"
+   ],
+   "done": {
+    "have": {
+     "create:brass_casing": 1
+    }
+   }
+  },
+  {
+   "id": "g2-m-bestiary",
+   "title": "把更多异兽图鉴补齐",
+   "track": "collection",
+   "stage": "mid",
+   "deps": [
+    "g2-h4-pet"
+   ],
+   "hint": "「更多异兽」章 41 任务，more_critters 占 29 个物品。",
+   "feasible": "partial",
+   "mods": [
+    "more_critters"
+   ]
+  },
+  {
+   "id": "g2-z-memento-hat",
+   "title": "给每只宠物做一顶帽子（生物帽子）",
+   "track": "collection",
+   "stage": "end",
+   "deps": [
+    "g2-z1-memento"
+   ],
+   "hint": "「永恒的回忆」章里 animalhatmod 占 27 个任务物品。",
+   "feasible": "partial",
+   "mods": [
+    "animalhatmod",
+    "midashunger"
+   ],
+   "done": {
+    "have": {
+     "animalhatmod:cow_hat_helmet": 1
+    }
+   }
+  },
+  {
+   "id": "g2-z-artifact-lethality",
+   "title": "收集 lethality 神器",
+   "track": "collection",
+   "stage": "end",
+   "deps": [
+    "g2-z2-artifacts"
+   ],
+   "hint": "「异界神器库」章里 lethality 占 10 个物品。",
+   "feasible": "partial",
+   "mods": [
+    "lethality"
+   ],
+   "done": {
+    "have": {
+     "lethality:nihilite": 1
+    }
+   }
+  },
+  {
+   "id": "g2-z-chefs-legacy",
+   "title": "收集厨神系列的证明物",
+   "track": "collection",
+   "stage": "end",
+   "deps": [
+    "g2-z3-godproof"
+   ],
+   "hint": "「厨神之证」章 112 任务，immortalers_delight(14) 与 vefc(8) 领先。",
+   "feasible": "no",
+   "mods": [
+    "immortalers_delight"
+   ]
+  },
+  {
+   "id": "g2-b6b-chef-truth",
+   "title": "冲刺「II-厨神真谛」：把遗剑系列做完",
+   "track": "boss",
+   "stage": "late",
+   "deps": [
+    "g2-b6-simplyswords"
+   ],
+   "hint": "「II-厨神真谛」章 54 任务：simplyswords 占 46 个物品，沉眠遗剑→正义/魔化遗剑→各元素遗剑。",
+   "feasible": "partial",
+   "mods": [
+    "simplyswords"
+   ],
+   "done": {
+    "have": {
+     "simplyswords:dormant_relic": 1
+    }
+   }
+  },
+  {
+   "id": "g2-cropdeeper",
+   "title": "收一遍幽邃黑暗作物",
+   "track": "farming",
+   "stage": "mid",
+   "deps": [
+    "g2-e8b-deeperdarker"
+   ],
+   "hint": "「幽邃黑暗作物」章 5 任务，是作物图鉴里最小的一章。",
+   "feasible": "partial",
+   "mods": [
+    "deeperdarker",
+    "ltc2",
+    "silentsdelight"
+   ],
+   "done": {
+    "have": {
+     "deeperdarker:soul_dust": 1
+    }
+   }
+  },
+  {
+   "id": "g2-c3o-exotic",
+   "title": "做一顿「异界珍馐」（各维度食材的菜）",
+   "track": "cooking",
+   "stage": "late",
+   "deps": [
+    "g2-e8-dimensions",
+    "g2-c2-firstdish"
+   ],
+   "hint": "「异界珍馐」章 241 任务：下界/末地/暮色各维度的食材做菜。",
+   "feasible": "partial",
+   "mods": [
+    "mynethersdelight",
+    "ends_delight",
+    "twilightdelight",
+    "lendersdelight"
+   ],
+   "done": {
+    "have": {
+     "ends_delight:bubble_tea": 1
+    }
+   }
+  },
+  {
+   "id": "g2-c3p-kaleido",
+   "title": "用森罗物语的锅做菜（烹燃心动）",
+   "track": "cooking",
+   "stage": "mid",
+   "deps": [
+    "g2-c2-firstdish"
+   ],
+   "hint": "「烹燃心动」章 36 任务，整章只有 kaleidoscope_cookery 一个 mod。",
+   "feasible": "partial",
+   "mods": [
+    "kaleidoscope_cookery"
+   ],
+   "done": {
+    "have": {
+     "kaleidoscope_cookery:cooked_rice": 1
+    }
+   }
+  },
+  {
+   "id": "g2-c3q-youkai",
+   "title": "玩「妖怪归家」：东方主题的整套烹饪",
+   "track": "cooking",
+   "stage": "mid",
+   "deps": [
+    "g2-c3-kitchen"
+   ],
+   "hint": "「妖怪归家」章 140 任务，youkaishomecoming 占 136 个物品，是单 mod 最大的章之一。",
+   "feasible": "partial",
+   "mods": [
+    "youkaishomecoming"
+   ],
+   "done": {
+    "have": {
+     "youkaishomecoming:bun": 1
+    }
+   }
+  },
+  {
+   "id": "g2-h7-tarot",
+   "title": "抽一次塔罗牌（塔罗秘法）",
+   "track": "home",
+   "stage": "mid",
+   "deps": [
+    "g2-h1-furniture"
+   ],
+   "hint": "「塔罗秘法」章只有 2 个任务，是闲情雅致里的小彩蛋。",
+   "feasible": "partial",
+   "mods": [
+    "tarotcards",
+    "obscure_api"
+   ],
+   "done": {
+    "have": {
+     "tarotcards:the_fool": 1
+    }
+   }
+  }
+ ]
+}
