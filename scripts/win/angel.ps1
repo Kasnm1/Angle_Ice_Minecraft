@@ -137,7 +137,7 @@ switch ($cmd) {
     }
     # 第 3 步把 src\bridge\server.js 拆成子文件后，这里只加不减：
     # 子文件都没有 --selftest（bridge 的规矩：一跑就连服务器），只做 --check。
-    foreach ($f in 'src\bridge\server.js', 'src\bridge\config.js', 'src\bridge\state.js', 'src\bridge\util.js', 'src\bridge\goto.js', 'src\bridge\connect.js', 'src\bridge\http.js', 'src\bridge\routes\inspect.js', 'src\bridge\routes\scan.js', 'src\bridge\routes\pickup.js', 'src\bridge\routes\body.js', 'src\bridge\routes\place.js', 'src\bridge\routes\move.js', 'src\bridge\routes\mine.js', 'src\bridge\routes\gather.js', 'src\bridge\routes\palette.js', 'src\bridge\routes\diag.js', 'src\mind\body.js') { & $Node --check $f; "{0,-34} --check ok" -f $f }
+    foreach ($f in 'src\bridge\server.js', 'src\bridge\config.js', 'src\bridge\state.js', 'src\bridge\util.js', 'src\bridge\goto.js', 'src\bridge\connect.js', 'src\bridge\http.js', 'src\bridge\routes\inspect.js', 'src\bridge\routes\scan.js', 'src\bridge\routes\pickup.js', 'src\bridge\routes\body.js', 'src\bridge\routes\place.js', 'src\bridge\routes\move.js', 'src\bridge\routes\mine.js', 'src\bridge\routes\gather.js', 'src\bridge\routes\palette.js', 'src\bridge\routes\diag.js', 'src\mind\body.js', 'src\mind\mind\state.js', 'src\mind\mind\prompt.js', 'src\mind\mind\runtime.js', 'src\mind\mind\scene.js', 'src\mind\mind\look.js', 'src\mind\mind\gates.js', 'src\mind\mind\tools.js', 'src\mind\mind\actions.js', 'src\mind\mind\think.js', 'src\mind\mind\selftest.js', 'src\mind\mind\wiring.js') { & $Node --check $f; "{0,-34} --check ok" -f $f }
   }
   'logs' {
     $w = if ($what -eq 'all') { 'mind' } else { $what }

@@ -431,6 +431,48 @@ function checkInstinctExports () {
   return PROBLEMS;
 }
 
+/**
+ * mind.js 对外接口快照（第 3 步拆巨石的防线，照 checkHandsExports / checkInstinctExports）。
+ *
+ * 为什么要有：`src/mind/mind.js` 被拆成 `src/mind/mind/*.js` 之后，它自己变成**汇总入口**
+ * （普通文件、不是符号链接），外部照旧 `require('../mind/mind')`。只要有一个导出名丢了/改名了/
+ * 顺序变了，那些模块会在**运行到那一条**时才炸（运行时 undefined），全套自测未必覆盖得到
+ * （`W` / `emit` / `think` / `MIND_TOOLS` 等很多是给别处和实机用的）。
+ * 这里把 `Object.keys(require('.../mind'))` 钉成快照：名字、**顺序**都要一模一样。
+ *
+ * ⚠️ `src/mind/mind.js` 在 require 时**只有定义、没有副作用**（不连 LLM、不连 bridge）——
+ * 所以这里可以直接 require。绝不要在这条路径上调 main()/cli()/start()。
+ */
+function checkMindExports () {
+  const PROBLEMS = [];
+  const snapFile = path.join(ROOT, 'references', 'exports-mind.json');
+  let want;
+  try {
+    want = JSON.parse(fs.readFileSync(snapFile, 'utf8'));
+  } catch (e) {
+    return [`references/exports-mind.json 读不到：${e.message}`];
+  }
+  let mind;
+  try {
+    mind = require(path.join(ROOT, 'src', 'mind', 'mind.js'));
+  } catch (e) {
+    return [`src/mind/mind.js 加载失败：${e.message}`];
+  }
+  const got = Object.keys(mind);
+  if (got.length !== want.length) PROBLEMS.push(`导出个数变了：快照 ${want.length}，现在 ${got.length}`);
+  const missing = want.filter(n => !got.includes(n));
+  const added = got.filter(n => !want.includes(n));
+  if (missing.length) PROBLEMS.push(`快照里有、现在没了：${missing.join(', ')}`);
+  if (added.length) PROBLEMS.push(`快照里没有、现在多了：${added.join(', ')}`);
+  // 顺序也要一致（原来的 module.exports 是什么顺序，现在还得是什么顺序）
+  const sameOrder = want.every((n, i) => got[i] === n);
+  if (!missing.length && !added.length && !sameOrder) {
+    const at = want.findIndex((n, i) => got[i] !== n);
+    PROBLEMS.push(`导出顺序变了（第 ${at + 1} 个：快照 ${want[at]}，现在 ${got[at]}）`);
+  }
+  return PROBLEMS;
+}
+
 // ---- 主流程 ----------------------------------------------------------------
 async function main () {
   let plan = buildPlan();
@@ -569,17 +611,28 @@ async function main () {
     console.log('\n  [exports] bridge-server 的 13 个导出名与顺序、58 个路由键的次序都和快照一致');
   }
 
+  // ---- mind.js 导出快照 -------------------------------------------------------
+  // 第 3 步（e）拆 mind.js 的防线（见 references/exports-mind.json）。
+  const mindProblems = checkMindExports();
+  if (mindProblems.length) {
+    console.log('\n  ✗ mind.js 导出快照对不上（外部模块的 require 会拿到 undefined）：');
+    for (const p of mindProblems) console.log(`      ${p}`);
+  } else {
+    console.log('\n  [exports] mind.js 的 36 个导出名与顺序和快照一致');
+  }
+
   // ---- 总判定 ---------------------------------------------------------------
   const passed = rows.filter(r => r.kind === 'pass').length;
   console.log('');
   console.log(`  合计：${passed} 通过 · ${known.length} 已知失败 · ${newFails.length} 新失败 · 总用时 ${elapsed.toFixed(1)}s`);
 
-  if (pathProblems.length || exportProblems.length || instinctProblems.length || bridgeProblems.length || newFails.length) {
+  if (pathProblems.length || exportProblems.length || instinctProblems.length || bridgeProblems.length || mindProblems.length || newFails.length) {
     if (newFails.length) console.log('  ✗ 有非已知失败，退出码 1');
     else if (pathProblems.length) console.log('  ✗ paths.js 数据路径检查失败，退出码 1');
     else if (exportProblems.length) console.log('  ✗ hands.js 导出快照对不上，退出码 1');
     else if (instinctProblems.length) console.log('  ✗ instinct.js 导出快照对不上，退出码 1');
-    else console.log('  ✗ bridge-server 接口快照对不上，退出码 1');
+    else if (bridgeProblems.length) console.log('  ✗ bridge-server 接口快照对不上，退出码 1');
+    else console.log('  ✗ mind.js 导出快照对不上，退出码 1');
     process.exit(1);
   }
   console.log('  ✓ 全绿（已知失败未增加）');
