@@ -12,6 +12,9 @@
  * 输出里出现 ReferenceError / TypeError / "is not defined" / "is not a function"、或进程提前退出，都算失败。
  *
  * 副作用：连不上时 bridge 会往 memory/journal.md 追加"我掉线了"—— 这里先记下文件长度，结束后截回去。
+ * 2026-09-30 补：bridge 还会把离线快照（server 127.0.0.1:1、connected:false）整份写进 memory/state.json
+ * （断线时 GET /state 回的就是这份缓存）；原来没管。journal.md 原来不存在时也没删，测完留下一个只有"掉线了"的文件。
+ * 现在两份都先存下原样，结束后还原（原来没有就删掉），并断言跑完和跑之前一样。
  */
 const cp = require('child_process');
 const fs = require('fs');
@@ -21,6 +24,8 @@ const http = require('http');
 
 const ROOT = path.resolve(__dirname, '..');
 const JOURNAL = path.join(ROOT, 'memory', 'journal.md');
+const STATE = path.join(ROOT, 'memory', 'state.json');
+const snap = (f) => (fs.existsSync(f) ? fs.readFileSync(f) : null);   // null = 原来没有这个文件
 
 const freePort = () => new Promise((res, rej) => {
   const s = net.createServer().listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => res(p)); });
@@ -37,6 +42,7 @@ const get = (port, p) => new Promise(res => {
   const check = (name, ok, extra) => { if (ok) { pass++; console.log(`  PASS  ${name}`); } else { fail++; console.log(`  FAIL  ${name}${extra ? ` —— ${extra}` : ''}`); } };
 
   const journalLen = fs.existsSync(JOURNAL) ? fs.statSync(JOURNAL).size : null;
+  const stateBefore = snap(STATE);
   const port = await freePort();
   const child = cp.spawn(process.execPath, [path.join(ROOT, 'bridge-server.js')], {
     cwd: ROOT, env: { ...process.env, MC_HOST: '127.0.0.1', MC_PORT: '1', MC_BRIDGE_PORT: String(port) },
@@ -62,7 +68,14 @@ const get = (port, p) => new Promise(res => {
   const bad = out.split('\n').filter(l => /ReferenceError|TypeError|is not defined|is not a function/.test(l));
   check('输出里没有 ReferenceError / TypeError', !bad.length, bad.slice(0, 3).join(' | '));
 
-  if (journalLen !== null) { try { fs.truncateSync(JOURNAL, journalLen); } catch (_) {} }
+  // 还原真的 memory/：journal.md 截回原长（原来没有就删掉）；state.json 写回原样（原来没有就删掉）
+  if (journalLen !== null) { try { fs.truncateSync(JOURNAL, journalLen); } catch (_) {} } else { try { fs.unlinkSync(JOURNAL); } catch (_) {} }
+  if (stateBefore !== null) { try { fs.writeFileSync(STATE, stateBefore); } catch (_) {} } else { try { fs.unlinkSync(STATE); } catch (_) {} }
+  const stateAfter = snap(STATE);
+  const journalAfter = fs.existsSync(JOURNAL) ? fs.statSync(JOURNAL).size : null;
+  check('跑完 memory/state.json、journal.md 和跑之前一样（不留测试痕迹）',
+    journalAfter === journalLen && (stateBefore === null ? stateAfter === null : !!stateAfter && stateAfter.equals(stateBefore)),
+    `journal ${journalLen}→${journalAfter}，state ${stateBefore === null ? '无' : stateBefore.length}→${stateAfter === null ? '无' : stateAfter.length}`);
   if (fail) console.log('\n--- bridge 输出（末 30 行）---\n' + out.split('\n').slice(-30).join('\n'));
   console.log(`\n  ${pass}/${pass + fail} 通过`);
   process.exit(fail ? 1 : 0);
