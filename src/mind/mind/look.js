@@ -65,6 +65,17 @@ async function look () {
   // 本能现在正忙着（`urgent` 有值 / `combatNow` 在打）→ 手上那件也是 `paused(instinct)`：
   // 事件可能已经翻过去了，这里再兜一次底（onInstinct 没 running 时返回 null，不会凭空造件）。
   if (insNow && W.job && (insNow.urgent || insNow.combatNow)) tasks().onInstinct(insNow.combatNow ? 'combat' : String(insNow.urgent));
+  // 本能那阵过去了（读得到本能、它也不忙了）→ 被它停下的那件摆回来，**每次停下只提醒一回**（设计第六节 2）。
+  // 读不到本能（insNow 为空）不算"过去了"——"读不到"和"没有"分开（AGENTS.md §5-1）。
+  if (insNow && !(insNow.urgent || insNow.combatNow)) {
+    try {
+      const key = tasks().open().filter(t => t.status === 'paused' && t.pausedWhy === 'instinct').map(t => `${t.id}@${t.updatedAt}`).join(',');
+      if (key && key !== W.instinctHintKey) {
+        const h = tasks().resumeHint('instinct');
+        if (h) { W.instinctHintKey = key; emit(h); }
+      }
+    } catch (_) { /* 提醒失败不影响看世界 */ }
+  }
   // 家在哪告诉本能层（收获本能只收家里的地）。一分钟一次，bridge 重启后也能补上
   if (Date.now() - W.homeToldAt > 60000) {
     const h = mem.getHome();
@@ -153,7 +164,13 @@ async function look () {
   try {
     const worn = Object.values(W.state.equipment || {}).filter(Boolean).map(name => ({ name, count: 1 }));
     const pc = plan.autoCheck([...(W.state.items || []), ...worn]);
-    for (const t of pc.newly) emit(`📋 计划里的「${t}」做到了${plan.current() ? `，下一步：${plan.current().text}` : ''}`, { cue: 'plan 计划', urgent: true });
+    // 标志达成 = 那一步做成的证据 → 对应的计划任务一起收尾（阶段 3，设计第九节；按原文对，下标会挪）
+    let closed = [];
+    if (pc.newly.length) { try { closed = tasks().closePlanTasks(pc.newly); } catch (_) {} }
+    for (const t of pc.newly) {
+      const c = closed.find(x => x.planText === t);
+      emit(`📋 计划里的「${t}」做到了${c ? `（任务 #${c.id} 也收尾了）` : ''}${plan.current() ? `，下一步：${plan.current().text}` : ''}`, { cue: 'plan 计划', urgent: true });
+    }
     if (pc.finished) emit('📋 长期计划全部做完了 —— 想想下一个目标（plan_view 看现在能做什么，plan_set 定新的）', { cue: 'plan 计划', urgent: true });
   } catch (_) {}
   // 视线里冒出没开过的箱子/木桶：马上告诉她（主人：优先级高，看见就过去）

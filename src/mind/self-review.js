@@ -175,8 +175,34 @@ function renderSample (r) {
   return [...L, ...renderContext(r)].join('\n');
 }
 
-function render (entries, { title = 'Angle_ICE 自我复盘', since = null } = {}) {
-  if (!entries.length) return `# ${title}\n\n（${since ? `${fmtT(since)} 以来` : ''}没有记到不对劲的地方）\n`;
+/**
+ * 任务队列的复盘数（任务队列阶段 3，设计第十节：被打断次数、过期件数、主人交代的完成率）。
+ * `s` 来自 `tasks.taskStats()`（mind 在跑时）或 `tasks.statsOf(readFile())`（命令行）。
+ * **"没有"和"读不到"分开报**（AGENTS.md §5-1）：`null` = 还没统计过；`{ unreadable:true }` = tasks.json 读不出来。
+ * 数是**累计**的（跟着 tasks.json 落盘），不受报告的 `--since` 范围影响 —— 表头写清从什么时候开始数的。
+ */
+function renderTaskStats (s) {
+  const head = ['## 任务队列', ''];
+  if (s && s.unreadable) return [...head, '（memory/tasks.json 读不出来 —— 这一段没法统计，不是"没有"）', ''];
+  if (!s) return [...head, '（还没有任务统计 —— 任务队列还没记过事，或者 tasks.json 是阶段 3 之前的旧格式）', ''];
+  const p = s.player || {};
+  const rate = p.asked ? `${Math.round((p.done / p.asked) * 100)}%` : '—';
+  return [...head,
+    `${s.since ? `${fmtT(s.since)} 以来` : ''}累计（不受报告时间范围影响）`, '',
+    '| 项 | 数 |', '|---|---:|',
+    `| 被打断 | ${s.interrupted ?? 0} 次 |`,
+    `| 自己想做的、过期了 | ${s.expired ?? 0} 件 |`,
+    `| 主人交代的 | ${p.asked ?? 0} 件 |`,
+    `| · 做完 | ${p.done ?? 0} 件（完成率 ${rate}） |`,
+    `| · 放下 / 没做成 | ${p.dropped ?? 0} / ${p.failed ?? 0} 件 |`,
+    ...(p.open != null ? [`| · 还没收尾 | ${p.open} 件 |`] : []),
+    ''];
+}
+
+function render (entries, { title = 'Angle_ICE 自我复盘', since = null, taskStats } = {}) {
+  // taskStats 没传（undefined）= 调用方不要这一段；传了 null / { unreadable } 也要说清楚
+  const taskPart = taskStats === undefined ? [] : renderTaskStats(taskStats);
+  if (!entries.length) return `# ${title}\n\n（${since ? `${fmtT(since)} 以来` : ''}没有记到不对劲的地方）\n${taskPart.length ? `\n${taskPart.join('\n')}` : ''}`;
   const t0 = Math.min(...entries.map(r => r.t)); const t1 = Math.max(...entries.map(r => r.t));
   const self = entries.filter(r => r.source === 'self').sort((a, b) => a.t - b.t);
   const groups = group(entries.filter(r => r.source !== 'self'))
@@ -207,7 +233,20 @@ function render (entries, { title = 'Angle_ICE 自我复盘', since = null } = {
       for (const r of g.samples) out.push(renderSample(r), '');
     }
   }
+  if (taskPart.length) out.push(...taskPart);
   return out.join('\n');
+}
+
+/**
+ * 命令行用：读 tasks.json 拿任务队列的复盘数（mind 没在跑也能看）。判据在 `mind/tasks.js`（readFile / statsOf），这里不另写。
+ * 文件不存在 → null（没记过）；读不出来 → `{ unreadable:true }`。
+ */
+function taskStatsFromFile () {
+  const T = require('./mind/tasks');
+  const f = T.readFile();
+  if (f.unreadable) return { unreadable: true };
+  if (f.missing) return null;
+  return T.statsOf(f.tasks, f.stats);
 }
 
 // ------------------------------------------------------------------ 自测
@@ -249,6 +288,28 @@ function selftest () {
   check('证据带上之前发生的事', /Ka_sum1 说：过来/.test(md));
   check('空的时候说没有，不是空白', /没有记到/.test(render([])));
 
+  console.log('\n任务队列的复盘数（任务队列阶段 3）');
+  {
+    const s = { since: Date.now() - 3600000, interrupted: 4, expired: 2, player: { asked: 5, done: 3, dropped: 1, failed: 0, open: 1 } };
+    const md = render(all, { taskStats: s });
+    check('★ 报告里有任务队列一段：被打断 / 过期 / 完成率', /## 任务队列/.test(md) && /\| 被打断 \| 4 次 \|/.test(md) && /过期了 \| 2 件/.test(md) && /做完 \| 3 件（完成率 60%）/.test(md), md.split('## 任务队列')[1]);
+    check('★ 没有不对劲的地方时也带这一段', /## 任务队列[\s\S]*完成率 60%/.test(render([], { taskStats: s })));
+    check('★ "没有"和"读不到"分开报', /还没有任务统计/.test(render([], { taskStats: null })) && /读不出来/.test(render([], { taskStats: { unreadable: true } })) && !/读不出来/.test(render([], { taskStats: null })));
+    check('不传 taskStats → 不带这一段（旧调用方式照旧）', !/任务队列/.test(render(all)));
+    // 命令行那条路：读文件 → 同一份 statsOf（跑的是 tasks.js 那份判据）
+    const os2 = require('os'); const tf = path.join(os2.tmpdir(), `review-tasks-${process.pid}.json`);
+    const was = process.env.MC_TASKS_FILE; process.env.MC_TASKS_FILE = tf;
+    try { fs.unlinkSync(tf); } catch (_) {}
+    check('★ 命令行：没有 tasks.json → null（没记过）', taskStatsFromFile() === null);
+    fs.writeFileSync(tf, '{ 坏了');
+    check('★ 命令行：tasks.json 坏了 → unreadable（不是"没有"）', taskStatsFromFile()?.unreadable === true);
+    fs.writeFileSync(tf, JSON.stringify({ version: 1, seq: 2, tasks: [{ id: 1, source: 'player', status: 'paused' }, { id: 2, source: 'player', status: 'done' }], stats: s }));
+    const fromFile = taskStatsFromFile();
+    check('★ 命令行：读回累计数，"还没收尾"按文件里的任务现数', fromFile && fromFile.interrupted === 4 && fromFile.player.done === 3 && fromFile.player.open === 1, fromFile);
+    try { fs.unlinkSync(tf); } catch (_) {}
+    if (was === undefined) delete process.env.MC_TASKS_FILE; else process.env.MC_TASKS_FILE = was;
+  }
+
   try { fs.unlinkSync(FILE()); } catch (_) {}
   console.log(`\n  ${pass}/${total} 通过`);
   process.exit(pass === total ? 0 : 1);
@@ -260,8 +321,8 @@ if (require.main === module) {
   else {
     const i = argv.indexOf('--since');
     const since = argv.includes('--all') ? 0 : parseSince(i >= 0 ? argv[i + 1] : null);
-    process.stdout.write(render(read({ since }), { since }) + '\n');
+    process.stdout.write(render(read({ since }), { since, taskStats: taskStatsFromFile() }) + '\n');
   }
 }
 
-module.exports = { FILE, CATEGORIES, KINDS, normErr, sigOf, looksLikeComplaint, looksLikePromise, record, read, group, render, parseSince };
+module.exports = { FILE, CATEGORIES, KINDS, normErr, sigOf, looksLikeComplaint, looksLikePromise, record, read, group, render, parseSince, renderTaskStats, taskStatsFromFile };

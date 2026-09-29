@@ -23,9 +23,23 @@
 // 本文件只在函数被调用时才 `require('./state')` 取**同一份** —— 和别的 mind 文件一样，
 // 绝不在这里再写一份 `W`（见 `../AGENTS.md` 铁律）。
 //
-// ⚠️ **本阶段（阶段 1）不做**：`task_*` 工具、"该接着做了"的提醒、过期提醒、诚实闸联动、
-// 计划联动（阶段 2 / 3）。但字段都留好了位置（`parent` / `planStep` / `progress` / `ttlMs` /
-// `interruptions`），阶段 2/3 直接用，不用再改结构。
+// ## 阶段 2（2026-09-30）加了什么
+//
+// - `jobPlan`：一串动作**算在哪件任务上、打断谁**（判据只此一份，`actions.startJob` 照做）。
+//   接着做同一件事**不再算"被打断"**；没有手上的事时直接发动作 → 自动包一件 `source=self, auto=true`。
+// - `afterJob` / `nextHint` / `resumeHint`："该接着做了"的提醒（做完 / 失败 / 本能过去 / 跟完了）。
+//   她 / 主人明确的那件**不因为一串做完就自动算做完、也不因为一步没做成就标 failed**（做完要她 `task_done` + 证据）。
+// - `toolAdd` / `toolNote` / `toolDone` / `toolDrop` / `toolResume`：大模型的 `task_*` 工具的本体（`tools.js` 只转调）。
+// - 过期不静默（`sweepExpired` 攒提醒、`takeNotices` 取一次）；收尾的最多留 `FINISHED_KEEP` 件。
+//
+// ## 阶段 3（2026-09-30）加了什么
+//
+// - 说话闸要读的：`lastEndedPlayer`（"他交代的事做完说一声"看任务状态，gates.taskDoneAllowed）；
+//   "说做好了但任务没收尾"的判据在 gates.unfinishedTaskClaim（那是说话的判据，放 gates）。
+// - 计划联动：`jobPlan` 收 `planStep`（闲着推计划时建 source=plan 的任务）、`planTick`（做完时计划该不该打勾：
+//   下标和原文都对得上才打）、`closePlanTasks`（计划的标志自己达成 → 对应任务收尾）。**计划本身不改**。
+// - 复盘统计：`stats`（被打断次数、过期件数、主人交代的 asked/done/dropped/failed）累计、跟着文件落盘；
+//   `taskStats` / `statsOf`（self-review 的命令行读文件也走 statsOf，只此一份）。
 
 'use strict';
 
@@ -173,7 +187,8 @@ function titleOf ({ title, said }) {
  * `said` 才是主人原话全文（`title` 只给她看，短一点省上下文）。
  */
 function makeTask ({ title, said = null, source = 'self', askedBy = null, pausedWhy = null,
-  parent = null, steps = [], i = 0, progress = null, planStep = null, ttlMs = null } = {}) {
+  parent = null, steps = [], i = 0, progress = null, planStep = null, planText = null, ttlMs = null,
+  auto = false, next = false } = {}) {
   return {
     id: 0,                                   // create() 里填
     title: titleOf({ title, said }),         // 人话
@@ -187,10 +202,16 @@ function makeTask ({ title, said = null, source = 'self', askedBy = null, paused
     i,                                       // 做到第几步（断点，只用于"告诉她做到哪了"）
     progress,                                // 她自己写的进度备注（阶段 2 的 task_note）
     planStep,                                // 属于长期计划第几步
+    planText,                                // 那一步的原文（阶段 3：计划被改过、下标对不上时不乱打勾）
     createdAt: Date.now(),
     updatedAt: Date.now(),
     ttlMs,                                   // 过期：player 不过期、self 20 分钟、plan 不过期
     interruptions: 0,                        // 被打断几次
+    // ↓ 阶段 2 加的
+    auto,                                    // true = 她没有手上的事时直接发动作，系统替她包的一件（做完 / 失败就收尾）
+    next,                                    // true = task_add(when:'next')：手上这件做完就做（排序排最前）
+    evidence: [],                            // 这件事做成过的身体动作（task_done 的证据，最多留 5 条）
+    lastFail: null,                          // 最近一次没做成的动作（提醒她"做到哪、卡在哪"）
   };
 }
 
@@ -241,11 +262,20 @@ function store () {
   // 第一次用到就从文件读回来（2026-09-29 Claude 复核补）：原来只有自测会调 load()，正式运行从不读 ——
   // 重启后第一件新任务 save() 时会把整个文件覆盖成只剩它，上次没做完的事全丢。
   if (!S.loaded && !S.__loading) { S.__loading = true; try { load(); } finally { S.__loading = false; } }
+  S.notices ||= [];
+  S.stats ||= newStats();
   return S;
 }
 
+/**
+ * 复盘用的累计数（阶段 3，设计第十节：被打断次数、过期件数、主人交代的完成率）。
+ * **累计在这里、跟着 tasks.json 落盘** —— 不从任务列表现数：收尾的任务会被修剪（FINISHED_KEEP），
+ * 现数会越跑越少，完成率会被算歪。
+ */
+function newStats () { return { since: Date.now(), interrupted: 0, expired: 0, player: { asked: 0, done: 0, dropped: 0, failed: 0 } }; }
+
 /** 自测用：清空（只动内存） */
-function _reset () { const S = store(); S.seq = 0; S.list = []; }
+function _reset () { const S = store(); S.seq = 0; S.list = []; S.notices = []; S.stats = newStats(); S.lastEndedId = null; }
 
 function all () { return store().list; }
 
@@ -283,8 +313,20 @@ function setStatus (t, to, { at = Date.now() } = {}) {
   t.status = to;
   t.updatedAt = at;
   if (LOG_FROM.has(from) || LOG_FROM.has(to)) logLine(t, from, to);
+  // 复盘累计（阶段 3）：只在"从没收尾变成收尾"的那一下记一次
+  if (FINISHED.has(to) && !FINISHED.has(from)) {
+    const S = store(); const st = S.stats;
+    if (to === 'expired') st.expired++;
+    if (isPlayerTask(t) && st.player[to] != null) st.player[to]++;
+    // "最近收尾的那件主人交代的事"用明确的标记记（lastEndedPlayer）：两件在同一毫秒收尾时，比 updatedAt 分不出先后
+    if (isPlayerTask(t) && ENDED_PLAYER.has(to)) S.lastEndedId = t.id;
+  }
   return t;
 }
+
+const ENDED_PLAYER = new Set(['done', 'dropped', 'failed']);
+
+const FINISHED = new Set(['done', 'failed', 'dropped', 'expired']);
 
 /**
  * 新建一件。**同一件事合并**（设计第七节）：同 `source` + 同 title（主人的话就是同一句原话）
@@ -301,6 +343,7 @@ function create (fields = {}) {
   t.ttlMs = ttlFor(src, fields.ttlMs);
   t.id = ++S.seq;
   S.list.push(t);
+  if (isPlayerTask(t)) S.stats.player.asked++;
   const from = t.status;
   t.status = 'queued';
   t.updatedAt = Date.now();
@@ -313,7 +356,10 @@ function create (fields = {}) {
 function setRunning (id, { at = Date.now() } = {}) {
   const t = get(id);
   if (!t) return null;
-  for (const o of all()) if (o.status === 'running' && o.id !== t.id) pause(o.id, o.pausedWhy || 'self', { at });
+  // 被换下来的那件理由是 self（她自己换了一件）。原来写的是 `o.pausedWhy || 'self'` —— 但 running 的任务
+  // 身上还挂着**上一次**停下的理由（例如 instinct），换一件时会把旧理由再用一遍（2026-09-30 复核改）。
+  for (const o of all()) if (o.status === 'running' && o.id !== t.id) pause(o.id, 'self', { at });
+  t.pausedWhy = null;
   setStatus(t, 'running', { at });
   save();
   return t;
@@ -326,7 +372,7 @@ function setRunning (id, { at = Date.now() } = {}) {
 function pause (id, why = 'self', { at = Date.now() } = {}) {
   const t = get(id);
   if (!t) return null;
-  if (t.status === 'running') t.interruptions = (t.interruptions || 0) + 1;
+  if (t.status === 'running') { t.interruptions = (t.interruptions || 0) + 1; store().stats.interrupted++; }
   if (t.status === 'paused' && t.pausedWhy === why) return t;   // 没有新信息，不刷日志
   t.pausedWhy = why;
   setStatus(t, 'paused', { at });
@@ -339,9 +385,11 @@ function done (id, { at = Date.now() } = {}) {
   t.pausedWhy = null;
   setStatus(t, 'done', { at }); save(); return t;
 }
-function fail (id, { at = Date.now() } = {}) {
+function fail (id, { why = null, at = Date.now() } = {}) {
   const t = get(id); if (!t) return null;
   t.pausedWhy = null;
+  // actions.js 原来就传了 why，但这里只收 at —— 失败原因一直被扔掉（阶段 2 顺手补上）
+  if (why) t.lastFail = String(why).slice(0, 80);
   setStatus(t, 'failed', { at }); save(); return t;
 }
 function drop (id, { why = null, at = Date.now() } = {}) {
@@ -371,12 +419,19 @@ function sweepExpired (now = Date.now(), { persist = true } = {}) {
   let n = 0;
   for (const t of all()) {
     if (t.status === 'queued' || t.status === 'paused') {
-      if (!isPlayerTask(t) && isExpired(t, now)) { setStatus(t, 'expired', { at: now }); n++; }
+      if (!isPlayerTask(t) && isExpired(t, now)) {
+        setStatus(t, 'expired', { at: now }); n++;
+        // 过期不静默（设计第七节）：下一轮上下文里告诉她一句（她自己想做的，不用跟主人说）
+        store().notices.push(`#${t.id} ${t.title} 是你自己想做的，放了 ${Math.round((t.ttlMs || 0) / 60000)} 分钟没做，过期了`);
+      }
     }
   }
   if (n && persist) save();
   return n;
 }
+
+/** 取走攒着的提醒（过期等），取一次就清掉 —— 每条只告诉她一次 */
+function takeNotices () { const S = store(); return S.notices.splice(0); }
 
 /** 跑得最久的那件（供排序"越久的越前"，设计第六节 3） */
 const age = (t) => t.createdAt;
@@ -427,17 +482,336 @@ function pauseWhyFor (kind, { heardPlayer = false } = {}) {
 function onInstinct (reason = '') {
   const t = running();
   if (!t) return null;
-  t.interruptions = (t.interruptions || 0) + 1;
+  // ⚠️ 不在这里 `interruptions++`：pause() 见到 running 已经加过一次（2026-09-30 复核：原来这里再加一次，
+  //    本能抢一下算成被打断 2 次，设计第七节"被打断 3 次要不要放下"的提醒会提前一倍冒出来）
   return pause(t.id, 'instinct');
+}
+
+// ------------------------------------------------------------------ 一串动作算在哪件事上（阶段 2）
+
+/**
+ * `startJob` 开始一串动作前问这里：**打断谁、这串动作算哪件任务的**。判据只此一份，`startJob` 只照做。
+ *
+ * 阶段 1 的做法是"动身体就把 running 的那件 pause，再把同一件 setRunning 回来"——
+ * 结果她为同一件事连发几轮动作（走过去 → 挖 → 合成），每一轮都给它记一次"被打断"，
+ * 3 轮之后"被打断 3 次了要不要放下"就会冒出来，其实一次都没被打断过（阶段 2 复核，见自测 ★ 连着做同一件）。
+ *
+ * 现在的规则（设计第五节那张表 + 第四节"没有 running 时系统自动包一件"）：
+ *
+ * | 这一串 | 有 running 的 | 没有 running 的 |
+ * |---|---|---|
+ * | 只动嘴 / 只看（`kind:'say'`） | 不碰，不算在任何任务上 | 同左 |
+ * | 显式 `taskId`（task_resume 之后 / 调用方指定） | 别的 running `paused`，这串算 taskId | 这串算 taskId |
+ * | `stop` | running `paused(player)`；这串不算任务 | 什么都不做 |
+ * | `follow` / `come_to` | running `paused(player)`；这串不算任务（跟完了由提醒摆回来） | 什么都不做 |
+ * | 其余动身体的，他这一轮刚交代了 #P（`playerTaskId`）且 running 不是 #P | running `paused(player)`，这串算 #P | 这串算 #P |
+ * | 其余动身体的 | **算在 running 那件上（接着做，不算打断）** | 自动包一件 `source=self, auto=true` |
+ *
+ * "算在 running 那件上"是**猜她在做同一件事**：她要换一件，用 `task_add(when:'now')` / `task_resume` 说清楚
+ * （工具说明里写了）。猜错的代价是"证据记到了手上那件"——`task_done` 还要她自己点，不会自动算做完。
+ *
+ * @returns {{ pause: number|null, pauseWhy: string|null, taskId: number|null, auto: object|null }}
+ *   `auto` 非空 = 调用方要 `create(auto)` 再把这串算在它上面（这里不直接建，好让自测只测判据）
+ */
+function jobPlan (steps, { taskId = null, heardPlayer = false, playerTaskId = null, why = '', planStep = null } = {}) {
+  const kind = interruptKind(steps, { heardPlayer });
+  const cur = running();
+  const out = { kind, pause: null, pauseWhy: null, taskId: null, auto: null };
+  if (kind === 'say') return out;
+  const want = taskId ?? ((kind === 'self' || kind === 'player') && playerTaskId && get(playerTaskId) && !FINISHED.has(get(playerTaskId).status) ? playerTaskId : null);
+  if (kind === 'stop' || kind === 'follow') {
+    if (cur && cur.id !== taskId) { out.pause = cur.id; out.pauseWhy = pauseWhyFor(kind, { heardPlayer }); }
+    out.taskId = taskId;
+    return out;
+  }
+  if (want) {
+    if (cur && cur.id !== want) { out.pause = cur.id; out.pauseWhy = pauseWhyFor(kind, { heardPlayer }); }
+    out.taskId = want;
+    return out;
+  }
+  if (cur) { out.taskId = cur.id; return out; }
+  // 阶段 3（设计第九节）：没人找她、闲着接着推长期计划时（调用方传 planStep = plan.current()），
+  // 这一串就是"开始做计划的下一步" → 建一件 source=plan 的任务（planStep/planText 指回去）。
+  // 它**不是** auto：计划的一步往往要好几串动作，一串做完就算做完会把计划错打勾；做完要 task_done 或标志达成。
+  // 同一步已经有一件没收尾的（停下了）→ create() 按原文合并，接着做那一件。
+  if (planStep && planStep.text != null && Number.isInteger(+planStep.index)) {
+    out.auto = { title: String(planStep.text), source: 'plan', planStep: +planStep.index, planText: String(planStep.text), auto: false, steps };
+    return out;
+  }
+  out.auto = { title: String(why || steps.map(s => s.tool).join('→')), source: 'self', auto: true, steps };
+  return out;
+}
+
+/** 一步做成了：记进这件任务的证据（`task_done` 要看它，最多留 5 条） */
+function noteEvidence (id, line) {
+  const t = get(id); if (!t) return null;
+  (t.evidence ||= []).push(String(line).slice(0, 100));
+  if (t.evidence.length > 5) t.evidence.splice(0, t.evidence.length - 5);
+  t.updatedAt = Date.now();
+  save();
+  return t;
+}
+
+/**
+ * 这串动作结束了（做完 / 没做成）—— 任务怎么收尾、要不要提醒她（设计第六节 2：做完 / 失败了，队列里还有事 → 提醒）。
+ *
+ * · 自动包的那件（`auto`）：做完就 done、失败就 failed（它本来就只是"这一串"）。
+ * · 她 / 主人明确的那件：**不自动算做完**（做完要她 `task_done` + 证据，设计第四节），
+ *   也**不因为一步没做成就标 failed** —— 阶段 1 那样做，主人交代的"做把铁镐"会因为挖一下没挖到就从队列里消失，
+ *   违反"主人交代的只有做完 / 她说过放弃才离开队列"（设计第七节）。失败只记在 `lastFail`，提醒她。
+ *
+ * @returns {string} 要拼进"✅ 做完了 / ❌ 没做成"那条事件后面的提醒（空 = 不用提醒）
+ */
+function afterJob (id, { ok = true, error = null, at = Date.now() } = {}) {
+  const t = id != null ? get(id) : null;
+  if (t && !FINISHED.has(t.status)) {
+    if (t.auto) { if (ok) done(t.id, { at }); else fail(t.id, { why: error, at }); }
+    else if (!ok) { t.lastFail = String(error || '没做成').slice(0, 80); t.updatedAt = at; save(); }
+  }
+  return nextHint(t);
+}
+
+/**
+ * "该接着做了"的那一句（**只此一处文案**）。`t` 是刚结束那串动作所属的任务（可能是 null）。
+ *   · t 还没做完（明确的任务）→ "#17 做一把铁镐 还没标做完（做到…）"
+ *   · t 做完了、有 parent 还开着 → "#18 是为了 #17 做的，回去接着做 #17 吗"
+ *   · 其余排着的 → 最多列 3 件
+ * 什么都没有 → ''（不打扰）。
+ */
+function nextHint (t) {
+  const bits = [];
+  if (t && !FINISHED.has(t.status) && !t.auto) {
+    const note = stepNote(t);
+    bits.push(`#${t.id} ${t.title} 还没标做完${t.lastFail ? `（卡在：${t.lastFail}）` : note ? `（${note}）` : ''} —— 真做完了用 task_done，没做完就接着做`);
+  }
+  if (t && t.status === 'done' && t.parent) {
+    const p = get(t.parent);
+    if (p && !FINISHED.has(p.status)) bits.push(`#${t.id} 是为了 #${p.id} ${p.title} 做的 —— 回去接着做 #${p.id}？（task_resume）`);
+  }
+  const rest = sortOpen(open()).filter(x => x.id !== t?.id && x.id !== (t?.parent || -1)).slice(0, 3);
+  if (rest.length) bits.push(`还排着：${rest.map(x => `#${x.id} ${x.title}${x.status === 'paused' ? `（停在：${pausedText(x)}）` : ''}`).join(' · ')}`);
+  return bits.length ? `📋 ${bits.join('；')}` : '';
+}
+
+/**
+ * 被本能 / 主人叫走之后，把停下的那件摆回来（设计第六节 2："刚才打完怪了，#17 还做吗？"）。
+ * `why` ∈ 'instinct' | 'player'。只看**因为这个理由**停下的；没有就返回 ''。
+ */
+function resumeHint (why) {
+  const list = sortOpen(open().filter(t => t.status === 'paused' && t.pausedWhy === why));
+  if (!list.length || running()) return '';
+  const lead = why === 'instinct' ? '本能那阵过去了' : '跟完 / 过去了';
+  return `📋 ${lead}：${list.slice(0, 3).map(t => `#${t.id} ${t.title}${stepNote(t) ? `（${stepNote(t)}）` : ''}`).join(' · ')} 还停着 —— 还做吗？（task_resume 接着做 / task_drop 放下）`;
+}
+
+// ------------------------------------------------------------------ 大模型的工具（阶段 2，设计第四节）
+//
+// 这里只放**判据和状态变化**（纯的，自测直接驱动）；`tools.js` 的 `task_*` 只是转调 + 把 W 里的证据传进来。
+// 返回 `{ ok:false, error }` 的一律是**她能看懂、知道下一步怎么办**的话。
+
+/** 找她说的那件；没给 id 就是手上那件 */
+function pick (id) {
+  if (id != null && id !== '') return get(id);
+  return running();
+}
+
+function brief (t) { return { id: t.id, title: t.title, status: t.status, source: t.source, ...(t.parent ? { parent: t.parent } : {}) }; }
+
+/**
+ * `task_add({ title, when, parent, why, planStep, planText })`。
+ * when：now = 现在就做（手上的变 paused(self)）；next = 手上这件做完就做；later = 排后面。
+ * parent 必须是还没收尾的那件（挂在收尾的事下面，提醒永远不会回来 —— 宁可拒绝）。
+ */
+function toolAdd ({ title, when = 'later', parent = null, why = null, planStep = null, planText = null } = {}) {
+  const tt = String(title || '').trim();
+  if (!tt) return { ok: false, error: '要写这件事是什么（title）' };
+  if (!['now', 'next', 'later'].includes(when)) return { ok: false, error: 'when 只能是 now / next / later' };
+  if (parent != null && parent !== '') {
+    const p = get(parent);
+    if (!p) return { ok: false, error: `没有 #${parent} 这件事` };
+    if (FINISHED.has(p.status)) return { ok: false, error: `#${p.id} ${p.title} 已经${capStatus(p.status)}，不用再为它做了` };
+  }
+  const source = planStep != null && planStep !== '' ? 'plan' : 'self';
+  const { task: t, created } = create({ title: tt, source, parent: parent != null && parent !== '' ? +parent : null,
+    planStep: source === 'plan' ? +planStep : null, planText: source === 'plan' ? planText : null });
+  if (why && created) t.progress = String(why).slice(0, 60);
+  if (when === 'next') { for (const o of all()) o.next = false; t.next = true; }
+  if (when === 'now') setRunning(t.id); else save();
+  return { ok: true, ...brief(t), merged: !created, note: created ? (when === 'now' ? '记下了，现在就做' : '记下了') : '这件已经在队列里了（没重复记）' };
+}
+
+/** `task_note({ id?, progress })`：写一句进度（默认写手上那件） */
+function toolNote ({ id = null, progress } = {}) {
+  const t = pick(id);
+  if (!t) return { ok: false, error: id != null ? `没有 #${id} 这件事` : '手上没有在做的事 —— 给个 id 写到哪件上' };
+  const p = String(progress || '').trim();
+  if (!p) return { ok: false, error: '要写进度（progress）' };
+  t.progress = p.slice(0, 80); t.updatedAt = Date.now(); save();
+  return { ok: true, ...brief(t), progress: t.progress };
+}
+
+/**
+ * `task_done({ id?, result })`：标做完。**必须有证据**（设计第四节）：
+ *   ① 这件任务名下有做成过的身体动作（`evidence`，startJob 每做成一步记一条）—— 没有就拒绝；
+ *   ② 她写的 result 过一遍说话闸的"诚实"判据（`gates.unbackedClaim`，调用方传进来 `check`，
+ *      本文件不 require gates —— 见文件头"不 require 兄弟文件"）：说的完成式有对应的失败记录 → 拒绝。
+ * 找不到证据时保守为"没做完"（AGENTS.md §5-5），告诉她缺什么。
+ *
+ * @param {object} o
+ * @param {(text:string)=>string|null} [o.check]  诚实判据：返回非空 = 这句 result 没有撑腰的（原因）
+ */
+function toolDone ({ id = null, result = '' } = {}, { check = null, at = Date.now() } = {}) {
+  const t = pick(id);
+  if (!t) return { ok: false, error: id != null ? `没有 #${id} 这件事` : '手上没有在做的事 —— 给个 id' };
+  if (FINISHED.has(t.status)) return { ok: false, error: `#${t.id} ${t.title} 已经${capStatus(t.status)}了` };
+  if (!(t.evidence || []).length) {
+    return { ok: false, error: `#${t.id} ${t.title} 名下还没有做成的动作记录（身体没回报过这件事的成功）。真做完了就先把那一步做了；做不成就 task_drop 说明原因` };
+  }
+  const lie = typeof check === 'function' ? check(String(result || '')) : null;
+  if (lie) return { ok: false, error: `result 里说的对不上工具结果：${lie}。照实写` };
+  if (result) t.progress = String(result).slice(0, 80);
+  done(t.id, { at });
+  const out = { ok: true, ...brief(t), evidence: t.evidence.slice(-3) };
+  if (isPlayerTask(t)) out.note = `这是${t.askedBy || '主人'}交代的，做完可以跟他说一声`;
+  const h = nextHint(t);
+  if (h) out.next = h;
+  return out;
+}
+
+/**
+ * `task_drop({ id, why })`：放弃一件。主人交代的放弃时**要跟主人说一声**（设计第四节）——
+ * 返回 `tellPlayer:true`，说话闸按任务状态放行这一句（阶段 3，见 gates.taskDoneAllowed 的 taskEnded）。
+ * 主人交代的必须写 why（跟他说的时候要有原因）。
+ */
+function toolDrop ({ id, why = '' } = {}, { at = Date.now() } = {}) {
+  if (id == null || id === '') return { ok: false, error: '要说放下哪件（id）' };
+  const t = get(id);
+  if (!t) return { ok: false, error: `没有 #${id} 这件事` };
+  if (FINISHED.has(t.status)) return { ok: false, error: `#${t.id} ${t.title} 已经${capStatus(t.status)}了` };
+  const w = String(why || '').trim();
+  if (isPlayerTask(t) && !w) return { ok: false, error: `#${t.id} 是${t.askedBy || '主人'}交代的，放下要写原因（why），也要跟他说一声` };
+  drop(t.id, { why: w || null, at });
+  // 挂在它下面、还没收尾的子任务：一起放下（为它做的，它不做了，子任务也就没意义了 —— 但照样留记录，不静默删）
+  const kids = all().filter(k => k.parent === t.id && !FINISHED.has(k.status));
+  for (const k of kids) drop(k.id, { why: `为了 #${t.id}，它放下了`, at });
+  const out = { ok: true, ...brief(t), ...(kids.length ? { alsoDropped: kids.map(k => k.id) } : {}) };
+  if (isPlayerTask(t)) { out.tellPlayer = true; out.note = `这是${t.askedBy || '主人'}交代的 —— 跟他说一声为什么不做了`; }
+  return out;
+}
+
+/** `task_resume({ id })`：接着做一件 paused / queued 的（成为手上那件；原来手上的变 paused(self)） */
+function toolResume ({ id } = {}) {
+  if (id == null || id === '') return { ok: false, error: '要说接着做哪件（id）' };
+  const t = get(id);
+  if (!t) return { ok: false, error: `没有 #${id} 这件事` };
+  if (FINISHED.has(t.status)) return { ok: false, error: `#${t.id} ${t.title} 已经${capStatus(t.status)}了` };
+  if (t.status === 'running') return { ok: true, ...brief(t), note: '就是手上这件' };
+  t.next = false;
+  setRunning(t.id);
+  const note = stepNote(t);
+  return { ok: true, ...brief(t), where: note || '还没开始', ...(t.lastFail ? { lastFail: t.lastFail } : {}), ...(t.said ? { said: t.said } : {}) };
+}
+
+// ------------------------------------------------------------------ 阶段 3：说话闸 / 计划 / 复盘 要读的
+
+/**
+ * 最近一件**收尾了的主人交代的事**（done / dropped / failed）—— 说话闸"他交代的事做完了说一声"看它
+ * （设计第九节：`taskDoneAllowed` 改成看任务状态）。没有 → null。
+ */
+function lastEndedPlayer () {
+  const S = store();
+  const ended = (t) => t && isPlayerTask(t) && ENDED_PLAYER.has(t.status);
+  let best = S.lastEndedId != null && ended(get(S.lastEndedId)) ? get(S.lastEndedId) : null;
+  if (!best) {
+    // 重启后没有那个标记：按收尾时间找；同一毫秒的取后建的那件（id 大）
+    for (const t of all()) {
+      if (!ended(t)) continue;
+      if (!best || (t.updatedAt || 0) > (best.updatedAt || 0) || ((t.updatedAt || 0) === (best.updatedAt || 0) && t.id > best.id)) best = t;
+    }
+  }
+  return best ? { id: best.id, title: best.title, status: best.status, at: best.updatedAt } : null;
+}
+
+/**
+ * 计划任务做完了，计划里那一步该不该打勾（设计第九节：做完时 `plan.updateStep` 打勾，**计划本身不改**）。
+ * 计划可能在这件任务建好之后被她改过（plan_set / plan_step 删了一步，下标就挪了）——
+ * 所以**下标和原文都对得上**才打勾；对不上就不打，说清楚为什么（宁可漏打，不打错）。
+ *
+ * @param {object} t        任务
+ * @param {object|null} pl  `plan.get()`（{ steps:[{text, ok}] }）
+ * @returns {{ index:number }|{ skip:string }}
+ */
+function planTick (t, pl) {
+  if (!t || t.source !== 'plan' || t.planStep == null) return { skip: '不是计划里的一步' };
+  if (!pl || !Array.isArray(pl.steps)) return { skip: '现在没有长期计划' };
+  const s = pl.steps[t.planStep];
+  if (!s) return { skip: `计划里已经没有第 ${t.planStep} 步了` };
+  if (t.planText && s.text !== t.planText) return { skip: `计划第 ${t.planStep} 步已经改成「${s.text}」了，不是这件` };
+  if (s.ok) return { skip: `计划第 ${t.planStep} 步已经打过勾了` };
+  return { index: t.planStep };
+}
+
+/**
+ * 计划的"做成的标志"自己达成了（`plan.autoCheck` 新打勾的那几步）→ 对应的计划任务收尾（阶段 3）。
+ * 这就是那件事做成的证据（背包里有了标志物品），不用她再 task_done。只按**原文**对（下标会挪）。
+ * @returns {object[]} 收尾的任务
+ */
+function closePlanTasks (texts, { at = Date.now() } = {}) {
+  const want = new Set((texts || []).map(String));
+  const out = [];
+  for (const t of all()) {
+    if (t.source !== 'plan' || FINISHED.has(t.status) || !want.has(String(t.planText || ''))) continue;
+    noteEvidence(t.id, `计划的标志达成：${t.planText}`);
+    done(t.id, { at });
+    out.push(t);
+  }
+  return out;
+}
+
+/**
+ * 复盘统计（设计第十节：被打断次数、过期件数、主人交代的完成率）。累计数来自 `W.tasks.stats`（跟着文件落盘）；
+ * `open` 是此刻还没收尾的主人交代的事（现数，不会被修剪影响）。
+ */
+function taskStats () { return statsOf(all(), store().stats); }
+
+/**
+ * 同一份统计的纯函数版（**只此一份**）：mind 在跑时用内存里的，`self-review.js` 的命令行读文件（`readFile`）后也调它。
+ * `stats` 缺（旧文件没有这一段）→ null（"没统计过"，不是 0）。
+ */
+function statsOf (list, stats) {
+  if (!stats) return null;
+  const p = { ...newStats().player, ...(stats.player || {}) };
+  const openPlayer = (list || []).filter(t => isPlayerTask(t) && !FINISHED.has(t.status)).length;
+  return {
+    since: stats.since || null, interrupted: stats.interrupted || 0, expired: stats.expired || 0,
+    player: { ...p, open: openPlayer, rate: p.asked ? Math.round((p.done / p.asked) * 100) / 100 : null },
+  };
 }
 
 // ------------------------------------------------------------------ 持久化（照 memory-store.js 的原子写）
 
+/**
+ * 收尾的任务最多留这么多件（最近的）。阶段 2 起"没有手上的事时直接发动作"会自动包一件 self 任务，
+ * 每走一趟路就多一件 —— 不修剪的话 tasks.json 一天能涨到几千件。没收尾的**一件都不删**（不丢事）。
+ */
+const FINISHED_KEEP = 50;
+
+function prune (S) {
+  const fin = S.list.filter(t => FINISHED.has(t.status));
+  if (fin.length <= FINISHED_KEEP) return;
+  const drop = new Set(fin.sort((a, b) => (a.updatedAt || 0) - (b.updatedAt || 0)).slice(0, fin.length - FINISHED_KEEP).map(t => t.id));
+  S.list = S.list.filter(t => !drop.has(t.id));
+}
+
 function save (file = FILE()) {
   const S = store();
+  // 读不出来的旧文件别被盖掉（load 的注释里说好的）。原来只在 restore 里避开了，create() 照样 save() 盖掉它；
+  // 这里兜底：load 时没能备份下来的，就不存（宁可这次记不住，也不毁掉旧记录）。备份成功了照常存。
+  if (S.unreadable && !S.backedUp && file === FILE()) { warn('[tasks] 旧的 tasks.json 读不出来、也没备份成，这次不存（免得把它盖掉）'); return false; }
+  prune(S);
   try {
     fs.mkdirSync(path.dirname(file), { recursive: true });
-    const data = JSON.stringify({ version: 1, seq: S.seq, tasks: S.list }, null, 1);
+    const data = JSON.stringify({ version: 1, seq: S.seq, tasks: S.list, stats: S.stats }, null, 1);
     const tmp = file + '.tmp';
     fs.writeFileSync(tmp, data);
     try {
@@ -462,7 +836,7 @@ function save (file = FILE()) {
  */
 function load (file = FILE()) {
   const S = store();
-  if (S.loaded) return { unreadable: S.unreadable || false };
+  if (S.loaded) return { unreadable: S.unreadable || false, ...(S.unreadable ? { backup: S.backedUp || null } : {}) };
   S.loaded = true;
   if (!fs.existsSync(file)) { S.seq = S.seq || 0; S.list = S.list || []; return { unreadable: false, empty: true }; }
   try {
@@ -470,12 +844,31 @@ function load (file = FILE()) {
     const list = Array.isArray(raw?.tasks) ? raw.tasks : [];
     S.list = list.map(t => ({ ...makeTask({ title: t.title, said: t.said, source: t.source }), ...t }));
     S.seq = Math.max(Number(raw?.seq) || 0, ...S.list.map(t => t.id || 0), 0);
+    // 复盘累计（阶段 3）：旧文件没有这一段 → 从 0 数（since 记成现在，报告里写清"从什么时候开始数的"）
+    const rs = raw?.stats;
+    S.stats = rs && typeof rs === 'object' ? { ...newStats(), ...rs, player: { ...newStats().player, ...(rs.player || {}) } } : newStats();
     return { unreadable: false };
   } catch (e) {
     S.unreadable = true;
-    warn(`[tasks] 读不出来（${e.message}）—— 当"没有任务"继续，但这次别覆盖旧文件`);
-    return { unreadable: true };
+    // 先把坏文件复制一份留证据（2026-09-30 补），之后才敢照常存 —— 不然这一整轮新记的事都存不下；
+    // 原来这里只说"别覆盖旧文件"，可 create() 第一次 save() 就把它盖了（自测 ★ 坏文件那两条钉着）
+    const bak = `${file}.unreadable-${Date.now()}`;
+    try { fs.copyFileSync(file, bak); S.backedUp = bak; } catch (_) { S.backedUp = null; }
+    warn(`[tasks] 读不出来（${e.message}）—— 当"没有任务"继续${S.backedUp ? `；旧文件备份在 ${path.basename(bak)}` : '，旧文件没备份成，这次不覆盖它'}`);
+    return { unreadable: true, backup: S.backedUp || null };
   }
+}
+
+/**
+ * 只读一份 tasks.json（给 self-review 这类**不跑任务队列**的读者用，不碰 `W.tasks`）。
+ * "没有"和"读不到"分开报（AGENTS.md §5-1）：`{ missing:true }` / `{ unreadable:true }` / `{ tasks, stats }`。
+ */
+function readFile (file = FILE()) {
+  if (!fs.existsSync(file)) return { missing: true, tasks: [], stats: null };
+  try {
+    const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+    return { tasks: Array.isArray(raw?.tasks) ? raw.tasks : [], stats: raw?.stats || null };
+  } catch (e) { return { unreadable: true, error: e.message, tasks: [], stats: null }; }
 }
 
 /**
@@ -516,14 +909,37 @@ function restore (now = Date.now()) {
 /** 排着的按**建议顺序**（她不一定要照 —— 只是建议）：player > plan > self；同类 paused 先于 queued；越久的越前 */
 const SRC_RANK = { player: 0, plan: 1, self: 2 };
 function sortOpen (list) {
-  return list.slice().sort((a, b) => {
+  const base = list.slice().sort((a, b) => {
+    // 她说了"这件做完就做"（task_add when:'next'）→ 排最前：那是她自己的决定，建议顺序让着她（阶段 2）
+    const x = (b.next ? 1 : 0) - (a.next ? 1 : 0);
+    if (x) return x;
     const s = (SRC_RANK[a.source] ?? 9) - (SRC_RANK[b.source] ?? 9);
     if (s) return s;
     const p = (a.status === 'paused' ? 0 : 1) - (b.status === 'paused' ? 0 : 1);
     if (p) return p;
     return age(a) - age(b);
   });
+  // 有 parent 的子任务排在它的 parent 前面（设计第六节 3：先砍树，才做得了木镐）。
+  // parent 不在这份列表里（在手上 / 已收尾）的子任务，留在原位。
+  const ids = new Set(base.map(t => t.id));
+  const kidsOf = new Map();
+  for (const t of base) if (t.parent && ids.has(t.parent) && t.parent !== t.id) (kidsOf.get(t.parent) || kidsOf.set(t.parent, []).get(t.parent)).push(t);
+  const out = []; const seen = new Set();
+  const put = (t, depth = 0) => {
+    if (seen.has(t.id) || depth > 8) return;
+    seen.add(t.id);
+    for (const k of kidsOf.get(t.id) || []) put(k, depth + 1);
+    out.push(t);
+  };
+  for (const t of base) if (!(t.parent && ids.has(t.parent))) put(t);
+  for (const t of base) put(t);   // 兜底：成环的也不丢
+  return out;
 }
+
+/** 排着 + 停着超过这么多件，提醒她清一清（设计第七节："不自动删"） */
+const OPEN_CAP = 12;
+/** 被打断这么多次，提醒她"要不要先放下"（设计第七节 —— 她决定） */
+const INTERRUPT_WARN = 3;
 
 /**
  * 【手上的事】/【排着的】两行（最多 5 行，**没有任务时整段不出现** —— 别占上下文）。
@@ -536,21 +952,24 @@ function sortOpen (list) {
  * `related` 是"为了 #id"的反向指针：一件任务的 `parent` 指向谁，那件就是"为了它"。
  * 返回 `''` 表示没有任务（buildNow 直接把它丢掉，不落地成空行）。
  */
-function contextLines ({ max = 5 } = {}) {
+function contextLines ({ max = 5, idle = false } = {}) {
   const cur = running();
   const rest = sortOpen(open()).filter(t => t.id !== cur?.id);
   const lines = [];
   const parentTag = (t) => (t.parent && get(t.parent) ? `（为了 #${t.parent} ${get(t.parent).title}）` : '');
+  const often = (t) => ((t.interruptions || 0) >= INTERRUPT_WARN ? `（被打断 ${t.interruptions} 次了，要不要先放下）` : '');
   if (cur) {
     const who = cur.source === 'player' ? `主人交代${cur.askedBy ? `（${cur.askedBy}）` : ''}` : cur.source === 'plan' ? '计划里的一步' : '自己想做的';
     const note = stepNote(cur);
-    lines.push(`【手上的事】#${cur.id} ${cur.title}（${who}${note ? `，${note}` : ''}）${parentTag(cur)}`);
+    lines.push(`【手上的事】#${cur.id} ${cur.title}（${who}${note ? `，${note}` : ''}${cur.lastFail ? `，上一步卡在：${cur.lastFail}` : ''}）${parentTag(cur)}${often(cur)}`);
   }
   const restLine = rest.slice(0, max - (cur ? 1 : 0)).map(t => {
     const why = t.status === 'paused' ? `（被打断：${pausedText(t)}）` : '';
-    return `#${t.id} ${t.title}${parentTag(t)}${why}`;
+    return `#${t.id} ${t.title}${parentTag(t)}${why}${often(t)}`;
   }).join(' · ');
-  if (restLine) lines.push(`【排着的】${restLine}`);
+  if (restLine) lines.push(`【排着的】${restLine}${rest.length > OPEN_CAP ? `（排着 ${rest.length} 件了，用不着的 task_drop 清一清）` : ''}`);
+  // 闲着且队列非空（设计第六节 2 的第四条）：把最该做的那件放在提醒里 —— 做不做她定
+  if (idle && !cur && rest.length) lines.push(`（手上没事，排着的最前面是 #${rest[0].id} ${rest[0].title} —— 要接着做就 task_resume）`);
   return lines.join('\n');
 }
 
@@ -751,8 +1170,33 @@ function selftest () {
     _reset(); store().loaded = false;
     const bad = load(tmp);
     check('★ 坏 JSON → unreadable=true（"读不到"和"没有"分开）', bad.unreadable === true, bad);
+    // 2026-09-30 复核：原来"别覆盖旧文件"只是注释 —— 下一件新任务 create() → save() 就把坏文件盖了
+    check('★ 坏文件先备份一份，备份里是原样', !!bad.backup && fs.readFileSync(bad.backup, 'utf8') === '{ 这不是 JSON', bad);
+    create({ title: '坏文件之后的新事', source: 'self' });
+    check('备份成了 → 照常存（这一轮新记的事不丢）', /坏文件之后的新事/.test(fs.readFileSync(tmp, 'utf8')));
+    try { fs.unlinkSync(bad.backup); } catch (_) {}
+    fs.writeFileSync(tmp, '{ 还是坏的');
+    store().unreadable = true; store().backedUp = null;
+    const kept = save();
+    check('★ 读不出来又没备份成 → 不存（旧文件原样留着）', kept === false && fs.readFileSync(tmp, 'utf8') === '{ 还是坏的', kept);
+    store().unreadable = false; store().backedUp = null;
     for (const p of [tmp, tmp + '.tmp']) { try { fs.unlinkSync(p); } catch (_) {} }
   }
+
+  console.log('\n复核（2026-09-30）：被打断的计数 / 停下的理由');
+  _reset();
+  {
+    const { task: A } = create({ title: '盖房子', source: 'self' });
+    setRunning(A.id);
+    onInstinct('combat');
+    check('★ 本能抢一下只算被打断 1 次（原来 onInstinct 自己再 +1，算成 2 次）', A.interruptions === 1, A.interruptions);
+    setRunning(A.id);
+    check('重新做的那件：停下的理由清掉', A.pausedWhy === null, A.pausedWhy);
+    const { task: B } = create({ title: '钓鱼', source: 'self' });
+    setRunning(B.id);
+    check('★ 她换做另一件 → 原来那件停下的理由是 self（原来会沿用上一次的 instinct）', A.status === 'paused' && A.pausedWhy === 'self', A);
+  }
+
 
   console.log('\n上下文那两行（设计第六节 1）');
   _reset();
@@ -820,6 +1264,201 @@ function selftest () {
     check('clearSpot 清干净', W.spotTries === null);
   }
 
+  console.log('\n阶段 2：一串动作算哪件（jobPlan）');
+  _reset();
+  {
+    const { task: A } = create({ title: '做一把铁镐', source: 'player', said: '帮我做把铁镐' });
+    setRunning(A.id);
+    onInstinct('combat');
+    setRunning(A.id);
+    const n0 = A.interruptions;
+    for (const tool of ['goto', 'mine', 'craft']) {
+      const p = jobPlan([{ tool }], { heardPlayer: false });
+      check(`★ 连着做同一件：${tool} 算在手上那件上、不打断`, p.taskId === A.id && p.pause === null && !p.auto, p);
+    }
+    check('★ 连发三串动作，被打断次数不涨', A.interruptions === n0, A.interruptions);
+    check('只动嘴 / 只看 → 不算在任何任务上', jobPlan([{ tool: 'say' }, { tool: 'scan_blocks' }]).taskId === null);
+    const st = jobPlan([{ tool: 'stop' }], { heardPlayer: true });
+    check('stop → 停手上那件（player），这串不算任务', st.pause === A.id && st.pauseWhy === 'player' && st.taskId === null, st);
+    const fo = jobPlan([{ tool: 'come_to', args: { player: 'Ka_sum1' } }], { heardPlayer: true });
+    check('come_to → 停手上那件（player），这串不算任务', fo.pause === A.id && fo.pauseWhy === 'player' && fo.taskId === null, fo);
+    const { task: P } = create({ title: '帮我把箱子理一下', said: '帮我把箱子理一下', source: 'player' });
+    const pp = jobPlan([{ tool: 'organize_storage' }], { heardPlayer: true, playerTaskId: P.id });
+    check('★ 他这轮刚交代了 #P、她动手 → 手上那件 paused(player)，这串算 #P', pp.pause === A.id && pp.pauseWhy === 'player' && pp.taskId === P.id, pp);
+    check('显式 taskId 优先', jobPlan([{ tool: 'mine' }], { taskId: P.id }).taskId === P.id);
+    _reset();
+    const au = jobPlan([{ tool: 'goto', args: { x: 1, z: 2 } }], { why: '去看看那边的树' });
+    check('★ 没有手上的事、直接发动作 → 要自动包一件（self, auto）', au.taskId === null && au.auto && au.auto.source === 'self' && au.auto.auto === true && /去看看那边的树/.test(au.auto.title), au);
+  }
+
+  console.log('\n阶段 2：一串动作结束（afterJob）');
+  _reset();
+  {
+    const { task: auto1 } = create({ title: '去看看那边的树', source: 'self', auto: true });
+    setRunning(auto1.id);
+    afterJob(auto1.id, { ok: true });
+    check('自动包的：做完就 done', auto1.status === 'done', auto1.status);
+    const { task: auto2 } = create({ title: '挖一下', source: 'self', auto: true });
+    setRunning(auto2.id);
+    afterJob(auto2.id, { ok: false, error: 'mine → 挖不动' });
+    check('自动包的：失败就 failed，原因记下', auto2.status === 'failed' && /挖不动/.test(auto2.lastFail || ''), auto2);
+    const { task: P } = create({ title: '帮我做把铁镐', said: '帮我做把铁镐', source: 'player' });
+    setRunning(P.id);
+    const h1 = afterJob(P.id, { ok: false, error: 'mine → 没挖到铁矿' });
+    check('★ 主人交代的：一步没做成 → 不标 failed，还在手上（原来会从队列里消失）', P.status === 'running' && /没挖到铁矿/.test(P.lastFail), P);
+    check('★ 提醒里说还没做完、卡在哪', /#\d+ 帮我做把铁镐 还没标做完（卡在：mine → 没挖到铁矿）/.test(h1), h1);
+    const h2 = afterJob(P.id, { ok: true });
+    check('★ 主人交代的：一串做完也不自动算做完（要 task_done + 证据）', P.status === 'running' && /还没标做完/.test(h2), { st: P.status, h2 });
+    const { task: Q } = create({ title: '把家里暗处插亮', source: 'self' });
+    check('提醒里带上排着的', /还排着：#\d+ 把家里暗处插亮/.test(afterJob(P.id, { ok: true })));
+    void Q;
+    _reset();
+    check('什么任务都没有 → 不提醒', afterJob(null, { ok: true }) === '');
+  }
+
+  console.log('\n阶段 2：task_* 工具');
+  _reset();
+  {
+    const P = toolAdd({ title: '做一把木镐', when: 'now' });
+    check('task_add now → 成为手上那件', P.ok && get(P.id).status === 'running', P);
+    const bad = toolAdd({ title: '先砍树', parent: 999 });
+    check('parent 不存在 → 拒绝', bad.ok === false && /没有 #999/.test(bad.error), bad);
+    const K = toolAdd({ title: '先去砍点木头', when: 'now', parent: P.id });
+    check('★ task_add now 挂 parent → 子任务在手上，parent paused(self)', get(K.id).status === 'running' && get(P.id).status === 'paused' && get(P.id).pausedWhy === 'self', [get(K.id), get(P.id)]);
+    const d0 = toolDone({}, {});
+    check('★ task_done 没有证据 → 拒绝（说缺什么）', d0.ok === false && /还没有做成的动作记录/.test(d0.error), d0);
+    noteEvidence(K.id, 'mine{"blockName":"oak_log"} → got oak_log×4');
+    const d1 = toolDone({ result: '砍了 4 个橡木' }, { check: () => '砍树的工具结果是失败的' });
+    check('★ task_done result 对不上工具结果 → 拒绝', d1.ok === false && /对不上/.test(d1.error), d1);
+    const d2 = toolDone({ result: '砍了 4 个橡木' }, { check: () => null });
+    check('★ task_done 有证据 → done', d2.ok === true && get(K.id).status === 'done', d2);
+    check('★ 子任务做完 → 提醒回 parent', /是为了 #\d+ 做一把木镐 做的 —— 回去接着做/.test(d2.next || ''), d2.next);
+    const r = toolResume({ id: P.id });
+    check('task_resume → parent 回到手上', r.ok && get(P.id).status === 'running', r);
+    const L = toolAdd({ title: '把家里暗处插亮', when: 'later' });
+    const N = toolAdd({ title: '去钓鱼', when: 'next' });
+    check('★ when:next 排在最前（她自己的决定）', sortOpen(open())[0].id === N.id, sortOpen(open()).map(t => t.id));
+    check('合并：同一件再 add → 不重复', toolAdd({ title: '去钓鱼' }).merged === true);
+    const r2 = toolResume({ id: L.id });
+    check('★ task_resume 换一件 → 原来手上的 paused(self)', get(L.id).status === 'running' && get(P.id).status === 'paused' && get(P.id).pausedWhy === 'self', [get(L.id).status, get(P.id)]);
+    void r2;
+    check('task_note 写到手上那件', toolNote({ progress: '插了 3 个' }).ok && get(L.id).progress === '插了 3 个');
+    const { task: pl } = create({ title: '帮我挖点铁', said: '帮我挖点铁', source: 'player', askedBy: 'Ka_sum1' });
+    const x0 = toolDrop({ id: pl.id });
+    check('★ 主人交代的放下要写原因', x0.ok === false && /要写原因/.test(x0.error), x0);
+    const kid = toolAdd({ title: '做把石镐先', parent: pl.id });
+    const x1 = toolDrop({ id: pl.id, why: '附近没有铁矿' });
+    check('★ 主人交代的放下 → tellPlayer（要跟他说一声）', x1.ok && x1.tellPlayer === true && get(pl.id).status === 'dropped', x1);
+    check('挂在它下面的子任务一起放下（留记录）', get(kid.id).status === 'dropped' && (x1.alsoDropped || []).includes(kid.id), x1);
+    check('收尾了的不能再 resume', toolResume({ id: pl.id }).ok === false);
+  }
+
+  console.log('\n阶段 2：过期 / 闲着 / 老被打断 / 本能过去了');
+  _reset();
+  {
+    const { task: s } = create({ title: '去看看海边', source: 'self' });
+    const { task: p } = create({ title: '帮我盖个棚子', said: '帮我盖个棚子', source: 'player' });
+    s.createdAt = Date.now() - 21 * 60 * 1000; p.createdAt = s.createdAt;
+    check('过期扫一遍：self 过期 1 件', sweepExpired() === 1 && s.status === 'expired' && p.status === 'queued');
+    const ns = takeNotices();
+    check('★ 过期不静默：攒一条提醒', ns.length === 1 && /去看看海边 是你自己想做的，放了 20 分钟没做，过期了/.test(ns[0]), ns);
+    check('提醒只给一次', takeNotices().length === 0);
+    check('★ 闲着、手上没事、排着有 → 上下文带一句"最前面是…task_resume"', /手上没事，排着的最前面是 #\d+ 帮我盖个棚子/.test(contextLines({ idle: true })), contextLines({ idle: true }));
+    check('不闲着时不带那句', !/手上没事/.test(contextLines()));
+    setRunning(p.id); pause(p.id, 'self'); setRunning(p.id); pause(p.id, 'player'); setRunning(p.id); pause(p.id, 'instinct');
+    check('★ 被打断 3 次 → 上下文提醒"要不要先放下"', /被打断 3 次了，要不要先放下/.test(contextLines()), contextLines());
+    const rh = resumeHint('instinct');
+    check('★ 本能过去了 → 摆回 paused(instinct) 的那件', /本能那阵过去了：#\d+ 帮我盖个棚子.*还做吗/.test(rh), rh);
+    check('没有因为主人停下的 → player 提醒为空', resumeHint('player') === '');
+  }
+
+  console.log('\n阶段 2：排序 / 修剪');
+  _reset();
+  {
+    const { task: parent } = create({ title: '做木镐', source: 'self' });
+    const { task: other } = create({ title: '钓鱼', source: 'self' });
+    const { task: kid } = create({ title: '砍树', source: 'self', parent: parent.id });
+    const order = sortOpen(open()).map(t => t.id);
+    check('★ 子任务排在它的 parent 前面', order.indexOf(kid.id) < order.indexOf(parent.id) && order.length === 3, order);
+    void other;
+    for (let i = 0; i < FINISHED_KEEP + 10; i++) { const { task } = create({ title: `走一趟${i}`, source: 'self', auto: true }); done(task.id); }
+    check('★ 收尾的最多留 FINISHED_KEEP 件，没收尾的一件不少', finished().length === FINISHED_KEEP && open().length === 3, { fin: finished().length, open: open().length });
+  }
+
+  console.log('\n阶段 2：重启一遍再检查（证据 / next / lastFail 都要留住）');
+  {
+    const W0 = require('./state').W;
+    _reset();
+    const { task: a } = create({ title: '帮我做把铁镐', said: '帮我做把铁镐', source: 'player' });
+    setRunning(a.id); noteEvidence(a.id, 'craft → crafted stick'); afterJob(a.id, { ok: false, error: 'craft → 缺铁锭' });
+    const nx = toolAdd({ title: '去挖铁', when: 'next', parent: a.id });
+    // 模拟进程重启：内存里的 W.tasks 丢掉，下一次用到时从同一个文件读回来
+    W0.tasks = undefined;
+    const rep = restore();
+    const a2 = get(a.id); const n2 = get(nx.id);
+    check('★ 重启后：running → paused(restart)', a2 && a2.status === 'paused' && a2.pausedWhy === 'restart' && rep.restarted.length === 1, a2);
+    check('★ 重启后：证据还在（task_done 不会因为重启被拒）', a2 && a2.evidence.length === 1 && /crafted stick/.test(a2.evidence[0]), a2 && a2.evidence);
+    check('★ 重启后：卡在哪还在', a2 && /缺铁锭/.test(a2.lastFail || ''), a2 && a2.lastFail);
+    check('★ 重启后：next / parent 还在', n2 && n2.next === true && n2.parent === a.id, n2);
+  }
+
+  console.log('\n阶段 3：复盘统计（累计、跟着文件落盘、重启后还在）');
+  {
+    const W0 = require('./state').W;
+    _reset();
+    const { task: p1 } = create({ title: '帮我做把铁镐', said: '帮我做把铁镐', source: 'player' });
+    const { task: p2 } = create({ title: '帮我挖点铁', said: '帮我挖点铁', source: 'player' });
+    const { task: p3 } = create({ title: '帮我把箱子理一下', said: '帮我把箱子理一下', source: 'player' });
+    const { task: s1 } = create({ title: '去看看海边', source: 'self' });
+    setRunning(p1.id); onInstinct('combat'); setRunning(p1.id); noteEvidence(p1.id, 'craft → ok');
+    toolDone({ id: p1.id }); drop(p2.id, { why: '没铁' });
+    s1.createdAt = Date.now() - 21 * 60 * 1000; sweepExpired();
+    const st = taskStats();
+    check('★ 被打断 / 过期 / 主人交代的完成率', st.interrupted === 1 && st.expired === 1 && st.player.asked === 3 && st.player.done === 1 && st.player.dropped === 1 && st.player.open === 1 && st.player.rate === 0.33, st);
+    check('★ 最近收尾的主人交代的事（说话闸看它）', lastEndedPlayer()?.id === p2.id && lastEndedPlayer()?.status === 'dropped', lastEndedPlayer());
+    {
+      // 两件在同一毫秒收尾（例如"都别做了"一次放下好几件）：取后收尾的那件，不看运气（原来比 updatedAt，平手就取了先建的）
+      const same = Date.now();
+      const { task: q1 } = create({ title: '同一毫秒甲', said: '同一毫秒甲', source: 'player' });
+      const { task: q2 } = create({ title: '同一毫秒乙', said: '同一毫秒乙', source: 'player' });
+      done(q2.id, { at: same }); done(q1.id, { at: same });
+      check('★ 同一毫秒收尾 → 取后收尾的那件', lastEndedPlayer()?.id === q1.id, lastEndedPlayer());
+      store().lastEndedId = null;   // 重启后没有标记：同一毫秒取后建的那件
+      check('重启后没有标记、同一毫秒 → 取 id 大的那件（确定，不看运气）', lastEndedPlayer()?.id === q2.id, lastEndedPlayer());
+      store().stats.player.asked -= 2; store().stats.player.done -= 2; save();   // 这两件不算进下面的统计断言（存盘：下面要"重启"读回来）
+    }
+    W0.tasks = undefined;   // 模拟重启：从文件读回来
+    const st2 = taskStats();
+    check('★ 重启后累计数还在（跟着 tasks.json 落盘）', st2.interrupted === 1 && st2.expired === 1 && st2.player.asked === 3 && st2.player.done === 1 && st2.player.open === 1, st2);
+    for (let i = 0; i < FINISHED_KEEP + 5; i++) { const { task } = create({ title: `交代${i}`, said: `交代${i}`, source: 'player' }); done(task.id); }
+    check('★ 收尾的被修剪了，完成率照样按累计算（不会越跑越少）', finished().length === FINISHED_KEEP && taskStats().player.done === 1 + FINISHED_KEEP + 5, { fin: finished().length, st: taskStats().player });
+    check('旧文件没有统计段 → null（"没统计过"，不是 0）', statsOf([], null) === null);
+    void p3;
+  }
+
+  console.log('\n阶段 3：计划联动（下标和原文都对得上才打勾）');
+  _reset();
+  {
+    const pl = { steps: [{ text: '做石镐', ok: false }, { text: '挖铁', ok: false }] };
+    const { task: t0 } = create({ title: '做石镐', source: 'plan', planStep: 0, planText: '做石镐' });
+    check('对得上 → 打第 0 步', planTick(t0, pl).index === 0, planTick(t0, pl));
+    check('★ 计划改过（原文对不上）→ 不打，说清楚', /已经改成「挖铁」/.test(planTick({ ...t0, planStep: 1 }, pl).skip || ''), planTick({ ...t0, planStep: 1 }, pl));
+    check('计划里没那一步了 → 不打', /没有第 5 步/.test(planTick({ ...t0, planStep: 5 }, pl).skip || ''));
+    check('已经打过勾 → 不重打', /已经打过勾/.test(planTick(t0, { steps: [{ text: '做石镐', ok: true }] }).skip || ''));
+    check('不是计划任务 → 不打', !!planTick({ source: 'self' }, pl).skip);
+    const closed = closePlanTasks(['做石镐']);
+    check('★ 标志达成 → 对应的计划任务收尾，证据记着', closed.length === 1 && get(t0.id).status === 'done' && /标志达成/.test(get(t0.id).evidence[0] || ''), get(t0.id));
+    check('原文对不上的不动', closePlanTasks(['别的']).length === 0);
+    const jp = jobPlan([{ tool: 'mine' }], { why: '砍树', planStep: { index: 1, text: '挖铁' } });
+    check('★ 闲着推计划（传了 planStep）、手上没事 → 建 source=plan 的任务，不是 auto', jp.auto && jp.auto.source === 'plan' && jp.auto.planStep === 1 && jp.auto.planText === '挖铁' && jp.auto.auto === false, jp);
+    const { task: pt } = create(jp.auto); setRunning(pt.id);
+    afterJob(pt.id, { ok: true });
+    check('★ 计划那一件：一串做完不自动算做完（计划的一步往往要好几串）', pt.status === 'running', pt.status);
+    check('手上有事时 planStep 不起作用（接着算手上那件）', jobPlan([{ tool: 'mine' }], { planStep: { index: 0, text: '做石镐' } }).taskId === pt.id);
+  }
+
+  // 收尾：自测写过的临时文件删掉（原来每跑一次在临时目录留一个 tasks-selftest-<pid>.json）
+  for (const p of [tmp, tmp + '.tmp']) { try { fs.unlinkSync(p); } catch (_) {} }
   console.log(`\n  ${pass}/${total} 通过`);
   process.exit(pass === total ? 0 : 1);
 }
@@ -835,8 +1474,15 @@ module.exports = {
   setRunning, pause, done, fail, drop, expire, dropPlayerTasks, sweepExpired,
   // 打断（只此一份判据）
   movesBody, interruptKind, pauseWhyFor, onInstinct,
+  // 一串动作算哪件 + 收尾提醒（阶段 2）
+  jobPlan, noteEvidence, afterJob, nextHint, resumeHint, takeNotices,
+  // 大模型的工具（阶段 2）
+  toolAdd, toolNote, toolDone, toolDrop, toolResume,
+  OPEN_CAP, INTERRUPT_WARN, FINISHED_KEEP,
+  // 说话闸 / 计划 / 复盘要读的（阶段 3）
+  lastEndedPlayer, planTick, closePlanTasks, taskStats, statsOf,
   // 持久化
-  save, load, restore,
+  save, load, restore, readFile,
   // 上下文 + 同点提醒
   contextLines, contextCount, sortOpen, noteSpot, spotHint, clearSpot,
   // 自测

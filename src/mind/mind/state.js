@@ -133,6 +133,10 @@ const W = {
   tasks: { seq: 0, list: [] },
   // 同一目的地来回走的短时状态（tasks.noteSpot 读写）——不落盘，重启后重来（和 W.seenChat 同类）。
   spotTries: null,
+  // 本能那阵过去后已经提醒过的"被本能停下的那几件"（`id@updatedAt` 拼的键）—— 同一次停下只提醒一回（look.js，阶段 2）
+  instinctHintKey: '',
+  // task_drop 刚放下主人交代的事 → `{ at, id, title }`：那句"不做了"允许说出去一次（gates.dropTellAllowed，阶段 2）
+  dropTell: null,
 };
 
 
