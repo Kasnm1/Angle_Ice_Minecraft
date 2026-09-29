@@ -35,6 +35,7 @@ const body = require('./body');
 const speech = require('./speech');
 const mem = require('./memory-store');
 const knowledge = require('../knowledge/knowledge');
+const paths = require('../paths');   // knowledge/ 路径（查任务书章名·任务名用，见 questLabel）
 const ambition = require('./ambition');
 const review = require('./self-review');
 const ledgerLib = require('../body/inventory-ledger');   // 只用它的 render（账在 bridge 记，见 inventory-ledger.js）
@@ -1288,12 +1289,32 @@ function planExtras () {
     const c = ambition.candidates({ inventory: W.state?.items || [], knownStations: knownStations(), limit: 2 });
     if (c?.length) out.push({ text: `心愿：做一道没做过的菜（比如 ${c.map(x => knowledge.label(x.id).replace(/\(.*\)$/, '')).join('、')}）`, why: `做遍食物的心愿 ${ambition.progress().made}/${ambition.progress().total}` });
   } catch (_) {}
-  // 游玩路线（knowledge/campaign.json）：跟着这个整合包的节奏玩，前置都做完的头几个
+  // 游玩路线（knowledge/campaign.json）：跟着这个整合包的节奏玩，前置都做完的头几个。
+  // 传任务书进度（W.ftbq）：没有 done 物品标志的目标也能按"任务书里做完了没"判，不再永远"不知道"。
+  // 带任务书编号的目标：why 后面补「（任务书：章名·任务名）」，让她知道去任务书哪儿点（查不到就不补）。
+  const route = [];
   try {
-    for (const g of plan.campaignStatus({ items: [...(W.state?.items || []), ...homeStockItems()] }).next.slice(0, 2)) out.push({ text: `路线：${g.title}`, why: g.hint || '' });
+    for (const g of plan.campaignStatus({ items: [...(W.state?.items || []), ...homeStockItems()], completed: W.ftbq || null }).next.slice(0, 2)) {
+      const label = g.quests?.length ? questLabel(g.quests[0]) : null;
+      route.push({ text: `路线：${g.title}`, why: (g.hint || '') + (label ? `（任务书：${label}）` : '') });
+    }
   } catch (_) {}
-  return out.slice(0, 9);   // 路线排在工程 / 布置 / 心愿之后，只补 2 条
+  // 路线那 2 条不被前面截掉：前面的先截到 7 条，再把路线接上
+  return [...out.slice(0, 7), ...route].slice(0, 9);
 }
+
+/** 任务书里的「章名·任务名」（查不到返回 null，不硬编） */
+function questLabel (qid) {
+  try {
+    if (!QL) {
+      const q = JSON.parse(require('fs').readFileSync(require('path').join(paths.KNOWLEDGE, 'quests.json'), 'utf8'));
+      QL = new Map(q.chapters.flatMap(ch => (ch.quests || []).map(x => [x.id, { title: x.title, chapter: ch.title }])));
+    }
+    const e = QL.get(qid);
+    return e ? `${e.chapter}·${e.title}` : null;
+  } catch (_) { return null; }
+}
+let QL = null;
 
 /**
  * 【长期计划】：平时一行（目标 + 正在做的一步）；闲着的时候完整给（现状 + 可以做的），让她接着做 / 改计划。
@@ -3162,6 +3183,42 @@ async function selftest () {
     W.ftbq = new Set(['362E2399F791D149']);   // 做完了"致富之路"
     check('★ 读到任务书进度 → 主线下一个出现在候选里（白手起家）', /主线：白手起家/.test(planLine('idle')), planLine('idle'));
     W.ftbq = null;
+    // 游玩路线：任务书编号带出来、why 末尾补「（任务书：章名·任务名）」、路线那两条不被截掉
+    {
+      plan._reset();
+      plan.setPlan({ goal: 'x', steps: ['一步'] });
+      const baseState = W.state;
+      W.state = { ...W.state, items: [] };
+      // 读不到任务书：路线里会出现「打开任务书…看完」（g2-open-quest，无 done，靠任务书判）
+      W.ftbq = null;
+      const idleNo = planLine('idle');
+      const routeBefore = (idleNo.match(/· 路线：[^\n]*/g) || []);
+      check('★ 读不到任务书 → 无 done 的路线目标不挡路（冒得出来）', routeBefore.length === 2, routeBefore);
+      // 读到任务书且「新手小屋」做完 → g2-open-quest 算做完，不再出现在路线里
+      W.ftbq = new Set(['7FAC7B71B61AFF81']);
+      const idleQ = planLine('idle');
+      check('★ 任务书进度接进路线：做完的任务不再冒出来', !/打开任务书，把【新手礼包and游玩须知】看完/.test(idleQ), (idleQ.match(/· 路线：[^\n]*/g) || []));
+      check('★ 任务书编号 → 「章名·任务名」查得出来', questLabel('7FAC7B71B61AFF81') === '新手礼包and游玩须知·新手小屋', questLabel('7FAC7B71B61AFF81'));
+      check('…查不到的 id 返回 null（不硬编）', questLabel('FFFFFFFFFFFFFFFF') === null, questLabel('FFFFFFFFFFFFFFFF'));
+      // 把无 quests 的生存开场目标用背包判掉 → 剩下的 start 候选全带任务书编号，
+      // 这样无论 30 分钟窗口轮到哪个，路线那两条的 why 末尾都该有「（任务书：…）」
+      W.state = { ...W.state, items: [{ name: 'minecraft:oak_log', count: 8 }, { name: 'minecraft:dirt', count: 8 }, { name: 'minecraft:oak_planks', count: 16 }] };
+      const idleLab = planLine('idle');
+      const routeLab = (idleLab.match(/· 路线：[^\n]*/g) || []);
+      check('★ 带任务书编号的路线候选，why 末尾带「（任务书：章名·任务名）」', routeLab.length === 2 && routeLab.every(l => /（任务书：[^）]+·[^）]+）/.test(l)), routeLab);
+      W.state = baseState;
+      W.ftbq = null;
+    }
+    // 工程 / 布置 / 心愿很多时，路线那 2 条不被 slice 截掉
+    {
+      plan._reset();
+      plan.setPlan({ goal: 'x', steps: ['一步'] });
+      W.projects = Array.from({ length: 6 }, (_, i) => ({ id: 'p' + i, name: '工程' + i, done: '10%', missing: {} }));
+      W.layouts = [{ id: 'L1', name: '家', done: 3, total: 6, canPlaceNow: ['furnace', 'chest'], stale: ['仓库'] }];
+      const idleMany = planLine('idle');
+      check('★ 前面候选很多时，路线那两条仍在（不被截掉）', (idleMany.match(/· 路线：/g) || []).length === 2, (idleMany.match(/· 路线：[^\n]*/g) || []));
+      W.projects = []; W.layouts = [];
+    }
     // 工程、布置、心愿都进计划的候选（只有计划一个声音在说"接下来做什么"）
     W.projects = [{ id: 'p1', name: '门口小仓库', done: '40%', toDig: 3, toPlace: 12, missing: { cobblestone: 9 } }];
     W.layouts = [{ id: 'L1', name: '家', done: 3, total: 6, stillWant: { furnace: 1 }, canPlaceNow: ['furnace'], stale: ['仓库'] }];
@@ -3247,4 +3304,4 @@ function cli (argv) {
   return main();
 }
 
-module.exports = { W, emit, think, buildNow, matchFast, humanState, learnFromDoing, repetitionHint, SYSTEM, SPECS, SAY_NUDGE, ALL, MIND_TOOLS, GROUPS, pickSpecs, groupsFromBody, activeGroups, activateGroup, TOOL_GROUPS, GROUP_CUES, combatInstinct, combatGuard, attackGuardReason, isOverAsking, lastProactiveUnanswered, unbackedClaim, taskDoneAllowed, claimState, liveFails, FACT_CLAIMS, REPORT_NUDGE, ASK_TOO_MUCH_NUDGE, HONEST_NUDGE, QUIET_MS, ASK_COOLDOWN_MS, cli };   // SYSTEM/SPECS 给 scripts/dialogue-eval.js 离线跑分用
+module.exports = { W, emit, think, buildNow, matchFast, humanState, learnFromDoing, repetitionHint, SYSTEM, SPECS, SAY_NUDGE, ALL, MIND_TOOLS, GROUPS, pickSpecs, groupsFromBody, activeGroups, activateGroup, TOOL_GROUPS, GROUP_CUES, combatInstinct, combatGuard, attackGuardReason, isOverAsking, lastProactiveUnanswered, unbackedClaim, taskDoneAllowed, claimState, liveFails, FACT_CLAIMS, REPORT_NUDGE, ASK_TOO_MUCH_NUDGE, HONEST_NUDGE, QUIET_MS, ASK_COOLDOWN_MS, questLabel, cli };   // SYSTEM/SPECS 给 scripts/dialogue-eval.js 离线跑分用

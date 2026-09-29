@@ -7,10 +7,13 @@
    "track": "mainline",
    "stage": "start",
    "deps": [],
-   "hint": "进游戏第一件事：开任务书读【游玩须知】9 个任务。",
-   "feasible": "no",
+   "hint": "进游戏第一件事：开任务书读【游玩须知】9 个任务。 任务书里点对号 / 交物品就算。",
+   "feasible": "yes",
    "mods": [
     "ftbquests"
+   ],
+   "quests": [
+    "7FAC7B71B61AFF81"
    ]
   },
   {
@@ -45,7 +48,10 @@
     "have": {
      "enigmaticlegacy:cursed_ring": 1
     }
-   }
+   },
+   "quests": [
+    "3C29228CB06E0B0A"
+   ]
   },
   {
    "id": "g2-open-keys",
@@ -55,10 +61,13 @@
    "deps": [
     "g2-open-quest"
    ],
-   "hint": "R 看来源、U 看用途、B 跳百科、O 开商店、按住 ~ 连锁挖掘。",
-   "feasible": "no",
+   "hint": "R 看来源、U 看用途、B 跳百科、O 开商店、按住 ~ 连锁挖掘。 任务书里点对号 / 交物品就算。",
+   "feasible": "yes",
    "mods": [
     "ftbquests"
+   ],
+   "quests": [
+    "7FAC7B71B61AFF81"
    ]
   },
   {
@@ -78,7 +87,10 @@
     "have": {
      "sophisticatedbackpacks:backpack": 1
     }
-   }
+   },
+   "quests": [
+    "34BCC1B9D84498DB"
+   ]
   },
   {
    "id": "g2-s1-wood",
@@ -114,7 +126,10 @@
     "have": {
      "minecraft:crafting_table": 1
     }
-   }
+   },
+   "quests": [
+    "0103E9ED6D505D07"
+   ]
   },
   {
    "id": "g2-s3-pick",
@@ -268,7 +283,10 @@
     "have": {
      "minecraft:diamond_pickaxe": 1
     }
-   }
+   },
+   "quests": [
+    "6DF1D42A289CD2F9"
+   ]
   },
   {
    "id": "g2-s11-storage",
@@ -309,7 +327,10 @@
     "have": {
      "xiangcaomengjia:wood_selling_bin": 1
     }
-   }
+   },
+   "quests": [
+    "107B99F9A5419859"
+   ]
   },
   {
    "id": "g2-ec2-shop",
@@ -323,6 +344,9 @@
    "feasible": "no",
    "mods": [
     "xiangcaomengjia"
+   ],
+   "quests": [
+    "107B99F9A5419859"
    ]
   },
   {
@@ -337,6 +361,9 @@
    "feasible": "partial",
    "mods": [
     "xiangcaomengjia"
+   ],
+   "quests": [
+    "03536397E5DABCEB"
    ]
   },
   {
@@ -386,10 +413,13 @@
    "deps": [
     "g2-f2-harvest"
    ],
-   "hint": "作物来源**被作者魔改**了，别按原模组攻略找，以【作物图鉴】为准。",
-   "feasible": "no",
+   "hint": "作物来源**被作者魔改**了，别按原模组攻略找，以【作物图鉴】为准。 任务书里点对号 / 交物品就算。",
+   "feasible": "partial",
    "mods": [
     "ftbquests"
+   ],
+   "quests": [
+    "28BD1A67152CE891"
    ]
   },
   {
@@ -430,7 +460,10 @@
      "minecraft:lead": 1,
      "minecraft:milk_bucket": 1
     }
-   }
+   },
+   "quests": [
+    "7B2A5DC059B2C665"
+   ]
   },
   {
    "id": "g2-f6-forestry",
@@ -450,7 +483,10 @@
     "have": {
      "farm_and_charm:butter": 1
     }
-   }
+   },
+   "quests": [
+    "7B2A5DC059B2C665"
+   ]
   },
   {
    "id": "g2-c1-board",
@@ -471,7 +507,10 @@
      "farmersdelight:cooking_pot": 1,
      "farmersdelight:stove": 1
     }
-   }
+   },
+   "quests": [
+    "029703D6FCB0A1AF"
+   ]
   },
   {
    "id": "g2-c2-firstdish",
@@ -490,7 +529,10 @@
     "have": {
      "farmersdelight:vegetable_soup": 1
     }
-   }
+   },
+   "quests": [
+    "60D299B4F4EBECD1"
+   ]
   },
   {
    "id": "g2-c3-kitchen",
@@ -524,6 +566,9 @@
    "feasible": "partial",
    "mods": [
     "dimensional_stomach"
+   ],
+   "quests": [
+    "5765E1A05F4F0AE5"
    ]
   },
   {
@@ -544,7 +589,10 @@
     "have": {
      "farmersdelight:tomato": 1
     }
-   }
+   },
+   "quests": [
+    "28BD1A67152CE891"
+   ]
   },
   {
    "id": "g2-c6-foodlog",
@@ -554,8 +602,8 @@
    "deps": [
     "g2-c2-firstdish"
    ],
-   "hint": "食录逸闻 20 章 / 2574 个食物任务，是这包最大的「图鉴」。",
-   "feasible": "no",
+   "hint": "食录逸闻 20 章 / 2574 个食物任务，是这包最大的「图鉴」。 任务书里点对号 / 交物品就算。",
+   "feasible": "partial",
    "mods": [
     "ftbquests",
     "bountifulfares",
@@ -600,6 +648,9 @@
     "drinkbeer",
     "atmospheric",
     "alexsmobs"
+   ],
+   "quests": [
+    "1D8FBF965E03D054"
    ]
   },
   {
@@ -615,6 +666,9 @@
    "mods": [
     "bakery",
     "farm_and_charm"
+   ],
+   "quests": [
+    "6E003FB0F32F723B"
    ]
   },
   {
@@ -635,7 +689,10 @@
     "have": {
      "naturescompass:naturescompass": 1
     }
-   }
+   },
+   "quests": [
+    "065536A106F7BFCB"
+   ]
   },
   {
    "id": "g2-e2-scout",
@@ -650,6 +707,9 @@
    "mods": [
     "minecraft",
     "waystones"
+   ],
+   "quests": [
+    "5F2449ED7DE7B33C"
    ]
   },
   {
@@ -671,7 +731,10 @@
     "have": {
      "minecraft:blaze_rod": 1
     }
-   }
+   },
+   "quests": [
+    "2C78A9311D47D326"
+   ]
   },
   {
    "id": "g2-e4-end",
@@ -681,8 +744,8 @@
    "deps": [
     "g2-e3-nether"
    ],
-   "hint": "找要塞、填末影之眼、进末地打龙。",
-   "feasible": "no",
+   "hint": "找要塞、填末影之眼、进末地打龙。 任务书里点对号 / 交物品就算。",
+   "feasible": "partial",
    "mods": [
     "minecraft",
     "ends_delight"
@@ -691,7 +754,10 @@
     "have": {
      "minecraft:dragon_breath": 1
     }
-   }
+   },
+   "quests": [
+    "288E205F1BE38E55"
+   ]
   },
   {
    "id": "g2-e5-unusualend",
@@ -712,7 +778,10 @@
     "have": {
      "minecraft:elytra": 1
     }
-   }
+   },
+   "quests": [
+    "7184371914285EE3"
+   ]
   },
   {
    "id": "g2-e6-bird",
@@ -732,7 +801,10 @@
     "have": {
      "immersive_aircraft:hull": 1
     }
-   }
+   },
+   "quests": [
+    "0A0BC17BA0ECFFF1"
+   ]
   },
   {
    "id": "g2-e7-ecosystem",
@@ -747,6 +819,9 @@
    "mods": [
     "exposure",
     "minecraft"
+   ],
+   "quests": [
+    "5F2449ED7DE7B33C"
    ]
   },
   {
@@ -766,6 +841,9 @@
     "the_bumblezone",
     "pasterdream",
     "alex_caves_dimensions"
+   ],
+   "quests": [
+    "7596C82F8B7A7C3F"
    ]
   },
   {
@@ -786,6 +864,9 @@
     "bosses_of_mass_destruction",
     "legendary_monsters",
     "makit_better"
+   ],
+   "quests": [
+    "7A375C5102A22A3D"
    ]
   },
   {
@@ -796,10 +877,13 @@
    "deps": [
     "g2-b1-boss"
    ],
-   "hint": "「逐级击破-末影龙前」里挑一个，打完拿掉落物。",
-   "feasible": "no",
+   "hint": "「逐级击破-末影龙前」里挑一个，打完拿掉落物。 任务书里点对号 / 交物品就算。",
+   "feasible": "partial",
    "mods": [
     "meetyourfight"
+   ],
+   "quests": [
+    "2655B2DEDD0AA7FA"
    ]
   },
   {
@@ -821,7 +905,10 @@
     "have": {
      "ends_delight:dragon_leg_with_sauce_block": 1
     }
-   }
+   },
+   "quests": [
+    "2655B2DEDD0AA7FA"
+   ]
   },
   {
    "id": "g2-b4-unlock",
@@ -831,11 +918,14 @@
    "deps": [
     "g2-b3-bossdish"
    ],
-   "hint": "做完料理回任务书领任务 → 商店解锁 → 再买 Boss 掉落物。",
-   "feasible": "no",
+   "hint": "做完料理回任务书领任务 → 商店解锁 → 再买 Boss 掉落物。 任务书里点对号 / 交物品就算。",
+   "feasible": "partial",
    "mods": [
     "ftbquests",
     "xiangcaomengjia"
+   ],
+   "quests": [
+    "7A375C5102A22A3D"
    ]
   },
   {
@@ -855,7 +945,10 @@
     "have": {
      "silentsdelight:heartburger": 1
     }
-   }
+   },
+   "quests": [
+    "700AF62403BA9758"
+   ]
   },
   {
    "id": "g2-b6-simplyswords",
@@ -875,7 +968,10 @@
     "have": {
      "simplyswords:iron_sai": 1
     }
-   }
+   },
+   "quests": [
+    "5707B00E761EDE31"
+   ]
   },
   {
    "id": "g2-b7-postdragon",
@@ -891,6 +987,9 @@
     "cataclysm",
     "terramity",
     "lendersdelight"
+   ],
+   "quests": [
+    "49FEF3A6A620AAB4"
    ]
   },
   {
@@ -901,11 +1000,14 @@
    "deps": [
     "g2-b7-postdragon"
    ],
-   "hint": "「Boss电话本」章：用 cataclysm:*_eye 在指定结构召唤。",
-   "feasible": "no",
+   "hint": "「Boss电话本」章：用 cataclysm:*_eye 在指定结构召唤。 任务书里点对号 / 交物品就算。",
+   "feasible": "partial",
    "mods": [
     "cataclysm",
     "enlightened_end"
+   ],
+   "quests": [
+    "2EED8997DC665600"
    ]
   },
   {
@@ -925,7 +1027,10 @@
     "have": {
      "create:andesite_alloy": 1
     }
-   }
+   },
+   "quests": [
+    "45256F10EA46A9A7"
+   ]
   },
   {
    "id": "g2-m2-power",
@@ -944,7 +1049,10 @@
     "have": {
      "create:water_wheel": 1
     }
-   }
+   },
+   "quests": [
+    "0F805DAE0A1B3783"
+   ]
   },
   {
    "id": "g2-m3-process",
@@ -963,7 +1071,10 @@
     "have": {
      "create:crushing_wheel": 1
     }
-   }
+   },
+   "quests": [
+    "74BD8298A1647980"
+   ]
   },
   {
    "id": "g2-m4-brass",
@@ -982,7 +1093,11 @@
     "have": {
      "create:brass_ingot": 1
     }
-   }
+   },
+   "quests": [
+    "7A420F29DFD3381A",
+    "25DE501CAB674D0E"
+   ]
   },
   {
    "id": "g2-m5-autocook",
@@ -1003,7 +1118,10 @@
     "have": {
      "create_central_kitchen:cooking_guide": 1
     }
-   }
+   },
+   "quests": [
+    "6E0E2EC39604D029"
+   ]
   },
   {
    "id": "g2-m6-steam",
@@ -1022,7 +1140,11 @@
     "have": {
      "create:mechanical_press": 1
     }
-   }
+   },
+   "quests": [
+    "6FCC645226FEEE5D",
+    "7604B2F82B41C210"
+   ]
   },
   {
    "id": "g2-m7-electric",
@@ -1041,7 +1163,10 @@
     "have": {
      "create_new_age:overcharged_iron": 1
     }
-   }
+   },
+   "quests": [
+    "7BE31D1CCCCB5C4D"
+   ]
   },
   {
    "id": "g2-m8-excavation",
@@ -1060,7 +1185,10 @@
     "have": {
      "createoreexcavation:drill": 1
     }
-   }
+   },
+   "quests": [
+    "598E0DF2157D0FDD"
+   ]
   },
   {
    "id": "g2-m9-gun",
@@ -1070,12 +1198,15 @@
    "deps": [
     "g2-m4-brass"
    ],
-   "hint": "「铳械协议」章 18 任务（TaCZ 枪械线）。",
-   "feasible": "no",
+   "hint": "「铳械协议」章 18 任务（TaCZ 枪械线）。 任务书里点对号 / 交物品就算。",
+   "feasible": "partial",
    "mods": [
     "tacz",
     "lrarmor",
     "lrtactical"
+   ],
+   "quests": [
+    "6E0A1C617AF8FC11"
    ]
   },
   {
@@ -1102,7 +1233,21 @@
     "have": {
      "create:sail_frame": 1
     }
-   }
+   },
+   "quests": [
+    "2A9718CD0A152168",
+    "2456002648FE765C",
+    "70C14A5BD16A8BAC",
+    "467663881A5E82D4",
+    "6E53EE6A22A774B7",
+    "753648C02171F9A6",
+    "47CD8F3072B6B9F5",
+    "216C94466B1B3451",
+    "1D4867FF68FDB084",
+    "6340110CD759AEAA",
+    "7D50D80E77A087F6",
+    "4D768507EE38C011"
+   ]
   },
   {
    "id": "g2-h1-furniture",
@@ -1123,6 +1268,9 @@
     "decorative_blocks",
     "beautify",
     "royalvariations"
+   ],
+   "quests": [
+    "2BD2188DBF7314B6"
    ]
   },
   {
@@ -1142,7 +1290,10 @@
     "have": {
      "kaleidoscope_doll:doll_machine": 1
     }
-   }
+   },
+   "quests": [
+    "582571D46A00E959"
+   ]
   },
   {
    "id": "g2-h3-paper",
@@ -1156,6 +1307,9 @@
    "feasible": "partial",
    "mods": [
     "papercraft_magic_decoration"
+   ],
+   "quests": [
+    "5A221770A6C88787"
    ]
   },
   {
@@ -1172,6 +1326,9 @@
     "touhou_little_maid",
     "adorablehamsterpets",
     "more_critters"
+   ],
+   "quests": [
+    "37867E60BC47E51C"
    ]
   },
   {
@@ -1194,7 +1351,10 @@
     "have": {
      "minecraft:fishing_rod": 1
     }
-   }
+   },
+   "quests": [
+    "5F150E56AA8614EC"
+   ]
   },
   {
    "id": "g2-h6-display",
@@ -1214,7 +1374,10 @@
     "have": {
      "displaydelight:food_plate": 1
     }
-   }
+   },
+   "quests": [
+    "2BD2188DBF7314B6"
+   ]
   },
   {
    "id": "g2-x1-ars",
@@ -1233,7 +1396,10 @@
     "have": {
      "ars_nouveau:imbuement_chamber": 1
     }
-   }
+   },
+   "quests": [
+    "6CBE1BEF350B22C3"
+   ]
   },
   {
    "id": "g2-x2-enchant",
@@ -1253,7 +1419,10 @@
     "have": {
      "minecraft:enchanting_table": 1
     }
-   }
+   },
+   "quests": [
+    "0AD505310ADC00D5"
+   ]
   },
   {
    "id": "g2-x3-refined",
@@ -1274,7 +1443,10 @@
     "have": {
      "refinedstorage:grid": 1
     }
-   }
+   },
+   "quests": [
+    "6C980DE9AA63087D"
+   ]
   },
   {
    "id": "g2-x4-sim",
@@ -1284,10 +1456,13 @@
    "deps": [
     "g2-ec1-bin"
    ],
-   "hint": "「模拟经营」章 13 任务，ordertocook 开小店接单。",
-   "feasible": "no",
+   "hint": "「模拟经营」章 13 任务，ordertocook 开小店接单。 任务书里点对号 / 交物品就算。",
+   "feasible": "partial",
    "mods": [
     "ordertocook"
+   ],
+   "quests": [
+    "1E5237DCFD77E3E3"
    ]
   },
   {
@@ -1298,11 +1473,14 @@
    "deps": [
     "g2-ec3-money"
    ],
-   "hint": "「钱坤大挪移」章 5 任务，polaristrading 做交易。",
-   "feasible": "no",
+   "hint": "「钱坤大挪移」章 5 任务，polaristrading 做交易。 任务书里点对号 / 交物品就算。",
+   "feasible": "yes",
    "mods": [
     "polaristrading",
     "xiangcaomengjia"
+   ],
+   "quests": [
+    "5C8AD4A7F6100F69"
    ]
   },
   {
@@ -1322,7 +1500,10 @@
     "have": {
      "waystones:warp_stone": 1
     }
-   }
+   },
+   "quests": [
+    "49AA11AF9FD721F4"
+   ]
   },
   {
    "id": "g2-x7-ancient",
@@ -1341,7 +1522,10 @@
     "have": {
      "minecraft:netherite_ingot": 1
     }
-   }
+   },
+   "quests": [
+    "726395B012524C13"
+   ]
   },
   {
    "id": "g2-z1-memento",
@@ -1351,12 +1535,15 @@
    "deps": [
     "g2-h4-pet"
    ],
-   "hint": "「永恒的回忆」章 21 任务：生物帽子等收集物。",
-   "feasible": "no",
+   "hint": "「永恒的回忆」章 21 任务：生物帽子等收集物。 任务书里点对号 / 交物品就算。",
+   "feasible": "partial",
    "mods": [
     "animalhatmod",
     "midashunger",
     "more_critters"
+   ],
+   "quests": [
+    "45BDF0C3384AA428"
    ]
   },
   {
@@ -1367,12 +1554,15 @@
    "deps": [
     "g2-b6-simplyswords"
    ],
-   "hint": "「异界神器库」章 20 任务。",
-   "feasible": "no",
+   "hint": "「异界神器库」章 20 任务。 任务书里点对号 / 交物品就算。",
+   "feasible": "partial",
    "mods": [
     "lethality",
     "smc",
     "zenith"
+   ],
+   "quests": [
+    "557ECD9C7773368C"
    ]
   },
   {
@@ -1383,11 +1573,14 @@
    "deps": [
     "g2-c2-firstdish"
    ],
-   "hint": "「厨神之证」章 112 任务是全包最大的单项收集。",
-   "feasible": "no",
+   "hint": "「厨神之证」章 112 任务是全包最大的单项收集。 任务书里点对号 / 交物品就算。",
+   "feasible": "partial",
    "mods": [
     "immortalers_delight",
     "enigmaticdelicacy"
+   ],
+   "quests": [
+    "449DE00416B62297"
    ]
   },
   {
@@ -1404,6 +1597,9 @@
     "farmersdelight",
     "youkaishomecoming",
     "candlelight"
+   ],
+   "quests": [
+    "1D8FBF965E03D054"
    ]
   },
   {
@@ -1414,11 +1610,14 @@
    "deps": [
     "g2-z3-godproof"
    ],
-   "hint": "「致谢名单」章 38 任务，是任务书的片尾。",
-   "feasible": "no",
+   "hint": "「致谢名单」章 38 任务，是任务书的片尾。 任务书里点对号 / 交物品就算。",
+   "feasible": "partial",
    "mods": [
     "smc",
     "cluttered"
+   ],
+   "quests": [
+    "6861B619C33A1EAF"
    ]
   },
   {
@@ -1436,6 +1635,24 @@
     "terramity",
     "composite_material",
     "enigmaticlegacy"
+   ],
+   "quests": [
+    "362E2399F791D149",
+    "107B99F9A5419859",
+    "03536397E5DABCEB",
+    "0103E9ED6D505D07",
+    "6C980DE9AA63087D",
+    "6DF1D42A289CD2F9",
+    "0AD505310ADC00D5",
+    "49AA11AF9FD721F4",
+    "0EBEA88A20FDCC8D",
+    "2ACC56E94647750A",
+    "747BBEFBA7B7C6ED",
+    "726395B012524C13",
+    "066F1715417CBE01",
+    "508E0442A4A5DD23",
+    "4FC4C3295EB19EF7",
+    "2E8068024BBBB625"
    ]
   },
   {
@@ -1696,7 +1913,10 @@
     "have": {
      "herbalbrews:stove": 1
     }
-   }
+   },
+   "quests": [
+    "02CCD01CC279F57C"
+   ]
   },
   {
    "id": "g2-c3c-bbq",
@@ -1716,7 +1936,10 @@
     "have": {
      "barbequesdelight:grill": 1
     }
-   }
+   },
+   "quests": [
+    "178A7FFE9FDB5E33"
+   ]
   },
   {
    "id": "g2-c3d-pickle",
@@ -1736,7 +1959,10 @@
     "have": {
      "vintagedelight:salt": 1
     }
-   }
+   },
+   "quests": [
+    "3E866CBE28047314"
+   ]
   },
   {
    "id": "g2-c3e-wine",
@@ -1757,7 +1983,10 @@
     "have": {
      "vinery:mead": 1
     }
-   }
+   },
+   "quests": [
+    "383BE125687216DC"
+   ]
   },
   {
    "id": "g2-c3f-seafood",
@@ -1778,7 +2007,10 @@
     "have": {
      "aquaculturedelight:bass_stew": 1
     }
-   }
+   },
+   "quests": [
+    "0BBA214AF8FD0CB5"
+   ]
   },
   {
    "id": "g2-c3g-sushi",
@@ -1800,7 +2032,10 @@
     "have": {
      "culturaldelights:squid": 1
     }
-   }
+   },
+   "quests": [
+    "75DC48E20C55BA28"
+   ]
   },
   {
    "id": "g2-c3h-sweet",
@@ -1817,6 +2052,11 @@
     "cosmopolitan",
     "simple_cream",
     "neapolitan"
+   ],
+   "quests": [
+    "0BF00D71FD1CCC24",
+    "2BC2E3E388350CB1",
+    "419923CDE59E2418"
    ]
   },
   {
@@ -1833,6 +2073,9 @@
     "kitchenkarrot",
     "vanillacookbook",
     "immortalers_delight"
+   ],
+   "quests": [
+    "12F3F1340D225AEF"
    ]
   },
   {
@@ -1855,7 +2098,10 @@
     "have": {
      "crockpot:corn": 1
     }
-   }
+   },
+   "quests": [
+    "4DF9D58CD569A6B4"
+   ]
   },
   {
    "id": "g2-c3k-noodle",
@@ -1876,7 +2122,10 @@
     "have": {
      "farmersdelight:rice": 1
     }
-   }
+   },
+   "quests": [
+    "1BE30BC16DB846C5"
+   ]
   },
   {
    "id": "g2-c3l-canned",
@@ -1891,6 +2140,9 @@
    "mods": [
     "kitchenkarrot",
     "luncheonmeatsdelight"
+   ],
+   "quests": [
+    "4BEBF6019D88CE27"
    ]
   },
   {
@@ -1907,6 +2159,9 @@
     "youkaishomecoming",
     "immortalers_delight",
     "braziliandelight"
+   ],
+   "quests": [
+    "74AA0C59C27FC09A"
    ]
   },
   {
@@ -1926,7 +2181,10 @@
     "have": {
      "miners_delight:milk_cup": 1
     }
-   }
+   },
+   "quests": [
+    "020A1F0DE003EBEA"
+   ]
   },
   {
    "id": "g2-e8b-deeperdarker",
@@ -1941,6 +2199,9 @@
    "mods": [
     "deeperdarker",
     "silentsdelight"
+   ],
+   "quests": [
+    "22528BC722285218"
    ]
   },
   {
@@ -1960,7 +2221,10 @@
     "have": {
      "undergarden:goo": 1
     }
-   }
+   },
+   "quests": [
+    "359CE1F6C266BD0A"
+   ]
   },
   {
    "id": "g2-e8d-bumblezone",
@@ -1979,7 +2243,10 @@
     "have": {
      "the_bumblezone:bee_soup": 1
     }
-   }
+   },
+   "quests": [
+    "66D8C44FA22A7ABF"
+   ]
   },
   {
    "id": "g2-e8e-pasterdream",
@@ -1998,7 +2265,10 @@
     "have": {
      "pasterdream:flour": 1
     }
-   }
+   },
+   "quests": [
+    "7D1D5C85A5413D4B"
+   ]
   },
   {
    "id": "g2-e8f-alexcaves",
@@ -2018,7 +2288,10 @@
     "have": {
      "alex_caves_dimensions:toxic_caves_key": 1
     }
-   }
+   },
+   "quests": [
+    "05106B0807AB0617"
+   ]
   },
   {
    "id": "g2-cropnether",
@@ -2039,7 +2312,10 @@
     "have": {
      "netherexp:hogham": 1
     }
-   }
+   },
+   "quests": [
+    "233021A19318EAAF"
+   ]
   },
   {
    "id": "g2-cropend",
@@ -2060,7 +2336,10 @@
     "have": {
      "ends_delight:bubble_tea": 1
     }
-   }
+   },
+   "quests": [
+    "2B1F49C7FC013E6D"
+   ]
   },
   {
    "id": "g2-cropindex",
@@ -2071,10 +2350,13 @@
     "g2-cropnether",
     "g2-cropend"
    ],
-   "hint": "「图鉴收集」章 5 任务，是作物图鉴的收尾。",
-   "feasible": "no",
+   "hint": "「图鉴收集」章 5 任务，是作物图鉴的收尾。 任务书里点对号 / 交物品就算。",
+   "feasible": "yes",
    "mods": [
     "ftbquests"
+   ],
+   "quests": [
+    "3DB2D5FC47ADAA9D"
    ]
   },
   {
@@ -2096,7 +2378,11 @@
     "have": {
      "twilightforest:root": 1
     }
-   }
+   },
+   "quests": [
+    "4C1618125B2D108B",
+    "0FF0F70BF47380F8"
+   ]
   },
   {
    "id": "g2-x5b-difficulty",
@@ -2106,10 +2392,13 @@
    "deps": [
     "g2-s10-diamond"
    ],
-   "hint": "「难度调节」章 3 任务，本包允许玩家自己调难度。",
-   "feasible": "no",
+   "hint": "「难度调节」章 3 任务，本包允许玩家自己调难度。 任务书里点对号 / 交物品就算。",
+   "feasible": "yes",
    "mods": [
     "ftbquests"
+   ],
+   "quests": [
+    "6E9257F972A3321D"
    ]
   },
   {
@@ -2120,10 +2409,13 @@
    "deps": [
     "g2-ec3-money"
    ],
-   "hint": "任务书里有经济排行类内容（见 mainline 的 GDP 相关，01-audit 提及）。",
-   "feasible": "no",
+   "hint": "任务书里有经济排行类内容（见 mainline 的 GDP 相关，01-audit 提及）。 任务书里点对号 / 交物品就算。",
+   "feasible": "partial",
    "mods": [
     "ftbquests"
+   ],
+   "quests": [
+    "1E5237DCFD77E3E3"
    ]
   },
   {
@@ -2162,7 +2454,10 @@
     "have": {
      "minecraft:brewing_stand": 1
     }
-   }
+   },
+   "quests": [
+    "7477BB87496F35A9"
+   ]
   },
   {
    "id": "g2-x2d-loot",
@@ -2222,7 +2517,11 @@
      "create:goggles": 1,
      "create:wrench": 1
     }
-   }
+   },
+   "quests": [
+    "3095FDF21BF65851",
+    "20922A2B12BD69F4"
+   ]
   },
   {
    "id": "g2-m3b-saw",
@@ -2241,7 +2540,11 @@
     "have": {
      "create:mechanical_saw": 1
     }
-   }
+   },
+   "quests": [
+    "14904C8BFDDBD727",
+    "1FFFCDD514A9692B"
+   ]
   },
   {
    "id": "g2-m4b-tube",
@@ -2260,7 +2563,11 @@
     "have": {
      "create:electron_tube": 1
     }
-   }
+   },
+   "quests": [
+    "20F1443C8C824E8D",
+    "75DAA488E9B21772"
+   ]
   },
   {
    "id": "g2-m4c-casing",
@@ -2279,7 +2586,11 @@
     "have": {
      "create:brass_casing": 1
     }
-   }
+   },
+   "quests": [
+    "6B47B01522852E54",
+    "0351F13ABC4FDACA"
+   ]
   },
   {
    "id": "g2-m-bestiary",
@@ -2293,6 +2604,9 @@
    "feasible": "partial",
    "mods": [
     "more_critters"
+   ],
+   "quests": [
+    "37867E60BC47E51C"
    ]
   },
   {
@@ -2313,7 +2627,10 @@
     "have": {
      "animalhatmod:cow_hat_helmet": 1
     }
-   }
+   },
+   "quests": [
+    "45BDF0C3384AA428"
+   ]
   },
   {
    "id": "g2-z-artifact-lethality",
@@ -2332,7 +2649,10 @@
     "have": {
      "lethality:nihilite": 1
     }
-   }
+   },
+   "quests": [
+    "557ECD9C7773368C"
+   ]
   },
   {
    "id": "g2-z-chefs-legacy",
@@ -2342,10 +2662,13 @@
    "deps": [
     "g2-z3-godproof"
    ],
-   "hint": "「厨神之证」章 112 任务，immortalers_delight(14) 与 vefc(8) 领先。",
-   "feasible": "no",
+   "hint": "「厨神之证」章 112 任务，immortalers_delight(14) 与 vefc(8) 领先。 任务书里点对号 / 交物品就算。",
+   "feasible": "partial",
    "mods": [
     "immortalers_delight"
+   ],
+   "quests": [
+    "449DE00416B62297"
    ]
   },
   {
@@ -2365,7 +2688,10 @@
     "have": {
      "simplyswords:dormant_relic": 1
     }
-   }
+   },
+   "quests": [
+    "0399934300B5D2AB"
+   ]
   },
   {
    "id": "g2-cropdeeper",
@@ -2386,7 +2712,10 @@
     "have": {
      "deeperdarker:soul_dust": 1
     }
-   }
+   },
+   "quests": [
+    "3E695EA89F7F89E1"
+   ]
   },
   {
    "id": "g2-c3o-exotic",
@@ -2409,7 +2738,10 @@
     "have": {
      "ends_delight:bubble_tea": 1
     }
-   }
+   },
+   "quests": [
+    "310D747D59962936"
+   ]
   },
   {
    "id": "g2-c3p-kaleido",
@@ -2428,7 +2760,10 @@
     "have": {
      "kaleidoscope_cookery:cooked_rice": 1
     }
-   }
+   },
+   "quests": [
+    "3B6F36D86CCCABAA"
+   ]
   },
   {
    "id": "g2-c3q-youkai",
@@ -2447,7 +2782,10 @@
     "have": {
      "youkaishomecoming:bun": 1
     }
-   }
+   },
+   "quests": [
+    "0571D37E58C5F489"
+   ]
   },
   {
    "id": "g2-h7-tarot",
@@ -2467,7 +2805,10 @@
     "have": {
      "tarotcards:the_fool": 1
     }
-   }
+   },
+   "quests": [
+    "32920DFA04F17F0C"
+   ]
   }
  ]
 }
