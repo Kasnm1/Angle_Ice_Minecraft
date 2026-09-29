@@ -200,67 +200,79 @@ async function craftByRecipeBook (bot, recipeId, times, table) {
 }
 
 /**
+ * "说给人听"的名字（纯函数，可单测）。
+ *
+ * `quark:stone_tool_materials` 里有 andesite / diorite / granite / polished_andesite / infested_stone /
+ * stone / deepslate / tuff ……，主人能一眼认出来的是"石头"。光按名字长短会挑到"凝灰岩(tuff)"，
+ * 但**标签名 `stone_tool_materials` 里就写着 stone** —— 这才是这个标签的本意（2026-09-28 实测踩到）。
+ *
+ * 优先级：**身上有的** > 能直接从自然方块挖到的（挖石头掉的是圆石 → 说"圆石"）> 标签名里带这个基底名的
+ *        > 名字最"素"最短的原版 > 能直接挖到的 > 标签里第一个。
+ *
+ * @param {Map<string,number>} have  身上有几种（用来优先说"手上那件"）
+ */
+function pickSlotSample (k, KB, have, ids, alts) {
+  const raw = (x) => !!(x && k.naturalRaw?.(x));
+  const held = ids.find(x => (have.get(x) || 0) > 0);
+  if (held) return held;
+  const tagIds = (alts || []).filter(a => a.tag).map(a => String(a.tag).split(':').pop());
+  const vanilla = ids.filter(x => String(x).startsWith('minecraft:'));
+  // 名字里没有加工前缀（polished/chiseled/…）的才是主人认得的"素"货
+  const VARIANT_RE = /(?:^|[:_])(polished|chiseled|smooth|cut|cracked|mossy|infested|carved|waxed|stripped)(?:_|$)/;
+  const plain = vanilla.filter(x => !VARIANT_RE.test(x));
+  const pool = plain.length ? plain : vanilla;
+  // 先挑"能直接从自然方块挖到"的（石镐的 stone_tool_materials 里有圆石 —— 挖石头掉的就是它）。
+  // 以前名字优先，报成"石头 3"，她会去找石头，挖下来却是圆石（2026-09-28 Claude 复查修掉）。
+  const rawNamed = pool.filter(raw);
+  if (rawNamed.length) return rawNamed.find(x => /(^|:)cobblestone$/.test(x)) || rawNamed[0];
+  const named = pool.find(x => tagIds.some(t => t.split('_').includes((x.split(':')[1] || '').split('_')[0])));
+  if (named) return named;
+  const final = pool;
+  return final.slice().sort((a, b) => (a.split(':')[1] || '').length - (b.split(':')[1] || '').length
+    || (KB.byOutput.get(b) || []).length - (KB.byOutput.get(a) || []).length)[0]
+    || ids.find(raw) || ids[0] || null;
+}
+
+/**
  * 挑"最容易做的一条配方"，并说清缺什么。
  *
  * 起因（2026-09-28 实机）：`POST /craft2 {itemName:"stone_pickaxe"}` 的报错把**每条候选配方**的缺料
  * 混在一句里吐出来 —— `缺 任意「#forge:rods/wooden（如 木棍）」(#forge:rods/wooden)；缺 火成岩(terramity:igneostone)、
  * 木棍(minecraft:stick)`。她抓不住重点，而且"火成岩"这种模组石头本来就不该出现在首选建议里。
  *
- * 判据（复用 knowledge.js 已有的，不另写一份 —— AGENTS.md §5）：
- *   · **原版优先**是最强的信号（`recipeRank`）：背包内 < 工作台/熔炉 < 原版类型 < 模组。
- *     先按它排，能挡住"箱子 ← 橡木箱子"这类整合包加的**转换配方**被当成首选。
- *   · 同档次再看缺的东西**越少越好**（种类数 → 总个数）。
- *   · 缺的能**从自然方块直接挖到**（`naturalRaw`）优于还得再合成的。
- * 报错只讲选中的这一条；其余配方最多加一句"另外还有 N 种做法"。
+ * 起因（2026-09-29 实机）：`craft(count=4 itemName=minecraft:stick)` 报了"还缺：竹子 2"，其实木板就能做。
+ * 旧排序 `[recipeRank, 缺的种类数, 缺的总个数, 缺的还得再合成]` 对这两种配方**四列全平手**，
+ * 稳定排序保留了原始顺序 → 排在前面的竹子胜出。**缺的是"手上/家里有没有"这一列**。
  *
- * @returns { best, rest, needs }
- *   needs = [{ need, have, ok, sample }]  每种原料：要几个、有几个、够不够
+ * 排序规则（从强到弱，每一条都是纯比较，见 `score` —— 方便单测）：
+ *   ① `recipeRank`：背包内 < 工作台/熔炉 < 原版类型 < 模组。挡住"箱子 ← 橡木箱子"这类转换配方。
+ *   ② **不缺料**的优于缺料的（手上/背包/家里能把这一格填上就不算缺）。
+ *   ③ 缺的**种类数**越少越好，再比缺的**总个数**。
+ *   ④ 缺的**基础度**："原版基础材料（`minecraft:`）优于模组材料"；同为基础，再比
+ *      "能用手上东西再合成出来的（`fromHave`/手上间接有）优于要出门挖的（`naturalRaw`）优于还要另找一路的"。
+ *   ⑤ 平手时原料越少越好、名字越"素"（`pickSlotSample`）。
+ *
+ * 报错只讲**选中的那一条**；另有更好懂的候选时，最多再补一句"另外用 X 也能做"（`altLine`）。
+ *
+ * @param {Map<string,number>} have   身上（+背包已补上来）的数量
+ * @param {Map<string,{count:number}>} [seen]  家里箱子/精妙背包等**见过但没带着**的（可选）：
+ *        `{ [itemId]: count }` 或 Map。只用来把"见过就算不缺"的格子判成 ok，不参与"身上有几个"的展示。
+ * @returns { best, rest, needs, altLine }
+ *   needs = [{ need, have, ok, sample, atHome }]  每种原料：要几个、身上有几个、够不够、家里有没有
  */
-function rankRecipesFor (k, KB, have, id, R, times) {
+function rankRecipesFor (k, KB, have, id, R, times, seen = null) {
   const raw = (x) => !!(x && k.naturalRaw?.(x));
-  // 说给人听的名字：身上有的 > 原版里最"素"的那个 > 能直接挖到的 > 标签里第一个。
-  // 为什么这么挑：`quark:stone_tool_materials` 里有 andesite / diorite / granite / polished_andesite /
-  // infested_stone / stone / deepslate / tuff ……，主人能一眼认出来的是"石头"，不是"抛光安山岩"或"凝灰岩"
-  // （2026-09-28 实测踩到）。判据：① 名字里没有加工前缀（polished/chiseled/…）
-  // ② 名字最短（"stone" 比 "andesite"/"deepslate" 基础）③ 能用来做的东西最多（越基础的材料配方越多）。
-  const VARIANT_RE = /(?:^|[:_])(polished|chiseled|smooth|cut|cracked|mossy|infested|carved|waxed|stripped)(?:_|$)/;
-  /**
-   * 说给人听的名字。
-   * 优先级：身上有的 > **标签名里带这个基底名**的 > 最"素"的原版 > 能直接挖到的 > 第一个。
-   *
-   * `quark:stone_tool_materials` 里有 andesite / diorite / granite / polished_andesite / infested_stone /
-   * stone / deepslate / tuff ……，主人能一眼认出来的是"石头"。光按名字长短会挑到"凝灰岩(tuff)"，
-   * 但**标签名 `stone_tool_materials` 里就写着 stone** —— 这才是这个标签的本意（2026-09-28 实测踩到）。
-   */
-  const pickSample = (ids, alts) => {
-    const held = ids.find(x => (have.get(x) || 0) > 0);
-    if (held) return held;
-    const tagIds = (alts || []).filter(a => a.tag).map(a => String(a.tag).split(':').pop());
-    const vanilla = ids.filter(x => String(x).startsWith('minecraft:'));
-    const plain = vanilla.filter(x => !VARIANT_RE.test(x));
-    const pool = plain.length ? plain : vanilla;
-    // 先看"标签名里写着它"的那个 —— 这是标签的本意，哪怕它自己不是 naturalRaw
-    // （`minecraft:stone` 不是 naturalRaw，挖石头得到的是圆石，但"石头"才是主人认得的名字）。
-    // 2026-09-28 Claude 复查：先挑"能直接从自然方块挖到"的（石镐的 stone_tool_materials 里有圆石 —— 挖石头掉的就是它），
-    // 挑不到再按标签名（木板这类本来就要合成的）。以前名字优先，报成"石头 3"，她会去找石头，挖下来却是圆石。
-    const rawNamed = pool.filter(raw);
-    if (rawNamed.length) {
-      const pick = rawNamed.find(x => /(^|:)cobblestone$/.test(x)) || rawNamed[0];
-      return pick;
-    }
-    const named = pool.find(x => tagIds.some(t => t.split('_').includes((x.split(':')[1] || '').split('_')[0])));
-    if (named) return named;
-    const crafty = pool.filter(raw);
-    const final = crafty.length ? crafty : pool;
-    return final.slice().sort((a, b) => (a.split(':')[1] || '').length - (b.split(':')[1] || '').length
-      || (KB.byOutput.get(b) || []).length - (KB.byOutput.get(a) || []).length)[0]
-      || ids.find(raw) || ids[0] || null;
+  const seenOf = (x) => {
+    if (!seen) return 0;
+    return (seen instanceof Map ? seen.get(x) : seen[x]) || 0;
   };
+  const pickSample = (ids, alts) => pickSlotSample(k, KB, have, ids, alts);
   const slotIds = (alts) => [...new Set(alts.flatMap(a => (a.item ? [a.item] : [...(KB.tags.get(`item:${a.tag}`) || [])])))];
   const slotNeed = (alts, need) => {
     const ids = slotIds(alts);
     const got = ids.reduce((n, x) => n + (have.get(x) || 0), 0);
-    return { need, have: got, ok: got >= need, sample: pickSample(ids, alts) };
+    const home = ids.reduce((n, x) => n + seenOf(x), 0);
+    return { need, have: got, ok: got >= need, atHome: home > 0, sample: pickSample(ids, alts) };
   };
   const needs = (r) => {
     if (r.shape) {
@@ -285,27 +297,80 @@ function rankRecipesFor (k, KB, have, id, R, times) {
       const ids = slotIds(alts);
       return ids.length > 0 && ids.every(x => baseName(x) === targetBase);
     });
+  /**
+   * **基础度**（④ 的一半）：数字越小越"基础"。
+   *   · 塞进 `#minecraft:planks` 标签的（木板、竹板…）= 所有木制品的通用起点 → 0        ← 最基础
+   *   · 名字里带 `log/stem` 的（原木、菌柄：砍树就有）                        → 1
+   *   · 其它原版基础材料（圆石、竹子…）                                      → 1
+   *   · 名字里带 `wood` 的 / `stripped_`（去皮木头、"某某木"：野外大多要斧子削） → 2
+   *   · 模组材料                                                            → 3
+   *
+   * 主人 2026-09-29 的原话："缺的东西最好弄（原版基础材料 > 模组材料；能用手上东西再合成出来的 > 要出去找的）"。
+   * 为什么木板排最前（实测 2026-09-29）：做木棍时"任意木板"（要先做）和"原木/竹子"（砍/挖就有）
+   * 的"能不能挖到"档位反而原木更优 —— 旧排序因此挑了竹子，报成"还缺竹子 2"。但木板才是
+   * **所有木制品的起点**、也是主人手边该有的，所以它单独占一档、强于"能直接挖到"。
+   */
+  const BASIC_RE = /(^|[_:])(log|stem)([_:]|$)/;
+  const WOOD_RE = /(^|[_:])wood([_:]|$)|stripped/;
+  const basicTier = (x) => {
+    if ((KB.itemTags.get(x) || new Set()).has('minecraft:planks')) return 0;
+    if (!String(x).startsWith('minecraft:')) return 3;      // 模组材料
+    if (WOOD_RE.test(x)) return 2;
+    return 1;
+  };
+  /**
+   * "好不好弄"（④ 的另一半）：**只在缺料时比较**。
+   *   · 手上（或家里）间接就能凑出来（`fromHave`：某条配方的原料全是手上有的） → 0.1  （木板←原木）
+   *   · 能直接从自然方块挖到（`naturalRaw`）                              → 0.25 （原木、圆石、竹子）
+   *   · 还得用"能挖到的原材料"再合成一步                                   → 0.35
+   *   · 都不是                                                          → 1
+   */
+  const fromHave = (x) => (KB.byOutput.get(x) || []).some(i => KB.recipes[i].in.length
+    && KB.recipes[i].in.every(s2 => slotIds(s2.alts).some(y => (have.get(y) || 0) > 0)));
+  const easyOne = (x) => fromHave(x) ? 0.1
+    : raw(x) ? 0.25
+      : (KB.byOutput.get(x) || []).some(i => KB.recipes[i].in.length
+        && KB.recipes[i].in.every(s2 => s2.alts.some(a => (a.item ? raw(a.item) : [...(KB.tags.get(`item:${a.tag}`) || [])].slice(0, 30).some(raw))))) ? 0.35
+        : 1;
+  /** 一格原料的 ④ 分：**基础度占整数位、好不好弄占小数位** —— 先比基础度，同基础度再比好不好弄。 */
+  const slotEase = (alts) => Math.min(...slotIds(alts).map(x => basicTier(x) + easyOne(x)), 5);
   const score = (r) => {
     const ns = needs(r);
     const short = ns.filter(s => !s.ok);
-    // 原版优先（recipeRank）是第一位的：整合包里的"转换配方"缺料同样少，但绝不该被推荐 —— 它只是
-    // 换个形态。用 isRevert 把它整个踢出候选。
+    const shortCost = short.reduce((n, s) => n + (s.need - s.have), 0);
+    // 缺的那些原料"摸起来有多难"：每一格取最好弄的候选，加起来 ×100 当成第 ④ 档的整数分。
+    const slotAlts = r.shape ? Object.values(r.shape.key) : r.in.map(s => s.alts);
+    const shortSlots = slotAlts.filter((alts, i) => !ns[i].ok);
+    const difficulty = Math.round(shortSlots.reduce((a, alts) => a + slotEase(alts), 0) * 100);
     return {
       ns, revert: isRevert(r),
-      rank: [k.recipeRank(r), short.length, short.reduce((n, s) => n + (s.need - s.have), 0),
-        short.filter(s => s.sample && !raw(s.sample)).length],
+      rank: [
+        k.recipeRank(r),                                                   // ① 原版/工作站优先
+        short.length,                                                      // ② 缺的种类数（0 = 一样不缺）
+        shortCost,                                                         // ③ 缺的总个数
+        difficulty,                                                        // ④ 缺的基础度（原版基础 > 模组；能现做 > 出门挖）
+        r.in.length,                                                       // ⑤ 原料格数越少越好
+      ],
     };
   };
   const scored = R.map(r => ({ r, ...score(r) }));
   // 有"真做法"就只在真做法里排；全都是拆回来的（罕见）才退回全量。
   const real = scored.filter(s => !s.revert);
   const pool = real.length ? real : scored;
-  const ranked = pool.sort((a, b) => {
+  const ranked = pool.slice().sort((a, b) => {
     for (let i = 0; i < a.rank.length; i++) if (a.rank[i] !== b.rank[i]) return a.rank[i] - b.rank[i];
     return 0;
   });
   const best = ranked[0];
-  return { best, rest: ranked.slice(1), needs: best.ns, all: scored };
+  // "另外用 X 也能做"：找一条**跟 best 用的原料明显不同**、且差得不多的候选，给一句人话。
+  // 只要一条（任务书："最多一条"），而且只在它更好懂或只差一点点时才说，免得又变成话痨。
+  let altLine = '';
+  if (best) {
+    const bestIds = new Set(needs(best.r).map(s => s.sample).filter(Boolean));
+    const alt = ranked.slice(1).find(s => s.ns.some(x => x.sample && !bestIds.has(x.sample)));
+    if (alt) altLine = `另外用 ${alt.ns.map(s => `${k.label(s.sample)}×${s.need}`).join(' + ')} 也能做`;
+  }
+  return { best, rest: ranked.slice(1), needs: best.ns, altLine, all: scored };
 }
 
 function shortfallText (k, KB, id, needs) {
@@ -493,6 +558,17 @@ async function craft2 (bot, { itemName, count = 1 } = {}, withTimeout, state = n
     if (unknown.length) parts.push(`${unknown.join('、')} 在背包里有没有读不到`);
     return parts.length ? `；${parts.join('；')}` : '';
   };
+  // "家里有"按见过就算：精妙背包（`backpackSeen`）+ 开过的箱子（`seenContainers`）。
+  // 只用来在挑配方时把这一格判成"不缺"（主人 2026-09-29：优先挑"现在手上/背包里/家里箱子材料最齐的"），
+  // **不**当成身上带着的数量去展示 —— 所以合并成一张 {id: count} 只读表传给 rankRecipesFor。
+  const seenAtHome = (() => {
+    if (!state) return null;
+    const m = {};
+    const add = (items) => { for (const [id, n] of Object.entries(items || {})) m[id] = (m[id] || 0) + (n || 0); };
+    add(state.backpackSeen?.items);
+    for (const c of state.seenContainers?.values?.() || []) add(c?.items);
+    return Object.keys(m).length ? m : null;
+  })();
 
   for (const r of cands) {
     const per = r.out.find(o => o.item === id)?.count || 1;
@@ -603,16 +679,12 @@ async function craft2 (bot, { itemName, count = 1 } = {}, withTimeout, state = n
   }
   // 全试完了还是没做成：不再把每条配方的缺料混在一句里（那样她抓不住重点）。
   // 挑**最容易做的一条**说清楚缺什么，其余最多提一句"还有 N 种做法"。
-  const { best, rest, needs } = rankRecipesFor(k, KB, have, id, cands, Math.max(1, Math.ceil(count / ((cands[0].out.find(o => o.item === id)?.count) || 1))));
+  const { best, rest, needs, altLine } = rankRecipesFor(k, KB, have, id, cands, Math.max(1, Math.ceil(count / ((cands[0].out.find(o => o.item === id)?.count) || 1))), seenAtHome);
   const shortText = shortfallText(k, KB, id, needs);
-  const extra = rest.length ? `（另外还有 ${rest.length} 种做法）` : '';
-  if (shortText) {
-    // 缺料说明里**分开写**"身上有 / 背包里有 / 都没有 / 背包读不到"（AGENTS.md §5-1）。
-    // needs 里的 have 是身上的；背包那两份另查快照。
-    const shortRaw = needs.filter(s => !s.ok).map(s => s.sample).filter(Boolean);
-    throw new Error(`${shortText}${packNoteFor(shortRaw)}${extra}`);
-  }
+  // 只在**选中的那条确实缺料**时才提"另外用 X 也能做"（原料够却做不成 = 另一码事，见下面）
+  if (shortText) throw new Error(`${shortText}${packNoteFor(needs.filter(s => !s.ok).map(s => s.sample).filter(Boolean))}${altLine ? `（${altLine}）` : rest.length ? `（另外还有 ${rest.length} 种做法）` : ''}`);
   // 原料都够却没做成 = 不是"缺料"，是尝试过程出错（要工作台没找到 / 摆好了服务器没给）
+  const extra = rest.length ? `（另外还有 ${rest.length} 种做法）` : '';
   const why = [...new Set(tried)].slice(0, 2).join('；');
   throw new Error(`现在做不了 ${k.label(id)}：材料是够的${why ? `，但${why}` : '，摆了没做成'}${extra}`);
 }
@@ -1180,7 +1252,7 @@ const FOOD_RE = /(cooked|baked|roast|grilled|fried|_stew|_soup|salad|bread|pie|c
 
 const NOT_FOOD_RE = /(seeds|sapling|_block|crate|bag|_bucket$|spawn_egg|raw_|rotten|poisonous|spider_eye|pufferfish)/;
 
-module.exports = { setHandsState, FOOD_RE, NOT_FOOD_RE, applyBoxSnapshot, approach, bind, click, clickIn, cookInPot, craft2, craftByHand, craftByRecipeBook, eat, findAndApproach, fuelValue, give, pickFuel, rankRecipesFor, returnGrid, safeTransfer, settleCursor, shortfallText, smelt, snapshotContainer, sortContainer, sortInventory, sortRange, topUpFromBackpack, use, wear, withBackpackLock, withPlacedStation };
+module.exports = { setHandsState, FOOD_RE, NOT_FOOD_RE, applyBoxSnapshot, approach, bind, click, clickIn, cookInPot, craft2, craftByHand, craftByRecipeBook, eat, findAndApproach, fuelValue, give, pickFuel, pickSlotSample, rankRecipesFor, returnGrid, safeTransfer, settleCursor, shortfallText, smelt, snapshotContainer, sortContainer, sortInventory, sortRange, topUpFromBackpack, use, wear, withBackpackLock, withPlacedStation };
 
 // ------------------------------------------------------------------ 自测
 // 第 3 步重构：这几节原本挤在 hands.js 的自测段里（同一个 (async () => {…})() 外套），
@@ -1515,6 +1587,41 @@ const __sections = [
           /const doSmelt = async \(furnaceBlock, usedType\) =>/.test(t.handsSrc()), true);
         check('★ smelt 不再直接抛"16 格内没有能烧它的炉子"就完事',
           /if \(!cands\.length\) throw new Error\(`16 格内没有能烧它的炉子/.test(t.handsSrc()), false);
+      }
+  }],
+  ['[0h] 合成挑配方：优先手上/家里最齐的，都不齐挑"缺得最好弄的"（2026-09-29 问题 2）', async (t) => {
+    const { check } = t;
+    const { K, rankRecipesFor, shortfallText } = t.h;
+    const k = K(); const KB = k.load();
+    const M = (o) => new Map(Object.entries(o));
+    const pickFor = (id, have, seen = null, times = 1) => {
+      const R = (KB.byOutput.get(id) || []).map(i => KB.recipes[i]);
+      const r = rankRecipesFor(k, KB, have, id, R, times, seen);
+      return { sample: r.needs.map(s => s.sample), line: r.needs.map(s => k.label(s.sample)).join(' | '), alt: r.altLine, ok: r.needs.every(s => s.ok) };
+    };
+      console.log('\n[0h] 合成挑配方：优先手上/家里最齐的，都不齐挑"缺得最好弄的"');
+      {
+        // ① 背包里有橡木木板、没竹子 → 选木板那条（实机 2026-09-29 03:37 挑错成竹子）
+        const A = pickFor('minecraft:stick', M({ 'minecraft:oak_planks': 4 }));
+        check('★ 有木板 → 选木板那条（不选竹子）', A.sample.some(x => /oak_planks$/.test(x)) && A.ok, true);
+        // ② 两样都没有 → 仍选木板那条（原木好弄、是所有木制品的起点；竹子少见）
+        const B = pickFor('minecraft:stick', M({}));
+        check('★ 都没有 → 仍选木板（原木好弄、基础）', B.sample.some(x => /planks$/.test(x)), true);
+        check('★ 都没有时木板是"缺"的（要 2），但仍是首选', B.ok, false);
+        // ③ 只有竹子 → 选竹子那条（手上有的优先，哪怕木板更"基础"）
+        const C = pickFor('minecraft:stick', M({ 'minecraft:bamboo': 8 }));
+        check('★ 只有竹子 → 选竹子那条（手上有的优先）', C.sample.every(x => /bamboo$/.test(x)) && C.ok, true);
+        // ④ 家里箱子里有橡木木板（seen）→ 也算"不齐但最齐"，选木板那条
+        const D = pickFor('minecraft:stick', M({}), { 'minecraft:oak_planks': 4 });
+        check('★ 家里箱子有木板 → 选木板那条（seen 参与排序）', D.sample.some(x => /planks$/.test(x)), true);
+        // ⑤ 缺料说明只讲选中的那一条，另加最多一句"另外用 X 也能做"
+        const line = shortfallText(k, KB, 'minecraft:stick', rankRecipesFor(k, KB, M({}), 'minecraft:stick', (KB.byOutput.get('minecraft:stick') || []).map(i => KB.recipes[i]), 1).needs);
+        check('★ 缺料只说选中的那一条（不含"另外还有 N 种"）', /^做木棍.*还缺：[^；]*$/.test(line), true);
+        check('★ 另给一句"另外用 X 也能做"（最多一条）', /^另外用 .+ 也能做$/.test(B.alt || ''), true);
+        check('★ altLine 里只列一组（没有第二句"另外"）', (B.alt || '').split('另外').length, 2);
+        // ⑥ 排序是纯函数：同样输入两次结果一致（不靠运气/原始顺序）
+        check('★ 同样输入两次挑到同一条（纯函数）',
+          JSON.stringify(pickFor('minecraft:stick', M({})).line), JSON.stringify(pickFor('minecraft:stick', M({})).line));
       }
   }],
   ['[0f] wear：已经穿在身上 → 成功 + alreadyWorn（2026-09-29 问题 3）', async (t) => {

@@ -10,6 +10,26 @@
 |---|---|
 | `knowledge.js` | `resolve` / `recipesFor` / `usesOf` / `obtain` / `materialTree` / `guide` / `describe` —— 返回**给模型读的中文纯文本**。数据目录是 `paths.KNOWLEDGE`（= 仓库根 `knowledge/`） |
 
+### `materialTree(q, count, inventory)` 的三个不变量（2026-09-29 重写）
+
+旧的把"背包真有的"和"中途做出来的余料"混在同一个 Map 里，空背包也报"能直接用上：橡木木板×1"
+（主人报的**幻影**）。现在账目分成三张表，改它之前先读这段：
+
+- **`have`** = 传进来的 `inventory`，**途中只减不增**；
+- **`made`** = 中途做出来的余料，**绝不能进"能直接用上"**；
+- **`used`** = 只有 `take()` 从 `have` 吃掉的那部分才记 —— 这就是"能直接用上"的唯一来源。
+
+两条硬规矩：① `need()` **一律返回 `{out, need}`**（`out` = 这条链做多出来、父级用不完的），
+不许像以前那样在"原材料 / 环 / 没配方"分支里直接 `return` 而不记账；
+② `memo` 让**同一个中间产物只列一步**、数量相加（以前木镐要 3 板、木棍又要 2 板，列了两步还少算）。
+
+`inventory` 传 **`null` = 读不到背包**（说"读不到"）、传 **`[]` = 确实读过且是空的**（说"一样都没有"）
+—— "没有"和"读不到"必须分开报。
+
+挑配方：`#minecraft:planks`（所有木制品的起点）在 `rank()` 里占基础度 0，**强于**"能直接挖到"
+（原木/竹子）—— 否则做木棍会挑竹子（2026-09-29 实测）。同一套基础度判据在
+`src/body/craft.js` 的 `rankRecipesFor` 里也有（两处各自独立、都只认这一条数据标签）。
+
 数据目录（原地不动，在仓库根）：
 `knowledge/generated/`（`gamedata.json` ~20MB、`kubejs.json`，生成物不入库）、
 `knowledge/*.md` `quests.json` `item-names.json`（`build_kb.py` 组装的产物，入库）、
