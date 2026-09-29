@@ -7,7 +7,7 @@
    "track": "mainline",
    "stage": "start",
    "deps": [],
-   "hint": "进游戏第一件事：开任务书读【游玩须知】9 个任务。 任务书里点对号 / 交物品就算。",
+   "hint": "进游戏第一件事：开任务书读【游玩须知】9 个任务。 看完了去任务书里点对号就算。",
    "feasible": "yes",
    "mods": [
     "ftbquests"
@@ -61,7 +61,7 @@
    "deps": [
     "g2-open-quest"
    ],
-   "hint": "R 看来源、U 看用途、B 跳百科、O 开商店、按住 ~ 连锁挖掘。 任务书里点对号 / 交物品就算。",
+   "hint": "R 看来源、U 看用途、B 跳百科、O 开商店、按住 ~ 连锁挖掘。 看完了去任务书里点对号就算。",
    "feasible": "yes",
    "mods": [
     "ftbquests"
@@ -413,7 +413,7 @@
    "deps": [
     "g2-f2-harvest"
    ],
-   "hint": "作物来源**被作者魔改**了，别按原模组攻略找，以【作物图鉴】为准。 任务书里点对号 / 交物品就算。",
+   "hint": "作物来源**被作者魔改**了，别按原模组攻略找，以【作物图鉴】为准。 做到 / 拿到之后，去任务书把东西交上才算数。",
    "feasible": "partial",
    "mods": [
     "ftbquests"
@@ -602,7 +602,7 @@
    "deps": [
     "g2-c2-firstdish"
    ],
-   "hint": "食录逸闻 20 章 / 2574 个食物任务，是这包最大的「图鉴」。 任务书里点对号 / 交物品就算。",
+   "hint": "食录逸闻 20 章 / 2574 个食物任务，是这包最大的「图鉴」。 做到 / 拿到之后，去任务书把东西交上才算数。",
    "feasible": "partial",
    "mods": [
     "ftbquests",
@@ -744,7 +744,7 @@
    "deps": [
     "g2-e3-nether"
    ],
-   "hint": "找要塞、填末影之眼、进末地打龙。 任务书里点对号 / 交物品就算。",
+   "hint": "找要塞、填末影之眼、进末地打龙。 做到 / 拿到之后，去任务书把东西交上才算数。",
    "feasible": "partial",
    "mods": [
     "minecraft",
@@ -877,7 +877,7 @@
    "deps": [
     "g2-b1-boss"
    ],
-   "hint": "「逐级击破-末影龙前」里挑一个，打完拿掉落物。 任务书里点对号 / 交物品就算。",
+   "hint": "「逐级击破-末影龙前」里挑一个，打完拿掉落物。 做到 / 拿到之后，去任务书把东西交上才算数。",
    "feasible": "partial",
    "mods": [
     "meetyourfight"
@@ -918,7 +918,7 @@
    "deps": [
     "g2-b3-bossdish"
    ],
-   "hint": "做完料理回任务书领任务 → 商店解锁 → 再买 Boss 掉落物。 任务书里点对号 / 交物品就算。",
+   "hint": "做完料理回任务书领任务 → 商店解锁 → 再买 Boss 掉落物。 做到 / 拿到之后，去任务书把东西交上才算数。",
    "feasible": "partial",
    "mods": [
     "ftbquests",
@@ -1000,7 +1000,7 @@
    "deps": [
     "g2-b7-postdragon"
    ],
-   "hint": "「Boss电话本」章：用 cataclysm:*_eye 在指定结构召唤。 任务书里点对号 / 交物品就算。",
+   "hint": "「Boss电话本」章：用 cataclysm:*_eye 在指定结构召唤。 做到 / 拿到之后，去任务书把东西交上才算数。",
    "feasible": "partial",
    "mods": [
     "cataclysm",
@@ -1198,7 +1198,7 @@
    "deps": [
     "g2-m4-brass"
    ],
-   "hint": "「铳械协议」章 18 任务（TaCZ 枪械线）。 任务书里点对号 / 交物品就算。",
+   "hint": "「铳械协议」章 18 任务（TaCZ 枪械线）。 做到 / 拿到之后，去任务书把东西交上才算数。",
    "feasible": "partial",
    "mods": [
     "tacz",
@@ -1456,7 +1456,7 @@
    "deps": [
     "g2-ec1-bin"
    ],
-   "hint": "「模拟经营」章 13 任务，ordertocook 开小店接单。 任务书里点对号 / 交物品就算。",
+   "hint": "「模拟经营」章 13 任务，ordertocook 开小店接单。 做到 / 拿到之后，去任务书把东西交上才算数。",
    "feasible": "partial",
    "mods": [
     "ordertocook"
@@ -1473,7 +1473,7 @@
    "deps": [
     "g2-ec3-money"
    ],
-   "hint": "「钱坤大挪移」章 5 任务，polaristrading 做交易。 任务书里点对号 / 交物品就算。",
+   "hint": "「钱坤大挪移」章 5 任务，polaristrading 做交易。 看完了去任务书里点对号就算。",
    "feasible": "yes",
    "mods": [
     "polaristrading",
@@ -1535,7 +1535,7 @@
    "deps": [
     "g2-h4-pet"
    ],
-   "hint": "「永恒的回忆」章 21 任务：生物帽子等收集物。 任务书里点对号 / 交物品就算。",
+   "hint": "「永恒的回忆」章 21 任务：生物帽子等收集物。 做到 / 拿到之后，去任务书把东西交上才算数。",
    "feasible": "partial",
    "mods": [
     "animalhatmod",
@@ -1554,7 +1554,7 @@
    "deps": [
     "g2-b6-simplyswords"
    ],
-   "hint": "「异界神器库」章 20 任务。 任务书里点对号 / 交物品就算。",
+   "hint": "「异界神器库」章 20 任务。 做到 / 拿到之后，去任务书把东西交上才算数。",
    "feasible": "partial",
    "mods": [
     "lethality",
@@ -1573,7 +1573,7 @@
    "deps": [
     "g2-c2-firstdish"
    ],
-   "hint": "「厨神之证」章 112 任务是全包最大的单项收集。 任务书里点对号 / 交物品就算。",
+   "hint": "「厨神之证」章 112 任务是全包最大的单项收集。 做到 / 拿到之后，去任务书把东西交上才算数。",
    "feasible": "partial",
    "mods": [
     "immortalers_delight",
@@ -1610,7 +1610,7 @@
    "deps": [
     "g2-z3-godproof"
    ],
-   "hint": "「致谢名单」章 38 任务，是任务书的片尾。 任务书里点对号 / 交物品就算。",
+   "hint": "「致谢名单」章 38 任务，是任务书的片尾。 做到 / 拿到之后，去任务书把东西交上才算数。",
    "feasible": "partial",
    "mods": [
     "smc",
@@ -2350,8 +2350,8 @@
     "g2-cropnether",
     "g2-cropend"
    ],
-   "hint": "「图鉴收集」章 5 任务，是作物图鉴的收尾。 任务书里点对号 / 交物品就算。",
-   "feasible": "yes",
+   "hint": "「图鉴收集」章 5 任务，是作物图鉴的收尾。 真收齐了再去任务书点对号，不是先点。",
+   "feasible": "partial",
    "mods": [
     "ftbquests"
    ],
@@ -2392,8 +2392,8 @@
    "deps": [
     "g2-s10-diamond"
    ],
-   "hint": "「难度调节」章 3 任务，本包允许玩家自己调难度。 任务书里点对号 / 交物品就算。",
-   "feasible": "yes",
+   "hint": "「难度调节」章 3 任务，本包允许玩家自己调难度。 难度是主人的事，她不自己改。",
+   "feasible": "no",
    "mods": [
     "ftbquests"
    ],
@@ -2409,7 +2409,7 @@
    "deps": [
     "g2-ec3-money"
    ],
-   "hint": "任务书里有经济排行类内容（见 mainline 的 GDP 相关，01-audit 提及）。 任务书里点对号 / 交物品就算。",
+   "hint": "任务书里有经济排行类内容（见 mainline 的 GDP 相关，01-audit 提及）。 做到 / 拿到之后，去任务书把东西交上才算数。",
    "feasible": "partial",
    "mods": [
     "ftbquests"
@@ -2662,7 +2662,7 @@
    "deps": [
     "g2-z3-godproof"
    ],
-   "hint": "「厨神之证」章 112 任务，immortalers_delight(14) 与 vefc(8) 领先。 任务书里点对号 / 交物品就算。",
+   "hint": "「厨神之证」章 112 任务，immortalers_delight(14) 与 vefc(8) 领先。 做到 / 拿到之后，去任务书把东西交上才算数。",
    "feasible": "partial",
    "mods": [
     "immortalers_delight"

@@ -42,7 +42,7 @@
 ## 自测
 
 ```bash
-$NODE src/mind/mind.js --selftest; $NODE src/mind/memory-store.js --selftest
+$NODE mind.js --selftest; $NODE src/mind/memory-store.js --selftest
 $NODE src/mind/night.js --selftest; $NODE src/mind/plan.js --selftest
 $NODE src/mind/speech.js --selftest; $NODE src/mind/ambition.js --selftest
 $NODE src/mind/self-review.js --selftest; $NODE src/mind/events-reader.js --selftest
