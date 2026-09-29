@@ -19,9 +19,9 @@ const { W, CFG, body, speech, mem, knowledge, ambition, review, ledgerLib, night
 const { log, hhmmss, scene, emit, chatWaitLeft, typingMs, chatGate, scheduleThink } = require('./runtime');
 const { humanState, combatInstinct, survivalFocus, dropLine, invText, surroundLine } = require('./scene');
 const { startJob, fmtArgs, runTool, toolResultLine, learnFromDoing } = require('./actions');
-const { ALL, kindOf, GROUP_CUES, groupsFromBody, pickSpecs, activeGroups } = require('./tools');
+const { ALL, kindOf, GROUP_CUES, groupsFromBody, pickSpecs, activeGroups, groupsFromTasks } = require('./tools');
 const { SYSTEM } = require('./prompt');
-const { DELEGATES, ASKS_BACK, DECIDE_NUDGE, ASKS_WHERE, LOOK_NUDGE, SAY_NUDGE, ACTION_NUDGE, isBareAffirmative, QUIET_MS, RECENT_CLAIM_MS, PLAYER_MOVE_TOOLS, PLAYER_MOVE_RE, TASK_ASK_RE, taskDoneAllowed, HONEST_NUDGE, isOverAsking, lastProactiveUnanswered, liveFails, unbackedClaim, REPORT_NUDGE, ASK_TOO_MUCH_NUDGE, ASK_BACK_NUDGE, torchAskAllowed } = require('./gates');
+const { DELEGATES, ASKS_BACK, DECIDE_NUDGE, ASKS_WHERE, LOOK_NUDGE, SAY_NUDGE, ACTION_NUDGE, isBareAffirmative, QUIET_MS, RECENT_CLAIM_MS, PLAYER_MOVE_TOOLS, PLAYER_MOVE_RE, TASK_ASK_RE, taskDoneAllowed, HONEST_NUDGE, isOverAsking, lastProactiveUnanswered, liveFails, unbackedClaim, REPORT_NUDGE, ASK_TOO_MUCH_NUDGE, ASK_BACK_NUDGE, torchAskAllowed, dropTellAllowed } = require('./gates');
 const wiring = require('./wiring');
 const paths = require('../../paths');   // knowledge/ 路径（查任务书章名·任务名用，见 questLabel）
 // 工具表在 tools.js —— 延迟取同一份（tools 也会回头用本文件的 buildNow，见 wiring.js）
@@ -144,8 +144,15 @@ function planLine (why) {
  * 阈值和文案（含"主人交代"、"做到第 N 步"、"被打断：…"）都不在这里 —— 见 `tasks.contextLines`，
  * 免得一个文案两处写、改了一处漏一处。
  */
-function tasksBlock () {
-  try { return tasks().contextLines(); } catch (_) { return ''; }
+function tasksBlock (why) {
+  try {
+    const T = tasks();
+    // 她自己想做、放太久的先标过期；过期不静默（设计第七节）—— 攒下的提醒这一轮说一次
+    T.sweepExpired();
+    const notes = T.takeNotices();
+    const lines = T.contextLines({ idle: why === 'idle' });
+    return [lines, ...notes.map(n => `（${n}）`)].filter(Boolean).join('\n');
+  } catch (_) { return ''; }
 }
 
 function buildNow (why) {
@@ -223,7 +230,7 @@ function buildNow (why) {
     (() => { const open = (s?.doors || []).filter(d => d.open); return open.length ? `身边开着的门：${open.slice(0, 5).map(d => `${d.kind}(${d.x},${d.y},${d.z})`).join('、')}` : ''; })(),
     bodyNow(),
     (() => { const ci = combatInstinct(s); return ci ? `身体正在自己打${ci.name}${ci.killed ? `（已经打死 ${ci.killed} 只）` : ''}（战斗本能），不用你动手；要逃就说逃` : ''; })(),
-    tasksBlock(),
+    tasksBlock(why),
     (() => { const f = survivalFocus(s); return f.length ? `\n【眼下最该操心的】\n${f.map(x => `· ${x}`).join('\n')}` : ''; })(),
     surroundLine(s),
     W.projects?.length ? `\n【进行中的工程】${W.projects.map(p => `${p.name}(${p.id}) 完成 ${p.done}，还要挖 ${p.toDig}、放 ${p.toPlace}${Object.keys(p.missing || {}).length ? `，缺 ${Object.entries(p.missing).slice(0, 4).map(([k, n]) => `${knowledge.label(k.includes(':') ? k : 'minecraft:' + k).replace(/\(.*\)$/, '')}×${n}`).join('、')}` : ''}`).join('；')}` : '',
@@ -352,13 +359,15 @@ async function think (why) {
   // 就替他建一件 `source='player'` 的任务 —— 这样"被打断 / 他没再说"都不会丢事。
   // 同一句话、同一件事重复说 → `tasks.create` 认出 key 一样且没收尾，返回原来那件，不重复堆。
   // ⚠️ 只在他**真的说了**（`ev` 里带名字的"说："）时建 —— 她自己在心里想的、身体回报的不算。
+  // 他这一刻交代的那件（最后一句）：她这一轮动手时，这串动作算在它上面（tasks.jobPlan 的 playerTaskId）
+  let askedTaskId = null;
   {
     const saidEvs = now.ev.filter(e => /说：/.test(e.text) && e.names?.length);
     for (const e of saidEvs) {
       const txt = e.text.replace(/^[^：]*说：/, '').trim();
       if (!txt || !TASK_ASK_RE.test(txt)) continue;
       const who = e.names[0];
-      tasks().create({ title: txt.slice(0, 30), said: txt, source: 'player', askedBy: who, heardAt: e.t });
+      try { askedTaskId = tasks().create({ title: txt.slice(0, 30), said: txt, source: 'player', askedBy: who, heardAt: e.t }).task.id; } catch (_) {}
     }
     // "都别做了 / 算了 / 不用了"（判据 `tasks.DROP_ALL_RE`，只此一份）→ player 任务全部放下；self 不动。
     // 她自己会照队列回答"不做了"，这里只把记录改对，不替她说话。
@@ -380,8 +389,9 @@ async function think (why) {
     for (const c of GROUP_CUES) if (c.re.test(talk)) for (const g of c.groups) groupsOn.add(g);
     for (const g of groupsFromBody(W.state)) groupsOn.add(g);
   }
-  // 这一轮真正要发的工具：每次调模型前重算 —— 她这一轮里刚用 tools(group) 叫进来的组要立刻生效
-  const specsForRound = () => pickSpecs(W.state, new Set([...groupsOn, ...activeGroups()]));
+  // 这一轮真正要发的工具：每次调模型前重算 —— 她这一轮里刚用 tools(group) 叫进来的组要立刻生效；
+  // 队列里有事就带 task 组（她这一轮刚 task_add 了第一件，下一次调模型就有 task_done / task_resume 用 —— 阶段 2）
+  const specsForRound = () => pickSpecs(W.state, new Set([...groupsOn, ...activeGroups(), ...groupsFromTasks()]));
   // 有时模型先查配方/用途，顺手说一句“好”，然后把这一刻当成做完了。
   // 这不是“只查资料就停”的合理结束：答应过的事要么开始做，要么说明做不到。
   let nudgedToAct = false;
@@ -469,6 +479,8 @@ async function think (why) {
         // 一次交代只放行一次（见 taskDoneAllowed）。
         const doneOk = name === 'say' && taskDoneAllowed(String(args.text || ''), { lastTaskAskedAt: W.lastTaskAskedAt, lastTaskDoneSaidAt: W.lastTaskDoneSaidAt });
         if (doneOk) W.lastTaskDoneSaidAt = Date.now();
+        // 刚用 task_drop 放下了主人交代的事 → "不做了 / 做不成"那一句跟他说一声，只免"少汇报"这道（判据 gates.dropTellAllowed）
+        const dropOk = name === 'say' && !doneOk && dropTellAllowed(String(args.text || ''), W.dropTell);
         // 火把开关（2026-09-29）：本能请她问的"家里挺暗的，要插火把吗"—— **唯一**放行的反问。
         // 判据在 gates.torchAskAllowed（带 askPlayer:'torch' 标记 + 本体对得上 + 同一问题冷却）。
         // 放行只免掉"反问 / 少问"那道闸；这句话是本能请她问的（家里插不插火把归主人定），
@@ -486,7 +498,7 @@ async function think (why) {
           W.history.push({ role: 'tool', tool_call_id: c.id, content: JSON.stringify({ ok: false, error: nudgedOnce(backNudged) ? ASK_BACK_NUDGE : '（这一条也没发出去：你还是把问题丢回给他了。自己定一个说出来。）' }) });
           continue;
         }
-        if (name === 'say' && !heJustSpoke && !doneOk && speech.classify(String(args.text || '')) === 'report' &&
+        if (name === 'say' && !heJustSpoke && !doneOk && !dropOk && speech.classify(String(args.text || '')) === 'report' &&
             Date.now() - (W.lastHeardAt || 0) > QUIET_MS) {
           // 播报自己的动作 / 进度，他最近没问她 → 不发（他看得见）。2026-09-29 主人："尽量少汇报自己的动作状态"
           quietNudged++;
@@ -502,7 +514,7 @@ async function think (why) {
           W.history.push({ role: 'tool', tool_call_id: c.id, content: JSON.stringify({ ok: false, error: nudgedOnce(askNudged) ? ASK_TOO_MUCH_NUDGE : '（这一条也没发出去：你还在问他。能自己决定的自己决定；真只有他知道的下次再说。）' }) });
           continue;
         }
-        if (name === 'say') { saying.push({ c, args, p: runTool(name, args) }); continue; }
+        if (name === 'say') { saying.push({ c, args, p: runTool(name, args), dropOk }); continue; }
         if (!k) { out = { ok: false, error: `没有 ${name} 这个工具` }; needMore = true; review.record({ kind: 'unknown_tool', tool: name, args, ...scene(3) }); }
         else if (k === 'end') { out = { ok: true }; end = true; }
         else if (k === 'action') { actions.push({ tool: name, args: normalizeArgs(name, args) }); out = { ok: true, note: '身体开始做了，做完会告诉你' }; }
@@ -547,14 +559,15 @@ async function think (why) {
         const why = String(msg.content || talk || now.ev.map(e => e.text.replace(/^\S+\s/, '')).join(' ')).replace(/\s+/g, ' ').slice(0, 60);
         // `heardPlayer` 传下去 → 她动手时若把手上那件打断了，理由是"主人插了别的事"（player）
         // 而不是"自己想换"（self）。判据用在哪、怎么用都在 tasks.interruptKind / pauseWhyFor（只此一份）。
-        startJob(actions, why, { heardPlayer });
+        startJob(actions, why, { heardPlayer, playerTaskId: askedTaskId });
       }
       // 动作已经开始了，再等话打完发出去（以前先打字、打完才动 —— 说了"来啦"要好几秒才迈腿）
-      for (const { c, args, p } of saying) {
+      for (const { c, args, p, dropOk } of saying) {
         const out = await p;
         if (args.inner) log(`💭 ${String(args.inner).slice(0, 120)}`);
         if (out.ok) {
           didSay.push(args.text || args.message); sentN += (out.sent || []).length;
+          if (dropOk) W.dropTell = null;   // 放下那件事说过一声了：口子关上（一次放下只放行一句）
           // 真的问出去了才记时间（见 isOverAsking）：拦下的不算，追问才拦得住
           if (speech.classify(String(args.text || '')) === 'ask') W.lastAskedAt = Date.now();
           // 火把问题真说出去了 → 记这一问的时刻（见 gates.torchAskAllowed）：

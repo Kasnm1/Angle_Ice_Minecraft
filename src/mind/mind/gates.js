@@ -72,6 +72,23 @@ function taskDoneAllowed (text, { now = Date.now(), lastTaskAskedAt = 0, lastTas
   return !(lastTaskDoneSaidAt && lastTaskDoneSaidAt >= lastTaskAskedAt);
 }
 
+/**
+ * 放下主人交代的事时"跟他说一声"那一句（任务队列阶段 2，设计第四节 `task_drop`：主人交代的放弃要跟主人说一声）。
+ *
+ * 为什么要单开：这句话（"铁镐先不做了 附近没铁"）`speech.classify` 判成 `report`、`TASK_DONE_RE` 也对不上，
+ * 他 30 秒没开口就会被"少汇报"那道闸当成播报拦下 —— 她明明该说，却说不出去（自测 ★ 对照组钉着）。
+ *
+ * 放行条件（**全中才放**，只免"少汇报"那一道；诚实 / 反问 / 少问照拦）：
+ *   ① `task_drop` 刚放下了一件**主人交代的**（`W.dropTell`，由工具设，发出去一次就清掉）；
+ *   ② 放下之后 `TASK_WINDOW_MS` 以内；
+ *   ③ 说的是"不做了 / 做不成 / 找不到"这类（`DROP_TELL_RE`）—— 借这个口子说别的播报，照拦。
+ */
+const DROP_TELL_RE = /(不做了|先不做|不弄了|先不弄|做不了|做不成|弄不了|没法做|没办法|放下了|先放下|先放一放|找不到|没找到|挖不到|没挖到)/;
+function dropTellAllowed (text, tell, { now = Date.now() } = {}) {
+  if (!tell || !tell.at || now - tell.at > TASK_WINDOW_MS) return false;
+  return DROP_TELL_RE.test(String(text || ''));
+}
+
 /** 问他的节流：这么久之内第 2 次问就拦（同一个问题他没回、又问一次，也拦） */
 const ASK_COOLDOWN_MS = 5 * 60 * 1000;
 
@@ -208,4 +225,4 @@ module.exports = { isBareAffirmative, taskDoneAllowed, isOverAsking, lastProacti
   claimState, liveFails, unbackedClaim, FACT_CLAIMS, REPORT_NUDGE, ASK_TOO_MUCH_NUDGE, ASK_BACK_NUDGE, HONEST_NUDGE,
   QUIET_MS, ASK_COOLDOWN_MS, DELEGATES, ASKS_BACK, DECIDE_NUDGE, ASKS_WHERE, LOOK_NUDGE, SAY_NUDGE,
   ACTION_NUDGE, RECENT_CLAIM_MS, PLAYER_MOVE_TOOLS, PLAYER_MOVE_RE, TASK_WINDOW_MS, TASK_ASK_RE, TASK_DONE_RE,
-  torchAskAllowed, TORCH_ASK_RE, TORCH_ASK_COOLDOWN_MS };
+  torchAskAllowed, TORCH_ASK_RE, TORCH_ASK_COOLDOWN_MS, DROP_TELL_RE, dropTellAllowed };

@@ -21,7 +21,7 @@ const { humanState, tonight, combatInstinct, combatGuard, attackGuardReason, sur
   dayKey, dropsNear, dropLine, invText, surroundNeeds, surroundLine, pickJoinMood, JOIN_MOODS } = require('./scene');
 const { look } = require('./look');
 const { MIND_TOOLS, ALL, SPECS, GROUPS, TOOL_GROUPS, UNGROUPED, GROUP_ROUNDS, GROUP_CUES,
-  groupsFromBody, pickSpecs, activateGroup, activeGroups, kindOf } = require('./tools');
+  groupsFromBody, pickSpecs, activateGroup, activeGroups, kindOf, groupsFromTasks } = require('./tools');
 const { startJob, runTool, fmtArgs, toolResultLine, celebrate, learnFromDoing,
   instinctEat, NAME_RE, FAST, matchFast, fastPath } = require('./actions');
 const { historyChars, bodyNow, knownStations, shortName, homeStockItems, planFacts, planExtras,
@@ -32,7 +32,7 @@ const { isBareAffirmative, taskDoneAllowed, isOverAsking, lastProactiveUnanswere
   liveFails, unbackedClaim, FACT_CLAIMS, REPORT_NUDGE, ASK_TOO_MUCH_NUDGE, HONEST_NUDGE, QUIET_MS,
   ASK_COOLDOWN_MS, DELEGATES, ASKS_BACK, DECIDE_NUDGE, ASKS_WHERE, LOOK_NUDGE, SAY_NUDGE,
   ACTION_NUDGE, RECENT_CLAIM_MS, PLAYER_MOVE_TOOLS, PLAYER_MOVE_RE, TASK_WINDOW_MS, TASK_ASK_RE,
-  TASK_DONE_RE, torchAskAllowed, TORCH_ASK_COOLDOWN_MS } = require('./gates');
+  TASK_DONE_RE, torchAskAllowed, TORCH_ASK_COOLDOWN_MS, dropTellAllowed } = require('./gates');
 const { SYSTEM } = require('./prompt');
 
 // 防抖计时器只此一份（runtime.js 里那两个模块级 let）：读 / 清走这三个。
@@ -905,7 +905,14 @@ async function selftest () {
     // 每个按需组都得能"激活"（有 tools(group) 这条路；关键词/身体至少一条自动路径）
     const autoByCue = new Set(GROUP_CUES.flatMap(c => c.groups));
     const autoByBody = new Set([...groupsFromBody({ dark: true }), ...groupsFromBody({ nearby: [{ name: 'cow', kind: 'animal', distance: 3 }] }), ...groupsFromBody({ unseenChests: [{ name: 'chest', at: 1 }] })]);
-    check('每个按需组都至少有一条自动激活的路（关键词或身体）', Object.keys(GROUPS).filter(g => g !== 'core').every(g => autoByCue.has(g) || autoByBody.has(g)), Object.keys(GROUPS).filter(g => g !== 'core' && !autoByCue.has(g) && !autoByBody.has(g)));
+    // 第三条自动路径（阶段 2）：队列里有事 → task 组（跑的是 think 里用的那份 groupsFromTasks）
+    const autoByTasks = (() => {
+      const T = require('./tasks'); const keep = W.tasks;
+      W.tasks = { seq: 0, list: [], loaded: true };
+      try { T.create({ title: '自测：排着一件', source: 'self' }); return groupsFromTasks(); } finally { W.tasks = keep; }
+    })();
+    const auto = (g) => autoByCue.has(g) || autoByBody.has(g) || autoByTasks.has(g);
+    check('每个按需组都至少有一条自动激活的路（关键词 / 身体 / 任务队列）', Object.keys(GROUPS).filter(g => g !== 'core').every(auto), Object.keys(GROUPS).filter(g => g !== 'core' && !auto(g)));
     check('暗处 / 要火把：建造组带出来（不然 light_up、make_torches 使不上）', groupsFromBody({ dark: true, nearby: [], items: [], equipment: {} }).has('build'));
     check('身上有煤木棍但没火把：建造组也带出来（能做火把）', groupsFromBody({ dark: false, torches: 0, nearby: [], items: [{ name: 'coal', count: 3 }], equipment: {} }).has('build'));
     // ---- ★ R-fix4-6：手持字段是 equipment.hand（不是 mainhand）
@@ -1288,21 +1295,29 @@ async function selftest () {
       });
       await startJob([{ tool: 'mine', args: {} }], '去挖铁', { taskId: E.id });
       check('★ 身体忙 → 重试到成功（一共试了 3 次）', tries === 3, tries);
-      check('★ 重试期间任务没被标 failed', T.get(E.id).status === 'done', T.get(E.id).status);
+      // 阶段 2 起：明确的任务一串做完**不自动算做完**（要 task_done + 证据），做成的那步记进证据
+      check('★ 重试期间任务没被标 failed（还在手上，做成的那步记进了证据）', T.get(E.id).status === 'running' && (T.get(E.id).evidence || []).length === 1, T.get(E.id));
       body._setBridge(prevBridge);   // 装回真的那份桥
     }
 
     // ── 2c) 重试也没用 → 才当失败（真失败才标 failed）
     {
       resetT();
-      const { task: F } = T.create({ title: '挖不动的矿', source: 'self', steps: [{ tool: 'mine' }] });
+      // 阶段 2：自动包的那件（她没有手上的事时直接发的动作）真失败才标 failed；明确的那件不标，记下卡在哪
+      const { task: F } = T.create({ title: '挖不动的矿', source: 'self', steps: [{ tool: 'mine' }], auto: true });
       T.setRunning(F.id);
       const prevBridge = { get: bridge.get, post: bridge.post };
       let tries = 0;
       body._setBridge({ post: async (p, b) => (p === '/mine' ? (++tries, { success: false, error: '身体忙（busy）' }) : prevBridge.post(p, b)) });
       await startJob([{ tool: 'mine', args: {} }], '挖矿', { taskId: F.id });
       check('★ 一直忙 → 试满 4 次（1 次 + 3 次重试）就当失败', tries === 4, tries);
-      check('★ 真失败才标 failed（不静默）', T.get(F.id).status === 'failed', T.get(F.id).status);
+      check('★ 自动包的那件：真失败才标 failed（不静默）', T.get(F.id).status === 'failed', T.get(F.id).status);
+      const { task: G } = T.create({ title: '帮我挖点铁', said: '帮我挖点铁', source: 'player' });
+      T.setRunning(G.id);
+      await startJob([{ tool: 'mine', args: {} }], '挖铁', { taskId: G.id });
+      check('★ 主人交代的：一串没做成 → 不标 failed（不从队列里消失），记下卡在哪', T.get(G.id).status === 'running' && /身体忙/.test(T.get(G.id).lastFail || ''), T.get(G.id));
+      const failEv = W.pending.map(e => e.text).reverse().find(e => /❌ mine/.test(e)) || '';
+      check('★ "❌ 没做成"那条事件后面带着"还没标做完（卡在…）"的提醒', /#\d+ 帮我挖点铁 还没标做完（卡在：mine → 身体忙/.test(failEv), failEv);
       body._setBridge(prevBridge);
     }
 
@@ -1409,6 +1424,73 @@ async function selftest () {
       check('★ 不同目的地 → 不提醒', go(300, 300) === '', T.spotTries);
     }
 
+    // ── 9) 阶段 2：真跑的那份 startJob + task_* 工具（不只调 tasks.js）
+    resetT();
+    {
+      const prevBridge = { get: bridge.get, post: bridge.post };
+      body._setBridge({ get: prevBridge.get, post: async (p, b) => (p === '/craft' ? { success: true, crafted: 'minecraft:stick' } : prevBridge.post(p, b)) });
+      // 他交代 → 自动进队列；她这一轮动手（playerTaskId）→ 这串算在他交代的那件上
+      const { task: P } = T.create({ title: '帮我做把铁镐', said: '帮我做把铁镐', source: 'player', askedBy: 'Ka_sum1' });
+      await startJob([{ tool: 'craft', args: { itemName: 'stick' } }], '先做木棍', { heardPlayer: true, playerTaskId: P.id });
+      check('★ 他刚交代、她动手 → 这串算在他那件上（running、有证据）', T.get(P.id).status === 'running' && (T.get(P.id).evidence || []).length === 1, T.get(P.id));
+      const i0 = T.get(P.id).interruptions;
+      await startJob([{ tool: 'craft', args: { itemName: 'stick' } }], '再做一次', { heardPlayer: false });
+      check('★ 接着做同一件（没说换）→ 不算被打断', T.get(P.id).interruptions === i0 && T.get(P.id).status === 'running', T.get(P.id));
+      const okEv = W.pending.map(e => e.text).reverse().find(e => /✅ 做完了/.test(e)) || '';
+      check('★ "✅ 做完了"后面带着"还没标做完 —— 真做完了用 task_done"', /#\d+ 帮我做把铁镐 还没标做完.*task_done/.test(okEv), okEv);
+      // 工具走 ALL（和模型调的是同一份）
+      const names = (groups) => pickSpecs(W.state, groups).map(s => s.function?.name || s.name);
+      check('★ task_add 常驻（队列空着也能记事）', names(new Set()).includes('task_add'), true);
+      check('★ 队列里有事 → 自动带 task 组（note / done / drop / resume 都在手上）', groupsFromTasks().has('task') && ['task_note', 'task_done', 'task_drop', 'task_resume'].every(n => names(groupsFromTasks()).includes(n)), [...groupsFromTasks()]);
+      const r1 = await runTool('task_done', { result: '做好了木棍' });
+      check('★ task_done 有证据 → 做完', r1.ok === true && T.get(P.id).status === 'done', r1);
+      // 没有手上的事、直接发动作 → 自动包一件 self，做完自动收尾
+      await startJob([{ tool: 'craft', args: { itemName: 'stick' } }], '顺手做点木棍', {});
+      const au = T.all().find(t => t.auto);
+      check('★ 没有手上的事直接动手 → 自动包一件（self, auto），做完自动 done', au && au.source === 'self' && au.status === 'done', au);
+      const r2 = await runTool('task_done', {});
+      check('手上没事时 task_done → 拒绝并说清楚', r2.ok === false && /手上没有在做的事/.test(r2.error), r2);
+      resetT();
+      check('★ 队列空了 → 不带 task 组（省工具说明的篇幅）', groupsFromTasks().size === 0, [...groupsFromTasks()]);
+      body._setBridge(prevBridge);
+    }
+
+    // ── 10) 阶段 2：放下主人交代的事 → 允许跟他说一声（走真的 think + 说话闸，假模型）
+    {
+      const line = '铁镐先不做了 附近没铁';
+      check('前提：这句话本来会被当成"播报"（不然下面的对照没意义）', speech.classify(line) === 'report', speech.classify(line));
+      const runRound = async (steps) => {
+        const said = []; const mb = mockBridge();
+        body._setBridge({ get: mb.get, post: async (p, b) => { if (p === '/chat') said.push((b.messages || [b.message]).join('/')); return mb.post(p, b); } });
+        body._setLLM(async () => steps.shift() || { content: '', tool_calls: [{ id: `w${Math.random()}`, function: { name: 'wait', arguments: '{}' } }] });
+        // 他 5 分钟没开口、交代是 1 小时前的事（"做完说一声"的 10 分钟窗口早过了）
+        W.history = []; W.lastNow = null; W.pending = []; W.chatWait = null; W.lastHeardAt = Date.now() - 5 * 60 * 1000;
+        W.lastTaskAskedAt = Date.now() - 60 * 60 * 1000; W.lastAskedAt = 0; W.lastProactive = null;
+        emit('❌ mine 没做成：附近没有铁矿', { names: [] });
+        for (let i = 0; i < 40 && (W.thinking || thinkTimerValue() || W.pending.length); i++) await new Promise(r => setTimeout(r, 100));
+        await new Promise(r => setTimeout(r, 200));
+        return said;
+      };
+      // 对照组：没放下，同一句 → 被当播报拦下
+      resetT(); W.dropTell = null;
+      const T0 = T.create({ title: '帮我做把铁镐', said: '帮我做把铁镐', source: 'player', askedBy: 'Ka_sum1' }).task;
+      const s0 = await runRound([{ content: '', tool_calls: [{ id: 'y1', function: { name: 'say', arguments: JSON.stringify({ text: line }) } }] }]);
+      check('对照：没 task_drop，这句"不做了"被当播报拦下', !s0.some(x => /不做了/.test(x)), s0);
+      // 放下（主人交代的，写了原因）→ 这一句说得出去
+      const s1 = await runRound([
+        { content: '', tool_calls: [{ id: 'z1', function: { name: 'task_drop', arguments: JSON.stringify({ id: T0.id, why: '附近找不到铁' }) } }] },
+        { content: '', tool_calls: [{ id: 'z2', function: { name: 'say', arguments: JSON.stringify({ text: line }) } }] },
+      ]);
+      check('★ task_drop 放下主人交代的 → 那一句"不做了"发出去了', s1.some(x => /不做了/.test(x)), s1);
+      check('★ 任务确实放下了（dropped，原因记着）', T.get(T0.id).status === 'dropped' && /附近找不到铁/.test(T.get(T0.id).progress || ''), T.get(T0.id));
+      check('★ 说过一次口子就关上（一次放下只放行一句）', W.dropTell === null, W.dropTell);
+      const s2 = await runRound([{ content: '', tool_calls: [{ id: 'y2', function: { name: 'say', arguments: JSON.stringify({ text: line }) } }] }]);
+      check('再说一遍同样的 → 照拦（口子已关）', !s2.some(x => /不做了/.test(x)), s2);
+      check('借口子说别的播报 → 照拦（判据只认"不做了 / 做不成 / 找不到"）', dropTellAllowed('我去插火把', { at: Date.now() }) === false && dropTellAllowed(line, { at: Date.now() }) === true && dropTellAllowed(line, { at: Date.now() - 11 * 60 * 1000 }) === false);
+      body._setBridge(mockBridge());
+      W.lastHeardAt = 0; W.lastTaskAskedAt = 0;
+    }
+
     try { require('fs').unlinkSync(tmpT); } catch (_) {}
     process.env.MC_TASKS_FILE = require('path').join(require('os').tmpdir(), `tasks-selftest-${process.pid}.json`);   // 还原成整个自测用的临时文件（删掉 env 会写回真的 memory）
     resetT();
@@ -1416,6 +1498,8 @@ async function selftest () {
     void n0;
   }
 
+  // 收尾：整个自测用的临时任务文件删掉（原来每跑一次在临时目录留一个 tasks-selftest-<pid>.json）
+  { const f = require('path').join(require('os').tmpdir(), `tasks-selftest-${process.pid}.json`); for (const p of [f, f + '.tmp']) { try { require('fs').unlinkSync(p); } catch (_) {} } }
   console.log(`\n  ${pass}/${total} 通过`);
   process.exit(pass === total ? 0 : 1);
 }

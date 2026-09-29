@@ -91,23 +91,28 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
  *
  * `busy`（身体被本能占着）→ 有限次重试；重试用完才当失败，**不标任务 failed**。
  */
-async function startJob (steps, why, { skillId = null, taskId = null, heardPlayer = false } = {}) {
+async function startJob (steps, why, { skillId = null, taskId = null, heardPlayer = false, playerTaskId = null } = {}) {
   const T = tasks();
-  // ① 该不该打断？—— 判据在 tasks.js，这里只照做
-  const kind = T.interruptKind(steps, { heardPlayer });
-  const cur = T.running();
-  let resumed = null;
-  if (cur && kind !== 'say' && cur.id !== taskId) {
-    resumed = T.pause(cur.id, T.pauseWhyFor(kind, { heardPlayer }));
-  }
+  // ① 打断谁、这串算哪件任务 —— 判据只在 tasks.jobPlan（阶段 2），这里只照做。
+  //    阶段 1 在这里"动身体就 pause 手上那件、再把同一件 setRunning 回来"，连着做同一件事也一轮记一次被打断。
+  let tid = null;
+  try {
+    const p = T.jobPlan(steps, { taskId, heardPlayer, playerTaskId, why });
+    if (p.pause) T.pause(p.pause, p.pauseWhy);
+    tid = p.auto ? T.create(p.auto).task.id : p.taskId;
+    if (tid) T.setRunning(tid);
+  } catch (e) { log(`   [tasks] 记任务失败（不影响干活）：${e.message}`); }
+  // 跟着他走（follow 一直跟着）被叫停 = 跟随结束 → 把因为他停下的那件摆回来（设计第六节 2）
+  const followEnded = !!(W.job?.holding && W.job.steps.some(s => s.tool === 'follow') && steps.some(s => s.tool === 'stop'));
   const token = ++W.token;
   if (W.job) { await bridge.post('/stop').catch(() => {}); }
   const started = Date.now();
-  W.job = { token, steps, i: 0, why, started, skillId, inv: [], taskId };
+  W.job = { token, steps, i: 0, why, started, skillId, inv: [], taskId: tid };
   const job = W.job;
-  // 这一串动作对应哪件任务：显式传进来的优先，否则接着刚被打断的那件（她多半是在做同一件事）
-  const tid = taskId ?? resumed?.id ?? null;
-  if (tid) T.setRunning(tid);
+  // 收尾提醒拼在事件后面（她读"✅ 做完了 / ❌ 没做成"那条时一起看到）；失败不影响干活
+  // 不算在任务上的那串（stop / come_to / 只看一眼）不拼：come_to 走到了另有 resumeHint，别说两遍
+  const hintAfter = (ok, error) => { if (tid == null) return ''; try { const h = T.afterJob(tid, { ok, error }); return h ? `\n${h}` : ''; } catch (_) { return ''; } };
+  if (followEnded) { try { const h = T.resumeHint('player'); if (h) emit(h); } catch (_) {} }
   // 这件事做的过程中背包的进出（物品账），结果出来时一起说："放进箱子@… 铁锭×8；捡到 圆石×3"
   const invNote = () => (job.inv.length ? `（这期间背包：${job.inv.splice(0).join('；')}）` : '');
   const results = [];
@@ -143,13 +148,17 @@ async function startJob (steps, why, { skillId = null, taskId = null, heardPlaye
       if (tool === 'sleep_in_bed') W.sleepFail = { t: Date.now(), why: String(r.error || '').slice(0, 60) };
       if (W.recentFails.length > 5) W.recentFails.shift();
       W.job = null;
-      if (tid) T.fail(tid, { why: `${tool} → ${r.error}` });   // 真失败（重试也没用）→ 任务标 failed，不静默
+      // 真失败（重试也没用）：自动包的那件标 failed；她 / 主人明确的那件**不标 failed**，记下卡在哪、提醒她（tasks.afterJob）
+      const hint = hintAfter(false, `${tool} → ${r.error}`);
       if (skillId) mem.skillResult(skillId, false, `${tool} → ${r.error}`);
       const focus = ambition.state().focus;
       if (focus && ['craft', 'smelt', 'container_put', 'container_take'].includes(tool)) ambition.noteTry(focus, false, `${tool} → ${r.error}`);
-      emit(`❌ ${skillId ? `照着技能 ${skillId} 做，` : ''}${tool}${fmtArgs(args)} 没做成：${r.error}${results.length > 1 ? `（前面做完了：${results.slice(0, -1).map(x => x.tool).join('、')}）` : ''}${invNote()}`, { cue: `${tool} ${JSON.stringify(args)}` });
+      emit(`❌ ${skillId ? `照着技能 ${skillId} 做，` : ''}${tool}${fmtArgs(args)} 没做成：${r.error}${results.length > 1 ? `（前面做完了：${results.slice(0, -1).map(x => x.tool).join('、')}）` : ''}${invNote()}${hint}`, { cue: `${tool} ${JSON.stringify(args)}` });
       return;
     }
+    // 做成的这一步记进任务的证据（task_done 要看它 —— 设计第四节"必须有工具成功的证据"）。
+    // 只记**动身体**的步骤：说话 / 看一眼做成了不算"这件事做成过什么"。
+    if (tid && !T.NO_BODY_TOOLS.has(tool)) { try { T.noteEvidence(tid, `${tool}${fmtArgs(args)} → ${summarize(r)}`); } catch (_) {} }
     learnFromDoing(tool, args, r);
     if (TOOLS[tool]?.continuous && i === steps.length - 1) {
       W.job = { ...W.job, holding: true };
@@ -159,7 +168,8 @@ async function startJob (steps, why, { skillId = null, taskId = null, heardPlaye
   }
   if (token !== W.token) return;
   W.job = null;
-  if (tid) T.done(tid);   // 这一串做完了 → 任务收尾（阶段 1：她整串都做成了才算做完）
+  // 这一串做完了：自动包的那件收尾；明确的那件**不自动算做完**（要她 task_done + 证据），只提醒（tasks.afterJob）
+  const hint = hintAfter(true);
   // 做成了一串事：记成技能（照技能做的就是更熟练）
   const real = steps.filter(s => !['look_at', 'stop', 'say'].includes(s.tool));
   if (skillId) mem.skillResult(skillId, true);
@@ -172,8 +182,10 @@ async function startJob (steps, why, { skillId = null, taskId = null, heardPlaye
     results.push({ tool: 'skill', args: {}, r: k });
   }
   const quiet = steps.every(s => ['look_at', 'stop'].includes(s.tool));
-  if (!quiet) emit(`✅ 做完了：${results.map(x => `${x.tool}${fmtArgs(x.args)} → ${summarize(x.r)}`).join('；')}${invNote()}`, { cue: steps.map(s => JSON.stringify(s.args)).join(' ') });
+  if (!quiet) emit(`✅ 做完了：${results.map(x => `${x.tool}${fmtArgs(x.args)} → ${summarize(x.r)}`).join('；')}${invNote()}${hint}`, { cue: steps.map(s => JSON.stringify(s.args)).join(' ') });
   else if (job.inv.length) emit(`🎒 ${job.inv.splice(0).join('；')}`);
+  // come_to 走到了 = "过来"结束（设计第六节 2）：因为他停下的那件摆回来
+  if (steps.some(s => s.tool === 'come_to')) { try { const h = T.resumeHint('player'); if (h) emit(h); } catch (_) {} }
 }
 
 function fmtArgs (a) {

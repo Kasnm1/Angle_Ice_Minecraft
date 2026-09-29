@@ -34,6 +34,17 @@ function homeStockItems () {
 }
 const shortName = (id) => knowledge.label(id).replace(/\([^)]*\)$/, '');
 const planFacts = (...a) => wiring.think().planFacts.apply(null, a);
+// 任务队列（tasks.js 纯函数 + W.tasks），延迟取
+const tasks = () => require('./tasks');
+/**
+ * task_done 的 result 过一遍"诚实"判据（设计第四节：沿用说话闸的 unbackedClaim，**不另写一份**）。
+ * 证据范围和说话闸一样：RECENT_CLAIM_MS 内的工具结果 + 身体刚回报的失败。
+ */
+function honestCheck (text) {
+  const { unbackedClaim, RECENT_CLAIM_MS } = require('./gates');
+  const now = Date.now();
+  return unbackedClaim(text, (W.recentResults || []).filter(r => now - r.t < RECENT_CLAIM_MS), W.recentLive || []);
+}
 
 const MIND_TOOLS = {
   learn: {
@@ -160,6 +171,44 @@ const MIND_TOOLS = {
       return { note: '纸条留好了' };
     },
   },
+  // ── 任务队列（阶段 2，设计第四节）：她管自己的事用这几个。判据和状态变化都在 tasks.js（只此一份），这里只转调。
+  //    都是"不动身体"的（tasks.NO_BODY_TOOLS 里早就留了名字），调了不会打断手上的事。
+  task_add: {
+    kind: 'memory',
+    desc: '记一件要做的事。when: now 现在就做（手上的先停下）/ next 手上这件做完就做 / later 排后面。缺材料要先去弄别的，就把"先去弄"记成子任务（parent 填为了哪件）。',
+    params: { title: { type: 'string' }, when: { type: 'string', enum: ['now', 'next', 'later'] }, parent: { type: 'number' }, why: { type: 'string' } },
+    required: ['title'],
+    run: (a) => tasks().toolAdd({ title: a.title, when: a.when || 'later', parent: a.parent ?? null, why: a.why || null }),
+  },
+  task_note: {
+    kind: 'memory',
+    desc: '给一件事写一句进度（做到哪了、还缺什么）。不给 id 就是手上那件。',
+    params: { id: { type: 'number' }, progress: { type: 'string' } }, required: ['progress'],
+    run: (a) => tasks().toolNote({ id: a.id ?? null, progress: a.progress }),
+  },
+  task_done: {
+    kind: 'memory',
+    desc: '标一件事做完了（不给 id 就是手上那件）。要有这件事做成过的动作记录才标得上；result 写做成了什么，照实写。',
+    params: { id: { type: 'number' }, result: { type: 'string' } }, required: [],
+    run: (a) => tasks().toolDone({ id: a.id ?? null, result: a.result || '' }, { check: honestCheck }),
+  },
+  task_drop: {
+    kind: 'memory',
+    desc: '放下一件事，why 写为什么。主人交代的放下时要跟他说一声。',
+    params: { id: { type: 'number' }, why: { type: 'string' } }, required: ['id', 'why'],
+    run: (a) => {
+      const r = tasks().toolDrop({ id: a.id, why: a.why || '' });
+      // 放下的是主人交代的 → 给"跟他说一声"那一句开个口子（gates.dropTellAllowed；发出去一次就关）
+      if (r.ok && r.tellPlayer) W.dropTell = { at: Date.now(), id: r.id, title: r.title };
+      return r;
+    },
+  },
+  task_resume: {
+    kind: 'memory',
+    desc: '接着做一件停下的 / 排着的事（它变成手上那件，手上原来的先停下）。',
+    params: { id: { type: 'number' } }, required: ['id'],
+    run: (a) => tasks().toolResume({ id: a.id }),
+  },
   wait: {
     kind: 'end',
     desc: '这一刻没什么要说要做的了，等下一件事发生。（安静陪着也是陪伴）',
@@ -167,8 +216,8 @@ const MIND_TOOLS = {
   },
   tools: {
     kind: 'info',
-    desc: '把一组工具拿出来用（平时只带着常用的那些，别的先收着）。要用到没带在身上的工具时，先把它叫出来：build 建造/布置、farm 农活/动物/做饭、store 箱子/仓库、quest 任务书/交易、travel 远行/下矿、skill 存技能。叫过之后接下来几轮都在。不给 group 就列出每组装了什么。',
-    params: { group: { type: 'string', enum: ['core', 'build', 'farm', 'store', 'quest', 'travel', 'skill'] } }, required: [],
+    desc: '把一组工具拿出来用（平时只带着常用的那些，别的先收着）。要用到没带在身上的工具时，先把它叫出来：build 建造/布置、farm 农活/动物/做饭、store 箱子/仓库、quest 任务书/交易、travel 远行/下矿、skill 存技能、task 管排着的事（有事排着时会自己带上）。叫过之后接下来几轮都在。不给 group 就列出每组装了什么。',
+    params: { group: { type: 'string', enum: ['core', 'build', 'farm', 'store', 'quest', 'travel', 'skill', 'task'] } }, required: [],
     run: ({ group }) => {
       if (!group) {
         return { groups: Object.fromEntries(Object.entries(GROUPS).map(([g, l]) => [g, l.filter(n => ALL[n])])), 现在带着的: [...activeGroups()] };
@@ -213,7 +262,11 @@ const GROUPS = {
     'set_torch_mode',
     // 同一次复查：背包 / 拿东西（在矿洞里身边没箱子时 store 组不会被带上）、服务器命令（/home /tpa）、
     // 水桶（灭火、落地水）、长期计划的更新（闲着接着做要用）、查家里库存（只读）—— 都是日常的，常驻
-    'open_backpack', 'take_items', 'home_stock', 'run_command', 'bucket', 'plan_set', 'plan_step'],
+    'open_backpack', 'take_items', 'home_stock', 'run_command', 'bucket', 'plan_set', 'plan_step',
+    // 任务队列（阶段 2）：记一件事随时都可能要（队列空着也要能记），常驻。
+    // 其余四个（note / done / drop / resume）都得先有一件事才用得上 → 放 task 组，队列里有事时自动带（groupsFromTasks）。
+    // 这样常驻组不超过自测钉的 62（每轮都发的工具说明要省着用，见下面"为什么"那段）。
+    'task_add'],
 
   // 按需：建造 / 布置家里
   build: ['place', 'place_nicely', 'place_structure', 'design_build', 'build_work', 'build_status', 'build_cancel',
@@ -234,6 +287,9 @@ const GROUPS = {
 
   // 按需：把做成功的做法沉淀成技能（低频，平常不用占位置）
   skill: ['save_skill'],
+
+  // 按需：管手上 / 排着的事（阶段 2）。队列里有事（手上的或排着的）就自动带上，见 groupsFromTasks
+  task: ['task_note', 'task_done', 'task_drop', 'task_resume'],
 };
 // 每个工具归到哪些组（一个工具可以属于多组；core 里的工具照样可以再出现，去重时以 core 优先）
 const TOOL_GROUPS = {};
@@ -287,6 +343,16 @@ function groupsFromBody (s) {
   if (s.dark || s.torches === 0 || (!hasTorch && (s.items || []).some(i => /coal|charcoal|stick|planks|log/i.test(i.name || '')))) g.add('build');
   return g;
 }
+/**
+ * 任务队列 → 该不该带 task 组（阶段 2）。手上有事、或者有排着 / 停着的，就带上 —— task_note / done / drop / resume
+ * 只在"有一件事"时才用得上。读不出队列时不带（宁可少带一组，也不让一次读失败把这一轮想带垮）。
+ */
+function groupsFromTasks () {
+  try {
+    const T = tasks();
+    return (T.running() || T.open().length) ? new Set(['task']) : new Set();
+  } catch (_) { return new Set(); }
+}
 /** 这一轮该发哪些工具的 spec：常驻组 + 当前激活的按需组。always 里的工具一定带上（她刚叫过的组）。 */
 function pickSpecs (s, activeGroups = new Set()) {
   const want = new Set(['core', ...activeGroups]);
@@ -328,4 +394,4 @@ function activeGroups () {
 
 
 module.exports = { MIND_TOOLS, ALL, SPECS, GROUPS, TOOL_GROUPS, UNGROUPED, GROUP_ROUNDS, GROUP_CUES,
-  groupsFromBody, pickSpecs, activateGroup, activeGroups, kindOf };
+  groupsFromBody, pickSpecs, activateGroup, activeGroups, kindOf, groupsFromTasks };

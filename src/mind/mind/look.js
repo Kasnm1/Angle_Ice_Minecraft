@@ -65,6 +65,17 @@ async function look () {
   // 本能现在正忙着（`urgent` 有值 / `combatNow` 在打）→ 手上那件也是 `paused(instinct)`：
   // 事件可能已经翻过去了，这里再兜一次底（onInstinct 没 running 时返回 null，不会凭空造件）。
   if (insNow && W.job && (insNow.urgent || insNow.combatNow)) tasks().onInstinct(insNow.combatNow ? 'combat' : String(insNow.urgent));
+  // 本能那阵过去了（读得到本能、它也不忙了）→ 被它停下的那件摆回来，**每次停下只提醒一回**（设计第六节 2）。
+  // 读不到本能（insNow 为空）不算"过去了"——"读不到"和"没有"分开（AGENTS.md §5-1）。
+  if (insNow && !(insNow.urgent || insNow.combatNow)) {
+    try {
+      const key = tasks().open().filter(t => t.status === 'paused' && t.pausedWhy === 'instinct').map(t => `${t.id}@${t.updatedAt}`).join(',');
+      if (key && key !== W.instinctHintKey) {
+        const h = tasks().resumeHint('instinct');
+        if (h) { W.instinctHintKey = key; emit(h); }
+      }
+    } catch (_) { /* 提醒失败不影响看世界 */ }
+  }
   // 家在哪告诉本能层（收获本能只收家里的地）。一分钟一次，bridge 重启后也能补上
   if (Date.now() - W.homeToldAt > 60000) {
     const h = mem.getHome();
