@@ -144,7 +144,14 @@ async function runTool (name, args) {
   if (!t || !t.run) return { ok: false, error: `没有 ${name} 这个动作` };
   const out = await (async () => {
     try {
-      const r = await t.run(normalizeArgs(name, args) || {});
+      let a = normalizeArgs(name, args) || {};
+      // `light_up` 默认照本能报过的家里暗处插（暗处坐标来自 `dark_spot` 事件，见 look.js）——
+      // 本能已经数过是哪几格了，她不用再自己找一遍。她要自己挑地方时传 spots 覆盖。
+      if (name === 'light_up' && a.spots == null) {
+        const spots = Array.isArray(W.darkSpots) ? W.darkSpots : null;
+        if (spots && spots.length) a = { ...a, spots: spots.slice(0, 3) };
+      }
+      const r = await t.run(a);
       if (r && (r.success === false || r.ok === false)) return { ok: false, error: r.error || 'failed', ...r };
       return { ok: true, ...r };
     } catch (e) {

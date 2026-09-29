@@ -46,6 +46,12 @@ async function look () {
           const { layout, empty } = storagePolicy.layoutFromBoxes(e.storage.boxes);
           mem.setHomeStorage(layout, { empty });
         }
+        // 房子的暗处：本能报的坐标记下来，她一调 light_up 就带过去（判据在同一天的 fix-askback-lightup）
+        // —— 不然她只知道"家里有暗处"，得自己再找一遍；本能已经数过是哪几格了。
+        if (e.kind === 'dark_spot' && Array.isArray(e.sample) && e.sample.length) {
+          const pts = e.sample.filter(p => p && typeof p.x === 'number').map(p => ({ x: p.x, y: p.y, z: p.z }));
+          if (pts.length) W.darkSpots = pts;
+        }
         emit(`🫳 ${e.text}`, { cue: `${e.kind} ${e.ore || ''}` });
       }
       W.instinctSeq = ins.seq;

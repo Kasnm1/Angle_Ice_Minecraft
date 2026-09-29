@@ -21,7 +21,7 @@ const { humanState, combatInstinct, survivalFocus, dropLine, invText, surroundLi
 const { startJob, fmtArgs, runTool, toolResultLine, learnFromDoing } = require('./actions');
 const { ALL, kindOf, GROUP_CUES, groupsFromBody, pickSpecs, activeGroups } = require('./tools');
 const { SYSTEM } = require('./prompt');
-const { DELEGATES, ASKS_BACK, DECIDE_NUDGE, ASKS_WHERE, LOOK_NUDGE, SAY_NUDGE, ACTION_NUDGE, isBareAffirmative, QUIET_MS, RECENT_CLAIM_MS, PLAYER_MOVE_TOOLS, PLAYER_MOVE_RE, TASK_ASK_RE, taskDoneAllowed, HONEST_NUDGE, isOverAsking, lastProactiveUnanswered, liveFails, unbackedClaim, REPORT_NUDGE, ASK_TOO_MUCH_NUDGE } = require('./gates');
+const { DELEGATES, ASKS_BACK, DECIDE_NUDGE, ASKS_WHERE, LOOK_NUDGE, SAY_NUDGE, ACTION_NUDGE, isBareAffirmative, QUIET_MS, RECENT_CLAIM_MS, PLAYER_MOVE_TOOLS, PLAYER_MOVE_RE, TASK_ASK_RE, taskDoneAllowed, HONEST_NUDGE, isOverAsking, lastProactiveUnanswered, liveFails, unbackedClaim, REPORT_NUDGE, ASK_TOO_MUCH_NUDGE, ASK_BACK_NUDGE } = require('./gates');
 const wiring = require('./wiring');
 const paths = require('../../paths');   // knowledge/ 路径（查任务书章名·任务名用，见 questLabel）
 // 工具表在 tools.js —— 延迟取同一份（tools 也会回头用本文件的 buildNow，见 wiring.js）
@@ -320,7 +320,7 @@ async function think (why) {
   // 说话出口的三道闸：**每一句 say 都过一遍** —— 一轮里她说两条汇报，两条都该拦。
   // 但同一类提示一轮只塞一条（不然历史里堆满一样的话），所以用计数：拦了就 +1，
   // 只有当这一类"这一轮已经拦过"时才不再塞提示（话照样不发）。
-  let quietNudged = 0; let askNudged = 0; let honestNudged = 0;
+  let quietNudged = 0; let askNudged = 0; let honestNudged = 0; let backNudged = 0;
   const nudgedOnce = (n) => n === 1;
   // 这一轮的工具结果（含身体动作的回报）——不说没发生的事，判据就用它（见 FACT_CLAIMS）
   const toolResults = [];
@@ -414,6 +414,7 @@ async function think (why) {
         // ⚠️ 诚实这道**不看 heJustSpoke**（2026-09-29 Claude 复核）：实机那句"我睡了呀 剛起床"
         //    恰恰是在回他的话（他问是不是卡住了）。"少汇报 / 少问"在他刚说话时放行是对的，"别说没发生的事"任何时候都要管。
         //    证据也**跨轮**看（RECENT_CLAIM_MS 内）：实机睡觉 ✗ 在 03:51:27，那句话在 03:52:08 的下一轮。
+        // ⚠️ "反问决定"这道也不看 heJustSpoke（见下面 ASK_BACK_NUDGE 那段）。
         if (name === 'say') {
           // 说了没发生的事：完成式发言，但最近的工具结果里没有对应的成功记录（2026-09-29 主人：不说没发生的事）
           const tNow = Date.now();
@@ -430,6 +431,17 @@ async function think (why) {
         // 一次交代只放行一次（见 taskDoneAllowed）。
         const doneOk = name === 'say' && taskDoneAllowed(String(args.text || ''), { lastTaskAskedAt: W.lastTaskAskedAt, lastTaskDoneSaidAt: W.lastTaskDoneSaidAt });
         if (doneOk) W.lastTaskDoneSaidAt = Date.now();
+        // ⚠️ 他刚开口时"回答他不受限"是给**回答**的，不是给"反问"的（2026-09-29 实机 19:10:16）：
+        //    他问"今天干嘛"，她答"先在家插点火把 / 省得老刷怪 / 你想去哪呀" —— 最后一句把决定
+        //    又丢回给他。判据在 `speech.asksBack()`（只此一处），**不看 heJustSpoke**（正相反，
+        //    这道闸只在他在场/刚开口时最有意义：他自己问的"你想去哪"是另一回事，由判据里的
+        //    "他在问你的意见"那条例外放行）。拦下不静默吞掉，给她提示重想。
+        if (name === 'say' && !doneOk && speech.asksBack(String(args.text || ''), playerSaid)) {
+          backNudged++;
+          needMore = true;
+          W.history.push({ role: 'tool', tool_call_id: c.id, content: JSON.stringify({ ok: false, error: nudgedOnce(backNudged) ? ASK_BACK_NUDGE : '（这一条也没发出去：你还是把问题丢回给他了。自己定一个说出来。）' }) });
+          continue;
+        }
         if (name === 'say' && !heJustSpoke && !doneOk && speech.classify(String(args.text || '')) === 'report' &&
             Date.now() - (W.lastHeardAt || 0) > QUIET_MS) {
           // 播报自己的动作 / 进度，他最近没问她 → 不发（他看得见）。2026-09-29 主人："尽量少汇报自己的动作状态"

@@ -818,10 +818,12 @@ function install (bot, state, deps) {
     const here = bot.entity.position;
     const moved = I.torchAnchor ? Math.hypot(here.x - I.torchAnchor.x, here.z - I.torchAnchor.z) : Infinity;
     const li = (() => { try { return deps.hands.lightAt?.(bot); } catch (_) { return null; } })();
-    const near = (() => { try { return deps.hands.nearestLight?.(bot, TC.spacing); } catch (_) { return null; } })();
     const torches = (() => { try { return deps.hands.torchCount?.(bot) ?? 0; } catch (_) { return 0; } })();
+    // "暗不暗"只认**这一格的实测亮度**（判据只此一份：body/util.js 的 lightVerdict，这里注入真身）。
+    // 2026-09-29 问题 B：以前还探 `nearestLight`，于是"附近有火把"就让这一步不插 —— 和 lightUp 同一个错。
+    const verdict = deps.hands.lightVerdict || undefined;
     const plan = pickTorchStep({
-      exposure: ex, light: li?.block ?? null, torches, nearestLight: near, movedSince: moved,
+      exposure: ex, light: li?.block ?? null, torches, movedSince: moved, lightVerdict: verdict,
     }, TC);
     if (!plan.place) {
       // 走了够远就把锚点挪过来，免得一直在"还没走够"里打转

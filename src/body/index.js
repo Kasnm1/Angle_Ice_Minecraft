@@ -254,7 +254,8 @@ function routes ({ state, withTimeout }) {
     'POST /project/cancel': async (b = {}) => { const P = projects(state); if (!P[b.id]) throw new Error(`没有工程 ${b.id}`); P[b.id].status = 'cancelled'; saveProjects(state); return { cancelled: b.id }; },
     'GET /light': async () => ({ light: lightAt(bot()), dark: isDark(lightAt(bot())) && !nearestLight(bot(), 7), nearestLight: nearestLight(bot(), 7), torches: torchCount(bot()), lastBright: state.lastBright ? { x: state.lastBright.x, y: state.lastBright.y, z: state.lastBright.z } : null }),
     // 手上有火把就直接插；真的用完时一次补够 16 根，避免每隔一根就重新打开合成流程。
-    'POST /light_up': async (b = {}) => { const have = torchCount(bot()); const m = have > 0 ? { torches: have } : await makeTorches(bot(), 16, state); const r = await lightUp(bot(), { max: Math.min(+b.max || 3, 8), force: !!b.force, state }); return { ...r, made: m.made || 0, ...(m.note ? { makeNote: m.note } : {}) }; },
+    // `spots` = 本能报过的暗处坐标（`dark_spot` 事件的 sample）—— 优先照那些格子插（2026-09-29 问题 B）。
+    'POST /light_up': async (b = {}) => { const have = torchCount(bot()); const m = have > 0 ? { torches: have } : await makeTorches(bot(), 16, state); const spots = Array.isArray(b.spots) ? b.spots.filter(p => p && p.x != null).slice(0, 8) : null; const r = await lightUp(bot(), { max: Math.min(+b.max || 3, 8), force: !!b.force, state, spots }); return { ...r, made: m.made || 0, ...(m.note ? { makeNote: m.note } : {}) }; },
     'POST /make_torches': async (b = {}) => makeTorches(bot(), Math.min(+b.count || 16, 64), state),
     'POST /self_rescue': async (b = {}) => selfRescue(bot(), state, b),
     'GET /chests/unseen': async (_, q) => ({ chests: unseenChests(bot(), state, +q?.radius || 24).slice(0, 6).map(b => ({ at: storageKey(bot(), b), name: b.name, x: b.position.x, y: b.position.y, z: b.position.z, distance: +bot().entity.position.distanceTo(b.position).toFixed(1) })) }),

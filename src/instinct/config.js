@@ -220,11 +220,11 @@ const CFG = {
   // 家的范围随基地长大：默认关，实机验证逐列扫描不卡之后再打开（MC_HOME_GROW=true）
   home: { grow: envTrue('MC_HOME_GROW'), everyMs: 1800000, gap: 8, margin: 6, cap: 128, near: 32 },
   // 暗处插火把（2026-09-28 第 8 批 第 4 条，新本能，无 LLM）。
-  // 判据见 pickTorchStep：地下 + 脚下方块光 ≤ darkMax + 身上有火把 + 7 格内没光源。
+  // 判据见 pickTorchStep：地下 + 脚下按共享亮度判据（body/util.js 的 lightVerdict）判出"暗" + 身上有火把。
+  // ⚠️ 2026-09-29 问题 B：原第 4 条"7 格内没光源才插"已删（"附近有火把 ≠ 这一格亮"），spacing 随之作废。
   torch: {
     enabled: envOn('MC_INSTINCT_TORCH'),
-    darkMax: 7,          // 脚下方块光 ≤ 这个就插（原版怪在方块光 0 刷，留余量）
-    spacing: 7,          // 这么近有光源就不插（和 hands.lightUp 的 spacing 一致）
+    darkMax: 7,          // 保留给自测/老调用点参考；真正的判据在 lightVerdict（方块光 ≤ 7 且天光 ≤ 7）
     everyBlocks: 6,      // 每走这么多格检查一次（别每拍都点）
     checkMs: 700,        // 检查最快多久一次
   },

@@ -3,7 +3,7 @@
 // 主人 2026-09-29 定的"少汇报、少问、不说没发生的事"（拦下后不静默吞掉，
 // 往历史里塞一条 ok:false + 提示，让她自己重想）：
 //
-// - `REPORT_NUDGE` / `ASK_TOO_MUCH_NUDGE` / `HONEST_NUDGE` / `DECIDE_NUDGE` / `LOOK_NUDGE`
+// - `REPORT_NUDGE` / `ASK_TOO_MUCH_NUDGE` / `ASK_BACK_NUDGE` / `HONEST_NUDGE` / `DECIDE_NUDGE` / `LOOK_NUDGE`
 // - `isOverAsking()` / `lastProactiveUnanswered()` / `taskDoneAllowed()`：该不该问
 // - `claimState()` / `liveFails()` / `unbackedClaim()` + `FACT_CLAIMS` / `OK_RE` / `FAIL_RE`：
 //   说的完成式在最近工具结果里找不到成功的记录就拦
@@ -77,6 +77,12 @@ const ASK_COOLDOWN_MS = 5 * 60 * 1000;
 
 const REPORT_NUDGE = '没发出去：这是播报你自己的动作 / 进度，他就在旁边看得见，不用你说。做完了就是做完了 —— 除非他问你，或者这里面有他非知道不可的事（出事了、缺东西要他要、要他定）。要开口就说点别的（接他的话、说你的感觉），或者干脆把这条撤了。';
 const ASK_TOO_MUCH_NUDGE = '没发出去：你刚问过他，他没回，又问一次了。能自己判断的自己定（去不去、要不要、先做哪个），做完他自然会说对不对；真只有他知道的（他想要什么、他打算去哪），那也等这次问完再说，别追问。';
+/**
+ * 他在问你打算干嘛，你答完又把问题丢回给他（"你想去哪呀""你要不要…""你决定吧"）。
+ * 判据在 `speech.js` 的 `asksBack()`（**只此一处**）—— 他刚开口时回答他本来不受限，
+ * 但答案里夹带的这种反问要拦（2026-09-29 实机 19:10:16）。拦下不静默吞掉，让她自己重想。
+ */
+const ASK_BACK_NUDGE = '没发出去：他问你打算干嘛，你就说你打算干嘛，别把问题丢回去。能自己定的自己定（去哪、先做哪个、要不要带上他），直接说你的决定然后去做 —— 错了他会说。把这句话改成你要做的事再说一次。';
 const HONEST_NUDGE = (why) => `没发出去：这句话说的是已经做完的事，但最近的工具结果里没有它成功的记录 —— ${why}。照实说（比如"没做成""还没好"），或者干脆别提这件事。`;
 
 /** 她刚问过他 / 上一个问题还没回 —— 再问就拦 */
@@ -162,6 +168,6 @@ function unbackedClaim (text, results, live = []) {
 
 
 module.exports = { isBareAffirmative, taskDoneAllowed, isOverAsking, lastProactiveUnanswered,
-  claimState, liveFails, unbackedClaim, FACT_CLAIMS, REPORT_NUDGE, ASK_TOO_MUCH_NUDGE, HONEST_NUDGE,
+  claimState, liveFails, unbackedClaim, FACT_CLAIMS, REPORT_NUDGE, ASK_TOO_MUCH_NUDGE, ASK_BACK_NUDGE, HONEST_NUDGE,
   QUIET_MS, ASK_COOLDOWN_MS, DELEGATES, ASKS_BACK, DECIDE_NUDGE, ASKS_WHERE, LOOK_NUDGE, SAY_NUDGE,
   ACTION_NUDGE, RECENT_CLAIM_MS, PLAYER_MOVE_TOOLS, PLAYER_MOVE_RE, TASK_WINDOW_MS, TASK_ASK_RE, TASK_DONE_RE };

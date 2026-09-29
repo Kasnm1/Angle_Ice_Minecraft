@@ -26,6 +26,7 @@ function doorKey (...a) { return __ns.doorKey.apply(null, a); }
 function ensureCarried (...a) { return __ns.ensureCarried.apply(null, a); }
 function eyeDist (...a) { return __ns.eyeDist.apply(null, a); }
 function fullId (...a) { return __ns.fullId.apply(null, a); }
+function go (...a) { return __ns.go.apply(null, a); }
 function holdControls (...a) { return __ns.holdControls.apply(null, a); }
 function inHomeArea (...a) { return __ns.inHomeArea.apply(null, a); }
 function invCounts (...a) { return __ns.invCounts.apply(null, a); }
@@ -35,6 +36,9 @@ function plainTimeout (...a) { return __ns.plainTimeout.apply(null, a); }
 function scaffoldIds (...a) { return __ns.scaffoldIds.apply(null, a); }
 function threatNear (...a) { return __ns.threatNear.apply(null, a); }
 function unseenChests (...a) { return __ns.unseenChests.apply(null, a); }
+// 亮度判据只此一份，在 util.js（2026-09-29 问题 B）：lightUp 和本能的 darkReport 共用同一套阈值。
+// 跨文件的函数一律走 __ns 转发壳（8 个文件彼此 require 成环，不能在顶层解构取值）。
+function lightVerdict (...a) { return __ns.lightVerdict.apply(null, a); }
 // 挖之前挑工具（2026-09-29）：判据在 tool-choice.js，只有那一份
 function equipDigTool (...a) { return __ns.equipDigTool.apply(null, a); }
 function bind (ns) { Object.assign(__ns, ns); N6 = ns.N6; REACH = ns.REACH; }
@@ -391,22 +395,76 @@ function nearestLight (bot, r = 7) {
 }
 
 /**
- * 点亮身边：像玩家一样按间距插 —— 身边 7 格内已经有光源就不插；没有就插一个，插完就停。
- * 以前按亮度判断：矿道口照得到天光（天空光 11）就判"够亮"一根不插；她觉得不对就换着工具反复插，
- * 主人说"也不用一直插吧"（2026-09-27）。亮度读数还有延迟，插完马上读仍是暗，一次会连插好几个。
+ * 点亮身边。判"要不要插"用**实际亮度**（判据只此一份：`util.js` 的 `lightVerdict`），
+ * 不再看"附近有没有光源方块"（2026-09-29 问题 B）。
+ *
+ * 为什么换：实机里本能报家里 `-7,126,-1` 全黑，她走到那儿 `light_up` 却说
+ * "7 格内已经有光源，不用再插" —— 那只是**附近有火把**，被墙挡住 / 隔了一层，
+ * 她脚下这一格其实还是暗的。于是两支都不插、原地发呆。
+ * （2026-09-27 改成"按附近光源"是为了另一个毛病：矿道口照得到天光也判"暗"、连插好几根。
+ *   那个用**天空光**判就行 —— `lightVerdict` 里 `sky > 7` 不算暗，不是靠"附近有火把"。）
+ *
+ * 返回里把话说清（AGENTS.md §5-2）：看了多少格、多少格是暗的、插了几支、没插的原因。
+ * "已经够亮"必须是**亮度**判出来的，不是"附近有火把"。
+ *
+ * @param {object} bot
+ * @param {object} o
+ * @param {number}  o.max        最多插几支
+ * @param {boolean} o.force      跳过"够亮"判断（主人明确叫你插）
+ * @param {number}  o.spacing    要走多远才算"换了一片"（插一支照一片）
+ * @param {object}  o.state      bridge 状态（火把在精妙背包里时去拿）
+ * @param {Array}   o.spots      优先照这些坐标插（`dark_spot` 事件报过的暗处）
  */
-async function lightUp (bot, { max = 1, force = false, spacing = 7, state = null } = {}) {
+async function lightUp (bot, { max = 1, force = false, spacing = 7, state = null, spots = null } = {}) {
   let placed = 0;
-  const near = nearestLight(bot, spacing);
-  if (near && !force) return { placed: 0, alreadyLit: near, torchesLeft: torchCount(bot), note: `${spacing} 格内已经有光源，不用再插` };
-  if (state && !torchItem(bot)) await ensureCarried(bot, state, TORCH_SPEC, Math.max(1, max));   // 火把在背包里就先拿出来
-  for (let i = 0; i < Math.min(max, 3); i++) {
+  const here = bot.entity.position.floored();
+  const L = lightAt(bot, here);
+  const v = lightVerdict(L);
+  // ① 脚下这一格到底暗不暗 —— 读不到就不动（不猜）
+  if (v.unreadable && !force) {
+    return { placed: 0, ok: false, dark: null, checked: 1, darkCount: null, torchesLeft: torchCount(bot),
+      note: '脚下这一格亮度读不到 —— 不猜，也不插（换个地方或等读数回来）' };
+  }
+  if (!v.dark && !force) {
+    return { placed: 0, alreadyLit: { at: doorKey(here), block: L.block, sky: L.sky }, dark: false, checked: 1, darkCount: 0,
+      torchesLeft: torchCount(bot), note: `脚下够亮（方块光 ${L.block}${typeof L.sky === 'number' ? ` / 天光 ${L.sky}` : ''}），不用再插` };
+  }
+  // 火把在精妙背包里就先拿出来（这一步之前就错了：拿不到就等于"没火把"，要如实报）
+  if (state && !torchItem(bot)) await ensureCarried(bot, state, TORCH_SPEC, Math.max(1, max));
+  if (!torchItem(bot)) {
+    return { placed: 0, ok: false, dark: true, checked: 1, darkCount: 1, torchesLeft: 0,
+      note: '这里暗，但身上没有火把（精妙背包里也没有）—— 先做火把（make_torches）' };
+  }
+  // ② 优先照本能报过的暗处坐标插：走出去、看脚下暗就插
+  const todo = (Array.isArray(spots) ? spots : []).filter(p => p && p.x != null).slice(0, Math.max(1, max));
+  for (const p of todo) {
+    if (placed >= Math.min(max, 3) || !torchItem(bot)) break;
+    try {
+      const near = bot.entity.position.offset(0, 0, 0).distanceTo(new Vec3(p.x + 0.5, p.y, p.z + 0.5));
+      if (near > 4) { await go(bot, null, { x: p.x, y: p.y, z: p.z, range: 1.5, maxMs: 15000 }); }
+    } catch (_) { /* 走不过去就照脚边插 */ }
+    const lp = lightAt(bot, bot.entity.position.floored());
+    const vp = lightVerdict(lp);
+    if (!vp.unreadable && !vp.dark) continue;         // 走到了却已经亮了 → 这一处不用插
+    if (await placeTorchHere(bot)) placed++;
+  }
+  // ③ 脚边还暗就照脚边插
+  for (let i = placed; i < Math.min(max, 3); i++) {
     if (!torchItem(bot)) break;
+    const lc = lightAt(bot, bot.entity.position.floored());
+    const vc = lightVerdict(lc);
+    if (i > placed && !vc.unreadable && !vc.dark) break;   // 插一支已经照亮了这片
     if (!await placeTorchHere(bot)) break;
     placed++;
-    if (i + 1 < max) { const moved = nearestLight(bot, spacing); if (moved) break; }   // 插一个就够照这片
   }
-  return { placed, torchesLeft: torchCount(bot) };
+  const after = lightAt(bot, bot.entity.position.floored());
+  const va = lightVerdict(after);
+  const where = todo.length ? `（照本能报的 ${todo.length} 个暗处）` : '';
+  return {
+    placed, dark: true, checked: 1 + todo.length, darkCount: 1 + todo.length, torchesLeft: torchCount(bot),
+    litAfter: va.unreadable ? null : { block: after.block, sky: after.sky },
+    note: placed > 0 ? `这里暗${where}，插了 ${placed} 根火把` : `这里暗${where}，但没插成（没地方放火把）`,
+  };
 }
 
 const isFiller = (name) => FILLER_RE.test(fullId(name)) || scaffoldIds().includes(fullId(name));   // 和搭脚方块同一份名单（含草方块、模组泥土石头）
@@ -460,3 +518,135 @@ let lightIdsCache = null; let lightIdsRegistry = null;
 const BRANCH = 8;   // 鱼骨支道长度（主道每 3 格一对，支道间隔 2 格实心：1×2 通道两侧各露一格，正好不漏）
 
 module.exports = { BRANCH, BUILT_RE, FILLER_RE, LIGHT_RE, ORE_RE, ORE_Y, TORCH_RE, TORCH_SPEC, bind, caveStep, clearCell, delve, digBlock, ensureFiller, fillerItem, inCave, isDark, isFiller, lightAt, lightIdsCache, lightIdsRegistry, lightUp, makeTorches, mines, nearestLight, oreIdsCache, oreIdsRegistry, placeFiller, placeTorchHere, saveMines, sensedOres, stepTo, torchCount, torchItem, tunnelTo, visibleOres };
+
+// ------------------------------------------------------------------ 自测
+// 问题 B（2026-09-29）：`light_up` 原来按「附近有没有光源方块」判"要不要插"，
+// 本能却按**实际亮度**判"暗不暗" —— 两套判据打架，实机里走到全黑的 -7,126,-1
+// 却被告知"7 格内已经有光源，不用再插"，一支没插、原地发呆。
+// 这一节用**假世界**把那个场景钉死：旁边 5 格有火把但被墙挡住 ≠ 这一格亮。
+// 被汇总 require 时 register（登记不跑）；`node src/body/mining.js --selftest` 时只跑这几节。
+
+const { register, runSuite } = require('./testkit');
+const __sections = [
+  ['[light_up] 按实际亮度判"要不要插"（问题 B，2026-09-29）', async (t) => {
+    const { check, Vec3 } = t;
+    const { lightUp, lightVerdict } = t.h;
+
+    const ORIGIN = { x: -7, y: 126, z: -1 };                 // 实机报的那个坐标
+    const key = (p) => `${p.x},${p.y},${p.z}`;
+
+    /**
+     * 假世界 —— 只让脚下那一格参与亮度判断，其余全按传入的"有没有火把"摆。
+     *
+     * ⚠️ 火把专用**贴着墙**（`hasTorchNear: 'blocked'`，在脚边一格的墙背后）：
+     * 这样它既落在"附近有光源"的范围内（改之前那套判据会据此说"不用插"），
+     * 又**不是** `placeTorchHere` 会去靠的那几个面 —— 否则假世界自己会把火把
+     * 当成"能靠的方块"，一插就把火把位覆盖了，"没地方放"就成了测试自己的锅。
+     *
+     * @param {object} o
+     * @param {number} o.light          脚下这一格的方块光（0 = 全黑）
+     * @param {number} [o.sky]          脚下这一格的天光
+     * @param {'blocked'|boolean} [o.hasTorchNear] 旁边有没有火把（'blocked' = 隔着墙）
+     * @param {boolean} [o.carryTorch]  身上有没有火把
+     * @param {{x,y,z}} [o.at]          站在哪（默认 0,64,0）
+     */
+    const mkBot = ({ light, sky = 0, hasTorchNear = false, carryTorch = true, at = null }) => {
+      const base = at ? new Vec3(at.x, at.y, at.z) : new Vec3(0, 64, 0);
+      const placed = [];
+      const items = carryTorch ? [{ name: 'minecraft:torch', count: 32, type: 1 }] : [];
+      return {
+        placed,
+        bot: {
+          entity: { position: base.clone() },
+          inventory: { items: () => items.slice() },
+          equip: async () => {},
+          placeBlock: async (ref, dir) => {
+            placed.push({ torchOn: ref.position ? ref.position.floored() : null, dir: dir ? { x: dir.x, y: dir.y, z: dir.z } : null });
+            return true;
+          },
+          blockAt (p) {
+            if (!p) return null;
+            const dx = p.x - base.x; const dy = p.y - base.y; const dz = p.z - base.z;
+            // 脚下这一格：唯一参与亮度判断的格
+            if (dx === 0 && dy === 0 && dz === 0) return { name: 'minecraft:air', boundingBox: 'empty', light, skyLight: sky, position: new Vec3(p.x, p.y, p.z) };
+            // 脚下垫的石头（placeTorchHere 要一块能靠的方块）
+            if (dx === 0 && dy === -1 && dz === 0) return { name: 'minecraft:stone', boundingBox: 'block', light: 0, skyLight: 0, position: new Vec3(p.x, p.y, p.z) };
+            // 旁边 5 格：火把。'blocked' → 摆在脚边一格的墙**后面**（墙上放不了，只能插地上）
+            if (hasTorchNear) {
+              const spots = hasTorchNear === 'blocked'
+                ? [[1, -1, 0], [0, -1, 1], [0, -1, -1], [-1, -1, 0], [-1, 0, 0]]
+                : [[1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1], [1, 1, 0]];
+              for (const [sx, sy, sz] of spots) {
+                if (dx === sx && dy === sy && dz === sz) return { name: 'minecraft:torch', boundingBox: 'empty', light: 0, skyLight: 0, position: new Vec3(p.x, p.y, p.z) };
+              }
+            }
+            return { name: 'minecraft:air', boundingBox: 'empty', light: 0, skyLight: 0, position: new Vec3(p.x, p.y, p.z) };
+          },
+          // 走远了的坐标（>4 格）才会调 go —— 兜住，别让寻路器真跑
+          pathfinder: { goal: null, setGoal () {} },
+          setControlState: () => {}, clearControlStates: () => {}, look: async () => {},
+          registry: { blocksByName: {} },
+          findBlock: () => null, findBlocks: () => [],
+        },
+      };
+    };
+
+    console.log('\n[light_up] 按实际亮度判"要不要插"');
+    {
+      // ① 实机那个场景：这一格全黑，旁边 5 格有火把（隔着墙 / 在另一层也一样）→ 必须插
+      const { bot, placed } = mkBot({ light: 0, hasTorchNear: 'blocked' });
+      const r = await lightUp(bot, { max: 1, state: { pathfinder: { goto: async () => { throw new Error('不该走：这一格就在脚下'); } } } });
+      check('★ 亮度 0、旁边 5 格有火把 → 必须插（不再说"附近有光源"）', r.placed, 1);
+      check('★ 真的放了火把方块', placed.length, 1);
+      check('★ 不说"已经够亮"', /够亮|已经有光源|不用再插/.test(r.note), false);
+      check('返回里说了这一格是暗的', r.dark, true);
+      check('返回里报"看了几格 / 几格暗"', [r.checked, r.darkCount], [1, 1]);
+    }
+    {
+      // ② 这一格亮度 12 → 不插（按实际亮度判出来的"够亮"）
+      const { bot, placed } = mkBot({ light: 12, hasTorchNear: 'blocked' });
+      const r = await lightUp(bot, { max: 1 });
+      check('★ 亮度 12 → 不插', r.placed, 0);
+      check('★ 明说了"够亮"+ 亮度读数', /够亮（方块光 12/.test(r.note), true);
+      check('没放方块', placed.length, 0);
+    }
+    {
+      // ③ 暗、但身上没火把 → 报"没火把"，不是"不用插"
+      const { bot } = mkBot({ light: 0, hasTorchNear: false, carryTorch: false });
+      const r = await lightUp(bot, { max: 1 });
+      check('★ 没火把 → 报"没火把"（不是"不用插"）', /没有火把/.test(r.note), true);
+      check('★ 没插成时 ok:false（她要去做火把，不是原地发呆）', r.ok, false);
+      check('没火把时也如实说这里暗', r.dark, true);
+    }
+    {
+      // ④ 实机那个坐标（本能报的暗处）—— 优先照报过的坐标插
+      const { bot, placed } = mkBot({ light: 0, at: ORIGIN });
+      const r = await lightUp(bot, { max: 1, spots: [{ x: ORIGIN.x, y: ORIGIN.y, z: ORIGIN.z }], state: { pathfinder: { goto: async () => { throw new Error('不该走：她已经站在报的坐标上'); } } } });
+      check('★ 带本能报的暗处坐标 → 照那儿插', r.placed, 1);
+      check('★ 插的就是报的坐标那一格（火把贴在它正下方）', key(placed[0].torchOn), key({ x: ORIGIN.x, y: ORIGIN.y - 1, z: ORIGIN.z }), true);
+      check('返回里说明是照本能报的坐标', /本能报的 1 个暗处/.test(r.note), true);
+    }
+    {
+      // ⑤ 亮度读不到 → 不猜、不插
+      const bot2 = { entity: { position: new Vec3(0, 64, 0) }, blockAt: () => null, inventory: { items: () => [] }, pathfinder: {} };
+      const r = await lightUp(bot2, { max: 1 });
+      check('★ 读不到亮度 → 不猜也不插', [r.placed, r.dark], [0, null]);
+      check('说明是"读不到"而不是"够亮"', /读不到/.test(r.note), true);
+    }
+    {
+      // ⑥ 判据形状锁：lightUp 里不许再出现"附近有没有光源"这条路
+      const src = require('fs').readFileSync(__filename, 'utf8');
+      const body = src.slice(src.indexOf('async function lightUp'), src.indexOf('const isFiller'));
+      check('★ 判据形状：lightUp 里不再调用 nearestLight', /nearestLight\s*\(/.test(body), false);
+      check('★ 判据形状：lightUp 按 lightVerdict 判', /lightVerdict\(/.test(body), true);
+      check('★ 判据形状：阈值只在 util.js 一份（mining.js 里没有 7 / 8 的裸数字判暗）', /l\.block\s*<=\s*7|l\.block\s*<\s*8/.test(body), false);
+      check('★ lightVerdict 走的是共享那份（同一函数体）', lightVerdict({ block: 0, sky: 0 }).dark, true);
+    }
+  }],
+];
+register('mining', __sections);
+
+if (require.main === module && process.argv.includes('--selftest')) {
+  require('./testkit').bindHands(require('./index').__ns);
+  runSuite('mining', __sections);
+}

@@ -129,16 +129,25 @@ function pickCaveStep ({ cells = [], self, entry = null, visited = new Set() }, 
  * 判据（全部满足才插）：
  *   ① 在地下 / 洞里：exposure.kind === 'underground' 或（sheltered 且头顶有顶 roofAt != null）
  *      —— 露天的黑（夜里）不算，那是该回家睡觉的事，不是点灯的事；
- *   ② 脚下那格的**方块光**读得到（block 是数字）且 ≤ darkMax（默认 7，原版怪物在方块光 0 刷，留余量）
- *      —— 读不到就不插（主人：区分"没有"和"读不到"，读不到不猜）；
- *   ③ 身上有火把（torches > 0）；
- *   ④ 最近的光源 > spacing 格（默认 7）—— 和 `lightUp` 的判据一致，不重复插。
+ *   ② 脚下那格按**共享亮度判据**（`body/util.js` 的 `lightVerdict`：方块光 ≤ 7 且天光 ≤ 7）
+ *      判出来是"暗" —— 读不到就不插（主人：区分"没有"和"读不到"，读不到不猜）；
+ *   ③ 身上有火把（torches > 0）。
  * **打架时不插**（由调用方保证，不在这个纯函数里）。
  *
+ * ⚠️ 2026-09-29（问题 B）：原来这里还有第 ④ 条"最近的光源 > spacing 格才插"，
+ * 已**删掉** —— 那正是"附近有火把 ≠ 这一格亮"的错判（被墙挡住 / 隔了一层照样中招），
+ * 和 `body/mining.js` 的 `lightUp` 犯的是同一个错。要不要插只认**这一格的实测亮度**。
+ *
+ * @param {object} c
+ * @param {object} c.exposure  头顶遮挡（`exposureOf(bot)` 的结果）
+ * @param {(number|null)} c.light 脚下那格的方块光（读不到给 null）
+ * @param {number} c.torches   身上火把数
+ * @param {number} c.movedSince 从上次检查点走了多少格（行为节流，与"亮不亮"无关）
+ * @param {object} [c.lightVerdict] 共享亮度判据（`body/util.js`）；调用方注入，缺省按阈值就地算
  * @returns {{place:true, why:string}|{place:false, why:string}}
  */
 function pickTorchStep (c = {}, cfg = CFG.torch) {
-  const { exposure = null, light = null, torches = 0, nearestLight = null, movedSince = Infinity } = c;
+  const { exposure = null, light = null, torches = 0, movedSince = Infinity, lightVerdict = defaultLightVerdict } = c;
   if (!(torches > 0)) return { place: false, why: '身上没火把' };
   // ① 地下？
   const kind = exposure?.kind;
@@ -147,12 +156,32 @@ function pickTorchStep (c = {}, cfg = CFG.torch) {
   }
   // ④ 移动够了才检查（每 ~6 格一次，别每拍都点）
   if (movedSince < cfg.everyBlocks) return { place: false, why: `才走了 ${movedSince.toFixed(1)} 格，还没到 ${cfg.everyBlocks}` };
-  // ② 亮度读得到才算暗
-  if (!Number.isFinite(light)) return { place: false, why: '脚下亮度读不到，不插' };
-  if (light > cfg.darkMax) return { place: false, why: `脚下不暗（方块光 ${light}）` };
-  // ③ 附近已经有光源就不插
-  if (nearestLight && nearestLight.distance <= cfg.spacing) return { place: false, why: `${nearestLight.distance} 格内已经有光源` };
-  return { place: true, why: `脚下暗（方块光 ${light}）且 ${cfg.spacing} 格内没光源` };
+  // ② 判"暗不暗"用共享那份判据（`body/util.js` 的 `lightVerdict`）；读不到就不插（不猜）
+  const v = lightVerdict(Number.isFinite(light) ? { block: light, sky: 0 } : null);
+  if (v.unreadable) return { place: false, why: '脚下亮度读不到，不插' };
+  if (!v.dark) return { place: false, why: `脚下不暗（方块光 ${light}）` };
+  return { place: true, why: `脚下暗（方块光 ${light}）` };
+}
+
+/**
+ * 共享亮度判据的兜底副本 —— **只为离线自测**。
+ *
+ * 名字和 `body/util.js` 导出的 `lightVerdict` 一样（`pickTorchStep` 里叫的也是它）——
+ * 这个壳先看 `__ns` 里有没有真身（真机由 `instinct/core.js` 的 `tryTorch()` 通过
+ * `deps.hands.lightVerdict` 注入 `pickTorchStep`，不走这里）；没有才用下面的兜底阈值。
+ *
+ * 为什么不顶层 require `body/util.js`：`body/` 和本文件**互不 require**（原来靠 bridge 那边
+ * 传 `deps.hands` 才接得上），加一条 require 会多一条隐式耦合。阈值和 `body/util.js` 的
+ * `DARK_BLOCK_MAX` / `SKY_BRIGHT` 相同 —— 形状锁在自测里钉住两者一致。
+ */
+const defaultLightVerdict = (l) => {
+  if (!l || typeof l.block !== 'number') return { dark: false, unreadable: true };
+  const sky = typeof l.sky === 'number' ? l.sky : 0;
+  return { dark: l.block <= 7 && sky <= 7, unreadable: false };
+};
+function lightVerdict (...a) {
+  if (__ns && typeof __ns.lightVerdict === 'function') return __ns.lightVerdict.apply(null, a);
+  return defaultLightVerdict(...a);
 }
 
 /**
@@ -319,21 +348,34 @@ const __sections = [
     {
       const T = { ...CFG.torch };
       const under = { kind: 'underground', roofAt: 5, solidAbove: 9 };
-      check('★ 地下 + 脚下黑 + 有火把 + 附近没光源 → 插', pickTorchStep({ exposure: under, light: 0, torches: 5, nearestLight: null, movedSince: 10 }, T).place, true);
-      check('没火把 → 不插', pickTorchStep({ exposure: under, light: 0, torches: 0, nearestLight: null, movedSince: 10 }, T).place, false);
-      check('★ 亮度读不到 → 不插（不猜）', pickTorchStep({ exposure: under, light: null, torches: 5, nearestLight: null, movedSince: 10 }, T).place, false);
-      check('★ 地面露天（kind=open）→ 不插（夜里黑该回家睡）', pickTorchStep({ exposure: { kind: 'open', skyLight: 15 }, light: 0, torches: 5, nearestLight: null, movedSince: 10 }, T).place, false);
-      check('露天但头顶有顶（sheltered + roofAt）→ 就当洞里，照插', pickTorchStep({ exposure: { kind: 'sheltered', roofAt: 3, skyLight: 5 }, light: 3, torches: 5, nearestLight: null, movedSince: 10 }, T).place, true);
-      check('sheltered 但读不出 roofAt → 不插', pickTorchStep({ exposure: { kind: 'sheltered', roofAt: null }, light: 3, torches: 5, nearestLight: null, movedSince: 10 }, T).place, false);
-      check('★ 脚下够亮（方块光 9）→ 不插', pickTorchStep({ exposure: under, light: 9, torches: 5, nearestLight: null, movedSince: 10 }, T).place, false);
-      check('★ 7 格内已经有光源 → 不插', pickTorchStep({ exposure: under, light: 0, torches: 5, nearestLight: { distance: 5 }, movedSince: 10 }, T).place, false);
-      check('最近光源在 9 格（>7）→ 插', pickTorchStep({ exposure: under, light: 0, torches: 5, nearestLight: { distance: 9 }, movedSince: 10 }, T).place, true);
-      check('★ 才走了 2 格（没到 6）→ 先不检查', pickTorchStep({ exposure: under, light: 0, torches: 5, nearestLight: null, movedSince: 2 }, T).place, false);
-      check('★ 第一次（movedSince=Infinity）→ 也算走够了', pickTorchStep({ exposure: under, light: 0, torches: 5, nearestLight: null, movedSince: Infinity }, T).place, true);
-      check('亮度刚好在阈值上（7）→ 插（判据是 ≥ 阈值才不插）', pickTorchStep({ exposure: under, light: 7, torches: 5, nearestLight: null, movedSince: 10 }, T).place, true);
-      check('亮度 8（阈值上一个）→ 不插', pickTorchStep({ exposure: under, light: 8, torches: 5, nearestLight: null, movedSince: 10 }, T).place, false);
-      check('亮度 6 → 插', pickTorchStep({ exposure: under, light: 6, torches: 5, nearestLight: null, movedSince: 10 }, T).place, true);
-      check('不插时说的理由里含"火把/光/暗"', /火把|光|暗|洞|走/.test(pickTorchStep({ exposure: under, light: 0, torches: 0, nearestLight: null, movedSince: 10 }, T).why), true);
+      check('★ 地下 + 脚下黑 + 有火把 → 插', pickTorchStep({ exposure: under, light: 0, torches: 5, movedSince: 10 }, T).place, true);
+      check('没火把 → 不插', pickTorchStep({ exposure: under, light: 0, torches: 0, movedSince: 10 }, T).place, false);
+      check('★ 亮度读不到 → 不插（不猜）', pickTorchStep({ exposure: under, light: null, torches: 5, movedSince: 10 }, T).place, false);
+      check('★ 地面露天（kind=open）→ 不插（夜里黑该回家睡）', pickTorchStep({ exposure: { kind: 'open', skyLight: 15 }, light: 0, torches: 5, movedSince: 10 }, T).place, false);
+      check('露天但头顶有顶（sheltered + roofAt）→ 就当洞里，照插', pickTorchStep({ exposure: { kind: 'sheltered', roofAt: 3, skyLight: 5 }, light: 3, torches: 5, movedSince: 10 }, T).place, true);
+      check('sheltered 但读不出 roofAt → 不插', pickTorchStep({ exposure: { kind: 'sheltered', roofAt: null }, light: 3, torches: 5, movedSince: 10 }, T).place, false);
+      check('★ 脚下够亮（方块光 9）→ 不插', pickTorchStep({ exposure: under, light: 9, torches: 5, movedSince: 10 }, T).place, false);
+      check('★ 才走了 2 格（没到 6）→ 先不检查', pickTorchStep({ exposure: under, light: 0, torches: 5, movedSince: 2 }, T).place, false);
+      check('★ 第一次（movedSince=Infinity）→ 也算走够了', pickTorchStep({ exposure: under, light: 0, torches: 5, movedSince: Infinity }, T).place, true);
+      check('亮度刚好在阈值上（7）→ 插（判据是 ≥ 阈值才不插）', pickTorchStep({ exposure: under, light: 7, torches: 5, movedSince: 10 }, T).place, true);
+      check('亮度 8（阈值上一个）→ 不插', pickTorchStep({ exposure: under, light: 8, torches: 5, movedSince: 10 }, T).place, false);
+      check('亮度 6 → 插', pickTorchStep({ exposure: under, light: 6, torches: 5, movedSince: 10 }, T).place, true);
+      check('不插时说的理由里含"火把/光/暗"', /火把|光|暗|洞|走/.test(pickTorchStep({ exposure: under, light: 0, torches: 0, movedSince: 10 }, T).why), true);
+      // ---- 问题 B（2026-09-29）：判据不再看"附近有没有光源" ----
+      // 判"暗不暗"只走共享的 lightVerdict（注入真身，见 core.js 的 tryTorch）
+      const fnSrc = instinctSrc().slice(instinctSrc().indexOf('function pickTorchStep'), instinctSrc().indexOf('const defaultLightVerdict'));
+      check('★ 判据形状：pickTorchStep 走共享的 lightVerdict', /lightVerdict\(/.test(fnSrc), true);
+      check('★ 判据形状：pickTorchStep 不再拿附近光源当判据（只认这一格的亮度）',
+        /light > cfg\.darkMax|"附近有光源"|内已经有光源/.test(fnSrc), false);
+      check('★ 注入判据时按它判（注入的判据说"亮" → 不插）',
+        pickTorchStep({ exposure: under, light: 0, torches: 5, movedSince: 10, lightVerdict: () => ({ dark: false, unreadable: false }) }, T).place, false);
+      check('★ 注入判据时按它判（注入的判据说"读不到" → 不插）',
+        pickTorchStep({ exposure: under, light: 0, torches: 5, movedSince: 10, lightVerdict: () => ({ dark: false, unreadable: true }) }, T).place, false);
+      check('★ 兜底判据的阈值和 body/util.js 一致（方块光 7 算暗、8 不算）',
+        JSON.stringify([pickTorchStep({ exposure: under, light: 7, torches: 5, movedSince: 10 }, T).place, pickTorchStep({ exposure: under, light: 8, torches: 5, movedSince: 10 }, T).place]), JSON.stringify([true, false]));
+      // 改之前"7 格内有光源就不插"是一条独立判据；删掉后所有输入都不带 nearestLight 也照样对
+      check('★ 判据形状：config 里不再留 spacing（那是"看附近光源"的遗留参数）',
+        /^\s*spacing:/m.test(require('fs').readFileSync(require('path').join(__dirname, 'config.js'), 'utf8')), false);
     }
   }],
   ['续挖下矿（第 8 批 第 5 条）', async (t) => {

@@ -103,8 +103,8 @@ for (const line of raw) {
   if (m) playerTimes.push(m[1]);
 }
 
-const counts = { report: 0, ask: 0, reply: 0, other: 0 };
-const buckets = { report: [], ask: [], reply: [], other: [] };
+const counts = { report: 0, ask: 0, asksback: 0, reply: 0, other: 0 };
+const buckets = { report: [], ask: [], asksback: [], reply: [], other: [] };
 for (const { at, text } of her) {
   let c = classify(text);
   // 他刚说完话 → 先算"回他的话"（接下来的那段本来就是在接他）
@@ -116,11 +116,12 @@ const pct = (n) => `${((n / tot) * 100).toFixed(0)}%`;
 console.log(`\n内容分类（共 ${her.length} 条${playerTimes.length ? `；他在 ${playerTimes.length} 个时刻说过话，之后 ${HEARD_MS / 1000} 秒内算"回他的话"` : '；没找到他说过话的锚点，无法区分"回话"和"自己开口"'}）：`);
 console.log(`  汇报自己的动作/进度  ${String(counts.report).padStart(4)} 条  ${pct(counts.report)}`);
 console.log(`  问玩家               ${String(counts.ask).padStart(4)} 条  ${pct(counts.ask)}`);
+console.log(`  把决定反问回给他     ${String(counts.asksback).padStart(4)} 条  ${pct(counts.asksback)}`);
 console.log(`  回他的话             ${String(counts.reply).padStart(4)} 条  ${pct(counts.reply)}`);
 console.log(`  其他（感受/发现/闲聊）${String(counts.other).padStart(4)} 条  ${pct(counts.other)}`);
 
 if (sampleArg >= 0 || process.argv.includes('--samples')) {
-  for (const [k, name] of [['report', '汇报'], ['ask', '问玩家'], ['other', '其他']]) {
+  for (const [k, name] of [['report', '汇报'], ['ask', '问玩家'], ['asksback', '反问决定'], ['other', '其他']]) {
     if (!buckets[k].length) continue;
     console.log(`\n${name}（${buckets[k].length} 条，前 ${Math.min(sampleN, buckets[k].length)} 条）：`);
     for (const l of buckets[k].slice(0, sampleN)) console.log(`  ${l}`);

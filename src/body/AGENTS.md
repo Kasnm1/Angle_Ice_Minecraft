@@ -9,11 +9,11 @@
 |---|---|
 | `hands.js` | **汇总**（第 3 步重构，2026-09-28）。只剩一行转发到 `index.js`（**不用符号链接**：Windows 的 git 默认签出成纯文本，require 会炸）—— `require('../body/hands')` 和 `--selftest` 都照旧，导出名与顺序一字不差。真正的内容在下面 8 个文件 + `index.js`。挂到 bridge 上的"手"：`/eat` `/use` `/wear` `/craft2`（整合包真实配方）`/smelt` `/container/*`。每个动作比对前后背包/装备/饥饿值，不信"调用成功" |
 | `index.js` | `hands.js` 的目标：8 个子文件的 `require` + `__ns` 汇总 + `bind()` 回填 + `routes()`（75 条路由）+ 47 个导出。**改路由挂载只动这里** |
-| `util.js` | 分出来 45 项：`Vec3`/注册表小工具、背包计数、可达性（`canUseFrom`/`canUseNow`）、门/梯子判定、NBT/Sophisticated 读写、`inHomeArea`。**共享状态 `knowledge`/`K()` 在这里** |
+| `util.js` | 分出来 45 项：`Vec3`/注册表小工具、背包计数、可达性（`canUseFrom`/`canUseNow`）、门/梯子判定、NBT/Sophisticated 读写、`inHomeArea`。**共享状态 `knowledge`/`K()` 在这里**。**`lightVerdict`/`blockLightAt`/`DARK_BLOCK_MAX`/`SKY_BRIGHT`（"这一格暗不暗"的唯一判据）也在这里** |
 | `containers.js` | 53 项：箱子 / 背包 / 饰品栏（curios）/ FTBQ / 结构放置，及排序与身份比对（`stackIdentity`/`sameTotals`）。**`HSTATE` 的 getter 在这里**，`backpackChain` 串行队列。**整理仓库（`organizeStorage`）自己会把精妙背包里的倒出来归位**（2026-09-29 问题 1）：`drainBackpackOnePass` 按快照前后差核对真实变化，`backpack` 分项单独报 `unreadable`/`chestsFull`/`drained`/`empty` —— 读不到 ≠ 里面没有 |
 | `craft.js` | 34 项：合成（手搓 / 配方书）、熔炉、吃 / 用 / 穿 / 给、厨锅。**`HSTATE` 的 getter 在这里**。合成/吃饭都先看精妙背包（`topUpFromBackpack`）；缺工作台/熔炉时**自己放下再用完挖回**（`withPlacedStation`，2026-09-29 问题 2b/3）。`wear`（2026-09-29 问题 3）：要穿的那件**已经在它该在的槽位上** → 直接回 `{worn, slot, alreadyWorn:true, via:'already-worn'}`，不报"背包里没有"（`findItem` 看不见身上穿着的，会误判缺货）。判据要**先于** `findItem` 的 null 抛出，用 `slotByName(wantId)` + `equipment()` 比对 |
 | `movement.js` | 32 项：寻路（`go`/`pathTo`/`followRoute`）、爬梯、开门、跟随（`startFollow`）、`motor`/`nudge`、`/cmd` 白名单、睡觉、自救 |
-| `mining.js` | 24 项：挖矿与下矿（`delve`）、矿脉/亮源注册表缓存、火把、填缝 |
+| `mining.js` | 24 项：挖矿与下矿（`delve`）、矿脉/亮源注册表缓存、火把（`lightUp` 按 `util.js` 的 `lightVerdict` 判、`spots` 优先照本能报的暗处）、填缝 |
 | `farming.js` | 4 项：作物 / 种子 / 收成 / `farm` |
 | `kit.js` | 9 项：装备清单（`defaultLoadout`/`isLoadoutItem`/`kitShortfall`）、脚手架判定。`scaffoldCache` 缓存。**镐斧铲剑都要有一把**（2026-09-29 问题 5 补上铲：`pickaxe$` 匹配不上 `iron_shovel`，`(^|_)axe$` 也匹配不上，于是挖黏土时工具在背包里也拿不出来）；铲/斧非 `essential`，不会刷 `kit_short` |
 | `tool-choice.js` | **挖方块前挑工具**（2026-09-29）。`toolKindFor`（该用铲/斧/镐：material → harvestTools → 名字兜底，**判据只此一处**）、`pickDigTool` / `fastestOfKind`（身上挑 digTime 最快的）、`equipDigTool` / `ensureDigTool`（换到手上，身上没有就去精妙背包拿；拿不到就照旧挖）。**不 require 兄弟文件**，名字直接进 `index.js` 的 `__ns` |
@@ -63,7 +63,24 @@ $NODE scripts/test-all.js                                # 全绿：含 [exports
 
 `HSTATE`（bridge 的 `state`）只存在 `index.js`：`install` 先写它再转调 `containers` 的 `installInner`，
 `containers` / `craft` 各接一个 `setHandsState(handsState)` 的 getter 读同一份 —— **不要另存副本**。
-`knowledge`/`K()` 只在 `util.js`；`scaffoldCache` 在 `kit.js`；`oreIdsCache`/`lightIdsCache` 在 `mining.js`。
+`knowledge`/`K()` 只在 `util.js`；`scaffoldCache` 在 `kit.js`；`oreIdsCache`/`lightIdsCache` 在 `mining.js`；
+**"这一格暗不暗"的判据 `lightVerdict` 只在 `util.js`**（见下节）。
+
+## 亮度判据只有一份（2026-09-29 问题 B）
+
+"这一格要不要插火把"只认 `util.js` 的 `lightVerdict(l)`（`l` 由同文件的 `lightAt` / `blockLightAt` 读）：
+
+- 方块光 ≤ `DARK_BLOCK_MAX`(7) **且** 天光 ≤ `SKY_BRIGHT`(7) → `dark: true`；读不到 → `unreadable: true`（**不是**"暗"，也**不是**"亮"）。
+- **判据里没有"附近有没有火把"这回事**。`mining.js` 的 `lightUp` 原来按"7 格内有光源就不插"判，
+  实机里她走到本能报的全黑格 `-7,126,-1`，却被墙挡住的那支火把骗成"已经够亮"，一支没插、原地发呆。
+  现在只认脚下这一格的实测亮度；`nearestLight` 只用于 `GET /light` 的展示，**不再参与判断**。
+- `light_up` 的返回把话说清：看了几格（`checked`）、几格是暗的（`darkCount`）、插了几支（`placed`）、
+  没插的原因（没火把 / 没地方放 / 已经够亮）—— "已经够亮"必须是**亮度**判出来的。
+- `light_up` 接受 `spots`（`dark_spot` 事件报过的暗处坐标）：离得远就先走过去，到了看脚下还暗才插。
+  mind 侧由 `actions.js` 的 `runTool` 自动带上 `W.darkSpots`（本能已经数过是哪几格了）。
+- `instinct/mining.js` 的 `pickTorchStep` 走**同一个判据**（真身由 `core.js` 的 `tryTorch()` 经
+  `deps.hands.lightVerdict` 注入；`instinct/` 与 `body/` 互不 require，那边留了一份阈值相同的兜底
+  `defaultLightVerdict`，形状锁在自测里钉住一致）。它原来那条"7 格内没光源才插"已删。
 
 ## 挖方块前挑工具（2026-09-29）
 

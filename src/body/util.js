@@ -384,6 +384,44 @@ const FIXED_CH = [
 
 const N6 = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
 
+// ---------------------------------------------------------------- 亮度：全项目只此一处（2026-09-29 问题 B）
+//
+// 实机：本能报家里 `-7,126,-1` 全黑，她走到那里 `light_up` 却说"7 格内已经有光源，不用再插" ——
+// 一支都不插，然后原地发呆。根因是**两套判据**：`dark_spot`（instinct）按**方块实际亮度**判全黑，
+// `lightUp`（body）按**附近有没有光源方块**判"不用再插"。有火把却被墙挡住 / 隔层的那一格
+// 仍然是暗的，光看"附近有光源"会把它判成"够亮"。
+//
+// 现在两处共用下面这一个判据（`lightVerdict`）：
+//   · `body/mining.js` 的 `lightUp` 用它决定"这一格要不要插"
+//   · `instinct/mining.js` 的 `pickTorchStep`（真身由 `instinct/core.js` 的 `tryTorch()` 注入）
+//     和 `darkReport` 用同一套阈值。`instinct/` 与 `body/` 互不 require，所以那边留了一份
+//     阈值相同的**兜底副本**（`defaultLightVerdict`，只为离线自测），形状锁钉住两者一致。
+//
+// 阈值：原版怪要**方块光 0** 才刷；留余量取 7（`DARK_BLOCK_MAX`）。
+// `sky`（天空光）> `SKY_BRIGHT` 就不算暗 —— 露天白天照得到天光的地方本来就不该插火把。
+const DARK_BLOCK_MAX = 7;
+const SKY_BRIGHT = 7;
+
+/**
+ * 这一格（脚那格）算不算"需要插火把的暗"。
+ * @param {{block:number, sky:?number}|null} l  `lightAt()` 的读数；**null = 读不到**
+ * @returns {{dark:boolean, unreadable:boolean}}
+ *   `unreadable` 和 `dark:false` 是两回事 —— 前者是"读不到亮度"（不猜、不插也不报），
+ *   后者是"读得到、而且够亮"（AGENTS.md §5-1："没有"和"读不到"必须分开报）。
+ */
+function lightVerdict (l) {
+  if (!l || typeof l.block !== 'number') return { dark: false, unreadable: true };
+  const sky = typeof l.sky === 'number' ? l.sky : 0;
+  return { dark: l.block <= DARK_BLOCK_MAX && sky <= SKY_BRIGHT, unreadable: false };
+}
+
+/** 一格的方块光读数（同 `lightAt` 的读法，但只读一格、不依赖 body 里的转发壳） */
+function blockLightAt (bot, pos) {
+  const b = bot.blockAt(pos);
+  if (!b || b.light == null) return null;
+  return { block: b.light, sky: b.skyLight ?? null };
+}
+
 let knowledge = null;
 
 function K () {
@@ -391,4 +429,31 @@ function K () {
   return knowledge;
 }
 
-module.exports = { ARMOR_SLOTS, FIXED_CH, K, N6, REACH, airish, bareId, bind, blockVisible, botName, canUseFrom, canUseNow, cartKey, commandWords, delta, doorBase, doorKey, doorKind, equipChanges, equipment, eyeDist, findItem, findStorage, foodScore, fullId, hexLong, inHomeArea, invCounts, isDoorLike, isLadder, isLiquid, isOpen, knowledge, knownTierOf, locatePlayerInv, markSeen, mcString, nearestBlock, passable, plainTitle, readNbt, readSophItem, readVarInt, seenKeys, sleep, slotByName, solidUnder, storageKey, summarizeWindow, surveyChar, tierOf, winInvCount };
+module.exports = { ARMOR_SLOTS, DARK_BLOCK_MAX, FIXED_CH, K, N6, REACH, SKY_BRIGHT, airish, bareId, bind, blockLightAt, blockVisible, botName, canUseFrom, canUseNow, cartKey, commandWords, delta, doorBase, doorKey, doorKind, equipChanges, equipment, eyeDist, findItem, findStorage, foodScore, fullId, hexLong, inHomeArea, invCounts, isDoorLike, isLadder, isLiquid, isOpen, knowledge, knownTierOf, lightVerdict, locatePlayerInv, markSeen, mcString, nearestBlock, passable, plainTitle, readNbt, readSophItem, readVarInt, seenKeys, sleep, slotByName, solidUnder, storageKey, summarizeWindow, surveyChar, tierOf, winInvCount };
+
+// ---------------------------------------------------------------- 自测（亮度判据）
+//
+// 2026-09-29 问题 B：`light_up` 和 `dark_spot` 曾各判一套 —— 一格亮度 0、旁边 5 格有火把
+// 但隔着墙，要照插；"附近有火把"那种判法会说"已经有光源，不用插"。这个判据是两份的唯一来源。
+
+const { register } = require('./testkit');
+const __sections = [
+  ['[亮度判据 lightVerdict]', async (t) => {
+    const { check } = t;
+    check('★ 亮度 0 → 暗（要插）', lightVerdict({ block: 0, sky: 0 }), { dark: true, unreadable: false });
+    check('★ 亮度 12 → 不暗（不用插）', lightVerdict({ block: 12, sky: 0 }), { dark: false, unreadable: false });
+    check('边界：亮度 7 → 暗（<= DARK_BLOCK_MAX 就算暗）', lightVerdict({ block: 7, sky: 0 }), { dark: true, unreadable: false });
+    check('边界：亮度 8 → 不暗', lightVerdict({ block: 8, sky: 0 }), { dark: false, unreadable: false });
+    check('露天白天（方块光 0 / 天光 15）→ 不算暗（矿道口的老毛病）', lightVerdict({ block: 0, sky: 15 }), { dark: false, unreadable: false });
+    check('★ 读不到（null）→ unreadable，不是"暗"也不是"亮"', lightVerdict(null), { dark: false, unreadable: true });
+    check('★ 读不到（没有 block 字段）→ unreadable', lightVerdict({ sky: 3 }), { dark: false, unreadable: true });
+    check('★ 判据里没有"附近有没有火把"这回事（只认这一格的亮度）',
+      /function lightVerdict[\s\S]{0,400}l\.block <= DARK_BLOCK_MAX[\s\S]{0,120}sky <= SKY_BRIGHT/.test(require('fs').readFileSync(__filename, 'utf8')), true);
+  }],
+];
+register('util', __sections);
+
+if (require.main === module && process.argv.includes('--selftest')) {
+  require('./testkit').bindHands(require('./index').__ns);
+  require('./testkit').runSuite('util', __sections);
+}

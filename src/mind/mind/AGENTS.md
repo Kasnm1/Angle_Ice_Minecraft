@@ -18,7 +18,7 @@
 | `runtime.js` | 132 | `log` / `hhmmss` / `scene`（此刻场记）/ `emit`（事件入流）/ `chatWaitLeft` / `typingMs` / `chatGate` / `scheduleThink`（debounce）。模块级 `thinkTimer` / `thinkTimerAt` **只在这里** |
 | `scene.js` | 234 | 情境快照与拼装：`humanState` / `tonight` / `combatInstinct` / `combatGuard` / `survivalFocus` / `dayKey` / `dropsNear` / `invText` / `surroundNeeds` / `pickJoinMood` / `JOIN_MOODS` / `shortName` … |
 | `look.js` | 245 | `look()`：每轮"想"之前看一眼世界（状态 / 背包 / 附近 / 玩家 / 聊天 / 门 / 装备 / 箱 / 亮度 / 余光），新东西 `emit()`；第一次见某人 `mem.meet()` |
-| `gates.js` | 167 | 说话 / 汇报 / 提问的判据表：`REPORT_NUDGE` / `ASK_TOO_MUCH_NUDGE` / `HONEST_NUDGE` / `FACT_CLAIMS` / `claimState` / `liveFails` / `unbackedClaim` / `taskDoneAllowed` / `isOverAsking` / `lastProactiveUnanswered` / `isBareAffirmative` / `PLAYER_MOVE_*` / `TASK_*` / `*_NUDGE` … |
+| `gates.js` | 167 | 说话 / 汇报 / 提问的判据表：`REPORT_NUDGE` / `ASK_TOO_MUCH_NUDGE` / `ASK_BACK_NUDGE` / `HONEST_NUDGE` / `FACT_CLAIMS` / `claimState` / `liveFails` / `unbackedClaim` / `taskDoneAllowed` / `isOverAsking` / `lastProactiveUnanswered` / `isBareAffirmative` / `PLAYER_MOVE_*` / `TASK_*` / `*_NUDGE` … |
 | `tools.js` | 328 | `MIND_TOOLS` 工具表与分组：`ALL` / `SPECS` / `GROUPS` / `TOOL_GROUPS` / `UNGROUPED` / `GROUP_ROUNDS` / `GROUP_CUES` / `pickSpecs` / `groupsFromBody` / `activateGroup` / `activeGroups` / `kindOf`；仓库位 `knownStations` / `homeStockItems` / `shortName` |
 | `actions.js` | 214 | 把"想"变成"做"：`startJob` / `runTool` / `toolResultLine` / `fmtArgs` / `celebrate` / `learnFromDoing`；反射级 `instinctEat` / `NAME_RE` / `FAST` / `matchFast` / `fastPath` |
 | `think.js` | 771 | `think()` 多轮调模型主循环 + 上下文压实：`historyChars` / `bodyNow` / `planExtras` / `planLine` / `buildNow` / `repetitionHint` / `particleHint` / `idleGate` / `compactLastNow` / `clipText` / `repairHistory` / `trimDangling` / `sleepAndSort` / `sortMemories` / `holdBody` / `startControl` … |
@@ -57,8 +57,10 @@
   函数体必须逐字节一致（唯一例外是上面那条 `thinkTimer` 访问器）。
 - **`look()` 里拼"长期计划"那一小段整块留在 `look.js`**，别挪去别处 ——
   `feat/campaign-quests` 分支（也在改长期计划）之后要合这一块。
-- 说话出口的四道闸（`REPORT_NUDGE` / `ASK_TOO_MUCH_NUDGE` / `HONEST_NUDGE` + 原有 `LOOK_NUDGE` / `DECIDE_NUDGE`）
-  在 `gates.js`。**加一类完成式只改 `gates.js` 的 `FACT_CLAIMS` 表**；加一类说话内容改 `speech.js` 的 `classify()`。
+- 说话出口的五道闸（`REPORT_NUDGE` / `ASK_TOO_MUCH_NUDGE` / `ASK_BACK_NUDGE` / `HONEST_NUDGE` + 原有 `LOOK_NUDGE` / `DECIDE_NUDGE`）
+  在 `gates.js`。**加一类完成式只改 `gates.js` 的 `FACT_CLAIMS` 表**；加一类说话内容改 `speech.js` 的 `classify()` / `asksBack()`。
+- `dark_spot` 事件报的暗处坐标（`sample`）由 `look()` 记进 `W.darkSpots`，`actions.js` 的 `runTool` 在她调
+  `light_up` 且没自己给 `spots` 时自动带上 —— 本能已经数过是哪几格了，不用她再找一遍（2026-09-29 问题 B）。
 - 别把"聪明规则"加回程序里（见 `../AGENTS.md` 的设计立场）。程序只保留**本能**。
 
 ## 自测

@@ -107,6 +107,7 @@ const W = {
   ledgerSeq: null,    // 物品账读到哪了（bridge 的 /inventory/ledger）；null = 还没读过（第一次不翻旧账）
   ledgerNew: null,    // 这一眼新看到的账
   instinctSeq: null,  // 本能事件读到哪了（/instinct/events）
+  darkSpots: null,    // 本能报过的家里暗处坐标（dark_spot 事件的 sample）—— 她调 light_up 时带上它
   homeToldAt: 0,      // 上次把家告诉本能层的时间
   lastHp: null,
   players: new Set(),

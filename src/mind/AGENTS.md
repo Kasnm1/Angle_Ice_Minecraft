@@ -31,7 +31,7 @@
 | `mind/runtime.js` | 132 | `log` / `hhmmss` / `scene`（此刻场记）/ `emit`（事件入流）/ `chatWaitLeft` / `typingMs` / `chatGate` / `scheduleThink`（debounce）。模块级 `thinkTimer` / `thinkTimerAt` **只在这里**，外部经 `readingThinkTimer()` / `readingThinkTimerAt()` / `clearThinkTimer()` 读改 |
 | `mind/scene.js` | 234 | 情境快照与拼装：`humanState` / `tonight` / `combatInstinct` / `survivalFocus` / `dropsNear` / `invText` / `surroundNeeds` / `pickJoinMood` / `JOIN_MOODS` … |
 | `mind/look.js` | 245 | `look()`：每轮"想"之前看一眼世界（状态/背包/聊天/余光/门/箱/亮度），新东西 `emit()`。**拼"长期计划"那段整块留在这里**，方便与 `feat/campaign-quests` 分支合并 |
-| `mind/gates.js` | 167 | 说话/汇报/提问的判据表：`REPORT_NUDGE` / `ASK_TOO_MUCH_NUDGE` / `HONEST_NUDGE` / `FACT_CLAIMS` / `claimState` / `liveFails` / `taskDoneAllowed` / `isOverAsking` / `lastProactiveUnanswered` … |
+| `mind/gates.js` | 167 | 说话/汇报/提问的判据表：`REPORT_NUDGE` / `ASK_TOO_MUCH_NUDGE` / `ASK_BACK_NUDGE` / `HONEST_NUDGE` / `FACT_CLAIMS` / `claimState` / `liveFails` / `taskDoneAllowed` / `isOverAsking` / `lastProactiveUnanswered` … |
 | `mind/tools.js` | 328 | `MIND_TOOLS` 工具表与分组：`SPECS` / `GROUPS` / `TOOL_GROUPS` / `GROUP_CUES` / `pickSpecs` / `groupsFromBody` / `activateGroup` / `activeGroups`；仓库位 `knownStations` / `homeStockItems` / `shortName` |
 | `mind/actions.js` | 214 | 把"想"变成"做"：`startJob` / `runTool` / `toolResultLine` / `fmtArgs` / `celebrate` / `learnFromDoing`；反射级 `instinctEat` / `NAME_RE` / `FAST` / `matchFast` / `fastPath`。`MIND_TOOLS` 经 Proxy 延迟取（见下） |
 | `mind/think.js` | 792 | `think()` 多轮调模型主循环 + 上下文压实：`historyChars` / `bodyNow` / `planExtras` / `planLine` / `buildNow` / `repetitionHint` / `idleGate` / `compactLastNow` / `clipText` / `trimDangling` / `sleepAndSort` / `sortMemories` / `holdBody` / `startControl` … |
@@ -51,11 +51,13 @@
   或者改 `PERSONA.md` / 给她的工具说明。程序只保留**本能**。
 - 说与做一致：她说"在做木镐"，状态里就必须真有这件事。
 - 动作结果以 bridge 返回的**实际变化**为准，不以"调用成功"为准。
-- **说话出口的四道闸是例外**（现在在 `mind/gates.js` 的 `REPORT_NUDGE` / `ASK_TOO_MUCH_NUDGE` / `HONEST_NUDGE`，
-  以及原有的 `LOOK_NUDGE` / `DECIDE_NUDGE`）：它们是主人 2026-09-29 明确要的"少汇报、少问、不说没发生的事"，
+- **说话出口的五道闸是例外**（现在在 `mind/gates.js` 的 `REPORT_NUDGE` / `ASK_TOO_MUCH_NUDGE` / `ASK_BACK_NUDGE` / `HONEST_NUDGE`，
+  以及原有的 `LOOK_NUDGE` / `DECIDE_NUDGE`）：它们是主人 2026-09-29 明确要的"少汇报、少问、不说没发生的事、别把问题反问回去"，
   拦下后**不静默吞掉** —— 往历史里塞一条 `ok:false` + 提示，让她自己重想。
-  判据在 `speech.js` 的 `classify()`（只此一处，`scripts/speech-audit.js` 也用这一份）。
+  判据在 `speech.js` 的 `classify()` / `asksBack()`（**只此一处**，`scripts/speech-audit.js` 也用这一份）。
   **加一类完成式只改 `mind/gates.js` 的 `FACT_CLAIMS` 表**；加一类说话内容改 `classify()`。
+  ⚠️ `ASK_BACK_NUDGE` 与 `HONEST_NUDGE` 一样**不看 `heJustSpoke`** —— 他刚开口时"回答他不受限"是给
+  **回答**的，不是给"把决定推回给他"的反问的（2026-09-29 实机 19:10:16 的"你想去哪呀"）。
 
 ## 必须知道
 

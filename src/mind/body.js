@@ -1270,9 +1270,9 @@ const TOOLS = {
   },
   light_up: {
     kind: 'action',
-    desc: '在脚边插一个火把（身边 7 格内已经有光源就不插；火把不够会先用煤/木炭做）。进洞、下矿、家附近暗处用。按间距插，一次一个，不要连着插。',
-    params: { max: { type: 'number' } }, required: [],
-    run: async ({ max }) => bridge.post('/light_up', { max }, 60000),
+    desc: '在脚边插一个火把。要不要插看的是**这一格的实测亮度**（脚下方块光 ≤7 就算暗要插；亮着就不插）—— 不看"附近有没有火把"（被墙挡住的火把照不到你脚下）。本能报过家里哪几格全黑的话，会自动优先照那些坐标插；spots 可以自己指定要照的坐标。火把不够会先用煤/木炭做。按间距插，一次一个，不要连着插。',
+    params: { max: { type: 'number' }, spots: { type: 'array', items: { type: 'object' }, description: '优先照这几个坐标插 [{x,y,z}]（不给就照本能报过的家里暗处）' } }, required: [],
+    run: async ({ max, spots }) => bridge.post('/light_up', { max, spots }, 60000),
   },
   make_torches: {
     kind: 'action',

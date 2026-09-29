@@ -352,6 +352,60 @@ async function selftest () {
     body._setBridge(mockBridge());
   }
 
+  console.log('\n回答他时别把问题反问回去（问题 A，2026-09-29 实机 19:10:16）');
+  {
+    // 实机那一轮的原样：他问"今天干嘛"，她答完夹一句"你想去哪呀"
+    const said = []; const mb = mockBridge();
+    body._setBridge({ get: mb.get, post: async (p, b) => { if (p === '/chat') said.push((b.messages || [b.message]).join('/')); return mb.post(p, b); } });
+    const scriptR = [
+      { content: '', tool_calls: [
+        { id: 'r1', function: { name: 'say', arguments: '{"text":"先在家里插点火把"}' } },
+        { id: 'r2', function: { name: 'say', arguments: '{"text":"你想去哪呀"}' } },
+      ] },
+    ];
+    body._setLLM(async () => scriptR.shift() || { content: '', tool_calls: [{ id: `w${Math.random()}`, function: { name: 'wait', arguments: '{}' } }] });
+    W.history = []; W.lastNow = null; W.pending = []; W.chatWait = null; W.lastAskedAt = 0; W.lastProactive = null;
+    emit('💬 Ka_sum1 说：今天干嘛', { names: ['Ka_sum1'], chat: true });
+    for (let i = 0; i < 50 && (W.thinking || thinkTimerValue()); i++) await new Promise(r => setTimeout(r, 100));
+    await new Promise(r => setTimeout(r, 500));
+    check('★ 他刚开口、她回答 → 放行（"先在家里插点火把"发得出去）', said.some(x => /先在家里插点火把/.test(x)), said);
+    check('★ 回答里夹的"你想去哪呀" → 拦下（没发出去）', !said.some(x => /你想去哪/.test(x)), said);
+    check('拦下时给了提示（不是静默吞掉）', W.history.some(m => m.role === 'tool' && /别把问题丢回去/.test(m.content)),
+      W.history.filter(m => m.role === 'tool').map(m => m.content.slice(0, 80)));
+
+    // 他明确在问她的意见（"你觉得先挖矿还是先砍树"）→ 她反问澄清放行
+    const said2 = []; const mb2 = mockBridge();
+    body._setBridge({ get: mb2.get, post: async (p, b) => { if (p === '/chat') said2.push((b.messages || [b.message]).join('/')); return mb2.post(p, b); } });
+    const scriptV = [
+      { content: '', tool_calls: [{ id: 'v1', function: { name: 'say', arguments: '{"text":"你想要哪个多点？"}' } }] },
+    ];
+    body._setLLM(async () => scriptV.shift() || { content: '', tool_calls: [{ id: `w${Math.random()}`, function: { name: 'wait', arguments: '{}' } }] });
+    W.history = []; W.lastNow = null; W.pending = []; W.chatWait = null; W.lastAskedAt = 0; W.lastProactive = null;
+    emit('💬 Ka_sum1 说：你觉得先挖矿还是先砍树', { names: ['Ka_sum1'], chat: true });
+    for (let i = 0; i < 50 && (W.thinking || thinkTimerValue()); i++) await new Promise(r => setTimeout(r, 100));
+    await new Promise(r => setTimeout(r, 500));
+    check('★ 他问她的意见 → 她反问澄清放行', said2.some(x => /你想要哪个/.test(x)), said2);
+
+    // 他刚开口、她只是回答"好呀" → 放行
+    const said3 = []; const mb3 = mockBridge();
+    body._setBridge({ get: mb3.get, post: async (p, b) => { if (p === '/chat') said3.push((b.messages || [b.message]).join('/')); return mb3.post(p, b); } });
+    const scriptY = [
+      { content: '', tool_calls: [{ id: 'y1', function: { name: 'say', arguments: '{"text":"好呀"}' } }] },
+    ];
+    body._setLLM(async () => scriptY.shift() || { content: '', tool_calls: [{ id: `w${Math.random()}`, function: { name: 'wait', arguments: '{}' } }] });
+    W.history = []; W.lastNow = null; W.pending = []; W.chatWait = null; W.lastAskedAt = 0; W.lastProactive = null;
+    emit('💬 Ka_sum1 说：今天干嘛', { names: ['Ka_sum1'], chat: true });
+    for (let i = 0; i < 50 && (W.thinking || thinkTimerValue()); i++) await new Promise(r => setTimeout(r, 100));
+    await new Promise(r => setTimeout(r, 500));
+    check('★ 只是回答"好呀" → 放行', said3.some(x => /好呀/.test(x)), said3);
+    // 判据本身也测一遍（跑的是导出的那份 speech.asksBack，不手抄）
+    check('判据：他问"今天干嘛"、她说"你想去哪呀" → 是反问决定', speech.asksBack('你想去哪呀', '今天干嘛') === true);
+    check('判据：他问她的意见、"你想要哪个多点？" → 不是', speech.asksBack('你想要哪个多点？', '你觉得先挖矿还是先砍树') === false);
+    check('判据：只有他知道的事（"你想要什么"）→ 不是', speech.asksBack('你想要什么', '你去挖矿吧') === false);
+    check('判据：她自己的邀请（"带上我嘛"）→ 不是', speech.asksBack('带上我嘛', '今天干嘛') === false);
+    body._setBridge(mockBridge());
+  }
+
   console.log('\n不说没发生的事：完成式要有工具结果撑着');
   {
     // 睡觉失败（工具已经报了 ✗ 现在不是晚上）→ 拦，提示里带上工具的原因。
@@ -869,6 +923,33 @@ async function selftest () {
     check('tools（元工具）能被调用', (await runTool('tools', {})).ok === true);
     check('my_dream 能被调用', (await runTool('my_dream', {})).ok === true);
     W.groupActive = {}; W.groupRound = 0;
+  }
+
+  console.log('\n本能报的暗处坐标 → 她一调 light_up 就带过去（问题 B，2026-09-29）');
+  {
+    const save = { darkSpots: W.darkSpots, instinctSeq: W.instinctSeq };
+    const seen = [];
+    const mb = mockBridge();
+    const ctrl = {
+      get: async (p) => (p.startsWith('/instinct/events')
+        ? { seq: 7, events: [{ seq: 7, kind: 'dark_spot', text: '家里有 3 格地面是全黑的', count: 3, sample: [{ x: -7, y: 126, z: -1 }, { x: -8, y: 126, z: -1 }, { x: -9, y: 126, z: -1 }] }] }
+        : mb.get(p)),
+      post: async (p, b) => { if (p === '/light_up') seen.push(b); return mb.post(p, b); },
+    };
+    body._setBridge(ctrl);
+    W.instinctSeq = 6;                       // 假装已经读到 6，让第 7 条事件算"新的"
+    await look();
+    check('★ dark_spot 的 sample 记进了 W.darkSpots', W.darkSpots, [{ x: -7, y: 126, z: -1 }, { x: -8, y: 126, z: -1 }, { x: -9, y: 126, z: -1 }]);
+    body._setBridge(ctrl);
+    await runTool('light_up', {});
+    check('★ 调 light_up 时不带坐标，也自动带上本能报的暗处', Array.isArray(seen[0]?.spots) && seen[0].spots.length === 3, true);
+    check('★ 带的就是本能报的那几格', seen[0].spots[0], { x: -7, y: 126, z: -1 });
+    seen.length = 0;
+    body._setBridge(ctrl);
+    await runTool('light_up', { spots: [{ x: 1, y: 2, z: 3 }] });
+    check('★ 她自己指定了 spots 就听她的（不覆盖）', seen[0].spots, [{ x: 1, y: 2, z: 3 }]);
+    body._setBridge(mb);
+    Object.assign(W, save);
   }
 
   console.log('\n空闲闸门（她闲着、身体在忙、也没人找她 → 不问模型）');
