@@ -32,7 +32,7 @@ const { isBareAffirmative, taskDoneAllowed, isOverAsking, lastProactiveUnanswere
   liveFails, unbackedClaim, FACT_CLAIMS, REPORT_NUDGE, ASK_TOO_MUCH_NUDGE, HONEST_NUDGE, QUIET_MS,
   ASK_COOLDOWN_MS, DELEGATES, ASKS_BACK, DECIDE_NUDGE, ASKS_WHERE, LOOK_NUDGE, SAY_NUDGE,
   ACTION_NUDGE, RECENT_CLAIM_MS, PLAYER_MOVE_TOOLS, PLAYER_MOVE_RE, TASK_WINDOW_MS, TASK_ASK_RE,
-  TASK_DONE_RE } = require('./gates');
+  TASK_DONE_RE, torchAskAllowed, TORCH_ASK_COOLDOWN_MS } = require('./gates');
 const { SYSTEM } = require('./prompt');
 
 // 防抖计时器只此一份（runtime.js 里那两个模块级 let）：读 / 清走这三个。
@@ -457,6 +457,61 @@ async function selftest () {
     check('放东西：store ✗ 就拦', !!unbackedClaim('东西放进去了', [{ tool: 'store_items', out: { ok: false, error: 'invalid operation' } }]));
     check('做到一半（只有开始）不算完成', unbackedClaim('我做完了', [{ tool: 'craft', out: { ok: true, note: '身体开始做了，做完会告诉你' } }]) === null);
     check('发现 / 危险 不碰（它们不是完成式）', unbackedClaim('看见一个没开过的箱子', []) === null && unbackedClaim('有怪！', []) === null);
+  }
+
+  console.log('\n火把开关：唯一的放行反问（"要插火把吗"）—— 判据');
+  {
+    const t = Date.now();
+    // ★ 放行：带标记 + 本体就是"要插火把吗"
+    check('★ 带 askPlayer:torch、说"家里挺暗的，要插火把吗" → 放行',
+      torchAskAllowed('家里挺暗的，要插火把吗？', 'torch', { now: t }) === true);
+    check('★ 换种问法也对得上（"要不要我插点火把"）',
+      torchAskAllowed('要不要我插点火把', 'torch', { now: t }) === true);
+    check('"需要点灯吗"也算（"点灯"和"插火把"是同一件事）',
+      torchAskAllowed('这里需要点灯吗', 'torch', { now: t }) === true);
+    // ① 没标记 → 不放行（普通问句照拦，不做成"所有问句都放行"）
+    check('★ 同一个问句、没带标记 → 不放行（普通反问照拦）',
+      torchAskAllowed('家里挺暗的，要插火把吗？', null, { now: t }) === false);
+    check('★ 带别的标记 → 不放行', torchAskAllowed('要插火把吗', 'other', { now: t }) === false);
+    // ② 带了标记、但说的不是这件事 → 不放行（防止"填个标记混别的问句过去"）
+    check('★ 带标记却问别的（"你想去哪呀"）→ 不放行（错填标记不讨好）',
+      torchAskAllowed('你想去哪呀', 'torch', { now: t }) === false);
+    check('★ 带标记却问别的（"储藏室放哪层好"）→ 不放行',
+      torchAskAllowed('储藏室放哪层好？', 'torch', { now: t }) === false);
+    check('★ 带标记、只说"要插"没有火把（"你要不要"）→ 不放行',
+      torchAskAllowed('你要不要', 'torch', { now: t }) === false);
+    // ③ 同一个问题的冷却：说过一次就不再放行（放行 ≠ 可以追着问）
+    check('★ 刚说过一次（1 分钟内）→ 不放行（同一问题冷却）',
+      torchAskAllowed('要插火把吗', 'torch', { now: t, lastTorchAskSaidAt: t - 60000 }) === false);
+    check('★ 过了冷却（6 分钟前说过）→ 又能放行',
+      torchAskAllowed('要插火把吗', 'torch', { now: t, lastTorchAskSaidAt: t - 6 * 60 * 1000 }) === true);
+    check('判据常量：火把问题冷却 = 常规问他冷却', TORCH_ASK_COOLDOWN_MS === ASK_COOLDOWN_MS);
+  }
+
+  console.log('\n火把开关：整轮跑一遍（放行 / 冷却 / 别的不放行）');
+  {
+    const mb = mockBridge();
+    const said = [];
+    body._setBridge({ get: mb.get, post: async (p, b) => { if (p === '/chat') said.push((b.messages || [b.message]).join('/')); return mb.post(p, b); } });
+    // 三条脚本：① 放行 ② 同一问题（该被冷却拦）③ 别的反问（该被反问闸拦）
+    const scriptT = [
+      { content: '', tool_calls: [{ id: 't1', function: { name: 'say', arguments: '{"text":"家里挺暗的，要插火把吗","askPlayer":"torch"}' } }] },
+      { content: '', tool_calls: [{ id: 't2', function: { name: 'say', arguments: '{"text":"要插火把吗","askPlayer":"torch"}' } }] },
+      { content: '', tool_calls: [{ id: 't3', function: { name: 'say', arguments: '{"text":"储藏室放哪层好？"}' } }] },
+      { content: '', tool_calls: [{ id: 't4', function: { name: 'wait', arguments: '{}' } }] },
+    ];
+    body._setLLM(async () => scriptT.shift() || { content: '', tool_calls: [{ id: `w${Math.random()}`, function: { name: 'wait', arguments: '{}' } }] });
+    W.history = []; W.lastNow = null; W.pending = []; W.chatWait = null;
+    W.lastHeardAt = Date.now() - 5 * 60 * 1000; W.lastAskedAt = 0; W.lastProactive = null; W.lastTorchAskSaidAt = 0;
+    W.state = { connected: true, health: 18, food: 15, isDay: true, pos: { x: 23, y: 64, z: 9 }, items: [], nearby: [], players: [] };
+    W.pending.push({ t: Date.now(), text: '🕯 本能：家里有 3 格地面是全黑的（比如 21,64,8 / 22,64,9 / 23,64,9），夜里会刷怪', cue: 'torch_ask', names: [] });
+    await think('event');
+    check('★ 本能请她问的火把 → 说出去了（放行）', said.some(x => /要插火把吗/.test(x)), said);
+    check('★ 同一问题第二次（冷却内）→ 拦下（放行不等于追着问）',
+      said.filter(x => /要插火把吗/.test(x)).length, 1);
+    check('★ 别的反问（"储藏室放哪层好？"）→ 照旧拦（不放行）', !said.some(x => /储藏室放哪层/.test(x)), said);
+    check('★ 真问出去时才记时刻（W.lastTorchAskSaidAt 被更新）', W.lastTorchAskSaidAt > 0);
+    body._setBridge(mockBridge());
   }
 
   console.log('\n发现 / 危险 / 感受 不算汇报，不拦');

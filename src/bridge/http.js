@@ -106,6 +106,12 @@ const server = http.createServer((req, res) => {
       // ★ 配方表诊断（P49）：同样**离线也要能看** —— 它存在的场合正是
       //   "她做不出东西"，而"没连上"和"连上了但配方表是空的"必须能区分开。
       'GET /recipes',
+      // ★ 火把开关（2026-09-29）：开关存在 `memory/torch-mode.json`，**不碰游戏** ——
+      //   主人没上线时也该能改（"以后家里别插了"不用先开游戏）；`GET /instinct` 的
+      //   torch 段同理（另外那个 `installed:false` 分支也说明了"本能没装上"）。
+      //   注意 `GET /instinct` 其余字段会回 503 之外的**离线快照**（I.cfg 是内存里的），
+      //   这正是要的：没连上时也能核对开关现在是什么。
+      'GET /instinct', 'POST /torch_mode',
     ]);
     if (!OFFLINE_OK.has(key) && !requireConnected(res)) return;
 

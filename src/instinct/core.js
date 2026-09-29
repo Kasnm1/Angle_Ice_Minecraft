@@ -50,6 +50,11 @@ function needTier (...a) { return __ns.needTier.apply(null, a); }
 function pickOre (...a) { return __ns.pickOre.apply(null, a); }
 function pickCaveStep (...a) { return __ns.pickCaveStep.apply(null, a); }
 function pickTorchStep (...a) { return __ns.pickTorchStep.apply(null, a); }
+function pickTorchAsk (...a) { return __ns.pickTorchAsk.apply(null, a); }
+function torchSituation (...a) { return __ns.torchSituation.apply(null, a); }
+function loadTorchMode (...a) { return __ns.loadTorchMode.apply(null, a); }
+function markTorchAsked (...a) { return __ns.markTorchAsked.apply(null, a); }
+function noteTorchAnswer (...a) { return __ns.noteTorchAnswer.apply(null, a); }
 function darkReport (...a) { return __ns.darkReport.apply(null, a); }
 function noteDelve (...a) { return __ns.noteDelve.apply(null, a); }
 function pickDelveResume (...a) { return __ns.pickDelveResume.apply(null, a); }
@@ -459,6 +464,8 @@ function install (bot, state, deps) {
   I.followMovedAt ||= 0;              // 跟随中：他上一次"动过"的时间戳
   I.delve ||= null;                   // 正在进行的下矿记录（mind 发起 / 本能续探）—— 第 8 批第 5 条
   I.noteDelve = (a, r, now) => noteDelve(I, a, r, now);   // hands.js 的 /delve 路由回调（接线只此一处）
+  I.torchMode ||= null;               // 火把开关的**缓存**（`memory/torch-mode.json` 的镜像）—— 2026-09-29
+  I.torchModeAt ||= 0;                // 上次从盘上读的时刻（见 torchModeState）；别每拍都读盘
   I.diagnostics = {};
   I.urgent = null;
 
@@ -702,6 +709,72 @@ function install (bot, state, deps) {
     return Math.hypot(p.x - h.center.x, p.z - h.center.z) <= h.radius && Math.abs(p.y - h.center.y) <= 16;
   };
 
+  // ------------------------------------------------------------------ 火把开关（2026-09-29）
+  //
+  // 场合判定 / 冷却 / 存盘**全在 `mining.js` 那三个纯函数里**（`torchSituation` / `pickTorchAsk` /
+  // `pickTorchStep`）—— 这里只做"接线"：把实时状态喂进去、把结果落盘、把该问的话变成事件。
+  // 判据不再写第二份（AGENTS.md §5-4）。
+  //
+  // **谁读谁写**：本进程（bridge）是 `memory/torch-mode.json` **唯一**的写者。mind 经 HTTP
+  // （`POST /torch_mode` / `GET /instinct`）读写，不碰文件 —— 否则两个进程各写一份必互相覆盖。
+  const TORCH_REREAD_MS = 4000;   // 缓存保鲜期：`mind` 刚改完开关，最多 4 秒后本进程就能看见
+
+  /**
+   * 读开关（带缓存）。写者只有本进程的 `torchAskPlan` / `POST /torch_mode`，
+   * 它们改完会**主动刷新** `I.torchMode`，所以这里的保鲜期只为"人工改了文件"兜底。
+   * 读不出来（坏 JSON / 没权限）**照默认值走但带 `why`**，调用方要能把"读不到"说出来（AGENTS.md §5-1）。
+   */
+  function torchModeState (now = Date.now()) {
+    if (!I.torchMode || now - (I.torchModeAt || 0) > TORCH_REREAD_MS) {
+      const L = loadTorchMode();
+      I.torchMode = L.state;
+      I.torchModeAt = now;
+      I.torchModeWhy = L.unreadable ? L.why : null;   // 正常读出来就把上次的错清掉
+    }
+    return I.torchMode;
+  }
+
+  /** 刚改过盘上的开关 → 立刻把缓存对齐（不等保鲜期，免得下一拍按旧值判断） */
+  function refreshTorchMode () { I.torchModeAt = 0; return torchModeState(); }
+
+  /**
+   * "正在下矿" —— `I.delve` 有效且这次下矿还"活着"（`pickDelveResume` 同一套判据，不另写一份）。
+   * 纯函数里只认这个 boolean：**它是"主人让下矿"的直接证据**，哪怕她已经走到洞口（地面上）也算下矿中。
+   */
+  const delvingOf = () => !!pickDelveResume({
+    delve: I.delve, self: bot.entity?.position ?? null, now: Date.now(),
+    resumeMs: I.cfg.delve.resumeMs, reach: I.cfg.delve.reach, enabled: I.cfg.delve.enabled,
+    caveEnabled: I.cfg.cave.enabled,
+  }).resume;
+
+  /**
+   * **要不要经 mind 问主人一次**"家里挺暗的，要插火把吗" —— 该问才问。
+   *
+   * 家里那条路上"发现暗处"和"开口问"是**两件事**：暗处照样记（`dark_spot` 报给 mind，她
+   * 心里有数），但**只在 `home=ask` 且冷却过了**才真的请 mind 开口。所以：
+   *   · 该问 → 发 `torch_ask` 事件（**带 `askPlayer:'torch'`** —— 这是放行"这句话能说出口"的标记，
+   *     见 `src/mind/mind/think.js` 的 `torchAskAllowed`。不放行的话它会被"少问 / 反问"那道闸拦掉）；
+   *   · 不该问 → `null`，调用方退回原来的 `dark_spot`（免得连"家里有暗处"都不告诉她了）。
+   *
+   * @param {number} darkCount  这一轮数出几格暗（0 = 没暗处，不发）
+   * @returns {?{ask:boolean, why:string, leftMs:number}} null = 不该开口（走 `dark_spot`）
+   */
+  function torchAskPlan (darkCount, now = Date.now()) {
+    const sits = torchSituation({
+      exposure: (() => { try { return deps.exposureOf?.(bot) ?? null; } catch (_) { return null; } })(),
+      atHome: bot.entity ? inHome(bot.entity.position) : null,
+      delving: delvingOf(),
+      modes: torchModeState(now),
+    });
+    if (sits.where !== 'home' || sits.mode !== 'ask') return null;
+    const pick = pickTorchAsk({ mode: sits.mode, state: torchModeState(now), now, darkCount });
+    if (!pick.ask) return null;
+    // 问的时刻**立刻落盘**：没回答的 6 小时冷却按它算，进程重启也不能丢（不然一重启又问一遍）。
+    const w = markTorchAsked(torchModeState(now), now);
+    I.torchMode = w.state; I.torchModeAt = now;
+    return pick;
+  }
+
   async function tryHarvest () {
     const H = I.cfg.harvest;
     if (!H.enabled || Date.now() - (I.lastHarvestAt || 0) < H.cooldownMs) return null;
@@ -824,6 +897,11 @@ function install (bot, state, deps) {
     const verdict = deps.hands.lightVerdict || undefined;
     const plan = pickTorchStep({
       exposure: ex, light: li?.block ?? null, torches, movedSince: moved, lightVerdict: verdict,
+      // 场合（2026-09-29 火把开关）：在家那格按 `home`（ask/off 都**不自己插**），
+      // 下矿 / 地下永远 auto（`away=off` 也照插 —— 洞里是当场危险，理由见 mining.js 那段）。
+      atHome: bot.entity ? inHome(here) : null,
+      delving: delvingOf(),
+      modes: torchModeState(),
     }, TC);
     if (!plan.place) {
       // 走了够远就把锚点挪过来，免得一直在"还没走够"里打转
@@ -1283,8 +1361,23 @@ function install (bot, state, deps) {
           if (d) {
             I.darkToldDay = day;
             if (d.kind === 'unreadable') I.lastDarkNote = '家里有光源，但亮度读出来都是暗的 —— 读不到亮度，不报暗处';
-            else if (d.kind === 'no_source') event('dark_spot', '家里一个光源（火把、灯）都没看到，夜里整片都会刷怪', { count: cells.length });
-            else event('dark_spot', `家里有 ${d.count} 格地面是全黑的（比如 ${d.sample.map(q => `${q.x},${q.y},${q.z}`).join(' / ')}），夜里会刷怪`, { count: d.count, sample: d.sample });
+            // 2026-09-29 火把开关：这一轮该不该**开口问主人**（`home=ask` 且冷却过了）。
+            // 该问 → `torch_ask`（带 `askPlayer:'torch'`，放行"要插火把吗"这句话）；
+            // 不过问的冷却 / 主人说过"不用"的 24 小时 → 退回 `dark_spot`：**暗处照报**（该告诉她的
+            // 一句不少），只是不再催她"去插火把"——"别催"拦的是"催插火把"这个动作，不是"家里有暗处"这条信息。
+            // 为什么是退回 `dark_spot` 而不是干脆不发：`dark_spot` 只是**告知**（mind 拿去记 `W.darkSpots`、
+            // 需要时自己调 `light_up`；想插的话那条路不经过开关，见 TASK 的硬规则"只改本能层的自动插"）。
+            // 真要说"连说都别说"的是 `home=off` —— 那时 `torchAskPlan` 返回 null 且暗处也**不必报**。
+            const q = d.kind === 'unreadable' ? null : torchAskPlan(d.count ?? cells.length);
+            if (q?.ask) {
+              event('torch_ask', '家里有些地方挺暗的，要插火把吗？', {
+                askPlayer: 'torch',                                  // ← 放行标记（见 mind/think.js）
+                count: d.count ?? cells.length,
+                sample: d.sample || [],
+                why: q.why,
+              });
+            } else if (d.kind === 'no_source') event('dark_spot', '家里一个光源（火把、灯）都没看到，夜里整片都会刷怪', { count: cells.length });
+            else if (d.kind === 'dark') event('dark_spot', `家里有 ${d.count} 格地面是全黑的（比如 ${d.sample.map(q => `${q.x},${q.y},${q.z}`).join(' / ')}），夜里会刷怪`, { count: d.count, sample: d.sample });
           }
         }
         if (r > h.radius + 2) {
@@ -2724,6 +2817,7 @@ const __sections = [
   ['让出身体', async (t) => {
     const { check, instinctSrc, ns } = t;
     const { CFG, PASSIVE_POSTS, breatheRefused, followIdlePlan, ownsBodyAtCleanup, paths, pickTorchStep, scanColumnsSync, yieldBody } = ns;
+    const { pickTorchAsk, torchSituation } = ns;   // 火把开关（2026-09-29）：接线用的是它们的纯函数真身
     // ---- 让出身体 ----
     const { pass, fail } = t;   // 读 testkit 的实时计数（原来是巨石自测自己的计数器）
     const P = CFG.pickup;
@@ -2876,6 +2970,33 @@ const __sections = [
         /if \(aborted\) mineFails\.delete\(k\)/.test(srcText), true);
       check('★ pickTorchStep 在 tick 的本能循环里（torch 那一条）',
         /\['torch', tryTorch\]/.test(srcText), true);
+
+      // ---- 火把开关的接线（2026-09-29）：判据在 mining.js 的纯函数，core.js 只喂状态 + 落盘 ----
+      check('★ tryTorch 把场合（atHome / delving / modes）喂给 pickTorchStep（不再只看"暗不暗"）',
+        /pickTorchStep\(\{[\s\S]{0,400}?atHome: bot\.entity \? inHome\(here\) : null[\s\S]{0,200}?delving: delvingOf\(\)[\s\S]{0,200}?modes: torchModeState\(\)/.test(srcText), true);
+      check('★ "正在下矿"复用 pickDelveResume 的判据（不另写一份）',
+        /delvingOf[\s\S]{0,200}?pickDelveResume\(\{[\s\S]{0,200}?resumeMs: I\.cfg\.delve\.resumeMs/.test(srcText), true);
+      check('★ 家里发现暗处走 torchAskPlan（该问才问），不再无条件 dark_spot',
+        /const q = d\.kind === 'unreadable' \? null : torchAskPlan\(d\.count \?\? cells\.length\)/.test(srcText), true);
+      check('★ 问主人时带 askPlayer:\'torch\'（放行标记，见 mind/think.js）',
+        /torch_ask'[\s\S]{0,300}?askPlayer: 'torch'/.test(srcText), true);
+      check('★ 问的时刻立刻落盘（markTorchAsked）——重启不忘，6 小时冷却才算得准',
+        /torchAskPlan[\s\S]{0,700}?markTorchAsked\(torchModeState\(now\), now\)/.test(srcText), true);
+      check('★ 开关存盘只有本进程写（loadTorchMode / markTorchAsked 都在 core.js）',
+        /function torchModeState[\s\S]{0,300}?loadTorchMode\(\)/.test(srcText), true);
+      // 冷却边界"刚好到点不算过"是 pickTorchAsk 的判据（这里用真身钉住，不靠读源码）
+      check('★ 问过之后 6 小时内不追问（askedAt 判据在 pickTorchAsk，真身调用）',
+        pickTorchAsk({ mode: 'ask', state: { home: 'ask', askedAt: 1000, answer: null }, now: 1000 + 5 * 3600 * 1000, darkCount: 1 }).ask, false);
+      check('★ 过了 6 小时可以再问一次',
+        pickTorchAsk({ mode: 'ask', state: { home: 'ask', askedAt: 1000, answer: null }, now: 1000 + 7 * 3600 * 1000, darkCount: 1 }).ask, true);
+      check('★ 主人说过"不用"→ 24 小时内不问（quietUntil 判据）',
+        pickTorchAsk({ mode: 'ask', state: { home: 'ask', answer: 'no', answeredAt: 1000, quietUntil: 1000 + 86400000 }, now: 1000 + 3600000, darkCount: 1 }).ask, false);
+      check('★ home=off → 连问都不问（也不退回 dark_spot 催）',
+        pickTorchAsk({ mode: 'off', state: { home: 'off' }, darkCount: 3 }).ask, false);
+      check('★ 在洞里（underground）判 auto：开关关着也不问、照插',
+        torchSituation({ exposure: { kind: 'underground' }, atHome: true, delving: false, modes: { home: 'off', away: 'off' } }).mode, 'auto');
+      check('★ 下矿中（delving）判 auto，哪怕人已经站在家/地面上',
+        torchSituation({ exposure: { kind: 'open' }, atHome: true, delving: true, modes: { home: 'ask', away: 'off' } }).where, 'mine');
       check('★ 跟随时"他站着不动才顺手做事"（followIdlePlan 在 tick 里）',
         /followIdlePlan\(\{ now, idleMs: I\.cfg\.follow\.idleMs/.test(srcText), true);
       check('★ delve 续挖在 tick 的本能循环里',

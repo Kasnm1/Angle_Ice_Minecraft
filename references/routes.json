@@ -536,6 +536,10 @@
     "source": "commonsense"
   },
   {
+    "key": "POST /torch_mode",
+    "source": "bridge"
+  },
+  {
     "key": "POST /unequip",
     "source": "hands"
   },

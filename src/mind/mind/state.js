@@ -108,6 +108,7 @@ const W = {
   ledgerNew: null,    // 这一眼新看到的账
   instinctSeq: null,  // 本能事件读到哪了（/instinct/events）
   darkSpots: null,    // 本能报过的家里暗处坐标（dark_spot 事件的 sample）—— 她调 light_up 时带上它
+  lastTorchAskSaidAt: 0,   // 上次把"要插火把吗"说出去的时刻（2026-09-29）—— 同一个问题冷却内不再放行（见 gates.torchAskAllowed）
   homeToldAt: 0,      // 上次把家告诉本能层的时间
   lastHp: null,
   players: new Set(),

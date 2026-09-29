@@ -11,7 +11,7 @@ Base URL：`http://127.0.0.1:${MC_BRIDGE_PORT:-3001}` · `Content-Type: applicat
 
 ## 路由总表
 
-共 140 条（bridge 60 · hands 75 · commonsense 5）。
+共 141 条（bridge 61 · hands 75 · commonsense 5）。
 
 | 方法 | 路径 | 文件 | 用途 | 主要参数 |
 |---|---|---|---|---|
@@ -149,6 +149,7 @@ Base URL：`http://127.0.0.1:${MC_BRIDGE_PORT:-3001}` · `Content-Type: applicat
 | `POST` | `/storage/loot` | `src/body/index.js` | 去开没开过的野外箱子并拿走 | — |
 | `POST` | `/storage/organize` | `src/body/index.js` | 整理家里的仓库（含精妙背包倒出来归位） | — |
 | `POST` | `/till` | `src/body/commonsense.js` | 锄地开新地：泥土/草方块 → 耕地（cs-31）。默认只锄 4 格内有水的（没水会退化回泥土，cs-04） | — |
+| `POST` | `/torch_mode` | `src/bridge/routes/diag.js` | 改火把开关 / 记主人对“要插火把吗”的回答（2026-09-29） | — |
 | `POST` | `/unequip` | `src/body/index.js` | 脱下装备 | `slot` |
 | `POST` | `/unstick` | `src/bridge/routes/move.js` | 卡住时脱困 | `x, y, z, reason, timeoutMs` |
 | `POST` | `/use` | `src/body/index.js` | 右键 | — |

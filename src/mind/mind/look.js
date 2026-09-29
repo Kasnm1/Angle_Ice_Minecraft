@@ -48,7 +48,8 @@ async function look () {
         }
         // 房子的暗处：本能报的坐标记下来，她一调 light_up 就带过去（判据在同一天的 fix-askback-lightup）
         // —— 不然她只知道"家里有暗处"，得自己再找一遍；本能已经数过是哪几格了。
-        if (e.kind === 'dark_spot' && Array.isArray(e.sample) && e.sample.length) {
+        // torch_ask（家里先问主人要不要插）也带着同样的坐标：他说「要」之后 light_up 才知道照哪插（2026-09-29 Claude 复核补）
+        if ((e.kind === 'dark_spot' || e.kind === 'torch_ask') && Array.isArray(e.sample) && e.sample.length) {
           const pts = e.sample.filter(p => p && typeof p.x === 'number').map(p => ({ x: p.x, y: p.y, z: p.z }));
           if (pts.length) W.darkSpots = pts;
         }

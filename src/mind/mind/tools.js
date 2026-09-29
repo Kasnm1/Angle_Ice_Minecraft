@@ -208,6 +208,9 @@ const GROUPS = {
     // 2026-09-28 实测回归：主人说"烤羊肉"，smelt 在按需组、关键词里又没有"烤"，她手上没有烧东西的工具，
     // 只好拿生羊肉右键炉灶试了三次放弃。做饭 / 烧东西 / 完整制作链 / 火把 / 放方块是日常动作，常驻。
     'smelt', 'cook_pot', 'make_item', 'make_torches', 'light_up', 'place',
+    // 火把开关（2026-09-29）：主人随时可能改口（"家里别插了"），常驻 —— 不然她手上没这工具，
+    // 听见了也改不了设置（和 make_torches / light_up 同一类日常动作）。
+    'set_torch_mode',
     // 同一次复查：背包 / 拿东西（在矿洞里身边没箱子时 store 组不会被带上）、服务器命令（/home /tpa）、
     // 水桶（灭火、落地水）、长期计划的更新（闲着接着做要用）、查家里库存（只读）—— 都是日常的，常驻
     'open_backpack', 'take_items', 'home_stock', 'run_command', 'bucket', 'plan_set', 'plan_step'],

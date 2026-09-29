@@ -222,11 +222,22 @@ const CFG = {
   // 暗处插火把（2026-09-28 第 8 批 第 4 条，新本能，无 LLM）。
   // 判据见 pickTorchStep：地下 + 脚下按共享亮度判据（body/util.js 的 lightVerdict）判出"暗" + 身上有火把。
   // ⚠️ 2026-09-29 问题 B：原第 4 条"7 格内没光源才插"已删（"附近有火把 ≠ 这一格亮"），spacing 随之作废。
+  //
+  // ⚠️ 2026-09-29（主人："插火把这个本能，作为一个开关吧，它可以询问玩家现在是否需要插火把，
+  //    以及下矿，探险的时候自动插"）：本能在哪插、要不要开口问，改由**开关** `torchMode` 决定。
+  //    · 开关**不在这里**（这里是代码里的默认值，开关是运行时可改、要存盘的）——
+  //      真身在 `memory/torch-mode.json`，读写/校验/场合判定都在 `instinct/mining.js`
+  //      （`TORCH_MODES` / `torchSituation` / `pickTorchAsk`，判据只此一份）。
+  //      为什么存 `memory/` 而不是 config：主人随时能改，重启不能忘（任务书要求持久化）。
+  //    · 下矿 / 地下永远自动插；家里默认先问；家外默认自动插。
   torch: {
     enabled: envOn('MC_INSTINCT_TORCH'),
     darkMax: 7,          // 保留给自测/老调用点参考；真正的判据在 lightVerdict（方块光 ≤ 7 且天光 ≤ 7）
     everyBlocks: 6,      // 每走这么多格检查一次（别每拍都点）
     checkMs: 700,        // 检查最快多久一次
+    // 家里问主人的最短间隔：主人说"不用" → 24 小时（真实时间）；没回答 → 6 小时。
+    // 只在没人问过更早的时候用得上（`torch_mode.json` 里记了上一次问的时刻）。
+    askHome: true,       // 开关缺省值 home='ask' 的兜底（真正的默认在 TORCH_MODES.home.def）
   },
   // 跟着的玩家站着不动时顺手做点事（第 6 条）：不动超过 idleMs 才允许
   follow: { idleMs: 8000, reach: 12 },

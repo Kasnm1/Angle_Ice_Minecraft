@@ -21,7 +21,7 @@ const { humanState, combatInstinct, survivalFocus, dropLine, invText, surroundLi
 const { startJob, fmtArgs, runTool, toolResultLine, learnFromDoing } = require('./actions');
 const { ALL, kindOf, GROUP_CUES, groupsFromBody, pickSpecs, activeGroups } = require('./tools');
 const { SYSTEM } = require('./prompt');
-const { DELEGATES, ASKS_BACK, DECIDE_NUDGE, ASKS_WHERE, LOOK_NUDGE, SAY_NUDGE, ACTION_NUDGE, isBareAffirmative, QUIET_MS, RECENT_CLAIM_MS, PLAYER_MOVE_TOOLS, PLAYER_MOVE_RE, TASK_ASK_RE, taskDoneAllowed, HONEST_NUDGE, isOverAsking, lastProactiveUnanswered, liveFails, unbackedClaim, REPORT_NUDGE, ASK_TOO_MUCH_NUDGE, ASK_BACK_NUDGE } = require('./gates');
+const { DELEGATES, ASKS_BACK, DECIDE_NUDGE, ASKS_WHERE, LOOK_NUDGE, SAY_NUDGE, ACTION_NUDGE, isBareAffirmative, QUIET_MS, RECENT_CLAIM_MS, PLAYER_MOVE_TOOLS, PLAYER_MOVE_RE, TASK_ASK_RE, taskDoneAllowed, HONEST_NUDGE, isOverAsking, lastProactiveUnanswered, liveFails, unbackedClaim, REPORT_NUDGE, ASK_TOO_MUCH_NUDGE, ASK_BACK_NUDGE, torchAskAllowed } = require('./gates');
 const wiring = require('./wiring');
 const paths = require('../../paths');   // knowledge/ 路径（查任务书章名·任务名用，见 questLabel）
 // 工具表在 tools.js —— 延迟取同一份（tools 也会回头用本文件的 buildNow，见 wiring.js）
@@ -431,12 +431,18 @@ async function think (why) {
         // 一次交代只放行一次（见 taskDoneAllowed）。
         const doneOk = name === 'say' && taskDoneAllowed(String(args.text || ''), { lastTaskAskedAt: W.lastTaskAskedAt, lastTaskDoneSaidAt: W.lastTaskDoneSaidAt });
         if (doneOk) W.lastTaskDoneSaidAt = Date.now();
+        // 火把开关（2026-09-29）：本能请她问的"家里挺暗的，要插火把吗"—— **唯一**放行的反问。
+        // 判据在 gates.torchAskAllowed（带 askPlayer:'torch' 标记 + 本体对得上 + 同一问题冷却）。
+        // 放行只免掉"反问 / 少问"那道闸；这句话是本能请她问的（家里插不插火把归主人定），
+        // 不是她自己在追着问。**不放行任何别的问句**（没标记、或说的不是插火把，照拦）。
+        const torchAskOk = name === 'say' && !doneOk &&
+          torchAskAllowed(String(args.text || ''), args.askPlayer, { lastTorchAskSaidAt: W.lastTorchAskSaidAt });
         // ⚠️ 他刚开口时"回答他不受限"是给**回答**的，不是给"反问"的（2026-09-29 实机 19:10:16）：
         //    他问"今天干嘛"，她答"先在家插点火把 / 省得老刷怪 / 你想去哪呀" —— 最后一句把决定
         //    又丢回给他。判据在 `speech.asksBack()`（只此一处），**不看 heJustSpoke**（正相反，
         //    这道闸只在他在场/刚开口时最有意义：他自己问的"你想去哪"是另一回事，由判据里的
         //    "他在问你的意见"那条例外放行）。拦下不静默吞掉，给她提示重想。
-        if (name === 'say' && !doneOk && speech.asksBack(String(args.text || ''), playerSaid)) {
+        if (name === 'say' && !doneOk && !torchAskOk && speech.asksBack(String(args.text || ''), playerSaid)) {
           backNudged++;
           needMore = true;
           W.history.push({ role: 'tool', tool_call_id: c.id, content: JSON.stringify({ ok: false, error: nudgedOnce(backNudged) ? ASK_BACK_NUDGE : '（这一条也没发出去：你还是把问题丢回给他了。自己定一个说出来。）' }) });
@@ -450,7 +456,8 @@ async function think (why) {
           W.history.push({ role: 'tool', tool_call_id: c.id, content: JSON.stringify({ ok: false, error: nudgedOnce(quietNudged) ? REPORT_NUDGE : '（这一条也没发出去：还是在播报你自己在干嘛。他没问，就别说。）' }) });
           continue;
         }
-        if (name === 'say' && !heJustSpoke && (isOverAsking(String(args.text || '')) || lastProactiveUnanswered())) {
+        if (name === 'say' && !heJustSpoke && !doneOk && !torchAskOk &&
+            (isOverAsking(String(args.text || '')) || lastProactiveUnanswered())) {
           // 连着问他 / 上一个问题还没回又问 → 不发。2026-09-29 主人："尽量少询问玩家问题"
           askNudged++;
           needMore = true;
@@ -507,6 +514,9 @@ async function think (why) {
           didSay.push(args.text || args.message); sentN += (out.sent || []).length;
           // 真的问出去了才记时间（见 isOverAsking）：拦下的不算，追问才拦得住
           if (speech.classify(String(args.text || '')) === 'ask') W.lastAskedAt = Date.now();
+          // 火把问题真说出去了 → 记这一问的时刻（见 gates.torchAskAllowed）：
+          // 同一个问题冷却期内不再放行第二遍（免掉"反问"闸 ≠ 可以追着问）。
+          if (out.askPlayer === 'torch') W.lastTorchAskSaidAt = Date.now();
         }
         W.history.push({ role: 'tool', tool_call_id: c.id, content: clipText(JSON.stringify(out)) });
       }

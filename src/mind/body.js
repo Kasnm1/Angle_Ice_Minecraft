@@ -880,11 +880,18 @@ const TOOLS = {
       inner: { type: 'string', description: '先写这个：此刻的你 —— 手上在忙什么、身上什么感觉、他这句话让你想到什么。一句，他看不见' },
       text: { type: 'string', description: '说出口的话' },
       urgent: { type: 'boolean' },
+      // 2026-09-29 火把开关：**只**在说"要插火把吗"这一句时填 'torch'。
+      // 不填 = 普通说话（该拦的照拦）。填了 = 这是一句"该问的问题"（本能报了家里有暗处、
+      // 明确请她开口），放行"反问他"那道闸 —— 不做成"所有问句都放行"（见 mind/think.js 的 torchAskAllowed）。
+      askPlayer: { type: 'string', enum: ['torch'], description: '填 torch 表示这句话是在问主人"家里挺暗的，要插火把吗"（本能请她问的）。别的场合不要填。' },
     },
     required: ['text'],
-    run: async ({ text, urgent }) => {
+    run: async ({ text, urgent, askPlayer }) => {
       const t = humanizeIds(String(text || '').trim()).slice(0, 400);
       if (!t) return { ok: false, error: 'empty' };
+      // 放行标记的"用掉了"由调用方（think.js）在 say 真正发出去之后记（W.lastTorchAskSaidAt）——
+      // 见那里的 `torchAskAllowed`。这里只把标记原样带回去，不改说话本身的行为。
+      const ask = askPlayer === 'torch' ? 'torch' : null;
       let parts = urgent ? [t.replace(/\n+/g, ' ').slice(0, 256)] : speech.segment(t, { maxSegments: 3 });
       // 同一句 3 分钟内不再说（实测：连着两轮"天亮了/早呀"、一轮里"好/来啦"说两遍）。危险提示不拦
       if (!urgent) {
@@ -904,7 +911,7 @@ const TOOLS = {
         await bridge.post('/chat', { messages: parts, gapMs: [350 + speech.len(parts[1]) * 60, 700 + speech.len(parts[1]) * 80] }, 20000);
       }
       hooks.onSay(parts.join(' / '));
-      return { ok: true, sent: parts };
+      return { ok: true, sent: parts, askPlayer: ask };
     },
   },
 
@@ -1279,6 +1286,19 @@ const TOOLS = {
     desc: '用身上的煤/木炭 + 木棍做火把（count = 想要几个，默认 16）。',
     params: { count: { type: 'number' } }, required: [],
     run: async ({ count }) => bridge.post('/make_torches', { count }, 60000),
+  },
+  set_torch_mode: {
+    kind: 'action',
+    desc: '改"自动插火把"的开关（主人 2026-09-29 要的）。两处：home 管**在家里**（ask=发现暗处先问主人一次 / auto=自己插 / off=不问也不插），away 管**野外探险**（auto=自己插 / off=不插）。**下矿、探洞、在地下永远自己插**（保命，不归这个开关管）。'
+      + '主人说"家里别插了/以后自己插/要插火把吗"这类话时用它。他回答"要插/好"就 answer:"yes"（想以后都自动就再加 alsoAuto:true）；回答"不用/别插"就 answer:"no"（24 小时内不再问）。只改设置、不去插（去插用 light_up）。',
+    params: {
+      home: { type: 'string', enum: ['ask', 'auto', 'off'], description: '家里：ask 先问 / auto 自己插 / off 不问不插' },
+      away: { type: 'string', enum: ['auto', 'off'], description: '野外：auto 自己插 / off 不插' },
+      answer: { type: 'string', enum: ['yes', 'no'], description: '主人对"要插火把吗"的回答' },
+      alsoAuto: { type: 'boolean', description: '回答"要"时顺手把家里设成 auto（他说"以后都自动插"）' },
+    },
+    required: [],
+    run: async (a) => bridge.post('/torch_mode', a, 15000),
   },
   self_rescue: {
     kind: 'action',

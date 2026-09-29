@@ -75,6 +75,43 @@ function taskDoneAllowed (text, { now = Date.now(), lastTaskAskedAt = 0, lastTas
 /** 问他的节流：这么久之内第 2 次问就拦（同一个问题他没回、又问一次，也拦） */
 const ASK_COOLDOWN_MS = 5 * 60 * 1000;
 
+/**
+ * "家里挺暗的，要插火把吗" —— **唯一**被允许反问的那句话（主人 2026-09-29 要的火把开关）。
+ *
+ * 为什么单开一道口：那道"少问 / 别反问"的闸按 `speech.asksBack()` 拦一切反问，
+ * 而"要插火把吗"本来就是**该问的问题**（家里插不插火把是主人的事，基地布局归他，
+ * 本能不敢自作主张 —— 见 instinct/mining.js 的 torchSituation）。所以放行它。
+ *
+ * ⚠️ **不是"所有问句都放行"**（TASK 硬要求）。只有同时满足这四条才放行：
+ *   ① 这一句是**带着标记**发的：`say` 的 `askPlayer === 'torch'`
+ *      （事件带 `askPlayer:'torch'`，她在调 say 时说这句话时填上；不填就是个普通问句，照拦）；
+ *   ② 本体就是"要插火把吗"这类的（`TORCH_ASK_RE`）—— 防止"填个标记混别的问句过去"；
+ *   ③ **同一个问题**的冷却还管着（`TORCH_ASK_COOLDOWN_MS` 内说过一次就不再放行）——
+ *      放行不等于可以追着问；
+ *   ④ 主人最近没有刚跟她说话（`heJustSpoke` 时回答他本来不受限，走的是另一条路，不用这道）。
+ *
+ * **错填标记不讨好**：不带 ② 的话她随便说个"你想去哪呀"再填 `torch` 就绕过了闸；
+ * 带上 ② 之后，标记只是"确认这是本能请她问的那件事"，问法还是得对得上。
+ */
+const TORCH_ASK_RE = /(要|要不要|需要|需不需要|要不要我|用不用)[^。！？!?]{0,8}(插|點|点|放)[^。！？!?]{0,4}(火把|燈|灯|亮)/;
+/** 同一个火把问题的冷却：这么久之内说过一次，就不再放行第二遍（和 ASK_COOLDOWN_MS 一致） */
+const TORCH_ASK_COOLDOWN_MS = ASK_COOLDOWN_MS;
+
+/**
+ * @param {string} text                 要说的话
+ * @param {string|null} askPlayer        `say` 带的标记（'torch' = 本能请她问的火把）
+ * @param {object} [o]
+ * @param {number} [o.now]
+ * @param {number} [o.lastTorchAskSaidAt] 上一次放行说出去的时刻（同一个问题别追着问）
+ * @returns {boolean} true = 放行这句话（不拦"反问 / 少问"）
+ */
+function torchAskAllowed (text, askPlayer = null, { now = Date.now(), lastTorchAskSaidAt = 0 } = {}) {
+  if (askPlayer !== 'torch') return false;                       // ① 没标记：不是这件事
+  if (!TORCH_ASK_RE.test(String(text || ''))) return false;      // ② 说的不是"要插火把吗"
+  if (lastTorchAskSaidAt && now - lastTorchAskSaidAt < TORCH_ASK_COOLDOWN_MS) return false;   // ③ 同一个问题冷却
+  return true;
+}
+
 const REPORT_NUDGE = '没发出去：这是播报你自己的动作 / 进度，他就在旁边看得见，不用你说。做完了就是做完了 —— 除非他问你，或者这里面有他非知道不可的事（出事了、缺东西要他要、要他定）。要开口就说点别的（接他的话、说你的感觉），或者干脆把这条撤了。';
 const ASK_TOO_MUCH_NUDGE = '没发出去：你刚问过他，他没回，又问一次了。能自己判断的自己定（去不去、要不要、先做哪个），做完他自然会说对不对；真只有他知道的（他想要什么、他打算去哪），那也等这次问完再说，别追问。';
 /**
@@ -170,4 +207,5 @@ function unbackedClaim (text, results, live = []) {
 module.exports = { isBareAffirmative, taskDoneAllowed, isOverAsking, lastProactiveUnanswered,
   claimState, liveFails, unbackedClaim, FACT_CLAIMS, REPORT_NUDGE, ASK_TOO_MUCH_NUDGE, ASK_BACK_NUDGE, HONEST_NUDGE,
   QUIET_MS, ASK_COOLDOWN_MS, DELEGATES, ASKS_BACK, DECIDE_NUDGE, ASKS_WHERE, LOOK_NUDGE, SAY_NUDGE,
-  ACTION_NUDGE, RECENT_CLAIM_MS, PLAYER_MOVE_TOOLS, PLAYER_MOVE_RE, TASK_WINDOW_MS, TASK_ASK_RE, TASK_DONE_RE };
+  ACTION_NUDGE, RECENT_CLAIM_MS, PLAYER_MOVE_TOOLS, PLAYER_MOVE_RE, TASK_WINDOW_MS, TASK_ASK_RE, TASK_DONE_RE,
+  torchAskAllowed, TORCH_ASK_RE, TORCH_ASK_COOLDOWN_MS };

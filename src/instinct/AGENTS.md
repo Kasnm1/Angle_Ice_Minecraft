@@ -12,7 +12,7 @@
 | `core.js` | `install()`（1630 行闭包，整体搬来，内部计时器没拆）、`bodyBusy` / `createCheck` / `settleJob` / `ownsBodyAtCleanup` / `breatheRefused` / `playerHurtPlan` / `victimHealth` / `syncSleepState` / `caveBoundary` / `scanColumns*` / `yieldBody`。2026-09-29 加了 `perceptionTimer`（她的余光，见下「野外资源感知」）；同日实机修落地水：`collectWater` 改成"走过去 → 对准 → 右键 + 重试 + 失败如实报坐标原因"，新增 `tryCollectPendingWater`（闲时回去收留下的水，位置只来自 `I.pendingWater`，**不写死坐标**） |
 | `combat.js` | `mobKind` / `attackCooldownMs` / `combatPlan` / `fightGearFetchPlan` / `armorRank` / `pickArmor` / `toolWorn` / `hazardUnder` / `pickStepOff`。`fightGearFetchPlan`（2026-09-29 问题 2c）：打架前**要不要为武器/盾去翻精妙背包**的纯判据 —— 怪 ≥ `CFG.combat.fightFromBackpackDist`（默认 5 格）才翻，贴脸不翻（开界面会挨打） |
 | `survival.js` | `pickEat` / `needBreath` / `effectPlan` / `shoreRingOffsets` / `pickShore` / `mlgStep` / `mlgFallDamage` / `mlgShouldPlace` / `waterRetrievePlan` / `pickRecovery`；**水下判据只此一份**（2026-09-29）：`blocksWater` / `headInWater` / `waterBreathing` / `oxygenNum` / `mineShouldStop` / `underwaterKeep` / `columnClear` / `breathPlan`；**落地水"该不该倒"与"收到哪一步"的判据只此一份**（2026-09-29 实机修，见下「落地水」） |
-| `mining.js` | `pickaxeTier` / `needTier` / `bareNameOf` / `pickOre` / `pickCaveStep` / `pickTorchStep` / `darkReport` / `noteDelve` / `pickDelveResume` |
+| `mining.js` | `pickaxeTier` / `needTier` / `bareNameOf` / `pickOre` / `pickCaveStep` / `pickTorchStep` / `pickTorchAsk` / `torchSituation` / `loadTorchMode` / `saveTorchMode` / `applyTorchMode` / `markTorchAsked` / `noteTorchAnswer` / `darkReport` / `noteDelve` / `pickDelveResume` |
 | `pickup.js` | `hdist` / `whoThrew` / `pickPickup` / `pickHarvest` / `pickLoot` / `pickTidy` / `carriedNames` / `carriedTally` / `pickupFailIds` |
 | `social.js` | `gazeEngaged` / `gazeQuotaLeft` / `pickGaze` / `pickCommand` / `weatherChange` / `followIdlePlan`。`gazeQuotaLeft`（2026-09-29 问题 1）：**一个互动窗口里只看一眼**的额度判据 —— `pickGaze` 靠它把"他一直在说话 → 每句都看"收成"每次开窗看一眼" |
 | `home.js` | `recognizeStructures` / `homeFootprint` |
@@ -95,6 +95,37 @@
 **"没有"和"读不到"必须分开报**（任务书硬性要求）：记忆文件读不出来 → `containerTargets`
 返回 `[]`、`tryLoot` 只按看得见的算，`GET /surroundings` 返回 `unloaded` 字段说明哪几柱没读到；
 **绝不把"没读到"渲染成"附近没有"**。
+
+## 火把开关：自动插 / 家里先问（2026-09-29，主人点名）
+
+主人："插火把这个本能，作为一个开关吧，它可以询问玩家现在是否需要插火把，以及下矿，
+探险的时候自动插。" 一个开关 `torchMode`，按"她在哪 / 在干嘛"分三种场合：
+
+| 场合 | 默认 | 说明 |
+|---|---|---|
+| **下矿 / 探洞 / 在地下** | `auto` | 不问，保命优先 |
+| **野外探险**（不在家范围、露天/洞口） | `auto` | 不问（暗处会刷怪） |
+| **家里** | `ask` | 不自动插；发现暗处时经 mind **问主人一次** |
+
+- **判据只此一处**（`mining.js`）：`torchSituation()` 判场合，`pickTorchAsk()` 判"该不该问"，
+  `pickTorchStep()` 判"该不该在这里插"。`core.js` 的 `tryTorch` / `dark_spot` 与 bridge 的
+  `POST /torch_mode` / `GET /instinct` 都从这三个纯函数取，**不各写一份**（项目 AGENTS.md §5-4）。
+- **场合的判定顺序**：先判 `delving`（`I.delve` 有效 —— `pickDelveResume` 同一套判据，不另写）
+  和"地下/洞里"（`exposure.kind === 'underground'`，或 `sheltered` 且 `roofAt != null`；
+  和 `pickTorchStep` 的 ① 一字不差）→ 前者优先。**自家矿道也算"下矿"不算"家里"**（保命优先）。
+  `atHome` 读不到（`null`）按"不在家"算（证据不足保守为不问）。
+- **下矿时 `away: 'off'` 也照插**（主人 2026-09-29 拍板"建议下矿永远插，保命"）：洞里的黑是**当场**
+  的危险，`away` 关的是"野外顺手点灯"这种可省的事，不是洞里的安全线。真要全关，
+  关整个本能（`MC_INSTINCT_TORCH=false`）。
+- **问主人**（家里那格）：`core.js` 家里扫描发现暗处时，调 `torchAskPlan()` —— 该问就发
+  `torch_ask` 事件（**带 `askPlayer:'torch'`**），不该问就退回原来的 `dark_spot`
+  （**暗处照报**，只是不再催她插）。问的时刻**立刻落盘**（`markTorchAsked`）。
+- **主人能随时改**：mind 的 `set_torch_mode` 工具 → bridge `POST /torch_mode` →
+  `applyTorchMode` / `noteTorchAnswer`。取值白名单：`home` ∈ `ask/auto/off`，`away` ∈ `auto/off`；
+  写错的值**拒绝**（不静默回退）。持久化格式见 `memory/AGENTS.md`。
+- **放行"要插火把吗"这句话**：它是**唯一**被允许的反问（家里插不插火把归主人定）。判据在
+  `src/mind/mind/gates.js` 的 `torchAskAllowed`（带 `askPlayer:'torch'` 标记 + 本体对得上 +
+  同一问题 5 分钟冷却）；**不放行任何别的问句**（没标记、或说的不是插火把，照拦）。
 
 ### 只说用得上的（2026-09-29 实机修"事件刷屏"）
 

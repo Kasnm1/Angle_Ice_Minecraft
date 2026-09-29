@@ -30,6 +30,40 @@ let goals;
 function withTimeout (...a) { return __ns.withTimeout.apply(null, a); }
 
 /**
+ * 火把开关的跨文件真身（`instinct/mining.js` 的纯函数）。
+ *
+ * ⚠️ 走 `instinct.js` 的**非枚举** `__ns`，不走 `module.exports` —— 后者的 56 个名字
+ *    有形状锁（`scripts/exports-test`），是"拆重构一字不差"的契约，**不能为了新功能去动它**。
+ *    `__ns` 正是为此留的"全部子文件名字"总表（见 instinct.js 文件尾）。
+ */
+const torch = () => instinct.__ns;
+
+/**
+ * 火把开关的一句话现状（`GET /instinct` 与 `POST /torch_mode` 共用一份，不各拼一遍）。
+ *
+ * `unreadable:true` 时 `why` 说清"读不到"（缺文件 = 从没设置过，**不算**读不到；
+ * 坏 JSON / 没权限才算）—— 没有和读不到必须分开报（AGENTS.md §5-1）。
+ * `askedAt` / `answeredAt` / `quietUntil` 一律给**毫秒时间戳**（mind 自己格式化），
+ * 另给 `leftMs`（还要多久才到点）—— "他还没回，还要等 5 小时"这种话直接能说。
+ */
+function torchStatus (now = Date.now()) {
+  const T = torch();
+  const L = T.loadTorchMode();
+  const s = L.state;
+  return {
+    home: s.home, away: s.away,
+    allowed: { home: T.TORCH_MODES.home.values, away: T.TORCH_MODES.away.values },
+    askedAt: s.askedAt, answeredAt: s.answeredAt, answer: s.answer,
+    quietUntil: s.quietUntil,
+    quietLeftMs: s.quietUntil && s.quietUntil > now ? s.quietUntil - now : 0,
+    noAnswerLeftMs: s.askedAt && s.answer == null && now - s.askedAt <= T.TORCH_COOLDOWN.noAnswerMs
+      ? T.TORCH_COOLDOWN.noAnswerMs - (now - s.askedAt) : 0,
+    file: T.TORCH_MODE_FILE,
+    unreadable: L.unreadable, why: L.why,
+  };
+}
+
+/**
  * 本文件负责的路由（12 条）：
  *   GET /debug/registries        —— 已落盘的注册表清单
  *   GET /debug/registry          —— 查一张已落盘的注册表
@@ -42,6 +76,7 @@ function withTimeout (...a) { return __ns.withTimeout.apply(null, a); }
  *   GET /instinct/events         —— 本能最近的事件流
  *   GET /resources        —— 资源记忆原文（2026-09-29）：她"看过的"野外资源
  *   POST /instinct               —— 配置本能（告诉它“家在哪”等）
+ *   POST /torch_mode             —— 改火把开关 / 记主人对“要插火把吗”的回答（2026-09-29）
  *   POST /stop                   —— 停下当前动作（hold=true 是“站着别动”）
  *
  * ⚠️ 上面的清单只是**说明**；真正的键名在下面 routes 对象里，与原 server.js 逐字一致。
@@ -253,6 +288,10 @@ const routes = {
     return {
       installed: true,
       pickup: I.cfg.pickup, harvest: I.cfg.harvest, mine: I.cfg.mine, sleep: I.cfg.sleep, armor: I.cfg.armor, gaze: I.cfg.gaze, combat: I.cfg.combat, tidy: I.cfg.tidy, loot: I.cfg.loot, cave: I.cfg.cave, bridge: I.cfg.bridge, mlg: I.cfg.mlg, dig: I.cfg.dig, homeGrow: I.cfg.home, cmd: I.cfg.cmd, perception: I.cfg.perception, death: I.death || null, movePolicy: I.movePolicy || null,
+      // 火把开关（2026-09-29）：当前模式 / 上次问主人的时刻 / 主人的回答。
+      // 单独一段而不是塞进 cfg —— 它**不在** CFG 里，是 `memory/torch-mode.json` 里的状态，
+      // 存盘只有 bridge 进程写（见 instinct/core.js 的 torchModeState）。
+      torch: torchStatus(),
       combatNow: I.combat && I.running?.kind === 'combat' ? { since: I.combat.started, at: Date.now(), engaged: I.combat.engaged.size, killed: I.combat.killed } : null,
       lastCancel: state.lastCancel || null,
       diagnostics: I.diagnostics || {},
@@ -344,8 +383,37 @@ const routes = {
     return { ...Object.fromEntries(KINDS.map(k => [k, I.cfg[k].enabled])), home: I.home };
   },
 
-  'POST /stop': async () => {
-    // ⚠️⚠️ 2026-09-29 实机：`/stop` 停不住一条**在途的 `POST /go`**，
+  // 火把开关（2026-09-29，主人："作为一个开关吧，它可以询问玩家现在是否需要插火把，以及下矿，
+  // 探险的时候自动插"）。mind 的 `set_torch_mode` 工具走这里。
+  //
+  // ⚠️ 真正读写 `memory/torch-mode.json` 的纯函数在 `instinct/mining.js`（`applyTorchMode` /
+  //    `noteTorchAnswer`）—— **只有 bridge 进程写这个文件**，mind 不碰文件（两个进程各写一份必互相覆盖）。
+  //    所以路由里只要叫它们、再把 I 上的缓存刷掉就行。
+  //
+  // 参数（都从 body 取，别从 query）：
+  //   home : 'ask' | 'auto' | 'off'   —— 家里那条（缺省不动）
+  //   away : 'auto' | 'off'           —— 家在的那条（缺省不动）
+  //   answer : 'yes' | 'no'           —— 主人对"要插火把吗"的回答（回答本身也能带开关）
+  //   alsoAuto : boolean              —— 回答"要"时顺手把 home 设成 auto（"以后都自动插"）
+  'POST /torch_mode': async (b = {}) => {
+    const I = state.instinct;
+    if (!I) throw new Error('本能还没装上（bot 还没建好）');
+    const T = torch();
+    const now = Date.now();
+    // 盘上的真身（不是 I 上的缓存 —— mind 可能刚改过，缓存还没过期）
+    const cur = T.loadTorchMode();
+    let r;
+    if (b.answer === 'yes' || b.answer === 'no') {
+      r = T.noteTorchAnswer(cur.state, b.answer, { now, alsoAuto: !!b.alsoAuto, home: b.home ?? null });
+    } else {
+      r = T.applyTorchMode(cur.state, { home: b.home, away: b.away });
+    }
+    if (!r.ok) throw new Error(r.error || '改火把开关失败');
+    I.torchMode = r.state; I.torchModeAt = now;   // 刷新本能层的缓存（下一拍就按新值判断）
+    return { ok: true, ...torchStatus(now), changed: r.changed || null, bad: r.bad || [] };
+  },
+
+  'POST /stop': async () => {    // ⚠️⚠️ 2026-09-29 实机：`/stop` 停不住一条**在途的 `POST /go`**，
     //    她以为"刚才身体自己在走路，不让我传"（日志 03:48–03:50）：
     //      run_command(home) ✗ 身体正在执行 POST /go（30.7 秒）
     //      stop() ✓
@@ -408,7 +476,7 @@ function rebind (ns) {
 
 module.exports = {
   routes,
-  keys: ["GET /debug/registries","GET /debug/registry","GET /debug/packets","POST /jump","POST /flee","GET /inventory/ledger","GET /ftbq/completed","GET /instinct","GET /instinct/events","GET /resources","POST /instinct","POST /stop"],
+  keys: ["GET /debug/registries","GET /debug/registry","GET /debug/packets","POST /jump","POST /flee","GET /inventory/ledger","GET /ftbq/completed","GET /instinct","GET /instinct/events","GET /resources","POST /instinct","POST /stop","POST /torch_mode"],
   bind,
   rebind,
  };

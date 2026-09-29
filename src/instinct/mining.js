@@ -119,6 +119,262 @@ function pickCaveStep ({ cells = [], self, entry = null, visited = new Set() }, 
   return { ...ok[0], cell: cell(ok[0].pos) };
 }
 
+// ---------------------------------------------------------------- 火把开关（主人 2026-09-29）
+//
+// 主人原话："插火把这个本能，作为一个开关吧，它可以询问玩家现在是否需要插火把，
+// 以及下矿，探险的时候自动插。"
+//
+// 一个开关 `torchMode`，按"她在哪 / 在干嘛"分三种场合（判据**只此一处**，就是下面这两个函数：
+// `instinct/core.js` 的 `tryTorch` / `dark_spot` 和 bridge 的 `POST /torch_mode` / `GET /instinct`
+// 都从这里取，不各写一份）：
+//
+//   | 场合 | 默认 | 说明 |
+//   |---|---|---|
+//   | **下矿 / 探洞 / 在地下**（在洞里的判据与 pickTorchStep 的 ① 同款） | `auto` | 不问，保命优先 |
+//   | **野外探险**（不在家范围、露天） | `auto` | 不问（暗处会刷怪） |
+//   | **家里** | `ask` | 不自动插；发现暗处时经 mind **问主人一次** |
+//
+// 开关取值（两处独立）：`home`：`'ask'`(默认) | `'auto'` | `'off'`；`away`：`'auto'`(默认) | `'off'`。
+//
+// **下矿时 `away:'off'` 也照插**（主人 2026-09-29 拍板："下礦時仍插？—— 你定，写理由；
+// 建议下矿永远插，保命"）。理由：洞里的黑是**当场**的危险（怪贴脸、找不到路、摔进坑），
+// `away` 关的是"野外顺手点灯"这种可省的事，不是"在洞里的安全线"。真要一支都不插，
+// 把整个火把本能关掉（`MC_INSTINCT_TORCH=false`）。
+
+/** 开关的合法取值与默认值 —— 校验、补默认、`set_torch_mode` 的 enum 共用这一份 */
+const TORCH_MODES = {
+  home: { values: ['ask', 'auto', 'off'], def: 'ask' },
+  away: { values: ['auto', 'off'], def: 'auto' },
+};
+
+/** 冷却（ms）—— 任务书定的两个数，理由见 memory/AGENTS.md 的「火把开关」一节 */
+const TORCH_COOLDOWN = {
+  // 主人说"不用" → 至少 24 小时（真实时间）不再问、也不再为家里的暗处催她。
+  // 理由（任务书）：他白天说了不用，晚上回来又问一次 = 没记住他的话。
+  offMs: 24 * 60 * 60 * 1000,
+  // 上一句他没回 → 6 小时内不再提。理由：和"少问"的规矩一致（没回答不是"不问"，
+  // 但绝不追着问）。6 小时 = 一次游戏时段内只提一次。
+  noAnswerMs: 6 * 60 * 60 * 1000,
+};
+
+/**
+ * 场合判定（纯函数）。**判据只此一处。**
+ *
+ * 「在家里」用调用方传进来的 `atHome`（`instinct/core.js` 的 `inHome()`，
+ * 和 `body/util.js` 的 `inHomeArea` 同一套范围：水平 ≤ radius 且 |Δy| ≤ 16）。
+ *
+ * ⚠️ 顺序：**先判下矿 / 地下（①），再判家（②），最后才是家外（③）**。
+ *   自家地下（自己挖的矿道）算「下矿」不算「家里」—— 主人那句"下矿、探险的时候自动插"
+ *   说的是**在洞里**这件事，不是"这片地在家的范围内"。反过来先判家的话，`home=ask` 会让
+ *   她在自家矿道里停下来问一句才敢点灯（保命的事不该等回答）。
+ *
+ * ⚠️ `atHome` 读不到（`null`，家还没同步给本能层 / 刚上线）**按"不在家"算** ——
+ *   家里那条要开一次口（问主人），证据不足时保守为不问（AGENTS.md §5-5），
+ *   宁可顺手插一支（点灯是安全方向），也不平白开一次口。
+ *
+ * @param {object} c
+ * @param {object} c.exposure  `exposureOf(bot)` 的结果（读不到给 null）
+ * @param {boolean|null} c.atHome  在不在家范围里（null = 不知道家在哪）
+ * @param {boolean} c.delving  最近一次下矿还在进行 / 刚结束不久（`I.delve` 有效）
+ * @returns {{where:'mine'|'home'|'away', mode:'auto'|'ask'|'off', ask:boolean, why:string}}
+ */
+function torchSituation (c = {}) {
+  const { exposure = null, atHome = null, delving = false } = c;
+  const modes = c.modes || TORCH_MODES;
+  const kind = exposure?.kind;
+  // ① 在地 下 / 洞里（判据与 pickTorchStep 的 ① 一字不差：underground，或 sheltered 且头顶有顶）
+  const under = kind === 'underground' || (kind === 'sheltered' && exposure?.roofAt != null);
+  if (delving) {
+    // `I.delve` 只在"mind 明确下过矿、且这次还在 5 分钟内"时才有效（见 pickDelveResume）——
+    // 它是"主人让我下矿"的直接证据，哪怕此刻她已经走到地面上（洞口）也算下矿中。
+    return { where: 'mine', mode: 'auto', ask: false, why: '正在下矿（保命优先，不问）' };
+  }
+  // ② 家里 —— **排在"在地下 / 有顶"之前**（2026-09-29 Claude 复核改）：屋里本来就有屋顶（sheltered + roofAt），
+  //    原来的顺序会把"家里室内 / 地下室"全当成洞里、自动插，主人要的"家里先问"就落空了。
+  //    只有明确在下矿（上面的 delving）、或真的在地下（自家矿道，exposure=underground）才在家范围里也自动插；
+  //    "有顶但在地面上"（sheltered，屋里）照家里的开关。
+  if (atHome === true && kind === 'underground') return { where: 'mine', mode: 'auto', ask: false, why: '家里的地下（自家矿道）：保命优先，不问' };
+  if (atHome === true) {
+    const mode = normTorchMode('home', modes.home ?? TORCH_MODES.home.def);
+    return { where: 'home', mode, ask: mode === 'ask', why: mode === 'ask' ? '在家里：先问主人一次' : `在家里（home=${mode}）` };
+  }
+  // ③ 家外的地下 / 洞里：保命优先，不问
+  if (under) return { where: 'mine', mode: 'auto', ask: false, why: '在地下 / 洞里（保命优先，不问）' };
+  // ④ 家外
+  const mode = normTorchMode('away', modes.away ?? TORCH_MODES.away.def);
+  return { where: 'away', mode, ask: false, why: atHome === null ? `不知道家在哪，按家外算（away=${mode}）` : `在家外（away=${mode}）` };
+}
+
+// ------------------------------------------------------------------ 开关的存盘（`memory/torch-mode.json`）
+//
+// ⚠️ **谁读谁写**：bridge 进程（本能在里面）是**唯一**的写者；mind 只经 HTTP
+// （`POST /torch_mode` / `GET /instinct`）读写，**不自己碰这个文件** —— 两个进程各写一份
+// 必然互相覆盖（和 `memory/mind.json` 只由 mind 进程整份重写同一个道理）。
+//
+// 位置：`src/paths.js` 的 `MEMORY`（数据目录的唯一来源，别自己 path.join(__dirname, ...)）。
+// `$MC_TORCH_MODE_FILE` 可以改（自测一律指到临时文件，**绝不写真的 memory/torch-mode.json**）。
+const TORCH_MODE_FILE = process.env.MC_TORCH_MODE_FILE || require('path').join(paths.MEMORY, 'torch-mode.json');
+
+/**
+ * 读开关。**读不到和"没设置"必须分开报**（AGENTS.md §5-1）：
+ * 文件不存在 = 从没设置过（用默认值，正常）；文件在但读不出来 / 是坏 JSON =
+ * `unreadable:true` —— 这时也用默认值，但调用方（`GET /instinct`）要能把它说出来。
+ * @returns {{state:object, unreadable:boolean, why:?string}}
+ */
+function loadTorchMode (file = TORCH_MODE_FILE) {
+  const fs = require('fs');
+  let raw;
+  try { raw = fs.readFileSync(file, 'utf8'); } catch (e) {
+    if (e && e.code === 'ENOENT') return { state: normTorchState(null), unreadable: false, why: null };
+    return { state: normTorchState(null), unreadable: true, why: String(e && e.message || e).slice(0, 120) };
+  }
+  try { return { state: normTorchState(JSON.parse(raw)), unreadable: false, why: null }; } catch (e) {
+    return { state: normTorchState(null), unreadable: true, why: `torch-mode.json 不是合法 JSON：${String(e && e.message || e).slice(0, 100)}` };
+  }
+}
+
+/**
+ * 写开关（原子写：`.tmp` + `renameSync`，和 memory 里别的文件同一个做法）。
+ * 返回写成功的状态；写失败**照实报**（不静默吞）—— 调用方要能回"没存上"。
+ */
+function saveTorchMode (state, file = TORCH_MODE_FILE) {
+  const fs = require('fs');
+  const s = normTorchState(state);
+  try {
+    const tmp = file + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify(s, null, 1));
+    fs.renameSync(tmp, file);
+    return { ok: true, state: s };
+  } catch (e) {
+    return { ok: false, state: s, error: String(e && e.message || e).slice(0, 160) };
+  }
+}
+
+/**
+ * 改开关（只给要改的键；`null` / `undefined` 表示"这个键不动"）。
+ * `home` / `away` 只认白名单值，写错的值**不回退成默认**、而是拒绝（`bad` 里报出来）——
+ * 主人说"家里别插了"要是被写成 `away`，他会以为没生效。
+ *
+ * @returns {{ok:boolean, state:object, changed:object, bad:Array, error:?string}}
+ */
+function applyTorchMode (state, patch = {}, file = TORCH_MODE_FILE) {
+  const s = normTorchState(state);
+  const bad = [];
+  const changed = {};
+  for (const k of ['home', 'away']) {
+    if (patch[k] == null) continue;
+    if (!torchModeOk(k, patch[k])) { bad.push({ key: k, value: String(patch[k]), allowed: TORCH_MODES[k].values }); continue; }
+    if (String(patch[k]) !== s[k]) { changed[k] = String(patch[k]); s[k] = String(patch[k]); }
+  }
+  if (bad.length) return { ok: false, state: s, changed, bad, error: `开关值不合法：${bad.map(b => `${b.key}=${b.value}（只能是 ${b.allowed.join(' / ')}）`).join('；')}` };
+  const w = saveTorchMode(s, file);
+  return { ok: w.ok, state: s, changed, bad: [], error: w.error || null };
+}
+
+/**
+ * 记下"这一轮问过主人了"（在他回答之前）。**问的时刻要落盘** ——
+ * 没回答的 6 小时冷却按它算，进程重启也不能丢（不然一重启就又问一遍）。
+ */
+function markTorchAsked (state, now = Date.now(), file = TORCH_MODE_FILE) {
+  const s = normTorchState(state);
+  s.askedAt = now;
+  s.answer = null;          // 新的一问：上一次的回答作废（"不用"的 24 小时另有 quietUntil 管着，不会丢）
+  s.answeredAt = null;
+  const w = saveTorchMode(s, file);
+  return { ok: w.ok, state: s, error: w.error || null };
+}
+
+/**
+ * 记下主人的回答。`yes` → 这次去插（可以同时把 `home` 改成 `auto`，如果他这么说了）；
+ * `no` → 写 `quietUntil = 现在 + 24 小时`，期间不再问、`dark_spot` 也不再催。
+ */
+function noteTorchAnswer (state, answer, { now = Date.now(), alsoAuto = false, home = null } = {}, file = TORCH_MODE_FILE) {
+  const s = normTorchState(state);
+  const a = answer === 'yes' || answer === 'no' ? answer : null;
+  if (!a) return { ok: false, state: s, error: `回答只能是 yes / no（收到 ${JSON.stringify(answer)}）` };
+  s.answer = a;
+  s.answeredAt = now;
+  s.askedAt = s.askedAt || now;
+  s.quietUntil = a === 'no' ? now + TORCH_COOLDOWN.offMs : null;
+  // 他说"以后都自动插" → 顺手把 home 设成 auto（同一个回答里能带两件事）
+  if (alsoAuto && a === 'yes') s.home = 'auto';
+  if (home != null && torchModeOk('home', home)) s.home = String(home);
+  const w = saveTorchMode(s, file);
+  return { ok: w.ok, state: s, error: w.error || null };
+}
+function torchModeOk (key, value) {
+  const spec = TORCH_MODES[key];
+  return !!spec && spec.values.includes(String(value));
+}
+
+/** 归一：非法 / 缺省 → 该键的默认值。**只认白名单**，不猜（写错的值不会静默变成"自动插"） */
+function normTorchMode (key, value) {
+  return torchModeOk(key, value) ? String(value) : TORCH_MODES[key].def;
+}
+
+/** 存盘形状（`memory/torch-mode.json`）—— 读回来的东西一律先过这一道，脏数据不采信 */
+function normTorchState (raw) {
+  const r = raw && typeof raw === 'object' ? raw : {};
+  const s = {
+    home: normTorchMode('home', r.home),
+    away: normTorchMode('away', r.away),
+    // 最近一次对主人的邀请（不管他答没答，都要留着 —— 冷却按它算）
+    askedAt: Number.isFinite(+r.askedAt) && +r.askedAt > 0 ? +r.askedAt : null,
+    // 他上一次的回答：'yes'（要插）/ 'no'（不用）/ null（还没回答过）
+    answer: r.answer === 'yes' || r.answer === 'no' ? r.answer : null,
+    answeredAt: Number.isFinite(+r.answeredAt) && +r.answeredAt > 0 ? +r.answeredAt : null,
+  };
+  // 他说"不用"的那次起算 24 小时（`no_until`）；上面的 answeredAt 是他什么时候说的，两回事：
+  // 冷却是**从那次回答起算**的，不是从"上次问"起算（问完他没回、第二天才说不算）。
+  s.quietUntil = Number.isFinite(+r.quietUntil) && +r.quietUntil > 0 ? +r.quietUntil : null;
+  // 兼容人工/旧版本写进来的 ISO 字符串（README 里给人看的是可读时间）
+  if (r.quietUntil && !Number.isFinite(+r.quietUntil)) { const t = Date.parse(String(r.quietUntil)); s.quietUntil = Number.isFinite(t) ? t : null; }
+  if (r.askedAt && !Number.isFinite(+r.askedAt)) { const t = Date.parse(String(r.askedAt)); s.askedAt = Number.isFinite(t) ? t : null; }
+  return s;
+}
+
+/**
+ * 家里发现暗处之后：**要不要经 mind 问主人一次**（纯函数）。
+ *
+ * 三种"不问"：
+ *   · 开关不是 `ask`（`off` 就是明说别插，`auto` 本能自己插上了，都不用开口）；
+ *   · 主人说过"不用"、24 小时还没到（`quietUntil`）—— 期间 `dark_spot` 也别再催她去插；
+ *   · 上一句他没回、6 小时还没到（`askedAt + noAnswerMs`）—— 不追问（和"少问"一致）。
+ *
+ * `answer === 'yes'` 单独一条：他说了要插，**"没回答"的 6 小时冷却不该套在他头上**
+ * （他明明答了）。这时她去插；暗处还在就是没插成，可以再说一次，走的是"上次没插成"那条路。
+ * 但**他也没再被问第二遍** —— 去插是本能/她的事，不是又一次开口。
+ *
+ * @param {object} c
+ * @param {'ask'|'auto'|'off'} c.mode   场合判定的结果（家里那格的 mode）
+ * @param {object} [c.state]           `normTorchState()` 的形状
+ * @param {number} [c.now]
+ * @param {object} [c.cooldown]        `TORCH_COOLDOWN`
+ * @param {number} [c.darkCount]       这一轮数出多少格暗（0 = 没暗处，不发）
+ * @returns {{ask:boolean, why:string, leftMs:number}}
+ */
+function pickTorchAsk (c = {}) {
+  const { mode = 'ask', state = null, now = Date.now(), cooldown = TORCH_COOLDOWN, darkCount = 1 } = c;
+  if (!(darkCount > 0)) return { ask: false, why: '家里没有暗处', leftMs: 0 };
+  if (mode !== 'ask') return { ask: false, why: mode === 'off' ? '开关关着（home=off），不问也不插' : '开关是 home=auto：本能自己插，不用问', leftMs: 0 };
+  const s = normTorchState(state);
+  // 冷却一律用 `<=`（"刚好到点"不算过）—— 边界上宁可少问一次，也不追着问。
+  if (s.quietUntil && now <= s.quietUntil) {
+    return { ask: false, why: `主人说过不用，还有 ${Math.round((s.quietUntil - now) / 60000)} 分钟才到 24 小时`, leftMs: s.quietUntil - now };
+  }
+  if (s.answer === 'no' && s.quietUntil == null) {
+    // 老数据：只说"不用"没写 quietUntil（人工改过 / 更早的版本）—— 按"回答时刻 + 24 小时"补算
+    const until = (s.answeredAt || s.askedAt || 0) + cooldown.offMs;
+    if (until && now <= until) return { ask: false, why: '主人说过不用（还没到 24 小时）', leftMs: until - now };
+  }
+  // 他说了"要插" —— 不按"他没回答"算（他答了），也还没有说"不用"，可以直接去插。
+  if (s.answer === 'yes') return { ask: true, why: '主人说要插的（去插；没插成还可以说一声）', leftMs: 0 };
+  if (s.askedAt && now - s.askedAt <= cooldown.noAnswerMs) {
+    return { ask: false, why: `上次问过他还没回（${Math.round((now - s.askedAt) / 60000)} 分钟前），别追问`, leftMs: cooldown.noAnswerMs - (now - s.askedAt) };
+  }
+  return { ask: true, why: '家里有暗处、开关是 home=ask、这一轮还没问过', leftMs: 0 };
+}
+
 /**
  * 该不该在这儿插个火把（2026-09-28 第 8 批 第 4 条，纯函数）。
  *
@@ -127,7 +383,8 @@ function pickCaveStep ({ cells = [], self, entry = null, visited = new Set() }, 
  * 本能层根本没有"暗了就点灯"这一条。这条顶上。
  *
  * 判据（全部满足才插）：
- *   ① 在地下 / 洞里：exposure.kind === 'underground' 或（sheltered 且头顶有顶 roofAt != null）
+ *   ① 场合是"自己插"：`torchSituation()` 判出来的 `mode` 按下去是 `auto`
+ *      （下矿 / 地下永远 auto；家在 `home=ask`/`home=off` 时不自作主张；家外看 `away`）
  *      —— 露天的黑（夜里）不算，那是该回家睡觉的事，不是点灯的事；
  *   ② 脚下那格按**共享亮度判据**（`body/util.js` 的 `lightVerdict`：方块光 ≤ 7 且天光 ≤ 7）
  *      判出来是"暗" —— 读不到就不插（主人：区分"没有"和"读不到"，读不到不猜）；
@@ -143,24 +400,27 @@ function pickCaveStep ({ cells = [], self, entry = null, visited = new Set() }, 
  * @param {(number|null)} c.light 脚下那格的方块光（读不到给 null）
  * @param {number} c.torches   身上火把数
  * @param {number} c.movedSince 从上次检查点走了多少格（行为节流，与"亮不亮"无关）
+ * @param {boolean|null} [c.atHome] 在不在家范围里（`inHome()`；null = 不知道家在哪）
+ * @param {boolean} [c.delving] 正在下矿（`I.delve` 有效）
+ * @param {object} [c.modes]   `{home, away}` 开关（缺省用默认值）
  * @param {object} [c.lightVerdict] 共享亮度判据（`body/util.js`）；调用方注入，缺省按阈值就地算
- * @returns {{place:true, why:string}|{place:false, why:string}}
+ * @returns {{place:true, why:string, where:string, mode:string}|{place:false, why:string, where?:string, mode?:string}}
  */
 function pickTorchStep (c = {}, cfg = CFG.torch) {
   const { exposure = null, light = null, torches = 0, movedSince = Infinity, lightVerdict = defaultLightVerdict } = c;
-  if (!(torches > 0)) return { place: false, why: '身上没火把' };
-  // ① 地下？
-  const kind = exposure?.kind;
-  if (!(kind === 'underground' || (kind === 'sheltered' && exposure?.roofAt != null))) {
-    return { place: false, why: kind ? `不在洞里（exposure=${kind}）` : '不知道头顶有没有遮挡' };
+  // ① 场合：家里（ask/off）不自作主张；下矿 / 地下永远 auto（away=off 也照插，理由见上面 TORCH_MODES 上面那段）
+  const sit = torchSituation({ exposure, atHome: c.atHome ?? null, delving: !!c.delving, modes: c.modes });
+  if (sit.mode !== 'auto') {
+    return { place: false, why: sit.where === 'home' ? `在家里（home=${sit.mode}）：${sit.mode === 'ask' ? '先问主人，不自己插' : '开关关着，不插'}` : sit.why, where: sit.where, mode: sit.mode };
   }
+  if (!(torches > 0)) return { place: false, why: '身上没火把', where: sit.where, mode: sit.mode };
   // ④ 移动够了才检查（每 ~6 格一次，别每拍都点）
-  if (movedSince < cfg.everyBlocks) return { place: false, why: `才走了 ${movedSince.toFixed(1)} 格，还没到 ${cfg.everyBlocks}` };
+  if (movedSince < cfg.everyBlocks) return { place: false, why: `才走了 ${movedSince.toFixed(1)} 格，还没到 ${cfg.everyBlocks}`, where: sit.where, mode: sit.mode };
   // ② 判"暗不暗"用共享那份判据（`body/util.js` 的 `lightVerdict`）；读不到就不插（不猜）
   const v = lightVerdict(Number.isFinite(light) ? { block: light, sky: 0 } : null);
-  if (v.unreadable) return { place: false, why: '脚下亮度读不到，不插' };
-  if (!v.dark) return { place: false, why: `脚下不暗（方块光 ${light}）` };
-  return { place: true, why: `脚下暗（方块光 ${light}）` };
+  if (v.unreadable) return { place: false, why: '脚下亮度读不到，不插', where: sit.where, mode: sit.mode };
+  if (!v.dark) return { place: false, why: `脚下不暗（方块光 ${light}）`, where: sit.where, mode: sit.mode };
+  return { place: true, why: `${sit.why}，脚下暗（方块光 ${light}）`, where: sit.where, mode: sit.mode };
 }
 
 /**
@@ -267,7 +527,7 @@ function pickDelveResume (c = {}) {
   return { resume: true, why: delve.interrupted ? `上次因为「${delve.interrupted}」断了 ${Math.round(since / 1000)} 秒，接着把它挖完` : `上次下矿结束 ${Math.round(since / 1000)} 秒，还能接着挖`, target: delve.target, entry: delve.entry };
 }
 
-module.exports = { bareNameOf, bind, darkReport, needTier, noteDelve, pickCaveStep, pickDelveResume, pickOre, pickTorchStep, pickaxeTier };
+module.exports = { TORCH_COOLDOWN, TORCH_MODE_FILE, TORCH_MODES, applyTorchMode, bareNameOf, bind, darkReport, loadTorchMode, markTorchAsked, needTier, normTorchMode, normTorchState, noteDelve, noteTorchAnswer, pickCaveStep, pickDelveResume, pickOre, pickTorchAsk, pickTorchStep, pickaxeTier, saveTorchMode, torchModeOk, torchSituation };
 
 // ------------------------------------------------------------------ 自测
 // 第 3 步重构：这几节原本挤在 instinct.js 的自测段里（同一个 function selftest 外套）。
@@ -351,9 +611,15 @@ const __sections = [
       check('★ 地下 + 脚下黑 + 有火把 → 插', pickTorchStep({ exposure: under, light: 0, torches: 5, movedSince: 10 }, T).place, true);
       check('没火把 → 不插', pickTorchStep({ exposure: under, light: 0, torches: 0, movedSince: 10 }, T).place, false);
       check('★ 亮度读不到 → 不插（不猜）', pickTorchStep({ exposure: under, light: null, torches: 5, movedSince: 10 }, T).place, false);
-      check('★ 地面露天（kind=open）→ 不插（夜里黑该回家睡）', pickTorchStep({ exposure: { kind: 'open', skyLight: 15 }, light: 0, torches: 5, movedSince: 10 }, T).place, false);
-      check('露天但头顶有顶（sheltered + roofAt）→ 就当洞里，照插', pickTorchStep({ exposure: { kind: 'sheltered', roofAt: 3, skyLight: 5 }, light: 3, torches: 5, movedSince: 10 }, T).place, true);
-      check('sheltered 但读不出 roofAt → 不插', pickTorchStep({ exposure: { kind: 'sheltered', roofAt: null }, light: 3, torches: 5, movedSince: 10 }, T).place, false);
+      // ⚠️ 2026-09-29 加火把开关后，这几条要带上 `atHome: false`：
+      //    "露天不插"原来的意思是"野外露天不用点灯（夜里该回家睡）"。现在**家外**默认
+      //    `away: 'auto'`（主人要的"探险时自动插"），所以露天 + 家外 + 脚下黑 → 插。
+      //    地上露天的黑要不要点灯，判据已经从"是不是洞里"换成"在哪种场合"（torchSituation）。
+      check('★ 地面露天、家外（kind=open + atHome=false）→ 还是插（away 默认 auto；主人 2026-09-29 要的）', pickTorchStep({ exposure: { kind: 'open', skyLight: 15 }, atHome: false, light: 0, torches: 5, movedSince: 10 }, T).place, true);
+      check('★ 地面露天、家里（atHome=true）→ 不自己插（要问主人）', pickTorchStep({ exposure: { kind: 'open', skyLight: 15 }, atHome: true, light: 0, torches: 5, movedSince: 10 }, T).place, false);
+      check('★ 地面露天、away=off（atHome=false）→ 不插', pickTorchStep({ exposure: { kind: 'open', skyLight: 15 }, atHome: false, modes: { away: 'off' }, light: 0, torches: 5, movedSince: 10 }, T).place, false);
+      check('露天但头顶有顶（sheltered + roofAt）→ 就当洞里，照插', pickTorchStep({ exposure: { kind: 'sheltered', roofAt: 3, skyLight: 5 }, atHome: false, light: 3, torches: 5, movedSince: 10 }, T).place, true);
+      check('露天、头顶有顶但读不出高度（roofAt=null）→ 不算洞里；家里要问、家外照插', pickTorchStep({ exposure: { kind: 'sheltered', roofAt: null }, atHome: true, light: 3, torches: 5, movedSince: 10 }, T).place, false);
       check('★ 脚下够亮（方块光 9）→ 不插', pickTorchStep({ exposure: under, light: 9, torches: 5, movedSince: 10 }, T).place, false);
       check('★ 才走了 2 格（没到 6）→ 先不检查', pickTorchStep({ exposure: under, light: 0, torches: 5, movedSince: 2 }, T).place, false);
       check('★ 第一次（movedSince=Infinity）→ 也算走够了', pickTorchStep({ exposure: under, light: 0, torches: 5, movedSince: Infinity }, T).place, true);
@@ -377,6 +643,134 @@ const __sections = [
       check('★ 判据形状：config 里不再留 spacing（那是"看附近光源"的遗留参数）',
         /^\s*spacing:/m.test(require('fs').readFileSync(require('path').join(__dirname, 'config.js'), 'utf8')), false);
     }
+  }],
+  ['火把开关：场合判定（主人 2026-09-29）', async (t) => {
+    const { check, ns } = t;
+    const { TORCH_MODES, torchSituation, torchModeOk, normTorchMode } = ns;
+    const under = { kind: 'underground', roofAt: 5 };
+    const open = { kind: 'open', skyLight: 15 };
+    const shelter = { kind: 'sheltered', roofAt: 3 };
+    // 数组断言一律用「逐项相等」的判据 —— 本套件的 check 是严格 JSON 相等，
+    // 只在字符串上才可靠（AGENTS.md：自测红了先怀疑断言，不能比对象/数组）。
+    const eq = (a) => (b) => JSON.stringify(a) === JSON.stringify(b);
+    // ---- 三种场合：下矿 / 地下 → auto（不问）；家里 → ask；家外露天 → auto ----
+    check('★ 地下（underground）→ 自动插、不问', [torchSituation({ exposure: under, atHome: false }).where, torchSituation({ exposure: under, atHome: false }).mode], eq(['mine', 'auto']));
+    check('★ 露天但头顶有顶（sheltered+roofAt）→ 算地下，自动插', torchSituation({ exposure: shelter, atHome: false }).mode, 'auto');
+    check('★ 下矿中（delving）→ 自动插（哪怕站到地面上）', [torchSituation({ exposure: open, atHome: false, delving: true }).where, torchSituation({ exposure: open, atHome: false, delving: true }).mode], eq(['mine', 'auto']));
+    check('★ 家里露天 → 问（home 默认 ask）', [torchSituation({ exposure: open, atHome: true }).where, torchSituation({ exposure: open, atHome: true }).mode, torchSituation({ exposure: open, atHome: true }).ask], eq(['home', 'ask', true]));
+    check('★ 家里地下（自家矿道）→ 还是自动插（保命优先于"先问"）', torchSituation({ exposure: under, atHome: true }).where, 'mine');
+    // 2026-09-29 Claude 复核：屋里有屋顶（sheltered + roofAt），原来被当成洞里、自动插 —— 家里"先问"就落空了
+    check('★ 家里室内（有屋顶、在地面上）→ 先问，不自动插', torchSituation({ exposure: { kind: 'sheltered', roofAt: 3 }, atHome: true }).where, 'home');
+    check('★ 家外有顶的地方（洞口 / 悬崖下）→ 仍算洞里、自动插', torchSituation({ exposure: { kind: 'sheltered', roofAt: 3 }, atHome: false }).where, 'mine');
+    check('★ 家外露天 → 自动插、不问', [torchSituation({ exposure: open, atHome: false }).where, torchSituation({ exposure: open, atHome: false }).mode], eq(['away', 'auto']));
+    check('不在家范围、也不知道家在哪（atHome=null）→ 按家外算', torchSituation({ exposure: open, atHome: null }).where, 'away');
+    check('头顶遮挡读不到（exposure=null）也没在家 → 按家外', torchSituation({ exposure: null, atHome: false }).where, 'away');
+    // ---- home 的三档 ----
+    check('home=off → 家里不问（也不插）', [torchSituation({ exposure: open, atHome: true, modes: { home: 'off' } }).mode, torchSituation({ exposure: open, atHome: true, modes: { home: 'off' } }).ask], eq(['off', false]));
+    check('home=auto → 家里自动插、不问', [torchSituation({ exposure: open, atHome: true, modes: { home: 'auto' } }).mode, torchSituation({ exposure: open, atHome: true, modes: { home: 'auto' } }).ask], eq(['auto', false]));
+    // ---- away 的两档 ----
+    check('away=off → 家外不插（场合判出来是 off）', torchSituation({ exposure: open, atHome: false, modes: { away: 'off' } }).mode, 'off');
+    check('★ away=off 时下矿**仍然**自动插（保命优先，主人 2026-09-29 拍板）', torchSituation({ exposure: under, atHome: false, modes: { away: 'off' } }).mode, 'auto');
+    check('★ away=off 且 delving → 还是自动插', torchSituation({ exposure: open, atHome: false, delving: true, modes: { away: 'off' } }).mode, 'auto');
+    // ---- 开关值的合法性：只认白名单，写错不会静默变成"自动插" ----
+    check('合法的值', [torchModeOk('home', 'ask'), torchModeOk('home', 'auto'), torchModeOk('home', 'off'), torchModeOk('away', 'auto'), torchModeOk('away', 'off')], eq([true, true, true, true, true]));
+    check('不合法的值 → false（away 不许写 ask）', [torchModeOk('away', 'ask'), torchModeOk('home', 'yes'), torchModeOk('nope', 'auto')], eq([false, false, false]));
+    check('归一：非法值回到默认（home→ask、away→auto）', [normTorchMode('home', 'yes'), normTorchMode('away', 'ask'), normTorchMode('home', undefined)], eq(['ask', 'auto', 'ask']));
+    check('默认值就是任务书要的：家里先问、家外自动', [TORCH_MODES.home.def, TORCH_MODES.away.def], eq(['ask', 'auto']));
+    // ---- pickTorchStep 接上开关 ----
+    const T = { ...ns.CFG.torch };
+    const P = (c) => ns.pickTorchStep(c, T);
+    check('★ home=ask + 在家 + 脚下黑 → 不自己插（要问）', P({ exposure: open, atHome: true, light: 0, torches: 5, movedSince: 10 }).place, false);
+    check('★ home=off + 在家 + 脚下黑 → 不插，理由说"开关关着"', /开关关着/.test(P({ exposure: open, atHome: true, light: 0, torches: 5, movedSince: 10, modes: { home: 'off' } }).why), true);
+    check('★ home=auto + 在家 + 脚下黑 → 插', P({ exposure: open, atHome: true, light: 0, torches: 5, movedSince: 10, modes: { home: 'auto' } }).place, true);
+    check('★ away=off + 家外露天 + 脚下黑 → 不插', P({ exposure: open, atHome: false, light: 0, torches: 5, movedSince: 10, modes: { away: 'off' } }).place, false);
+    check('★ 地下 + home 的开关 → 还是插（地下不看 home）', P({ exposure: under, atHome: true, light: 0, torches: 5, movedSince: 10, modes: { home: 'off' } }).place, true);
+    check('★ 场合写进了返回值（where/mode），便于诊断', P({ exposure: open, atHome: true, light: 0, torches: 5, movedSince: 10 }).where, 'home');
+    check('★ 家里（ask）不插时理由写得清"先问主人"', /先问主人/.test(P({ exposure: open, atHome: true, light: 0, torches: 5, movedSince: 10 }).why), true);
+  }],
+  ['火把开关：家里问一次 / 冷却（主人 2026-09-29）', async (t) => {
+    const { check, ns } = t;
+    const { pickTorchAsk, TORCH_COOLDOWN, normTorchState } = ns;
+    const H = 3600000; const now = 2000000000000;
+    // 数组断言用逐项相等（本套件的 check 是严格 `===`，见 testkit.js）
+    const eq = (a) => (b) => JSON.stringify(a) === JSON.stringify(b);
+    // ---- 该问 ----
+    check('★ 家里有暗处、home=ask、没问过 → 问', pickTorchAsk({ mode: 'ask', state: null, now }).ask, true);
+    check('没有暗处 → 不问', pickTorchAsk({ mode: 'ask', state: null, now, darkCount: 0 }).ask, false);
+    check('home=off → 不问', pickTorchAsk({ mode: 'off', state: null, now }).ask, false);
+    check('home=auto → 不问（本能自己插）', pickTorchAsk({ mode: 'auto', state: null, now }).ask, false);
+    // ---- 主人说"不用" → 24 小时内不再问、不再催 ----
+    const saidNo = { home: 'ask', away: 'auto', askedAt: now - 2 * H, answer: 'no', answeredAt: now - 2 * H, quietUntil: now - 2 * H + TORCH_COOLDOWN.offMs };
+    check('★ 主人说不用、才过 2 小时 → 不问', pickTorchAsk({ mode: 'ask', state: saidNo, now }).ask, false);
+    check('★ 理由里写清"还有多久到 24 小时"', /24 小时/.test(pickTorchAsk({ mode: 'ask', state: saidNo, now }).why), true);
+    check('★ 冷却是 24 小时（配置里写死）', TORCH_COOLDOWN.offMs, 24 * 60 * 60 * 1000);
+    check('★ 主人说不用、过了 24 小时 → 可以再问一次', pickTorchAsk({ mode: 'ask', state: saidNo, now: saidNo.quietUntil + 1000 }).ask, true);
+    check('刚好卡在 24 小时那一刻 → 还不到（保守为不问）', pickTorchAsk({ mode: 'ask', state: saidNo, now: saidNo.quietUntil }).ask, false);
+    check('他说不用是 30 小时前、中间没再问 → 能再问', pickTorchAsk({ mode: 'ask', state: { home: 'ask', answer: 'no', answeredAt: now - 30 * H, askedAt: now - 30 * H, quietUntil: now - 30 * H + TORCH_COOLDOWN.offMs }, now }).ask, true);
+    check('老数据（说不用但没写 quietUntil）→ 按回答时刻 + 24 小时兜底', pickTorchAsk({ mode: 'ask', state: { home: 'ask', answer: 'no', answeredAt: now - 3 * H, askedAt: now - 3 * H }, now }).ask, false);
+    // ---- 他没回答 → 6 小时内不追问 ----
+    const noAnswer = { home: 'ask', away: 'auto', askedAt: now - H, answer: null, answeredAt: null, quietUntil: null };
+    check('★ 问过、他没回、才 1 小时 → 不追问', pickTorchAsk({ mode: 'ask', state: noAnswer, now }).ask, false);
+    check('★ 没回答的冷却写的就是 6 小时', TORCH_COOLDOWN.noAnswerMs, 6 * 60 * 60 * 1000);
+    check('★ 过了 6 小时他还是没回 → 才能再提一次', pickTorchAsk({ mode: 'ask', state: noAnswer, now: noAnswer.askedAt + TORCH_COOLDOWN.noAnswerMs + 1000 }).ask, true);
+    check('刚好 6 小时 → 还不到', pickTorchAsk({ mode: 'ask', state: noAnswer, now: noAnswer.askedAt + TORCH_COOLDOWN.noAnswerMs }).ask, false);
+    // ---- 他说"要插" → 不拦（去插；没插成可以再说） ----
+    check('★ 主人说要 → 不拦（去插；暗处还在就是没插成，可以再说）', pickTorchAsk({ mode: 'ask', state: { home: 'ask', askedAt: now - 60 * 60 * 1000, answer: 'yes', answeredAt: now - 3600 * 1000 }, now }).ask, true);
+    // ---- 存盘形状：脏数据不采信 ----
+    const clean = normTorchState({ home: 'YES', away: 'ask', askedAt: 'x', answer: 'maybe', quietUntil: 'y' });
+    check('★ 读回来的乱值全部归一到白名单', [clean.home, clean.away, clean.askedAt, clean.answer, clean.answeredAt, clean.quietUntil], eq(['ask', 'auto', null, null, null, null]));
+    check('★ ISO 字符串时间能读回来（给人看的可读时间）', typeof normTorchState({ quietUntil: '2026-09-30T12:00:00Z' }).quietUntil, 'number');
+    const empty = normTorchState(null);
+    check('空 / null → 默认值', [empty.home, empty.away, empty.askedAt, empty.answer, empty.quietUntil], eq(['ask', 'auto', null, null, null]));
+  }],
+  ['火把开关：持久化（写入 → 重新加载 → 设置一致）', async (t) => {
+    const { check, ns } = t;
+    const { loadTorchMode, saveTorchMode, applyTorchMode, markTorchAsked, noteTorchAnswer, TORCH_COOLDOWN, pickTorchAsk } = ns;
+    const fs = require('fs'); const os = require('os'); const p = require('path');
+    const dir = fs.mkdtempSync(p.join(os.tmpdir(), 'torch-mode-'));
+    const file = p.join(dir, 'torch-mode.json');
+    const eq = (a) => (b) => JSON.stringify(a) === JSON.stringify(b);
+    try {
+      // ---- 文件不存在 = 从没设置过（不是"读不到"） ----
+      const fresh = loadTorchMode(file);
+      check('★ 文件不存在 → 用默认值、且不报"读不到"', [fresh.unreadable, fresh.why, fresh.state.home, fresh.state.away], eq([false, null, 'ask', 'auto']));
+      // ---- 写入 → 重新加载 → 设置一致 ----
+      const w = applyTorchMode(fresh.state, { home: 'off', away: 'off' }, file);
+      check('★ 写入成功', [w.ok, w.changed.home, w.changed.away], eq([true, 'off', 'off']));
+      const back = loadTorchMode(file);
+      check('★ 重新加载 → 设置和写进去的一致', [back.state.home, back.state.away], eq(['off', 'off']));
+      check('★ 文件真的是 JSON（人能看懂 / 能手改）', JSON.parse(fs.readFileSync(file, 'utf8')).home, 'off');
+      // ---- 只改一个键，另一个不动 ----
+      const w2 = applyTorchMode(back.state, { home: 'auto' }, file);
+      check('★ 只给 home → away 保持原样', [w2.state.home, w2.state.away], eq(['auto', 'off']));
+      // ---- 非法值：拒绝，不是静默回退 ----
+      const w3 = applyTorchMode(loadTorchMode(file).state, { away: 'ask' }, file);
+      check('★ away=ask 不合法 → 拒绝并说清允许哪些', [w3.ok, /auto \/ off/.test(w3.error)], eq([false, true]));
+      check('★ 被拒绝时文件没被改动（还是 auto/off）', (() => { const s = loadTorchMode(file).state; return [s.home, s.away]; })(), eq(['auto', 'off']));
+      // ---- 问过的时刻要落盘（没回答的 6 小时冷却靠它） ----
+      const nowA = 2000000000000;
+      const asked = markTorchAsked(loadTorchMode(file).state, nowA, file);
+      check('★ "问过了"落盘', loadTorchMode(file).state.askedAt, nowA);
+      check('★ 落盘后 1 小时：不再问（重启也记得）', pickTorchAsk({ mode: 'ask', state: loadTorchMode(file).state, now: nowA + 3600000 }).ask, false);
+      check('★ 落盘后 6 小时零 1 秒：可以再问', pickTorchAsk({ mode: 'ask', state: loadTorchMode(file).state, now: nowA + TORCH_COOLDOWN.noAnswerMs + 1000 }).ask, true);
+      // ---- 主人的回答落盘 ----
+      const sayNo = noteTorchAnswer(loadTorchMode(file).state, 'no', { now: nowA + 7000000 }, file);
+      check('★ 说"不用" → quietUntil = 回答时刻 + 24 小时', sayNo.state.quietUntil, nowA + 7000000 + TORCH_COOLDOWN.offMs);
+      const reload = loadTorchMode(file).state;
+      check('★ 重启后还记得"不用"（24 小时内不问）', pickTorchAsk({ mode: 'ask', state: reload, now: nowA + 7000000 + 3600000 }).ask, false);
+      check('★ 重启后过了 24 小时 → 能再问', pickTorchAsk({ mode: 'ask', state: reload, now: reload.quietUntil + 1 }).ask, true);
+      // ---- 他说"要插 + 以后都自动" ----
+      const sayYes = noteTorchAnswer(reload, 'yes', { now: nowA + 90000000, alsoAuto: true }, file);
+      const reload2 = loadTorchMode(file).state;
+      check('★ 说"要" + 以后都自动 → answer=yes 且 home 变成 auto', [reload2.answer, reload2.home], eq(['yes', 'auto']));
+      check('★ 说"要"之后不按"他没回答"算（能去插）', pickTorchAsk({ mode: 'ask', state: reload2, now: nowA + 90000000 + 1000 }).ask, true);
+      check('非法回答 → 拒绝', noteTorchAnswer(reload, 'maybe', {}, file).ok, false);
+      // ---- 坏文件：读不出来要报"读不到"，不是"没设置" ----
+      fs.writeFileSync(file, '{ this is not json');
+      const broken = loadTorchMode(file);
+      check('★ 坏 JSON → unreadable=true 且说明原因（不静默当默认）', [broken.unreadable, /不是合法 JSON/.test(broken.why)], eq([true, true]));
+      check('★ 坏文件也回默认值（不至于让她彻底不能插）', [broken.state.home, broken.state.away], eq(['ask', 'auto']));
+    } finally { try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_) {} }
   }],
   ['续挖下矿（第 8 批 第 5 条）', async (t) => {
     const { check, instinctSrc, ns } = t;

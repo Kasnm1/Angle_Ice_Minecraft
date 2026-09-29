@@ -49,9 +49,12 @@ function instinctSrc () {
 async function runSuite (title, mine) {
   const counters = { pass: 0, fail: 0 };
   const check = (name, got, want) => {
-    if (got === want) { counters.pass++; return; }
+    // want 传函数 = 自定义判据（数组 / 对象比较用；`===` 在非字符串上不可靠 —— AGENTS.md
+    // "自测红了先怀疑断言"）。不传函数就照旧严格相等（一直是这个契约，别改成深比较）。
+    const ok = typeof want === 'function' ? want(got) : got === want;
+    if (ok) { counters.pass++; return; }
     counters.fail++;
-    console.log(`  ✗ ${name} —— 得到 ${JSON.stringify(got)}，应为 ${JSON.stringify(want)}`);
+    console.log(`  ✗ ${name} —— 得到 ${JSON.stringify(got)}，应为 ${typeof want === 'function' ? '(按判据)' : JSON.stringify(want)}`);
   };
   // 「让出身体」那节原本是巨石自测的收尾，自带 `console.log(\`${pass} passed…\`)` ——
   // 拆开后它读的 pass/fail 改成这里的**实时**计数（t.counters 的取值器），
