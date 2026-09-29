@@ -12,6 +12,7 @@
 | `containers-seen.json` | `src/body/util.js` 的 `SEEN_FILE` —— **开过的容器**（箱子/木桶/矿车）的 `"x,y,z"` 键数组 | ❌ 忽略 | 原子写（`.tmp` + `renameSync`）。删一条 = 让她"忘了开过"，下次还会去开 |
 | **`resources.json`** | `src/world/perception.js` —— **野外资源记忆**（她的"余光"看过就记）：资源片 + 野外容器位置 | ❌ 忽略（是她走过哪儿的行踪） | 见下面「`resources.json` 的格式」。原子写；跑着的时候别手改（本能每 5 秒整份重写） |
 | **`torch-mode.json`** | `src/instinct/mining.js` 的 `saveTorchMode()`（**只有 bridge 进程写**）—— 火把开关 + 家里那次的问答 | ✅ **入库**（就是个设置，没有隐私；和 `config.json` 同级） | 见下面「`torch-mode.json` 的格式」。原子写。**手改前先停 bridge** —— 本能每拍会读它（缓存 4 秒）；改完能读出来，但"上次问过他的时刻"自己算不准就别乱写 |
+| **`tasks.json`** | `src/mind/mind/tasks.js`（**只有 mind 进程写**）—— 任务队列（阶段 1）：她手上做的、排着的、被打断停下的活儿 | ❌ 忽略（`said` 里可能有玩家原话；和 `mind.json` 同等对待） | 见下面「`tasks.json` 的格式」。原子写（`.tmp` + `renameSync`，Windows 上 EPERM 回退直接写）。**mind 在跑时别手改**（它整份重写）；删掉 = 让她"忘掉所有没做完的事" |
 | **`field-log.md`** | **开发者**（人或 agent） | ✅ | 见下 —— 项目最有价值的资产 |
 | `issues-report.md` | 开发者，阶段性汇总 | ✅ | 历史快照（P1–P21 阶段），新问题不往这里写 |
 
@@ -97,6 +98,50 @@
 | 他说"要插" | 无 | —— | 不拦着去插；暗处还在就是没插成，可以再说一次 |
 
 冷却一律用 `<=` 判（"刚好到点"不算过）—— 边界上宁可少问一次。
+
+## `tasks.json` 的格式（任务队列，2026-09-29 阶段 1）
+
+**只有 mind 进程写这个文件**（`src/mind/mind/tasks.js` 的 `save()` / `load()`）。
+
+路径：`$MC_TASKS_FILE` 或 `memory/tasks.json`（自测 / `--sim` 一律用临时文件，**绝不写这个真文件**）。
+
+```jsonc
+{
+  "version": 1,
+  "seq": 3,                       // 只增不减：下一个 #id 从这里 +1（重启也不回退）
+  "tasks": [
+    {
+      "id": 1,
+      "title": "做一把铁镐",       // 主人交代的就是他原话前 30 字
+      "source": "player",         // player（他交代的）/ self（她自己想做的）/ plan（计划里的一步，阶段 3）
+      "askedBy": "Ka_sum1",       // 谁交代的（只有 player 有）
+      "said": "帮我做一把铁镐",     // 他的原话（合并去重按它算）
+      "status": "paused",         // queued / running / paused / done / failed / dropped / expired
+      "pausedWhy": "instinct",    // 停下时才有：player / self / instinct / restart
+      "parent": null,             // "这是为了哪件事做的"（子任务指回父任务，阶段 2/3 用）
+      "steps": [],                // 这一件的做法（照技能做的会填）
+      "i": 0,                     // 做到第几步
+      "progress": null,           // 她写的一句进度（"已经做了木棍，还缺 3 个铁锭"）
+      "planStep": null,           // 对应计划里的哪一步（阶段 3 用，先留位）
+      "createdAt": 1790694749971,
+      "updatedAt": 1790694749971,
+      "ttlMs": null,              // 多久算过期：player / plan = null（不过期）；self = 20 分钟
+      "interruptions": 0          // 被打断几次（每次 running → paused 都 +1）
+    }
+  ]
+}
+```
+
+几条规矩（与 `mind.json` 同理）：
+
+- **原子写**：先写 `tasks.json.tmp` 再 `renameSync`；Windows 上目标被占用会 `EPERM`，
+  退回直接写（不原子，但总比这次不存强）。
+- **缺文件 = 从没有过任务**（正常，不是错，`load` 返回 `empty`）；
+  **坏 JSON / 读不出来 = `unreadable:true`**（当"没有任务"继续，但**不覆盖**旧文件）——
+  "没有"和"读不到"必须分开报（项目 AGENTS.md §5-1）。
+- **`expired` 只对 self**（`ttlMs` 有值的）。player / plan 的任务放多久都还在（他交代的事不许悄悄过期）。
+- **醒来（`restore()`）先收 `running` → `paused(restart)`，再扫过期**。顺序反了的话，
+  一件正跑着、又恰好到期的 self 任务会被直接标 `expired` —— 那是**丢事**。
 
 ## 写 `field-log.md` 的格式（必须遵守）
 

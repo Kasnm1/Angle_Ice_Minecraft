@@ -37,5 +37,8 @@ module.exports = {
   tools: lazy('tools'),
   actions: lazy('actions'),
   think: lazy('think'),
+  // 任务队列（阶段 1）：think / look / actions 都要用它；它自己不回头 require 这些，
+  // 摆在这里是为了"取法"统一（别处也可以直接 `require('./tasks')`，效果一样）。
+  tasks: lazy('tasks'),
   selftest: lazy('selftest'),
 };

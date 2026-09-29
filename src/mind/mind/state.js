@@ -127,6 +127,12 @@ const W = {
   auditStreak: 0,           // 连续 403 内容审计几次（到 2 次就压缩那段发不出去的内容）
   groupRound: 0,            // "想"到第几轮了（按需组的有效期按它算）
   groupActive: {},          // { 组名: 到期轮次 }
+  // ── 任务队列（阶段 1，见 tasks.js / docs/TASK-QUEUE-DESIGN-20260929.md）──────
+  // 为什么状态挂在这里：和 W 的其它字段一样，全进程**只此一份**；tasks.js 用到时才 require 取同一份。
+  // `seq` 只增不减（任务的 #id 来源），`list` 是全部任务（含已收尾的，收尾的不出现在上下文里）。
+  tasks: { seq: 0, list: [] },
+  // 同一目的地来回走的短时状态（tasks.noteSpot 读写）——不落盘，重启后重来（和 W.seenChat 同类）。
+  spotTries: null,
 };
 
 

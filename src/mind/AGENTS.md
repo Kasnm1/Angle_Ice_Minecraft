@@ -33,10 +33,11 @@
 | `mind/look.js` | 245 | `look()`：每轮"想"之前看一眼世界（状态/背包/聊天/余光/门/箱/亮度），新东西 `emit()`。**拼"长期计划"那段整块留在这里**，方便与 `feat/campaign-quests` 分支合并 |
 | `mind/gates.js` | 167 | 说话/汇报/提问的判据表：`REPORT_NUDGE` / `ASK_TOO_MUCH_NUDGE` / `ASK_BACK_NUDGE` / `HONEST_NUDGE` / `FACT_CLAIMS` / `claimState` / `liveFails` / `taskDoneAllowed` / `isOverAsking` / `lastProactiveUnanswered` … |
 | `mind/tools.js` | 328 | `MIND_TOOLS` 工具表与分组：`SPECS` / `GROUPS` / `TOOL_GROUPS` / `GROUP_CUES` / `pickSpecs` / `groupsFromBody` / `activateGroup` / `activeGroups`；仓库位 `knownStations` / `homeStockItems` / `shortName` |
-| `mind/actions.js` | 214 | 把"想"变成"做"：`startJob` / `runTool` / `toolResultLine` / `fmtArgs` / `celebrate` / `learnFromDoing`；反射级 `instinctEat` / `NAME_RE` / `FAST` / `matchFast` / `fastPath`。`MIND_TOOLS` 经 Proxy 延迟取（见下） |
-| `mind/think.js` | 792 | `think()` 多轮调模型主循环 + 上下文压实：`historyChars` / `bodyNow` / `planExtras` / `planLine` / `buildNow` / `repetitionHint` / `idleGate` / `compactLastNow` / `clipText` / `trimDangling` / `sleepAndSort` / `sortMemories` / `holdBody` / `startControl` … |
-| `mind/selftest.js` | 1107 | `selftest()`（249 条）与 `mockBridge()`。**>900 行**（原样搬移，未拆）——下一步可选再分 |
-| `mind/wiring.js` | 41 | **拆环中枢**：`think ↔ runtime`、`tools ↔ actions` 互相调用，只能延迟取。每个导出是 `() => require('./x')`，首次调用才加载 |
+| `mind/actions.js` | 239 | 把"想"变成"做"：`startJob`（**阶段 1 起先问任务层该不该打断**、busy 有限次重试）/ `runTool`（附"同一目的地"提醒）/ `toolResultLine` / `fmtArgs` / `celebrate` / `learnFromDoing`；反射级 `instinctEat` / `NAME_RE` / `FAST` / `matchFast` / `fastPath`。`MIND_TOOLS` 经 Proxy 延迟取（见下） |
+| `mind/tasks.js` | 836 | **任务队列（阶段 1，2026-09-29）**：任务对象 + 队列 + 持久化（`memory/tasks.json`）+ 打断判据（只此一份）。纯函数 + 显式状态（挂 `W.tasks`），不 require 兄弟文件，可单独 `$NODE src/mind/mind/tasks.js --selftest`。本阶段不做 `task_*` 工具 / 提醒 / 联动（阶段 2、3），字段已留位 |
+| `mind/think.js` | 823 | `think()` 多轮调模型主循环 + 上下文压实：`historyChars` / `bodyNow` / `tasksBlock` / `planExtras` / `planLine` / `buildNow` / `repetitionHint` / `idleGate` / `compactLastNow` / `clipText` / `trimDangling` / `sleepAndSort` / `sortMemories` / `holdBody` / `startControl` … |
+| `mind/selftest.js` | 1367 | `selftest()`（312 条）与 `mockBridge()`。**>1300 行**（原样搬移 + 阶段 1 任务队列那段）——下一步可选再分 |
+| `mind/wiring.js` | 43 | **拆环中枢**：`think ↔ runtime`、`tools ↔ actions` 互相调用，只能延迟取。每个导出是 `() => require('./x')`，首次调用才加载。含 `tasks` |
 
 **循环依赖怎么办**（拆环的三招，改名前先看这里）：
 
@@ -70,9 +71,10 @@
 ## 自测
 
 ```bash
-# mind.js 拆开后（第 3 步 e）：根入口跑 --selftest（249 条）；
-# 子文件都没有 --selftest 分支（跑了是空操作），只做 --check。
+# mind.js 拆开后（第 3 步 e）：根入口跑 --selftest（312 条）；
+# 子文件都没有 --selftest 分支（跑了是空操作）——例外是 mind/tasks.js（纯函数，自带 65 条），只做 --check。
 $NODE mind.js --selftest
+$NODE src/mind/mind/tasks.js --selftest          # 任务队列（阶段 1），可单独跑
 for f in src/mind/mind/*.js; do $NODE --check $f || echo BAD $f; done
 $NODE src/mind/memory-store.js --selftest; $NODE src/mind/night.js --selftest
 $NODE src/mind/plan.js --selftest; $NODE src/mind/speech.js --selftest

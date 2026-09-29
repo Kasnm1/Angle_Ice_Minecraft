@@ -15,6 +15,8 @@ const wiring = require('./wiring');
 // 本能：饿到发慌就吃 / "停""跟我来"瞬间反应（正文在 actions.js）
 function instinctEat (...a) { return wiring.actions().instinctEat.apply(null, a); }
 function fastPath (...a) { return wiring.actions().fastPath.apply(null, a); }
+// 任务队列（阶段 1）：本能抢身体时把手上那件标成 paused(instinct)。纯函数 + 显式状态，用到时才 require。
+const tasks = () => require('./tasks');
 
 async function look () {
   const safe = p => bridge.get(p, 2000).catch(() => null);
@@ -54,10 +56,15 @@ async function look () {
           if (pts.length) W.darkSpots = pts;
         }
         emit(`🫳 ${e.text}`, { cue: `${e.kind} ${e.ore || ''}` });
+        // 本能抢了身体（打怪、逃命…）→ 手上那件任务 `paused(instinct)`（设计第五节）。任务层判据只此一份。
+        if (e.kind === 'combat' || e.kind === 'flee' || /打断|抢|让出/.test(String(e.text || ''))) tasks().onInstinct(e.kind || e.text);
       }
       W.instinctSeq = ins.seq;
     }
   }
+  // 本能现在正忙着（`urgent` 有值 / `combatNow` 在打）→ 手上那件也是 `paused(instinct)`：
+  // 事件可能已经翻过去了，这里再兜一次底（onInstinct 没 running 时返回 null，不会凭空造件）。
+  if (insNow && W.job && (insNow.urgent || insNow.combatNow)) tasks().onInstinct(insNow.combatNow ? 'combat' : String(insNow.urgent));
   // 家在哪告诉本能层（收获本能只收家里的地）。一分钟一次，bridge 重启后也能补上
   if (Date.now() - W.homeToldAt > 60000) {
     const h = mem.getHome();
@@ -219,6 +226,11 @@ async function look () {
   }
   if (W.lastInv && !W.job) {
     for (const k of inv2.keys()) if ((inv2.get(k) || 0) > (W.lastInv.get(k) || 0)) ambition.noteGained(k.includes(':') ? k : `minecraft:${k}`, 'collected');
+    // 背包真变了 → "同一目的地白跑"的计数重新数（这一趟拿到了东西，不是打转）。
+    // 判据的落点只此一处：`tasks.noteSpot` 自己也认背包变化，这里清是为了"没再走也能收"。
+    let changed = false;
+    for (const k of new Set([...W.lastInv.keys(), ...inv2.keys()])) if ((inv2.get(k) || 0) !== (W.lastInv.get(k) || 0)) { changed = true; break; }
+    if (changed) tasks().clearSpot();
   }
   W.lastInv = inv2;
 

@@ -72,6 +72,9 @@ function mockBridge () {
 
 
 async function selftest () {
+  // 整个自测期间任务队列都写临时文件：前面的对话自测也会触发「主人交代 → 自动建任务」，
+  // 以前只在任务那一节才切到临时文件，前面几节已经把「去把南瓜砍了」写进了真的 memory/tasks.json（2026-09-29 Claude 复核补）
+  if (!process.env.MC_TASKS_FILE) process.env.MC_TASKS_FILE = require('path').join(require('os').tmpdir(), `tasks-selftest-${process.pid}.json`);
   let pass = 0; let total = 0;
   const check = (label, cond, d) => { total++; if (cond) pass++; console.log(`  ${cond ? 'PASS' : 'FAIL'}  ${label}${cond ? '' : `  ${JSON.stringify(d)}`}`); };
   process.env.MC_MIND_FILE = require('path').join(require('os').tmpdir(), `mind-test-${process.pid}.json`);
@@ -1234,6 +1237,182 @@ async function selftest () {
       check(`★ ${why}：不冒"野外有…先过去开"（让位给保命/主人）`, !/野外有 .*没打开过的箱子.*先过去开/.test(txt), txt.match(/野外有[^\n]*/)?.[0]);
       W.state = W0;
     }
+  }
+
+  console.log('\n任务队列（阶段 1）：不丢事、不乱顶、摆到她眼前');
+  {
+    // 这一段跑的就是真跑的那份（tasks.js 的判据 + buildNow 拼出来的那两行 + startJob 照做），
+    // 不另抄一份实现 —— 任务书 §5-1 的老规矩。
+    const T = require('./tasks');
+    const W0 = W.state;
+    const tmpT = require('path').join(require('os').tmpdir(), `tasks-test-${process.pid}.json`);
+    // loaded:true = 干净的空队列（store() 第一次用到会从文件读回，测持久化的那几条自己把 loaded 设回 false 再 load）
+    const resetT = () => { W.tasks = { seq: 0, list: [] }; W.tasks.loaded = true; W.tasks.unreadable = false; };
+    try { require('fs').unlinkSync(tmpT); } catch (_) {}
+    process.env.MC_TASKS_FILE = tmpT;
+    resetT();
+    W.state = { connected: true, health: 18, food: 15, isDay: true, pos: { x: 0, y: 64, z: 0 }, items: [], nearby: [], players: [] };
+
+    // ── 1) 她做 A 时，发"不动身体"的工具 → A 还在做（不被打断）
+    const { task: A } = T.create({ title: '做一把铁镐', source: 'self', steps: [{ tool: 'mine' }, { tool: 'craft' }], i: 1 });
+    T.setRunning(A.id);
+    await startJob([{ tool: 'say', args: { text: '好' } }], '回他一句', { heardPlayer: true });
+    check('★ 做 A 时只说句话 → A 仍在做（没被打断）', T.get(A.id).status === 'running', T.get(A.id).status);
+    await startJob([{ tool: 'scan_blocks', args: {} }], '扫一眼', { heardPlayer: true });
+    check('★ 做 A 时只看一眼（scan_blocks）→ A 仍在做', T.get(A.id).status === 'running', T.get(A.id).status);
+
+    // ── 2) 发"动身体"的动作 → A 停下，且不丢
+    // （这里先把 B 立成 running，模拟"她决定改做另一件"——不然 startJob 会当她还在做 A、
+    //   做完就把 A 收尾了，那是"接着做同一件"的正常路径，不是"被打断"）
+    const { task: B } = T.create({ title: '去砍点木头', source: 'self' });
+    T.setRunning(B.id);
+    check('B 成为 running 时 A 已停下（一个身体只有一件事）', T.get(A.id).status === 'paused', T.get(A.id).status);
+    await startJob([{ tool: 'mine', args: {} }], '去挖矿', { heardPlayer: false, taskId: B.id });
+    check('★ 做 A 时发 mine → A 停下了', T.get(A.id).status === 'paused', T.get(A.id).status);
+    check('★ A 停下的理由 = self（不是因为主人插事）', T.get(A.id).pausedWhy === 'self', T.get(A.id).pausedWhy);
+    check('★ A 还在（不丢事）', T.get(A.id) !== null && T.open().some(t => t.id === A.id), T.open().map(t => t.id));
+    check('A 记了一次被打断', T.get(A.id).interruptions === 1, T.get(A.id).interruptions);
+
+    // ── 2b) 身体被本能占着（busy）→ 有限次重试，不标任务 failed
+    {
+      resetT();
+      const { task: E } = T.create({ title: '去挖点铁', source: 'self', steps: [{ tool: 'mine' }] });
+      T.setRunning(E.id);
+      const prevBridge = { get: bridge.get, post: bridge.post };
+      let tries = 0;
+      // 头两次回"身体忙着"（bridge 的这把锁），第三次才成功 —— 走的正是 startJob 里那条重试路
+      body._setBridge({
+        post: async (p, b) => (p === '/mine'
+          ? (++tries < 3 ? { success: false, error: '身体忙（busy），先等前面那条做完' } : { success: true, mined: 1 })
+          : prevBridge.post(p, b)),
+      });
+      await startJob([{ tool: 'mine', args: {} }], '去挖铁', { taskId: E.id });
+      check('★ 身体忙 → 重试到成功（一共试了 3 次）', tries === 3, tries);
+      check('★ 重试期间任务没被标 failed', T.get(E.id).status === 'done', T.get(E.id).status);
+      body._setBridge(prevBridge);   // 装回真的那份桥
+    }
+
+    // ── 2c) 重试也没用 → 才当失败（真失败才标 failed）
+    {
+      resetT();
+      const { task: F } = T.create({ title: '挖不动的矿', source: 'self', steps: [{ tool: 'mine' }] });
+      T.setRunning(F.id);
+      const prevBridge = { get: bridge.get, post: bridge.post };
+      let tries = 0;
+      body._setBridge({ post: async (p, b) => (p === '/mine' ? (++tries, { success: false, error: '身体忙（busy）' }) : prevBridge.post(p, b)) });
+      await startJob([{ tool: 'mine', args: {} }], '挖矿', { taskId: F.id });
+      check('★ 一直忙 → 试满 4 次（1 次 + 3 次重试）就当失败', tries === 4, tries);
+      check('★ 真失败才标 failed（不静默）', T.get(F.id).status === 'failed', T.get(F.id).status);
+      body._setBridge(prevBridge);
+    }
+
+    // ── 3) 主人的话自动进队列（走真正跑的那条路：TASK_ASK_RE 命中 → create）
+    resetT();
+    const n0 = W.pending.length;
+    emit('💬 Ka_sum1 说：帮我做把铁镐', { cue: 'Ka_sum1 帮我做把铁镐', names: ['Ka_sum1'], urgent: true });
+    await think('event');
+    const made = T.all().filter(t => t.source === 'player');
+    check('★ 他交代的事自动进队列（source=player）', made.length >= 1, T.all().map(t => ({ id: t.id, src: t.source, said: t.said })));
+    if (made.length) {
+      check('★ 记的是他的原话（前 30 字）', String(made[0].said || '').includes('帮我做把铁镐'), made[0].said);
+      check('★ 记了是谁交代的', made[0].askedBy === 'Ka_sum1', made[0].askedBy);
+      check('★ player 任务不过期（ttlMs 为空）', made[0].ttlMs == null, made[0].ttlMs);
+      const idBefore = made[0].id;
+      // 同一句话再说一遍 → 不重复堆
+      W.pending.length = 0;
+      emit('💬 Ka_sum1 说：帮我做把铁镐', { cue: 'Ka_sum1 帮我做把铁镐', names: ['Ka_sum1'], urgent: true });
+      await think('event');
+      const again = T.all().filter(t => t.source === 'player' && t.id === idBefore);
+      check('★ 同一件事再说一遍 → 还是那一件（不重复堆）', again.length === 1 && T.all().filter(t => t.source === 'player').length === made.length, T.all().filter(t => t.source === 'player').map(t => t.id));
+    }
+
+    // ── 4) 本能抢身体 → paused(instinct)
+    resetT();
+    const { task: C } = T.create({ title: '盖房子', source: 'self' });
+    T.setRunning(C.id);
+    T.onInstinct('combat');
+    check('★ 本能抢身体 → running 那件 paused(instinct)', T.get(C.id).status === 'paused' && T.get(C.id).pausedWhy === 'instinct', { s: T.get(C.id).status, w: T.get(C.id).pausedWhy });
+
+    // ── 5) "都别做了" → player 全放下，self 不动（判据 DROP_ALL_RE）
+    resetT();
+    const { task: P1 } = T.create({ title: '帮我做把铁镐', said: '帮我做把铁镐', source: 'player', askedBy: 'Ka_sum1' });
+    const { task: P2 } = T.create({ title: '帮我把箱子理一下', said: '帮我把箱子理一下', source: 'player', askedBy: 'Ka_sum1' });
+    const { task: S1 } = T.create({ title: '自己想做的', source: 'self' });
+    T.setRunning(P1.id);
+    const dropped = T.dropPlayerTasks({ why: '主人说都别做了' });
+    check('★ "都别做了" → player 任务全放下', [P1, P2].every(t => T.get(t.id).status === 'dropped'), [T.get(P1.id).status, T.get(P2.id).status]);
+    check('★ self 任务不动', T.get(S1.id).status === 'queued', T.get(S1.id).status);
+    check('放下时写了原因', /都别做了/.test(T.get(P2.id).progress || ''), T.get(P2.id).progress);
+
+    // ── 6) 上下文那两行（走真正的 buildNow，不是只调 tasks）
+    resetT();
+    {
+      const { task: R } = T.create({ title: '做一把铁镐', source: 'player', said: '帮我做把铁镐', askedBy: 'Ka_sum1', steps: [{ tool: 'mine' }, { tool: 'craft' }, { tool: 'give' }], i: 2, progress: '已经做了木棍，还缺 3 个铁锭' });
+      T.setRunning(R.id);
+      const { task: Q } = T.create({ title: '去砍点木头', source: 'self', parent: R.id });
+      const { task: Z } = T.create({ title: '把家里暗处插亮', source: 'self' });
+      T.pause(Z.id, 'player');
+      const txt = buildNow('event').text;
+      check('★ 【此刻】里有【手上的事】', /【手上的事】#\d+ 做一把铁镐/.test(txt), txt.match(/【手上的事】[^\n]*/)?.[0]);
+      check('★ 写着是"主人交代"的、做到第几步', /做一把铁镐（主人交代（Ka_sum1），做到第 2 步/.test(txt), txt.match(/【手上的事】[^\n]*/)?.[0]);
+      check('★ 【排着的】里带着"为了 #id"和"被打断"', /【排着的】[\s\S]*去砍点木头（为了 #\d+ 做一把铁镐）/.test(txt) && /把家里暗处插亮（被打断：主人插了别的事）/.test(txt), txt.match(/【排着的】[^\n]*/)?.[0]);
+      check('★ 建议顺序：主人交代的在手上，自己排后面', txt.indexOf('做一把铁镐') < txt.indexOf('去砍点木头'), true);
+      // 没有任务时整段不出现（别占上下文）
+      resetT();
+      const txt2 = buildNow('event').text;
+      check('★ 没有任务时那两行整段不出现', !/【手上的事】|【排着的】/.test(txt2), txt2.match(/【(手上的事|排着的)】[^\n]*/)?.[0]);
+    }
+
+    // ── 7) 持久化 + 重启接手（跑真盘）
+    resetT();
+    {
+      const { task: PA } = T.create({ title: '帮我做把铁镐', said: '帮我做把铁镐', source: 'player', askedBy: 'Ka_sum1', steps: [{ tool: 'mine' }], i: 1 });
+      const { task: SB } = T.create({ title: '自己去砍树', source: 'self', steps: [{ tool: 'goto', args: { x: 1, z: 2 } }] });
+      T.setRunning(PA.id);
+      T.save(tmpT);
+      check('★ 写盘后文件在、没有半截 .tmp', require('fs').existsSync(tmpT) && !require('fs').existsSync(tmpT + '.tmp'));
+      const before = JSON.stringify({ seq: W.tasks.seq, list: T.all() });
+      resetT(); W.tasks.loaded = false;
+      const r = T.load(tmpT);
+      check('★ 读得回来（不是 unreadable）', r.unreadable === false, r);
+      check('★ 读回来内容一致', JSON.stringify({ seq: W.tasks.seq, list: T.all() }) === before, true);
+      // running 那件重启后 → paused(restart)；到期的 self → expired
+      T.get(SB.id).createdAt = Date.now() - 21 * 60 * 1000;   // 假装 21 分钟前建的（ttl 20 分钟）
+      const rep = T.restore();
+      check('★ 重启后 running → paused(restart)', T.get(PA.id).status === 'paused' && T.get(PA.id).pausedWhy === 'restart', { s: T.get(PA.id).status, w: T.get(PA.id).pausedWhy });
+      check('★ 到期的 self → expired（说清了哪件）', T.get(SB.id).status === 'expired' && rep.expired.some(t => t.id === SB.id), rep.expired.map(t => t.id));
+      check('★ player 任务放多久都不过期', T.get(PA.id).status === 'paused' && T.get(PA.id).pausedWhy === 'restart', T.get(PA.id).status);
+      // 坏文件 → unreadable，不静默（"读不到"和"没有"分开报）
+      require('fs').writeFileSync(tmpT, '{ 这不是 JSON');
+      resetT(); W.tasks.loaded = false;
+      const bad = T.load(tmpT);
+      check('★ 坏 JSON → unreadable=true（不静默）', bad.unreadable === true, bad);
+      try { require('fs').unlinkSync(tmpT); } catch (_) {}
+    }
+
+    // ── 8) 附加小项：同一目的地来回走（判据在 tasks.js，runTool 是唯一落点）
+    resetT();
+    {
+      const st = { pos: { x: 0, y: 64, z: 0 }, items: [{ name: 'oak_log', count: 1 }], players: [] };
+      const go = (x, z, items = st.items, t = null) => T.noteSpot('goto', { x, z }, { ...st, items }, { now: t || Date.now() });
+      const h1 = go(15665, 10020);
+      const h2 = go(15666, 10021);
+      const h3 = go(15664, 10020);
+      check('★ 同一点去第 3 次、背包没变 → 提醒换办法', h1 === '' && h2 === '' && /你已经去 \(15664,10020\) 这里 3 次了/.test(h3) && /换个办法/.test(h3), h3);
+      T.clearSpot();
+      go(1, 1); go(1, 1);
+      const h4 = go(1, 1, [{ name: 'oak_log', count: 2 }]);
+      check('★ 背包变了 → 不提醒（这一趟不是白跑）', h4 === '', h4);
+      T.clearSpot();
+      go(100, 100); go(200, 200);
+      check('★ 不同目的地 → 不提醒', go(300, 300) === '', T.spotTries);
+    }
+
+    try { require('fs').unlinkSync(tmpT); } catch (_) {}
+    process.env.MC_TASKS_FILE = require('path').join(require('os').tmpdir(), `tasks-selftest-${process.pid}.json`);   // 还原成整个自测用的临时文件（删掉 env 会写回真的 memory）
+    resetT();
+    W.state = W0;
+    void n0;
   }
 
   console.log(`\n  ${pass}/${total} 通过`);

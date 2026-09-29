@@ -22,6 +22,8 @@ memory/journal.md*
 memory/mind.json*
 # memory/self-review.jsonl 是自我复盘（self-review.js）：现场证据里有玩家聊天原文，同等隐私。
 memory/self-review.jsonl*
+# memory/tasks.json 是任务队列（mind/tasks.js）：said 里存着他交代事情的原话，同等隐私。* 覆盖 .bak。
+memory/tasks.json*
 
 # ── 体积：本地保留、不入库 ──────────────────────────────
 # knowledge/_raw/ 是 extract_*.py 的中间产物；其中 quests.json 与 item-names.json

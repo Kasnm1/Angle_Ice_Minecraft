@@ -20,10 +20,11 @@
 | `look.js` | 245 | `look()`：每轮"想"之前看一眼世界（状态 / 背包 / 附近 / 玩家 / 聊天 / 门 / 装备 / 箱 / 亮度 / 余光），新东西 `emit()`；第一次见某人 `mem.meet()` |
 | `gates.js` | 167 | 说话 / 汇报 / 提问的判据表：`REPORT_NUDGE` / `ASK_TOO_MUCH_NUDGE` / `ASK_BACK_NUDGE` / `HONEST_NUDGE` / `FACT_CLAIMS` / `claimState` / `liveFails` / `unbackedClaim` / `taskDoneAllowed` / `isOverAsking` / `lastProactiveUnanswered` / `isBareAffirmative` / `PLAYER_MOVE_*` / `TASK_*` / `*_NUDGE` … |
 | `tools.js` | 328 | `MIND_TOOLS` 工具表与分组：`ALL` / `SPECS` / `GROUPS` / `TOOL_GROUPS` / `UNGROUPED` / `GROUP_ROUNDS` / `GROUP_CUES` / `pickSpecs` / `groupsFromBody` / `activateGroup` / `activeGroups` / `kindOf`；仓库位 `knownStations` / `homeStockItems` / `shortName` |
-| `actions.js` | 214 | 把"想"变成"做"：`startJob` / `runTool` / `toolResultLine` / `fmtArgs` / `celebrate` / `learnFromDoing`；反射级 `instinctEat` / `NAME_RE` / `FAST` / `matchFast` / `fastPath` |
-| `think.js` | 771 | `think()` 多轮调模型主循环 + 上下文压实：`historyChars` / `bodyNow` / `planExtras` / `planLine` / `buildNow` / `repetitionHint` / `particleHint` / `idleGate` / `compactLastNow` / `clipText` / `repairHistory` / `trimDangling` / `sleepAndSort` / `sortMemories` / `holdBody` / `startControl` … |
-| `selftest.js` | 1071 | `selftest()`（243 条）与 `mockBridge()`。**>900 行**（原样搬移，未再拆）——可选下一步 |
-| `wiring.js` | 41 | **拆环中枢**：每个导出是 `() => require('./x')`，第一次调用时才加载（见下） |
+| `actions.js` | 239 | 把"想"变成"做"：`startJob`（**阶段 1 起先问任务层该不该打断**、busy 有限次重试）/ `runTool`（附"同一目的地"提醒）/ `toolResultLine` / `fmtArgs` / `celebrate` / `learnFromDoing`；反射级 `instinctEat` / `NAME_RE` / `FAST` / `matchFast` / `fastPath` |
+| `tasks.js` | 836 | **任务队列（阶段 1，2026-09-29）**：任务对象 + 队列 + 持久化（`memory/tasks.json`）+ 打断判据（只此一份）。纯函数 + 显式状态（挂 `W.tasks`），不 require 任何兄弟文件 —— 能 `$NODE src/mind/mind/tasks.js --selftest` 单独跑 |
+| `think.js` | 823 | `think()` 多轮调模型主循环 + 上下文压实：`historyChars` / `bodyNow` / `tasksBlock`（把任务队列那两行拼进【此刻】）/ `planExtras` / `planLine` / `buildNow` / `repetitionHint` / `particleHint` / `idleGate` / `compactLastNow` / `clipText` / `repairHistory` / `trimDangling` / `sleepAndSort` / `sortMemories` / `holdBody` / `startControl`（`GET :3003/mind` 带 `tasks`）… |
+| `selftest.js` | 1367 | `selftest()`（312 条）与 `mockBridge()`。**>1300 行**（原样搬移 + 阶段 1 任务队列那一段）——可选下一步再拆 |
+| `wiring.js` | 43 | **拆环中枢**：每个导出是 `() => require('./x')`，第一次调用时才加载（见下）。含 `tasks` |
 
 ## 拼接是怎么把循环依赖解开的（改代码前先读这段）
 
@@ -48,8 +49,9 @@
 
 - **`W` 是进程内唯一一份可变状态**。只在 `state.js` 里 `const W = {…}`；别的文件
   `require('./state')` 解构拿到的是**同一个对象引用**。**绝不**在别处再写一份 `W` / `CFG`。
-- **不自测就空转**：子文件都**没有** `--selftest` 分支（跑了是空操作）。自测一律走根入口
-  `$NODE mind.js --selftest`（243 条）。`$NODE src/mind/mind.js --selftest` 是空操作，别用。
+- **不自测就空转**：子文件都**没有** `--selftest` 分支（跑了是空操作）——**除了 `tasks.js`**
+  （纯函数 + 显式状态，自带 `--selftest`，见下）。其余自测一律走根入口
+  `$NODE mind.js --selftest`（312 条）。`$NODE src/mind/mind.js --selftest` 是空操作，别用。
 - **导出名与顺序不许动**：`module.exports` 的名字与顺序钉在 `references/exports-mind.json`，
   由 `scripts/test-all.js` 的 `checkMindExports` 守。加/改导出名会被拦。
 - **改正文要对得上快照**：拆分后的核对用
@@ -61,12 +63,25 @@
   在 `gates.js`。**加一类完成式只改 `gates.js` 的 `FACT_CLAIMS` 表**；加一类说话内容改 `speech.js` 的 `classify()` / `asksBack()`。
 - `dark_spot` 事件报的暗处坐标（`sample`）由 `look()` 记进 `W.darkSpots`，`actions.js` 的 `runTool` 在她调
   `light_up` 且没自己给 `spots` 时自动带上 —— 本能已经数过是哪几格了，不用她再找一遍（2026-09-29 问题 B）。
+- **任务队列（阶段 1，2026-09-29）**：`tasks.js` 是**纯函数 + 显式状态**，状态挂 `W.tasks`（`{seq, list}`，
+  `state.js` 里声明）；它**不 require 任何兄弟文件**，所以能单独跑自测。几条不许走回头路的：
+  - **"不动身体"的工具名单只有一份** = `tasks.NO_BODY_TOOLS`（用排除法兜底：不在名单里就当会打断）。
+    加工具时**只改 `tasks.js` 那张表**；`actions.js` 的 `startJob` 和 `think.js` 都不许自己再判一遍。
+  - **打断判据只有一份** = `tasks.interruptKind` / `pauseWhyFor`（say / stop / follow / player / self）。
+  - **上下文那两行的文案与排序只有一份** = `tasks.contextLines`（`think.js` 的 `tasksBlock` 只转发）。
+    `contextCount()` 是给自测钉"最多 5 条"上限用的（数 `#\d+` 会把 `（为了 #1 …）` 的反向指针也数进去）。
+  - **同一目的地来回走的阈值只有一份** = `tasks.js` 文件头的 `SAME_SPOT_*`；落点在 `actions.runTool`
+    （每个动作的唯一出入口），提醒拼进工具结果的 `hint`。
+  - **`restore()` 必须先收 `running`、后扫过期**：一件到期的 running self 任务若被直接标 `expired` 就是**丢事**。
+  - 本阶段**不做**：`task_*` 工具、"该接着做了"提醒、过期提醒、诚实闸 / 计划联动（阶段 2 / 3）。
+    字段（`parent` / `planStep` / `progress` / `ttlMs` / `interruptions`）先留好了，别改结构。
 - 别把"聪明规则"加回程序里（见 `../AGENTS.md` 的设计立场）。程序只保留**本能**。
 
 ## 自测
 
 ```bash
-$NODE mind.js --selftest                                  # 243 条，唯一的 mind 自测入口
+$NODE mind.js --selftest                                  # 312 条，唯一的 mind 自测入口
+$NODE src/mind/mind/tasks.js --selftest                   # 65 条，任务队列（纯函数，能单独跑）
 for f in src/mind/mind/*.js; do $NODE --check $f || echo BAD $f; done
 $NODE scripts/refactor/check-moved.js  --before <ref> --files src/mind/mind.js --after <清单>   # 原文一字不改
 $NODE scripts/refactor/check-toplevel.py <ref> src/mind/mind.js src/mind/mind                   # 函数之间的顶层语句没丢

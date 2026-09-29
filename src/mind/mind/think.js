@@ -26,6 +26,8 @@ const wiring = require('./wiring');
 const paths = require('../../paths');   // knowledge/ 路径（查任务书章名·任务名用，见 questLabel）
 // 工具表在 tools.js —— 延迟取同一份（tools 也会回头用本文件的 buildNow，见 wiring.js）
 const MIND_TOOLS = new Proxy({}, { get: (_, k) => wiring.tools().MIND_TOOLS[k], has: (_, k) => k in wiring.tools().MIND_TOOLS, ownKeys: () => Reflect.ownKeys(wiring.tools().MIND_TOOLS), getOwnPropertyDescriptor: (_, k) => Object.getOwnPropertyDescriptor(wiring.tools().MIND_TOOLS, k) });
+// 任务队列（阶段 1）：纯函数 + 显式状态，状态挂在 `W.tasks`，用到时才 require（同 wiring 的道理）。
+const tasks = () => require('./tasks');
 
 function historyChars () {
   return W.history.reduce((n, m) => n + (m.content ? String(m.content).length : 0) + (m.tool_calls ? JSON.stringify(m.tool_calls).length : 0), 0);
@@ -131,6 +133,21 @@ function planLine (why) {
     + `\n没人找你的时候：${cur ? `接着做「${cur.text}」` : '定下一步'}；做完了 / 情况变了就改计划（plan_step / plan_set）。有人找你就先陪人。`;
 }
 
+/**
+ * 【手上的事】/【排着的】那两行（设计第六节 1）。任务对象、排序、文案**全在 `tasks.js`**，
+ * 这里只负责"每轮拼一次、没有就整段不出现"。
+ *
+ * 为什么放在 `bodyNow()` 后面：bodyNow 说的是"身体此刻在动什么"（这一秒），
+ * 这两行说的是"她心里记着的活儿"（能跨很多轮）。先说身体、再说记着的，读起来是顺的：
+ * 身体正在做的那件 = 【手上的事】；排在后面还没轮到 / 被打断的 = 【排着的】。
+ *
+ * 阈值和文案（含"主人交代"、"做到第 N 步"、"被打断：…"）都不在这里 —— 见 `tasks.contextLines`，
+ * 免得一个文案两处写、改了一处漏一处。
+ */
+function tasksBlock () {
+  try { return tasks().contextLines(); } catch (_) { return ''; }
+}
+
 function buildNow (why) {
   const ev = W.pending.splice(0);
   const names = [...new Set([...ev.flatMap(e => e.names), ...W.players])];
@@ -206,6 +223,7 @@ function buildNow (why) {
     (() => { const open = (s?.doors || []).filter(d => d.open); return open.length ? `身边开着的门：${open.slice(0, 5).map(d => `${d.kind}(${d.x},${d.y},${d.z})`).join('、')}` : ''; })(),
     bodyNow(),
     (() => { const ci = combatInstinct(s); return ci ? `身体正在自己打${ci.name}${ci.killed ? `（已经打死 ${ci.killed} 只）` : ''}（战斗本能），不用你动手；要逃就说逃` : ''; })(),
+    tasksBlock(),
     (() => { const f = survivalFocus(s); return f.length ? `\n【眼下最该操心的】\n${f.map(x => `· ${x}`).join('\n')}` : ''; })(),
     surroundLine(s),
     W.projects?.length ? `\n【进行中的工程】${W.projects.map(p => `${p.name}(${p.id}) 完成 ${p.done}，还要挖 ${p.toDig}、放 ${p.toPlace}${Object.keys(p.missing || {}).length ? `，缺 ${Object.entries(p.missing).slice(0, 4).map(([k, n]) => `${knowledge.label(k.includes(':') ? k : 'minecraft:' + k).replace(/\(.*\)$/, '')}×${n}`).join('、')}` : ''}`).join('；')}` : '',
@@ -329,6 +347,26 @@ async function think (why) {
   const playerSaid = now.ev.filter(e => /说：/.test(e.text)).map(e => e.text.replace(/^[^：]*说：/, '')).join(' ');   // 他这一刻说的话   // 这一轮自己看过周围 / 背包没有（问"X在哪"之前要先看）
   // 他这句是在交代事情 → 记下时间：之后"做好了 / 做不成"算回他（taskDoneAllowed）
   if (playerSaid && TASK_ASK_RE.test(playerSaid)) W.lastTaskAskedAt = Date.now();
+  // ── 任务队列（阶段 1，设计第四节）───────────────────────────────────────────
+  // 他交代的事情**自动进队列**：他这一句命中了说话闸的 `TASK_ASK_RE`（判据只有那一条，这里不重写），
+  // 就替他建一件 `source='player'` 的任务 —— 这样"被打断 / 他没再说"都不会丢事。
+  // 同一句话、同一件事重复说 → `tasks.create` 认出 key 一样且没收尾，返回原来那件，不重复堆。
+  // ⚠️ 只在他**真的说了**（`ev` 里带名字的"说："）时建 —— 她自己在心里想的、身体回报的不算。
+  {
+    const saidEvs = now.ev.filter(e => /说：/.test(e.text) && e.names?.length);
+    for (const e of saidEvs) {
+      const txt = e.text.replace(/^[^：]*说：/, '').trim();
+      if (!txt || !TASK_ASK_RE.test(txt)) continue;
+      const who = e.names[0];
+      tasks().create({ title: txt.slice(0, 30), said: txt, source: 'player', askedBy: who, heardAt: e.t });
+    }
+    // "都别做了 / 算了 / 不用了"（判据 `tasks.DROP_ALL_RE`，只此一份）→ player 任务全部放下；self 不动。
+    // 她自己会照队列回答"不做了"，这里只把记录改对，不替她说话。
+    if (playerSaid && tasks().DROP_ALL_RE.test(playerSaid)) {
+      const dropped = tasks().dropPlayerTasks({ why: `主人说：${playerSaid.slice(0, 40)}` });
+      if (dropped.length) log(`📋 主人叫停 → 放下 ${dropped.length} 件他交代的事（${dropped.map(t => `#${t.id}`).join(' ')}）`);
+    }
+  }
   const heardPlayer = now.ev.some(e => /说：/.test(e.text) && e.names?.length); let nudgedToSay = false;
   // 他这一刻跟她说话了（【此刻】里"他说："）——说话出口的三个拦截都以它为准：
   // 他刚开口，她要回什么都不拦（任务书："他刚跟她说话时，回答他不受限"）
@@ -487,7 +525,10 @@ async function think (why) {
         W.recentResults = [...(W.recentResults || []).filter(r => Date.now() - r.t < RECENT_CLAIM_MS), { tool: name, out, t: Date.now() }];
       }
       // 长任务（下矿、施工、整理）进行中，玩家只是聊天时，模型偶尔会顺手调 look_at。
-      // 这类回应不应把正在执行的身体任务顶掉；真正的“过来/停下/换一件事”仍保留为可打断动作。
+      // 这类回应不应把正在执行的身体任务顶掉；真正的"过来/停下/换一件事"仍保留为可打断动作。
+      // （阶段 1 起这只是"提前筛一遍"—— 真正的判据已挪进 `tasks.NO_BODY_TOOLS`，
+      //   `startJob` 里对**所有**"不动身体"的工具一视同仁，不只 look_at。这里留着是给
+      //   `didDo` 一个干净的名字，避免把 look_at 也写进"做了这些"。）
       if (W.job && heardPlayer && actions.length && actions.every(a => a.tool === 'look_at')) actions.length = 0;
       const roundSaid = calls.filter(c => c.function?.name === 'say').map(c => parseArgs(c.function?.arguments).text || '');
       const affirmative = [...roundSaid, msg.content || ''].some(isBareAffirmative);
@@ -504,7 +545,9 @@ async function think (why) {
         // "为了什么"：她自己当时的想法最好；没有就用触发这件事的那句话
         const talk = now.ev.filter(e => /说：/.test(e.text)).map(e => e.text.replace(/^\S+\s/, '')).pop();
         const why = String(msg.content || talk || now.ev.map(e => e.text.replace(/^\S+\s/, '')).join(' ')).replace(/\s+/g, ' ').slice(0, 60);
-        startJob(actions, why);
+        // `heardPlayer` 传下去 → 她动手时若把手上那件打断了，理由是"主人插了别的事"（player）
+        // 而不是"自己想换"（self）。判据用在哪、怎么用都在 tasks.interruptKind / pauseWhyFor（只此一份）。
+        startJob(actions, why, { heardPlayer });
       }
       // 动作已经开始了，再等话打完发出去（以前先打字、打完才动 —— 说了"来啦"要好几秒才迈腿）
       for (const { c, args, p } of saying) {
@@ -790,6 +833,9 @@ function startControl () {
         llmUsage: { ...body.usage, perHour: (() => { const h = (Date.now() - body.usage.since) / 3600000; return h > 0.01 ? { calls: Math.round(body.usage.calls / h), inTok: Math.round(body.usage.inTok / h), outTok: Math.round(body.usage.outTok / h), inChars: Math.round(body.usage.inChars / h) } : null; })(), avgInChars: body.usage.calls ? Math.round(body.usage.inChars / body.usage.calls) : null },
         people: S.people,
         recentMemories: S.memories.slice(-15),
+        // 任务队列（阶段 1，任务书观测项）：她手上 / 排着的都是什么、都到哪一步了。
+        // `context` 是此刻拼进上下文的那两行原文 —— 一眼就能看出"她看到的"和"实际有的"对不对得上。
+        tasks: { lines: tasks().contextLines(), open: tasks().open().map(t => ({ id: t.id, title: t.title, source: t.source, status: t.status, pausedWhy: t.pausedWhy })) },
         log: W.log.slice(-40),
       });
     }

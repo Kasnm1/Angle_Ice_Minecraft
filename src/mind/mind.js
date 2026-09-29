@@ -99,6 +99,20 @@ async function main () {
   await look();   // 第一眼：把已有聊天标成看过、记下背包
   W.pending.length = 0;
   emit('🌅 你上线了（刚醒过来）');
+  // 任务队列：上次没做完的事读回来（running → paused(restart)，她自己想做、已过期的标 expired），醒来第一轮就告诉她。
+  // 2026-09-29 Claude 复核补：restore() 原来只有自测调，正式运行从没读回过 —— "重启保留"（主人确认过的）没生效。
+  try {
+    const tq = require('./mind/tasks');
+    const rep = tq.restore();
+    const left = tq.open();
+    if (rep.unreadable) emit('📋 任务记录读不出来（memory/tasks.json 坏了？）—— 上次没做完的事不知道还有哪些');
+    else if (left.length || rep.expired.length) {
+      const parts = [];
+      if (left.length) parts.push(`上次没做完的：${left.slice(0, 5).map(t => `#${t.id} ${t.title}${t.source === 'player' ? '（主人交代的）' : ''}`).join('、')}`);
+      if (rep.expired.length) parts.push(`你自己想做、放太久过期了的：${rep.expired.map(t => `#${t.id} ${t.title}`).join('、')}`);
+      emit(`📋 ${parts.join('；')}`);
+    }
+  } catch (e) { console.warn(`[tasks] 读回任务失败：${e.message}`); }
 
   setInterval(() => look().catch(() => {}), CFG.pollMs);
   setInterval(() => {
@@ -120,6 +134,8 @@ async function main () {
 
 
 async function sim (lines) {
+  // 模拟不碰真的任务队列（2026-09-29 Claude 复核补）
+  if (!process.env.MC_TASKS_FILE) process.env.MC_TASKS_FILE = require('path').join(require('os').tmpdir(), `tasks-sim-${process.pid}.json`);
   process.env.MC_MIND_FILE = process.env.MC_MIND_FILE || require('path').join(require('os').tmpdir(), `mind-sim-${process.pid}.json`);
   body._setBridge(mockBridge());
   W.sim = true;

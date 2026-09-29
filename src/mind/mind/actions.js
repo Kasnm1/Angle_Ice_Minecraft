@@ -1,6 +1,7 @@
 // actions.js —— 把"想"变成"做"：被她选中的工具怎么落到身体上。
 //
-// - `startJob()`：一串动作交给 bridge 排队（新动作顶掉正在做的）
+// - `startJob()`：一串动作交给 bridge 排队；**不再无条件顶掉**（阶段 1 起先问任务层该不该打断，
+//   见 `tasks.interruptKind` / `pauseWhyFor`）
 // - `runTool()`：`MIND_TOOLS` 里的工具直接跑，其余转发给 `body.TOOLS`
 // - `toolResultLine()` / `fmtArgs()`：回执怎么写进意识流
 // - `celebrate()` / `learnFromDoing()`：亲手做成的事自动记成经验 / 心愿进度
@@ -8,9 +9,11 @@
 //   （饿到发慌就吃、"停 / 跟我来"瞬间反应；`look()` 也会调后两个）
 //
 // 工具表在 tools.js，但 tools.js 的 `MIND_TOOLS` 会回头用 `startJob` / `runTool`（本文件）——
-// 所以这里只能**延迟**取（`wiring.tools()`，见 wiring.js）。
+// 所以这里只能**延迟**取（`wiring.tools()`，见 wiring.js）。任务层同理：延迟 require，
+// 免得 actions.js 和 tasks.js 互相咬住（tasks.js 是纯函数 + 显式状态，不回头 require 本文件）。
 //
 // 第 3 步（e）拆 `src/mind/mind.js`（2026-09-29，只搬移不改逻辑）。
+// 阶段 1 任务队列接入（2026-09-29）：打断判据挪进 tasks.js，本文件只负责"照做"。
 
 const { W, CFG, body, speech, mem, knowledge, ambition, review, ledgerLib, night, plan, storagePolicy, TOOLS, bridge, parseArgs, normalizeArgs, toolSpec, summarize } = require('./state');
 const { emit, log, scene, hhmmss, scheduleThink } = require('./runtime');
@@ -18,6 +21,8 @@ const wiring = require('./wiring');
 function bodyNow (...a) { return wiring.think().bodyNow.apply(null, a); }
 // 工具表在 tools.js；`typeof` 守卫在原件里是防"加载顺序"的，拆开后用延迟转发取同一份。
 const MIND_TOOLS = new Proxy({}, { get: (_, k) => wiring.tools().MIND_TOOLS[k], has: (_, k) => k in wiring.tools().MIND_TOOLS, ownKeys: () => Reflect.ownKeys(wiring.tools().MIND_TOOLS), getOwnPropertyDescriptor: (_, k) => Object.getOwnPropertyDescriptor(wiring.tools().MIND_TOOLS, k) });
+// 任务层：纯函数 + 显式状态（状态挂在 W.tasks），延迟 require 避免加载顺序问题。
+const tasks = () => require('./tasks');
 
 let lastInstinct = 0;
 async function instinctEat () {
@@ -64,15 +69,45 @@ function fastPath (who, text) {
 // ------------------------------------------------------------------ 身体（一串动作在后台做）
 
 /**
- * 开始做一串动作。新的会顶掉旧的（她自己决定的；和人一样，改主意就停下手上的事）。
- * 做完/失败/被打断 → 变成一件"发生的事"流回意识流，她再决定下一步。
+ * 身体忙的时候重试几次（阶段 1；设计文档第五节 5："身体层不排队 → 上层有限次重试，不算失败"）。
+ * BODY_BUSY_RE 认 bridge 在锁上的那句话；重试 3 次、间隔 300ms —— 锁是毫秒级抢的，
+ * 300ms × 3 足够跨过前面那条命令的尾巴，再长就是真卡住了（该报失败而不是傻等）。
  */
-async function startJob (steps, why, { skillId = null } = {}) {
+const BODY_RETRY = 3;
+const BODY_RETRY_MS = 300;
+// bridge 身体锁的真实报错（src/bridge/http.js）：「身体正在执行 POST /go（30.7 秒），当前 POST /cmd 没有启动；等前一个动作完成后重试」
+// 原来的正则认「忙 / busy / 锁」，那句一个都没有 → 重试从没生效（2026-09-29 Claude 复核改）。也认返回里的 busy 字段（见调用处）。
+const BODY_BUSY_RE = /身体正在执行|没有启动；等前一个动作完成后重试|(身体|body).*(忙|busy|占用|locked|锁)|(忙|busy|locked).*(身体|body)|409/i;
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+/**
+ * 开始做一串动作。
+ *
+ * **阶段 1 起不再"新动作一律顶掉旧的"**（审计 C1：那是 last-writer-wins，旧任务剩下的步骤会丢）。
+ * 现在先问任务层该不该打断（判据**只有一份**，在 `tasks.interruptKind`）：
+ *   · 这一串全是"不动身体"的动作（说话/看一眼/查背包）→ 不打断，和手上的事**并行**（`kind:'say'`）
+ *   · 动了身体 → 把当前 running 任务 `paused`，理由照 `tasks.pauseWhyFor`（主人插事 = player，自己想换 = self）
+ * 旧的 `preempted()` 提示保留：哪怕队列留住了任务，她也该知道"刚才做到哪了"。
+ *
+ * `busy`（身体被本能占着）→ 有限次重试；重试用完才当失败，**不标任务 failed**。
+ */
+async function startJob (steps, why, { skillId = null, taskId = null, heardPlayer = false } = {}) {
+  const T = tasks();
+  // ① 该不该打断？—— 判据在 tasks.js，这里只照做
+  const kind = T.interruptKind(steps, { heardPlayer });
+  const cur = T.running();
+  let resumed = null;
+  if (cur && kind !== 'say' && cur.id !== taskId) {
+    resumed = T.pause(cur.id, T.pauseWhyFor(kind, { heardPlayer }));
+  }
   const token = ++W.token;
   if (W.job) { await bridge.post('/stop').catch(() => {}); }
   const started = Date.now();
-  W.job = { token, steps, i: 0, why, started, skillId, inv: [] };
+  W.job = { token, steps, i: 0, why, started, skillId, inv: [], taskId };
   const job = W.job;
+  // 这一串动作对应哪件任务：显式传进来的优先，否则接着刚被打断的那件（她多半是在做同一件事）
+  const tid = taskId ?? resumed?.id ?? null;
+  if (tid) T.setRunning(tid);
   // 这件事做的过程中背包的进出（物品账），结果出来时一起说："放进箱子@… 铁锭×8；捡到 圆石×3"
   const invNote = () => (job.inv.length ? `（这期间背包：${job.inv.splice(0).join('；')}）` : '');
   const results = [];
@@ -92,7 +127,14 @@ async function startJob (steps, why, { skillId = null } = {}) {
     if (token !== W.token) { preempted(); return; }   // 被新的动作顶掉了
     W.job.i = i;
     const { tool, args } = steps[i];
-    const r = await runTool(tool, args);
+    // 身体被本能占着 → 有限次重试，不算任务失败（设计第五节 5）
+    let r = await runTool(tool, args);
+    for (let k = 0; k < BODY_RETRY && !r.ok && (r.busy || BODY_BUSY_RE.test(String(r.error || ''))); k++) {
+      if (token !== W.token) { preempted(); return; }
+      await sleep(BODY_RETRY_MS);
+      log(`   ↻ ${tool} 身体忙着，等一下再试（第 ${k + 1}/${BODY_RETRY} 次）`);
+      r = await runTool(tool, args);
+    }
     results.push({ tool, args, r });
     if (token !== W.token) { preempted(); return; }
     if (!r.ok) {
@@ -101,6 +143,7 @@ async function startJob (steps, why, { skillId = null } = {}) {
       if (tool === 'sleep_in_bed') W.sleepFail = { t: Date.now(), why: String(r.error || '').slice(0, 60) };
       if (W.recentFails.length > 5) W.recentFails.shift();
       W.job = null;
+      if (tid) T.fail(tid, { why: `${tool} → ${r.error}` });   // 真失败（重试也没用）→ 任务标 failed，不静默
       if (skillId) mem.skillResult(skillId, false, `${tool} → ${r.error}`);
       const focus = ambition.state().focus;
       if (focus && ['craft', 'smelt', 'container_put', 'container_take'].includes(tool)) ambition.noteTry(focus, false, `${tool} → ${r.error}`);
@@ -116,6 +159,7 @@ async function startJob (steps, why, { skillId = null } = {}) {
   }
   if (token !== W.token) return;
   W.job = null;
+  if (tid) T.done(tid);   // 这一串做完了 → 任务收尾（阶段 1：她整串都做成了才算做完）
   // 做成了一串事：记成技能（照技能做的就是更熟练）
   const real = steps.filter(s => !['look_at', 'stop', 'say'].includes(s.tool));
   if (skillId) mem.skillResult(skillId, true);
@@ -160,6 +204,15 @@ async function runTool (name, args) {
   })();
   // 每个动作的结果记一行（以前 mind.log 只记"做了什么"，失败原因查不到 —— 2026-09-28 烤羊肉那次就是这样）
   try { console.log(`   ↳ ${toolResultLine(name, args, out)}`); } catch (_) {}
+  // 同一目的地来回走（附加小项）：`runTool` 是**每个**动作的唯一出入口，判据挂在这里就只写一处。
+  // 走路类（goto / come_to / follow）走一次记一次；同一个点（3 格内）2 分钟内 ≥3 次、背包没变 → 提醒她换办法。
+  // 提醒拼在结果里（`out.hint`），她会像读普通回执一样读到 —— 不走"另发一条消息"那条路。
+  try {
+    if (out?.ok && tasks().SAME_SPOT_TOOLS.has(name)) {
+      const h = tasks().noteSpot(name, args, W.state);
+      if (h) out.hint = out.hint ? `${out.hint}；${h}` : h;
+    }
+  } catch (_) { /* 提醒失败不影响干活 */ }
   return out;
 }
 
