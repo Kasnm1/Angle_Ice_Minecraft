@@ -18,7 +18,7 @@ const fs = require('fs');
 const path = require('path');
 
 const ROOT = path.resolve(__dirname, '..');
-const DIRS = ['src/body', 'src/instinct', 'src/bridge', 'src/bridge/routes'].map(d => path.join(ROOT, d));
+const DIRS = ['src/body', 'src/instinct', 'src/bridge', 'src/bridge/routes', 'src/world/pathing'].map(d => path.join(ROOT, d));
 // 这几个目录里不是拆分产物、自己独立的老文件（它们的名字恰好和别人重名也不算）
 const STANDALONE = new Set(['commonsense.js', 'equip-policy.js', 'storage-policy.js', 'inventory-ledger.js', 'ftbq-sync.js', 'body-command-lock.js', 'reconnect.js', 'testkit.js']);
 
@@ -51,6 +51,20 @@ for (const f of files) {
   // 函数参数（含解构参数）也算声明，例如 craft2(bot, opts, withTimeout)
   for (const m of src.matchAll(/\bfunction\s*\*?\s*[A-Za-z_$]*[\w$]*\s*\(([^)]*)\)/g)) {
     for (const n of m[1].replace(/[{}[\]]/g, ',').split(',')) { const k = n.split('=')[0].split(':').pop().replace('...', '').trim(); if (k) declared.add(k); }
+  }
+  // 对象字面量里的方法简写（`classify (token, errName) {` / `setGoal (g) {` …）也算声明。
+  // 为什么补（2026-09-29 第 3 步 3d 抓到的误报）：
+  //   `budget.js` 的 `createGoalOwner()` 返回一个字面量，里面有 `classify (token, errName) { … }`
+  //   —— 它和 `src/body/inventory-ledger.js` 导出的 `classify` **重名**但无关（兄弟文件要调
+  //   后者会写成 `ledger.classify(...)`，带 `.`，下面那条 called 正则本来就不收）。
+  //   可 declare 这一侧原来是"只认 bare 的 `function` / `const|let|var` 声明"，
+  //   认不出方法简写 —— 于是把它当"用了兄弟函数却没声明/转发壳"报 FAIL。
+  //   同样的写法在 `src/body/inventory-ledger.js`（`begin (ev) {`）拆之前就存在，
+  //   只是那边恰好没有与之重名的兄弟导出，所以从没触发过。
+  //   收束住，只在"行首空白 + 名字 + 空格 + ( + 参数 + ) + 空格*{" 时算，且排除控制流关键字。
+  const KEYWORD = /^(if|for|while|switch|catch|return|function|typeof|delete|new|throw|do|else|try|await|yield|in|of|case|void|with|super|class|extends|import|export)$/;
+  for (const m of src.matchAll(/^[ \t]+([A-Za-z_$][\w$]*)[ \t]+\([^)]*\)[ \t]*\{/gm)) {
+    if (!KEYWORD.test(m[1])) declared.add(m[1]);
   }
   const called = new Set();
   for (const m of src.matchAll(/(?:^|[^.\w$]|\.\.\.)([A-Za-z_$][\w$]*)\s*\(/gm)) called.add(m[1]);
