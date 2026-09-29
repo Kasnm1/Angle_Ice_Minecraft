@@ -23,5 +23,32 @@
   },
   "selftestVia": {
     "src/mind/mind.js": "mind.js"
+  },
+  "needsLocalData": {
+    "_comment": [
+      "这几份数据**故意不入库**（.gitignore）：registry/minecraft-*.json 是登录时从服务器抓的注册表快照（会写回服务器地址），",
+      "knowledge/generated/ 是从整合包本体生成的 24MB 知识数据。云端 / 全新 clone 的环境没有它们。",
+      "缺数据时，下面这些测试的失败记为『未验证（缺本机数据）』：不算通过、也不算新失败，总判定照样打印出来 —— 必须在 PR 里写明哪些没验到，由本机补验。",
+      "有数据时（本机）这一节完全不生效，它们照常算。"
+    ],
+    "files": [
+      "registry/minecraft-block.json",
+      "registry/minecraft-item.json",
+      "registry/minecraft-entity_type.json",
+      "knowledge/generated/gamedata.json"
+    ],
+    "tests": [
+      "src/body/build.js",
+      "src/body/containers.js",
+      "src/body/craft.js",
+      "src/body/hands.js",
+      "src/body/index.js",
+      "src/body/kit.js",
+      "src/knowledge/knowledge.js",
+      "src/mind/ambition.js",
+      "src/mind/mind.js（经 mind.js）",
+      "src/world/item-registry.js",
+      "src/world/perception.js"
+    ]
   }
 }

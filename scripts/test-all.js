@@ -59,6 +59,7 @@ const ONLY = onlyArg >= 0 ? (process.argv[onlyArg + 1] || '').split(',').map(s =
 
 // ---- 已知失败白名单（配置化，不硬编码）--------------------------------------
 const CONFIG_PATH = path.join(__dirname, 'test-all.config.json');
+const CONFIG_NLD = () => { try { return JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8')).needsLocalData || null; } catch (_) { return null; } };
 let knownFailures = {};
 let CONFIG = {};
 try {
@@ -573,7 +574,12 @@ async function main () {
 
   const elapsed = (Date.now() - t0) / 1000;
 
-  // ---- 分类：已知失败 / 新失败 -------------------------------------------------
+  // ---- 缺本机数据（云端 / 全新 clone）：见 test-all.config.json 的 needsLocalData ----
+  const NLD = CONFIG_NLD();
+  const missingData = NLD ? NLD.files.filter(f => !fs.existsSync(path.join(ROOT, f))) : [];
+  const nldTests = new Set(missingData.length ? NLD.tests : []);
+
+  // ---- 分类：已知失败 / 新失败 / 未验证（缺本机数据）----------------------------
   const rows = results.map(r => {
     const known = knownFailures[r.label];
     let failCount = r.counts ? r.counts.fail : (r.ok ? 0 : 1);
@@ -584,6 +590,7 @@ async function main () {
     const zero = r.ok && r.expectAsserts && (!r.counts || !r.counts.pass);
     if (zero) { r.ok = false; r.zeroAsserts = true; failCount = Math.max(failCount, 1); }
     if (r.ok) kind = 'pass';
+    else if (nldTests.has(r.label)) kind = 'nodata';
     else if (known && failCount <= known.maxFail) kind = 'known';
     else kind = 'new';
     return { ...r, failCount, kind, known };
@@ -604,7 +611,7 @@ async function main () {
     const p = parsed ? (r.counts.pass == null ? '—' : r.counts.pass) : '—';
     const f = parsed ? r.counts.fail : (r.ok ? 0 : r.failCount);
     const label = r.label.length > wLabel ? r.label.slice(0, wLabel - 1) + '…' : r.label;
-    const verdict = r.kind === 'pass' ? '✓ 通过' : r.kind === 'known' ? '⚠ 已知' : r.timedOut ? '✗ 超时' : '✗ 失败';
+    const verdict = r.kind === 'pass' ? '✓ 通过' : r.kind === 'known' ? '⚠ 已知' : r.kind === 'nodata' ? '？未验证' : r.timedOut ? '✗ 超时' : '✗ 失败';
     console.log('  │ ' + pad(label, wLabel) + ' │ ' + padL(p, 6) + ' │ ' + padL(f, 6) + ' │ ' + padL((r.ms / 1000).toFixed(1) + 's', 7) + ' │ ' + pad(verdict, 7) + ' │');
   }
   console.log('  └' + '─'.repeat(wLabel + 2) + '┴' + '─'.repeat(8) + '┴' + '─'.repeat(8) + '┴' + '─'.repeat(9) + '┴' + '─'.repeat(9) + '┘');
@@ -617,6 +624,14 @@ async function main () {
       console.log(`    ⚠ ${r.label}：${r.failCount} 条失败（白名单上限 ${r.known.maxFail}）`);
       if (r.known.reason) console.log(`       理由：${r.known.reason}`);
     }
+  }
+
+  // ---- 未验证（缺本机数据）：不算通过，必须显眼地说出来 --------------------------
+  const nodata = rows.filter(r => r.kind === 'nodata');
+  if (nodata.length) {
+    console.log(`\n  ？ 未验证（缺本机数据：${missingData.join('、')}）—— 这些测试在这个环境里跑不了，不算通过：`);
+    for (const r of nodata) console.log(`    ？ ${r.label}`);
+    console.log('    → 在 PR / 汇报里写明这几项没验到，由有数据的本机补跑 npm test。');
   }
 
   // ---- 新失败 ---------------------------------------------------------------
@@ -713,7 +728,7 @@ async function main () {
   // ---- 总判定 ---------------------------------------------------------------
   const passed = rows.filter(r => r.kind === 'pass').length;
   console.log('');
-  console.log(`  合计：${passed} 通过 · ${known.length} 已知失败 · ${newFails.length} 新失败 · 总用时 ${elapsed.toFixed(1)}s`);
+  console.log(`  合计：${passed} 通过 · ${known.length} 已知失败 · ${newFails.length} 新失败${nodata.length ? ` · ${nodata.length} 未验证（缺本机数据）` : ''} · 总用时 ${elapsed.toFixed(1)}s`);
 
   if (pathProblems.length || exportProblems.length || instinctProblems.length || pathingProblems.length || bridgeProblems.length || mindProblems.length || apiSpecProblems.length || newFails.length) {
     if (newFails.length) console.log('  ✗ 有非已知失败，退出码 1');
@@ -726,7 +741,7 @@ async function main () {
     else console.log('  ✗ bridge-server 接口快照对不上，退出码 1');
     process.exit(1);
   }
-  console.log('  ✓ 全绿（已知失败未增加）');
+  console.log(nodata.length ? `  ✓ 能跑的都绿（已知失败未增加）—— 另有 ${nodata.length} 项缺本机数据未验证，不等于全绿` : '  ✓ 全绿（已知失败未增加）');
   process.exit(0);
 }
 
