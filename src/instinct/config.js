@@ -144,6 +144,31 @@ const CFG = {
     // 多久扫一轮。扫描本身约 3ms（自测实测 32 格 / 20 柱），所以真正的成本在"读方块 + 聚片"。
     // 5 秒一轮：她走路 5 秒大概 20 格，够覆盖"余光"，也不会和拾取/战斗抢拍子。
     everyMs: parseInt(process.env.MC_INSTINCT_PERCEPTION_MS ?? '5000', 10) || 5000,
+    // ⚠️ 2026-09-29 实机：走路一顿一顿、`scheduler.maxLagMs: 908` —— 事件循环被同步代码堵住。
+    //    本地量出来的两个同步大户（见 modpack-study/fix-mlg-perception/bench-*.js）：
+    //      ① 建扫描清单（整份**实机**注册表 21579 个方块过 classifyBlock）**30.1ms**（每份 registry 一次，有缓存）；
+    //      ② `cluster` 4000 点 **49.6ms**（`cap:4000` 卡住上限，**每 5 秒一次**，没有分批）。
+    //    目标：任何一段同步 < 30ms。下面这些键就是为此设的（每条都写了为什么）。
+    // 建扫描清单每多少块让出一次（21579 / 500 ≈ 43 批）
+    idBuildBatch: 500,
+    // cluster 单次让出前的同步时间预算（ms）。挑 12 = 30ms 目标的一半，留余量给同一轮里的
+    // 分类、merge、写盘。4000 点原来一次 50ms → 切成约 4~5 片。
+    clusterSliceMs: 12,
+    // 聚片/合并/排序里"多少次操作看一次表"的粒度（配合上面那个预算）
+    clusterOpsPerCheck: 256,
+    // 没怎么动就别重扫：离上次扫描中心 < 这么多格 = 原地站着，重扫几乎全是同一批方块。
+    //   （她走路 5 秒约 20 格，所以真在走路时一定超过 8）
+    minMoveBlocks: 8,
+    // 且距上次扫描还不到这么久 → 也不重扫。站着不动的空闲状态没必要每 5 秒烧一次 cluster。
+    minRescanMs: 60000,
+    // 她在**走路 / 打架 / 开着界面**时的节奏：放慢 4 倍（物理 tick 优先 —— 走路乱不乱全看它）。
+    //   空闲时才用 everyMs（5 秒，"余光"要跟得上）。
+    busyEveryMs: 20000,
+    // 任一同步阶段超过这个毫秒数 → `slow()` 报出来是哪一段慢（GET /instinct 的 diagnostics 也带）
+    phaseWarnMs: 30,
+    // 写 `memory/resources.json`：**不是每轮都写**。有变化、且距上次写超过这么久才写
+    //   （writeFileSync + rename 实测 2.9ms/2000 条，写盘本身不慢，但没必要 5 秒一次）。
+    saveMinIntervalMs: 30000,
     // 每多少列让一次事件循环（诊断里 `batches` 用它算）。真让出由 scanColumnsIn 逐列做，
     // 这个数字只用于"报出来我有多少批"。
     batchColumns: 8,
@@ -158,8 +183,15 @@ const CFG = {
     decayRate: 0.5,
     // 走到那片发现没了 → 删掉（"东西真没了"）。只有"确实走过、且这一轮扫到过那里"才判。
     goneRadius: 8,
-    // 事件冷却：同一个位置同一类，这么久内只告诉 mind 一次（别刷屏）
-    tellCooldownMs: 120000,
+    // 事件冷却：**同一片区域**同一类，这么久内只告诉 mind 一次（别刷屏）。
+    //   2026-09-29 实机："花 / 砂砾 / 树…"几秒一批发给 mind，mind 被不停打断。
+    //   120s → 300000（5 分钟）；而且键从"同一格"改成"同一片 16 格网格" ——
+    //   她走过同一片林地时，坐标每步都变，按格算等于没冷却。
+    tellCooldownMs: 300000,
+    // 全部 resource_seen 每分钟最多几条（硬上限，防一类东西刷屏时把其它事件挤掉）
+    tellPerMinute: 4,
+    // 事件区域的网格边长（坐标按它取整算"同一片"）
+    tellRegionGrid: 16,
   },
   cave: {
     // 自动探洞会把“人在洞里”误当成“主人让我探险”。默认关闭；明确下矿走 /delve，
@@ -204,7 +236,32 @@ const CFG = {
     seconds: 90,        // 每次续挖最多多久（和 mind 下矿的默认时长一致）
     minHp: 12,
   },
-  mlg: { enabled: process.env.MC_INSTINCT_MLG !== 'false', minFall: 3.5, placeAt: 3.0 },
+  // 落地水（MLG）。2026-09-29 实机修：主人问"為什麼他在把家裡放了水？" ——
+  //   她从 **5 格**高掉下来就倒水，而原版摔落伤害 = 落差 − 3，5 格只扣 2 点（1 颗心），
+  //   完全不需要倒水；倒完还**没收回来**，水就留在家里。
+  // 现在只在"这一摔真会伤到她"时才倒（判据是纯函数 `survival.js` 的 `mlgShouldPlace`，
+  // 伤害模型在 `mlgFallDamage` 里，只此一份）：
+  mlg: {
+    enabled: process.env.MC_INSTINCT_MLG !== 'false',
+    // 家**外**：预估伤害 ≥ 血量的一半，**或** ≥ hurtAt 点 → 倒。
+    //   理由：一半血挨一下太亏（20 血时 10 点就是 5 颗心）；hurtAt=6（3 颗心）兜住
+    //   "血多但掉得也不少"的情形。5 格那种 2 点两条都不满足 → 不倒。
+    hurtAt: 6,
+    hpRatio: 0.5,
+    // 家**里**：默认不倒水 —— 倒进屋里收不回来会留一滩水（实机就是这么发生的）。
+    //   只有"这一下会摔死"（伤害 ≥ 当前血量）才倒，命比一滩水要紧。
+    homeLethalOnly: true,
+    // 兜底粗筛：落差不到这么多格直接不管（真判据在 mlgFallDamage，这里只挡明显不疼的）。
+    //   原版少 3 格不摔，留余量到 4.5。
+    minFall: 4.5,
+    // 离落点这么近就低头倒水（保持原值）
+    placeAt: 3.0,
+    // 倒完一定要收回来：走过去对准水源方块右键，失败重试几次（原实现没有"走过去"这一步，
+    // 射线够不到水面 → 静默失败）。
+    retrieveRetries: 3,
+    retrieveWalkNear: 3,   // 走到离水源这个距离以内再右键（和 body/commonsense.js 的 fillBucket 一致）
+    pendingMax: 8,         // 实在收不回来的水点最多记几条，闲时回去收（不写死坐标）
+  },
   cmd: {
     enabled: process.env.MC_INSTINCT_CMD !== 'false',
     cmdGapMs: 60000,

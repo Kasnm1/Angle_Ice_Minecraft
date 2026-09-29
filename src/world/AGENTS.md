@@ -14,7 +14,8 @@
 | `block-palette.js` / `palette-registry.js` | 方块调色板解析 + 三道闸 + 写回 `bot.registry` |
 | `item-registry.js` | 物品表写回 `bot.registry`（规则与方块**刻意不同**，见 [`registry/AGENTS.md`](../../registry/AGENTS.md)） |
 | `entity-registry.js` | 给 mineflayer 认不出的模组生物补服务端真名 + 记"谁打了她 / 打了玩家"（仇恨）；`isHostileEntity` 敌对判据只此一份 |
-| `perception.js` | **野外资源感知（她的"余光"，2026-09-29）**：`classifyBlock`（分类，**用真实标签**不是硬编码名单）、`cluster`（同类聚成一片）、`rank` / `renderLine`（排序 + 出那行字）、`scanAround`（32 格分段扫描，复用 `instinct/core.js` 的 `scanColumnsIn`）、以及持久记忆 `load` / `save` / `merge` / `forget` / `containerTargets`。**记忆格式见 [`memory/AGENTS.md`](../../memory/AGENTS.md)**；判据（家里/开过/太远）只此一份 |
+| `perception.js` | **野外资源感知（她的"余光"，2026-09-29）**：`classifyBlock`（分类，**用真实标签**不是硬编码名单）、`cluster` / `clusterAsync`（同类聚成一片；**同一个内核 `clusterSteps`**，异步版分段让出事件循环）、`rank` / `renderLine`（排序 + 出那行字）、`scanAround`（32 格分段扫描，复用 `instinct/core.js` 的 `scanColumnsIn`）、以及持久记忆 `load` / `saveAsync` / `shouldSave` / `merge` / `forget` / `containerTargets`。**记忆格式见 [`memory/AGENTS.md`](../../memory/AGENTS.md)**；判据（家里/开过/太远）只此一份 |
+| ↑ 三个"什么时候说/什么时候扫"的判据 | 全部住在本文件，**只此一处**：`worthTelling`（这一片值不值得打断 mind：缺的 / 值钱的 / 没开过的容器 —— 花/砂砾/普通树不发）、`shouldRescan`（没怎么动 + 距上次不足 `minRescanMs` → 不重扫；忙时放慢）、`shouldSave`（没变化不写盘、有变化也攒够 `saveMinIntervalMs`）。`nameHitsNeed` / `needKeysOf`（"缺什么"的匹配，**中文名走 `knowledge/item-names.json`**，裸类别名"矿"不算具体命中） |
 
 ## 必须知道的历史结论
 

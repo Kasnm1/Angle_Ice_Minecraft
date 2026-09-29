@@ -36,18 +36,12 @@ function withTimeout (...a) { return __ns.withTimeout.apply(null, a); }
 const placeLogic = require('../world/place');
 const { Vec3 } = require('vec3');
 
-/**
- * 感知类别的中文名 —— **给事件文字用**。
- * 为什么不直接读 `world/perception.js` 的 `KIND[kind].zh`：那个模块是**可选的**
- * （`require` 失败时 `perception = null`，本能照样跑），这一段是它的文字兜底；
- * 名字就在一处，改一处即可。缺了也只是事件里少个中文名，不影响判断。
- */
-const PERCEPTION_ZH = { log: '树', ore: '矿', clay: '黏土', sand: '沙', gravel: '砂砾', crop: '作物', flower: '花', water: '水', container: '箱子', danger: '危险方块', mushroom: '蘑菇', stone: '石头' };
-
 function effectPlan (...a) { return __ns.effectPlan.apply(null, a); }
 function shoreRingOffsets (...a) { return __ns.shoreRingOffsets.apply(null, a); }
 function pickShore (...a) { return __ns.pickShore.apply(null, a); }
 function mlgStep (...a) { return __ns.mlgStep.apply(null, a); }
+function mlgShouldPlace (...a) { return __ns.mlgShouldPlace.apply(null, a); }
+function waterRetrievePlan (...a) { return __ns.waterRetrievePlan.apply(null, a); }
 function pickRecovery (...a) { return __ns.pickRecovery.apply(null, a); }
 function pickaxeTier (...a) { return __ns.pickaxeTier.apply(null, a); }
 function needTier (...a) { return __ns.needTier.apply(null, a); }
@@ -1314,6 +1308,16 @@ function install (bot, state, deps) {
   }, 2000);
 
   // ---- 落地水反射（每个物理 tick）
+  //
+  // ⚠️ 2026-09-29 实机修（主人："為什麼他在把家裡放了水？"）：
+  //   ① 她从 **5 格** 高掉下来就倒水 —— 原版摔落伤害 = 落差 − 3，5 格只扣 2 点（1 颗心）。
+  //      判据换成 `mlgShouldPlace`（`survival.js`，伤害模型 `mlgFallDamage`，只此一处）：
+  //      家外"≥ 血一半 或 ≥ 6 点"才倒，家里**只在会摔死时**倒。
+  //   ② 倒完的水**没收回来**：旧的 `collectWater` 直接在原地 `lookAt` + `activateItem`，
+  //      **没有"走到水边"这一步** —— 落地后她站在水的上面/旁边，射线够不到水面，右键当然装不上；
+  //      而且整段 `catch (_) {}` 把异常吞了，事件只能说"没收回来"，说不清为什么。
+  //      现在照 `body/commonsense.js` 的 `fillBucket`（现成判据，不抄第二遍）：
+  //      走过去（3 格内）→ 对准 → 右键 → 失败重试 `retrieveRetries` 次 → 仍失败则如实报坐标与原因。
   const M = { startY: null, placed: null, equipping: false, collecting: false };
   // "身上有没有水桶"缓存：physicsTick 每 50ms 跑一次，以前每次都遍历整个背包（物品多时白烧 CPU）。
   // 背包变化（mineflayer 的 window 插件在格子变动时发 updateSlot）才失效。读不到时就现算一次。
@@ -1333,22 +1337,85 @@ function install (bot, state, deps) {
     }
     return null;
   };
+  /** 身上的效果名（读不到 = []；判"缓降 / 摔落保护"要用，反正读不到就不减伤） */
+  const mlgEffects = () => {
+    try {
+      const eff = bot.entity?.effects;
+      if (!eff || typeof eff !== 'object') return [];
+      return Object.values(eff).map(e => bot.registry?.effects?.[e.id]?.name).filter(Boolean);
+    } catch (_) { return []; }
+  };
+  /** 落点是不是"带 fall_damage_resetting 标签"的方块（整合包真值，不写死名单） */
+  const landSafeTag = (name) => {
+    if (!name) return false;
+    try {
+      const id = name.includes(':') ? name : `minecraft:${name}`;
+      return !!deps.knowledge?.load?.().blockTags?.get(id)?.has('minecraft:fall_damage_resetting');
+    } catch (_) { return false; }
+  };
+  // 收不回来的水点（闲时回去收；**绝不写死坐标**）。最多 CFG.mlg.pendingMax 条。
+  I.pendingWater ||= [];
   async function collectWater () {
     if (M.collecting || !M.placed) return;
     M.collecting = true;
+    const { Vec3 } = require('vec3');
+    const tgt = M.placed.pos;
+    const fall = M.placed.fall;
     try {
       await sleepMs(250);
-      const bucket = bot.inventory.items().find(i => i.name === 'bucket');
-      if (bucket && bot.heldItem?.name !== 'bucket') await bot.equip(bucket, 'hand');
-      const tgt = M.placed.pos;
-      for (let k = 0; k < 3 && !bot.inventory.items().some(i => i.name === 'water_bucket'); k++) {
-        await bot.lookAt(tgt.offset(0.5, 0.1, 0.5), true);
+      let reason = '还没开始试';
+      for (let tries = 0; ; tries++) {
+        const hasWB = bot.inventory.items().some(i => i.name === 'water_bucket');
+        const hasEmpty = bot.inventory.items().some(i => i.name === 'bucket');
+        // 1 格半径内找水源方块（水可能往下/往旁边流了一点）
+        let src = null;
+        for (let dx = -1; dx <= 1 && !src; dx++) for (let dy = -2; dy <= 1 && !src; dy++) for (let dz = -1; dz <= 1 && !src; dz++) {
+          const b = bot.blockAt(tgt.offset(dx, dy, dz));
+          if (b && blocksWater(b.name, b.getProperties?.()) && bot.blockAt(tgt.offset(dx, dy, dz))?.name === 'water') src = b;
+        }
+        const d = src ? Math.hypot(src.position.x + 0.5 - bot.entity.position.x, src.position.z + 0.5 - bot.entity.position.z) : Infinity;
+        const plan = waterRetrievePlan({
+          attempts: tries, hasWaterBucket: hasWB, hasEmptyBucket: hasEmpty,
+          nearEnough: d <= I.cfg.mlg.retrieveWalkNear, sawSource: !!src,
+        }, I.cfg.mlg);
+        if (plan.done) { reason = plan.why; break; }
+        if (plan.act === 'walk' && src) {
+          // 走过去（复用 bridge 的运动：本能走位，和 fillBucket 同一套）
+          try {
+            await deps.handlers['POST /go']({ x: src.position.x, y: src.position.y, z: src.position.z, range: I.cfg.mlg.retrieveWalkNear, maxMs: 4000 });
+          } catch (_) {}
+          await sleepMs(200);
+          continue;   // 走完再判一次（下一轮会走到 aim）
+        }
+        // aim：对准水源方块右键（照 fillBucket 的 offset(0.5, 0.8, 0.5)）
+        if (!src) { reason = '找不到水源方块'; break; }
+        const bucket = bot.inventory.items().find(i => i.name === 'bucket');
+        if (!bucket) { reason = '身上没有空桶'; break; }
+        if (bot.heldItem?.name !== 'bucket') await bot.equip(bucket, 'hand');
+        await bot.lookAt(src.position.offset(0.5, 0.8, 0.5), true);
         bot.activateItem();
-        await sleepMs(300);
+        await sleepMs(400);
+        reason = `第 ${tries + 1} 次右键了，桶没装上水`;
       }
       const ok = bot.inventory.items().some(i => i.name === 'water_bucket');
-      event('mlg', ok ? `从 ${Math.round(M.placed.fall)} 格高掉下来，落地前倒了水、又收回来了` : `从 ${Math.round(M.placed.fall)} 格高掉下来倒了水，但水没收回来（${tgt.x},${tgt.y},${tgt.z}）`);
-    } catch (_) {} finally { M.placed = null; M.collecting = false; }
+      if (ok) {
+        event('mlg', `从 ${Math.round(fall)} 格高掉下来，落地前倒了水、又收回来了`);
+        // 收回来了：把它从"待收"清单里删掉（闲时收水那一份）
+        I.pendingWater = I.pendingWater.filter(p => !(p.x === tgt.x && p.y === tgt.y && p.z === tgt.z));
+      } else {
+        // ★ 说不清原因就等于没说（AGENTS.md §5-1）：坐标 + 为什么 + 还会不会再试
+        event('mlg', `从 ${Math.round(fall)} 格高掉下来倒了水，但**没收回**（在 ${tgt.x},${tgt.y},${tgt.z}，因为${reason}）—— 记下来了，闲下来回去收`, { at: { x: tgt.x, y: tgt.y, z: tgt.z }, reason });
+        state.ledger?.note({ route: 'mlg', retrieved: false, why: reason, at: `${tgt.x},${tgt.y},${tgt.z}` });
+        // 记进"没收回来的水"，闲时（身体空着）回去收 —— 不写死坐标
+        if (I.pendingWater.length < (I.cfg.mlg.pendingMax ?? 8)
+          && !I.pendingWater.some(p => p.x === tgt.x && p.y === tgt.y && p.z === tgt.z)) {
+          I.pendingWater.push({ x: tgt.x, y: tgt.y, z: tgt.z, at: Date.now(), why: reason });
+        }
+      }
+    } catch (e) {
+      event('mlg', `从 ${Math.round(fall)} 格高掉下来倒了水，收回时出错了（在 ${tgt.x},${tgt.y},${tgt.z}）：${e.message}`);
+      state.ledger?.note({ route: 'mlg', retrieved: false, error: e.message, at: `${tgt.x},${tgt.y},${tgt.z}` });
+    } finally { M.placed = null; M.collecting = false; }
   }
   bot.on('physicsTick', () => {
     try {
@@ -1361,10 +1428,14 @@ function install (bot, state, deps) {
       }
       if (M.startY == null || e.position.y > M.startY) M.startY = e.position.y;
       const g = groundBelow(e.position);
+      const landName = g?.pos ? bot.blockAt(g.pos)?.name ?? null : null;
       const act = mlgStep({
         startY: M.startY, y: e.position.y, vy: e.velocity?.y ?? 0, landY: g?.y ?? null, landIsWater: !!g?.water,
         hasBucket: hasWaterBucket(), holding: bot.heldItem?.name === 'water_bucket',
         nether: /nether/.test(String(bot.game?.dimension || '')), placed: !!M.placed,
+        // ★ 2026-09-29：这些是"该不该倒"的输入（判据在 survival.js 的 mlgShouldPlace）
+        hp: bot.health ?? 20, inHome: inHome(e.position),
+        landName, landSafe: landSafeTag(landName), effects: mlgEffects(),
       });
       if (act === 'equip' && !M.equipping) {
         M.equipping = true;
@@ -1378,6 +1449,38 @@ function install (bot, state, deps) {
       }
     } catch (_) {}
   });
+
+  /**
+   * 闲时回去收"之前没收回来的水"（2026-09-29 实机：家里 `17,123,6` 那摊水就是这么留下的）。
+   *
+   * **不写死坐标** —— 位置只来自 `I.pendingWater`（倒水那次失败时记下的）。
+   * 判据全在 `waterRetrievePlan`（和落地那次收水共用），这里只负责"走过去 + 右键"。
+   * 只在她真闲着时做（身体空着、有桶、不在打架），够近才去（不为收一滩水跑半个地图）。
+   */
+  async function tryCollectPendingWater () {
+    if (!I.cfg.mlg.enabled || M.collecting || !bot.entity) return null;
+    if (I.running || state.currentAction || I.inflight > 0) return null;   // 身体被占着
+    const list = I.pendingWater || [];
+    if (!list.length) return null;
+    if (Date.now() - (I.lastPendingWaterAt || 0) < 60000) return null;
+    const hasEmpty = bot.inventory.items().some(i => i.name === 'bucket');
+    if (!hasEmpty) return null;
+    const here = bot.entity.position;
+    // 只挑够近的（20 格以内），且优先最近的
+    const near = list.filter(p => Math.hypot(p.x - here.x, p.z - here.z) <= 20)
+      .sort((a, b) => Math.hypot(a.x - here.x, a.z - here.z) - Math.hypot(b.x - here.x, b.z - here.z));
+    if (!near.length) return null;
+    I.lastPendingWaterAt = Date.now();
+    const p = near[0];
+    // 用**落地收水那一套**：走过去 → 对准 → 右键（M.placed 只是"收水流程"的入参载体）
+    const saved = M.placed;
+    M.placed = { pos: { x: p.x, y: p.y, z: p.z, offset: (dx, dy, dz) => require('vec3').Vec3(p.x + dx, p.y + dy, p.z + dz) }, fall: 0 };
+    await collectWater();
+    const still = (I.pendingWater || []).some(q => q.x === p.x && q.y === p.y && q.z === p.z);
+    if (!still) event('mlg', `回去把之前在 ${p.x},${p.y},${p.z} 留下的水收回来了`);
+    M.placed = saved;
+    return { did: 'mlg_water' };
+  }
 
   // ---- 野外资源感知：她的"余光"（2026-09-29，主人："對野外資源不敏感"）------
   //
@@ -1399,10 +1502,30 @@ function install (bot, state, deps) {
   let perceptionBusy = false;
   const perceptionTimer = setInterval(async () => {
     const PC = I.cfg.perception;
-    if (!PC?.enabled || perceptionBusy || !bot.entity || !I.cfg.loot) return;
-    if (Date.now() - (I.lastPerceptionAt || 0) < PC.everyMs) return;
+    if (!PC?.enabled || !perception || !bot.entity || !I.cfg.loot) return;   // perception 读不到就整段不跑
+    // ① 该不该扫 —— 判据在 `perception.shouldRescan`（同一判据只写一处）：
+    //    没怎么动 + 距上次不到 minRescanMs → 不扫；走路/打架/开着界面 → 放慢到 busyEveryMs。
+    //    ⚠️ 以前只有"到点就扫"一条：原地站着也每 5 秒整个重扫一遍（cluster 是最贵的一段），
+    //    而且她走路时照样全速扫，正是"走路很乱"的一分子（2026-09-29 实机）。
+    const _pp = bot.entity?.position;
+    const _moveDist = (_pp && I.lastPerceptionPos)
+      ? Math.hypot(_pp.x - I.lastPerceptionPos.x, _pp.z - I.lastPerceptionPos.z) : null;
+    const _occupied = !!(I.inflight > 0 || state.pathing || state.gui || I.combat?.engaged);
+    const _rs = perception.shouldRescan({
+      sinceMs: Date.now() - (I.lastPerceptionAt || 0),
+      moveDist: _moveDist, busy: perceptionBusy, occupied: _occupied,
+    }, PC);
+    if (!_rs.scan) {
+      // 只在"本来该扫却没扫"时留一行（否则每 2 秒一条纯噪声）
+      if ((Date.now() - (I.lastPerceptionAt || 0)) >= PC.everyMs * 3) {
+        I.diagnostics ||= {};
+        I.diagnostics.perceptionSkip = { at: Date.now(), why: _rs.why, everyMs: _rs.everyMs };
+      }
+      return;
+    }
     perceptionBusy = true;
     I.lastPerceptionAt = Date.now();
+    if (_pp) I.lastPerceptionPos = { x: _pp.x, z: _pp.z };
     try {
       // 真实标签 → registry id（整合包真值，不写死名单）
       const tagIds = (tag) => {
@@ -1417,6 +1540,9 @@ function install (bot, state, deps) {
       const r = await perception.scanAround({
         bot, radius: PC.radius, tagIds, tagOf, scanIn: scanColumnsIn, yieldFn: yieldLoop,
         dy: PC.dy, batchColumns: PC.batchColumns,
+        // 建 ID 名单每 500 个方块让出一次（整合包 registry 2 万多个，整段跑完 30ms 会冻进程）；
+        // 聚片每切完一片 / 每 12ms 让出一次（点多了 cluster 本身能到 50ms+）。两个都进 CFG，理由写在 config.js。
+        idBuildBatch: PC.idBuildBatch, clusterSliceMs: PC.clusterSliceMs,
       });
       const dim = dimNow();
       const before = perception.load();
@@ -1431,24 +1557,53 @@ function install (bot, state, deps) {
       });
       // goneKinds 传的是"这一轮在这一带扫到的类别"：只有这一类**在近处出现过**，
       // 才谈得上"同一个位置的同类没了"。整类都没扫到 ≠ 没了（可能是没加载）—— 不删。
-      perception.save(f.store);
+      // ② 写盘：**不是每轮都写**（`shouldSave`）—— 没变化不写；有变化也攒到 saveMinIntervalMs 再写；
+      //    而且用**异步** `saveAsync`（同步 `writeFileSync` 写在 5 秒一轮里就是白白堵一下事件循环）。
+      //    场景签名（条数 + 最近一条的 seenAt）用来判断"文件内容变了没"，省得为了比内容再 JSON 一遍。
+      const _sig = `${f.store.places.length}:${f.store.places.length ? f.store.places[f.store.places.length - 1].seenAt : 0}`;
+      const _sv = perception.shouldSave({
+        changed: (m.added.length + m.refreshed.length + f.decayed.length + f.gone.length) > 0,
+        sinceSaveMs: Date.now() - (I.lastPerceptionSaveAt || 0), sig: _sig, lastSig: I.lastPerceptionSaveSig,
+      }, PC);
+      let _saved = false;
+      if (_sv.write) {
+        _saved = await perception.saveAsync(f.store);
+        if (_saved) { I.lastPerceptionSaveAt = Date.now(); I.lastPerceptionSaveSig = _sig; }
+      }
       // ③ 新发现才说话，而且只说用得上的（缺的 / 值钱的 / 没开过的野外容器）
+      //    —— `worthTelling` 是唯一判据（花 / 砂砾 / 普通树 / 石头都不发事件，
+      //       它们照样进【附近看得见的】那一行和资源记忆，只是不打断 mind）。2026-09-29 修刷屏。
       const needs = perception.needsFrom({
         planStep: deps.plan?.current?.()?.text || '',
         ambition: deps.ambition?.state?.()?.focus || '',
       });
-      const ranked = perception.rank(m.added.map(it => ({ ...it, distance: Math.hypot(it.center.x - bot.entity.position.x, it.center.z - bot.entity.position.z) })), needs, { max: 4 });
+      const ranked = perception.rank(m.added.map(it => ({ ...it, distance: Math.hypot(it.center.x - bot.entity.position.x, it.center.z - bot.entity.position.z) })), needs, { max: 6 });
+      // 同类同区域冷却（同一类别 + 同一 16 格网格 N 分钟只报一次）+ 全局每分钟上限 —— 都在 CFG.perception
+      const _minute = Math.floor(Date.now() / 60000);
+      if (I.resourceToldMinute !== _minute) { I.resourceToldMinute = _minute; I.resourceToldCount = 0; }
+      const _grid = PC.tellRegionGrid || 16;
       for (const it of ranked) {
-        const key = `res:${it.kind}:${it.center.x},${it.center.z}`;
-        const last = I.resourceTold?.get(key) || 0;
-        if (Date.now() - last < PC.tellCooldownMs) continue;
+        const w = perception.worthTelling(it, { needs });
+        if (!w.tell) continue;                                   // 花 / 砂砾 / 普通树 → 不发
+        if ((I.resourceToldCount || 0) >= (PC.tellPerMinute ?? 4)) break;   // 全局每分钟帽
+        // 冷却键：**类别 + 区域**（不是"类别 + 精确中心"）—— 同一片花挪了两格不该再报一次
+        const gx = Math.round(it.center.x / _grid), gz = Math.round(it.center.z / _grid);
+        const key = `res:${it.kind}:${gx},${gz}`;
         I.resourceTold ||= new Map();
+        const last = I.resourceTold.get(key) || 0;
+        if (Date.now() - last < PC.tellCooldownMs) continue;
         I.resourceTold.set(key, Date.now());
-        const why = it.why === 'need' ? '（你现在正缺这个）' : '';
+        I.resourceToldCount = (I.resourceToldCount || 0) + 1;
+        // 「缺这个」要说清是**哪种**：`w.label` 是命中 needs 的那个具体词（"铁"→"铁矿（你现在正缺铁）"）
+        const why = w.why === 'need' ? `（你现在正缺${w.label || it.name || ''}）` : '';
         const wet = it.underwater && it.kind !== 'water' ? '，在水下' : '';
-        event('resource_seen', `余光扫到：${PERCEPTION_ZH[it.kind] || '资源'}（${it.direction} ${Math.round(it.distance)} 格，${it.center.x},${it.center.y},${it.center.z}）${wet}${why}`, { kind: it.kind, name: it.name, pos: it.center, count: it.count });
+        const dir = it.direction || '附近';                      // merge 里已补 direction 字段（这里再加一道兜底）
+        const dist = Number.isFinite(it.distance) ? Math.round(it.distance) : '?';
+        event('resource_seen', `余光扫到：${perception.displayName(it)}（${dir} ${dist} 格，${it.center.x},${it.center.y},${it.center.z}）${wet}${why}`, { kind: it.kind, name: it.name, pos: it.center, count: it.count });
       }
       // ★ 野外**没开过**的容器：立刻高优先级告诉 mind（主人点名）
+      // 判据 `containerTargets` 已筛过"野外的 + 没开过的 + 这个维度 + 够新"；
+      // 这里再用 `visitedStructures`/`resourceTold` 去重（一个箱子只喊一次）。
       const seenKeys = state.seenContainers || null;
       const boxes = perception.containerTargets(f.store.places, {
         home: I.home, seenKeys, dim: dimNow(), now: Date.now(),
@@ -1462,13 +1617,22 @@ function install (bot, state, deps) {
         event('chest_seen', `看见一个没开过的${who}（${c.center.x},${c.center.y},${c.center.z}，${Math.round(Math.hypot(c.center.x - bot.entity.position.x, c.center.z - bot.entity.position.z))} 格）—— 手上没急事就去开`, { name: c.name, pos: c.center, urgent: true });
       }
       // 每轮耗时写进诊断（任务书要求能在 GET /instinct 看到）
+      // ⚠️ 关键：`slow` 要说清**是哪一段**慢 —— `r.perf.phases` 里最长的那个（2026-09-29 修"只报总时长"）。
+      const _ph = r.perf.phases || {};
+      let _worst = null;
+      for (const [k, v] of Object.entries(_ph)) if (!_worst || v > _ph[_worst]) _worst = k;
       I.diagnostics ||= {};
       I.diagnostics.perception = {
         at: Date.now(), radius: PC.radius, ...r.perf,
         found: r.items.length, added: m.added.length, refreshed: m.refreshed.length,
         decayed: f.decayed.length, gone: f.gone.length, places: f.store.places.length,
-        containers: boxes.length,
+        containers: boxes.length, saved: _saved, saveWhy: _sv.why, scanned: true,
+        slowest: _worst, slowestMs: _worst ? _ph[_worst] : null,
+        told: I.resourceToldCount || 0,
       };
+      // 单段 > phaseWarnMs（默认 30ms）就报，并且**点名是哪一段**；
+      // 总时长 > 500ms 也报（老判据，保留）。
+      if (_worst && _ph[_worst] > (PC.phaseWarnMs ?? 30)) slow(`perception.${_worst}`, _ph[_worst]);
       if (r.perf.ms > 500) slow('perception.scanAround', r.perf.ms);
     } catch (e) {
       I.diagnostics ||= {};
@@ -2354,6 +2518,12 @@ function install (bot, state, deps) {
       if (pick.ids) { last.pickup = `去捡远处 ${pick.ids.length} 堆（far）`; I.last = { t: now, ...last }; await runPickup(pick.ids, null); return; }
       if (pick.skip && /far=/.test(pick.skip)) last.pickup = pick.skip;
     }
+    // ⑩ 回去收"之前没收回来的水"（2026-09-29 加）：上面全都没事做、身体空着 = 真闲着了。
+    //    实机：家里 `17,123,6` 那摊水就是落地水倒了没收回留下的。位置**只来自** `I.pendingWater`
+    //    （倒水失败那次记下的，**不写死坐标**），判据和落地收水共用 `waterRetrievePlan`。
+    //    够近（20 格）且手上有空桶才去 —— 不为收一滩水跑半个地图。
+    const pw = await tryCollectPendingWater();
+    if (pw?.did) { I.last = { t: now, ...last, water: '去收留下的水了' }; return; }
     I.last = { t: now, ...last };
   }
 
@@ -2726,6 +2896,126 @@ const __sections = [
     // 源码形状锁：equipForFight 真的用了这个判据（不是只在旁边写着）
     check('★ equipForFight 用 fightGearFetchPlan 决定去不去背包', /const plan = fightGearFetchPlan\(\{ dist, hasShield: hasShieldNow/.test(instinctSrc()), true);
     check('★ 贴脸时不碰背包（去背包拿都必须过 plan.fetch*）', /plan\.fetchShield && state && deps\.hands\.ensureCarried/.test(instinctSrc()), true);
+  }],
+  // ---- 落地水：收不回来要说清"在哪、为什么"（2026-09-29 实机）----
+  // 测的是**跑的那份**：`collectWater` 失败分支的事件文本 + `tryCollectPendingWater` 的入队规则。
+  // 不另抄实现 —— 断言打在源码形状和 `waterRetrievePlan`（survival.js，另一节单测）上。
+  ['落地水：没收回来必须说清在哪、为什么', async (t) => {
+    const { check, ns, instinctSrc } = t;
+    const { waterRetrievePlan, mlgShouldPlace, CFG } = ns;
+    const src = instinctSrc();
+
+    // ---- 事件文本：坐标 + 原因（"说不清原因就等于没说"）----
+    check('★ 失败事件带坐标（在哪）', /倒了水，但\*\*没收回\*\*（在 \$\{tgt\.x\},\$\{tgt\.y\},\$\{tgt\.z\}，因为\$\{reason\}/.test(src), true);
+    check('★ 失败事件带原因（为什么）', /因为\$\{reason\}）—— 记下来了，闲下来回去收/.test(src), true);
+    check('★ 失败时写进 ledger（route=mlg, retrieved=false）', /state\.ledger\?\.note\(\{ route: 'mlg', retrieved: false, why: reason/.test(src), true);
+    check('★ 出错分支也说清坐标 + 异常信息', /收回时出错了（在 \$\{tgt\.x\},\$\{tgt\.y\},\$\{tgt\.z\}）：\$\{e\.message\}/.test(src), true);
+
+    // ---- 收水流程：先"走过去"再"对准"（旧代码漏了走这一步 → 射线够不到水面）----
+    check('★ 收水走 waterRetrievePlan（判据只此一处）', /const plan = waterRetrievePlan\(\{/.test(src), true);
+    check('★ 收水有"走过去"这一步（旧代码没有 → 站在水上面/旁边够不到）', /plan\.act === 'walk'[\s\S]{0,200}POST \/go/.test(src), true);
+    check('★ 对准用 offset\(0\.5, 0\.8, 0\.5\)（照 fillBucket 现成判据）', /lookAt\(src\.position\.offset\(0\.5, 0\.8, 0\.5\), true\)/.test(src), true);
+    check('★ 失败重试次数来自 CFG（retrieveRetries）', /attempts: tries/.test(src) && Number.isFinite(CFG.mlg.retrieveRetries), true);
+
+    // ---- 待收清单：不写死坐标，位置只来自 pendingWater ----
+    // ⚠️ 断言的 regex 不能把**自己这行**也匹配上（源码形状锁的常见坑）：坐标字符串在这里拼出来。
+    // 只看"代码行"（去注释）—— 注释里提到实机那摊水是**说明**，不是写死。
+    const codeOnly = src.split('\n').filter(l => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n');
+    const HARDCODED = new RegExp(['17', '123', '6'].join(',\\s*'));
+    check('★ 没有把实机那摊水的坐标写死进代码（注释里提到不算）', HARDCODED.test(codeOnly), false);
+    check('★ 待收点只来自 I.pendingWater', /I\.pendingWater\.push\(\{ x: tgt\.x, y: tgt\.y, z: tgt\.z, at: Date\.now\(\), why: reason \}\)/.test(src), true);
+    check('★ 待收点有上限（pendingMax）', /I\.pendingWater\.length < \(I\.cfg\.mlg\.pendingMax \?\? 8\)/.test(src), true);
+    check('★ 闲时才回去收（身体空着 / 没命令 / 不在打架）', /async function tryCollectPendingWater[\s\S]{0,200}I\.running \|\| state\.currentAction \|\| I\.inflight > 0/.test(src), true);
+    check('★ 只有够近（≤20 格）才去收，不为收一滩水跑半个地图', /Math\.hypot\(p\.x - here\.x, p\.z - here\.z\) <= 20/.test(src), true);
+    check('★ 真闲着时才会走到这一步（tick 的 ⑩）', /tryCollectPendingWater\(\)[\s\S]{0,60}I\.last = \{ t: now, \.\.\.last, water:/.test(src), true);
+
+    // ---- 收不到水源方块 → 如实说"找不到水源方块"，不假装成功 ----
+    check('★ 找不到水源 → 明确原因（不是静默）', /if \(!src\) \{ reason = '找不到水源方块'; break; \}/.test(src), true);
+    check('★ 没空桶 → 明确原因', /if \(!bucket\) \{ reason = '身上没有空桶'; break; \}/.test(src), true);
+
+    // ---- 与判据的一致性：倒的条件里"家里"是致命才倒（配合 mlgShouldPlace 一节）----
+    check('★ physicsTick 把 hp/inHome/landSafe/effects 喂给 mlgStep',
+      /hp: bot\.health \?\? 20, inHome: inHome\(e\.position\)[\s\S]{0,120}landName, landSafe: landSafeTag\(landName\), effects: mlgEffects\(\)/.test(src), true);
+    check('★ 落安全方块（落点带 fall_damage_resetting 标签）不倒水',
+      mlgShouldPlace({ hp: 20, startY: 90, landY: 70, landSafe: true, landName: 'water' }, CFG.mlg).place, false);
+  }],
+  // ---- 感知：少扫、只说用得上的、别每轮写盘（2026-09-29 实机修）----
+  // 测的是**跑的那份**：`perceptionTimer` 里真的调了 perception 的判据（源码形状锁），
+  // 加上判据本身的边界（worthTelling / shouldRescan / shouldSave 都在 perception.js 单测过，这里测接线）。
+  ['感知：少扫 / 只说用得上的 / 别每轮写盘', async (t) => {
+    const { check, ns, instinctSrc } = t;
+    const src = instinctSrc();
+    // ⚠️ 这几个判据住在 `src/world/perception.js`（不在本能层 56 个名字的总表里），
+    //    所以直接 require 那一份**跑的那份** —— 绝不是把实现再抄一遍。
+    const P = require('../world/perception');
+    const { shouldRescan, worthTelling, shouldSave } = P;
+    // CFG 从本能层取（`t.cfg` 在 core.js 单跑时可能没绑上 —— 直接要 config.js 那份更稳）
+    const cfg = ns.CFG || require('./config.js').CFG;
+    // 只看"代码行"（去掉行注释 / 块注释行）—— 源码形状锁别把说明文字也算进去
+    const codeOnly = src.split('\n').filter(l => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n');
+
+    // ---- 接线：perceptionTimer 用 shouldRescan 决定扫不扫（不再"到点就扫"）----
+    check('★ 用 shouldRescan 决定扫不扫', /const _rs = perception\.shouldRescan\(\{/.test(src), true);
+    check('★ 没动 + 距上次不到 minRescanMs → 不扫', /if \(!_rs\.scan\)/.test(src), true);
+    check('★ 走路/打架/开界面 → 算"忙"（放慢）', /I\.inflight > 0 \|\| state\.pathing \|\| state\.gui \|\| I\.combat\?\.engaged/.test(src), true);
+    check('★ 记下上次扫描中心（算移动距离用）', /I\.lastPerceptionPos = \{ x: _pp\.x, z: _pp\.z \}/.test(src), true);
+
+    // ---- 接线：事件过 worthTelling（花/砂砾/树不发）----
+    check('★ 事件前过 worthTelling', /const w = perception\.worthTelling\(it, \{ needs \}\)/.test(src), true);
+    check('★ worthTelling 说不发就不发', /if \(!w\.tell\) continue;/.test(src), true);
+    // ---- 接线：区域冷却 + 全局每分钟帽 ----
+    check('★ 冷却键是"类别 + 区域网格"（不是精确中心）', /const key = `res:\$\{it\.kind\}:\$\{gx\},\$\{gz\}`/.test(src), true);
+    check('★ 全局每分钟上限', /\(I\.resourceToldCount \|\| 0\) >= \(PC\.tellPerMinute \?\? 4\)/.test(src), true);
+    check('★ 每分钟归零（按分钟桶）', /if \(I\.resourceToldMinute !== _minute\)/.test(src), true);
+
+    // ---- 接线：「缺这个」说出具体是什么 ----
+    check('★ "缺这个"带上具体名字（w.label）', /（你现在正缺\$\{w\.label \|\| it\.name \|\| ''\}）/.test(src), true);
+    // 同样：注释里引述旧写法是说明；只在代码行里判。判据的 regex 拼出来，免得匹配到自己这行。
+    const generic = new RegExp(['你现在正缺', '这个'].join(''));
+    check('★ 代码里不再写死那句泛泛的"缺这个"（注释里引述不算）', generic.test(codeOnly), false);
+    // ---- 接线：direction 兜底（merge 已补，这里再兜一次，绝不出现 undefined）----
+    check('★ direction 有兜底（undefined 不会进事件文本）', /const dir = it\.direction \|\| '附近'/.test(src), true);
+    check('★ 事件里用的是 dir，不是裸 it.direction', /（\$\{dir\} \$\{dist\} 格/.test(src), true);
+
+    // ---- 接线：写盘用 saveAsync + shouldSave（不是每轮写）----
+    check('★ 写盘用 shouldSave 判"要不要写"', /const _sv = perception\.shouldSave\(\{/.test(src), true);
+    check('★ 写盘用异步 saveAsync（不是同步 save）', /await perception\.saveAsync\(f\.store\)/.test(src), true);
+    check('★ 写成功后记下时刻与签名', /I\.lastPerceptionSaveAt = Date\.now\(\); I\.lastPerceptionSaveSig = _sig;/.test(src), true);
+    check('★ perception.save( 同步写不再出现在扫描里', /perception\.save\(f\.store\)/.test(src), false);
+
+    // ---- 接线：slow 要说清哪一段 ----
+    check('★ slow 报最慢的那一段（r.perf.phases）', /slow\(`perception\.\$\{_worst\}`/.test(src), true);
+    check('★ 诊断里有 slowest / slowestMs', /slowest: _worst, slowestMs: _worst \? _ph\[_worst\] : null/.test(src), true);
+
+    // ---- 接线：扫的分段参数来自 CFG ----
+    check('★ 建 ID 名单与聚片的分段都来自 CFG', /idBuildBatch: PC\.idBuildBatch, clusterSliceMs: PC\.clusterSliceMs/.test(src), true);
+
+    // ---- 判据边界（跑的那份，不另抄）----
+    check('★ 花 → worthTelling 不发', worthTelling({ kind: 'flower', name: 'dandelion' }, { needs: ['黏土'] }).tell, false);
+    check('★ 砂砾 → 不发', worthTelling({ kind: 'gravel', name: 'gravel' }, { needs: [] }).tell, false);
+    check('★ 钻石矿（value=high）→ 发', worthTelling({ kind: 'ore', name: 'diamond_ore', value: 'high' }, { needs: [] }).why, 'valuable');
+    check('★ 缺铁（合成缺粗铁）时铁矿 → 发，并说清"铁矿石"',
+      worthTelling({ kind: 'ore', name: 'iron_ore', value: 'low' }, { needs: P.needsFrom({ craftMissing: ['raw_iron'] }) }).label, '铁矿石');
+    check('★ 缺"矿"（只写"挖点矿"）时铁矿 → 不发（不是所有矿都缺）',
+      worthTelling({ kind: 'ore', name: 'iron_ore', value: 'low' }, { needs: P.needsFrom({ planStep: '挖点矿' }) }).tell, false);
+    check('★ 缺"铁矿"（写了具体）时铁矿 → 发，说清"铁矿石"',
+      worthTelling({ kind: 'ore', name: 'iron_ore', value: 'low' }, { needs: P.needsFrom({ planStep: '去挖点铁矿' }) }).label, '铁矿石');
+    check('★ 缺黏土时黏土 → 发，说清"黏土"',
+      worthTelling({ kind: 'clay', name: 'clay' }, { needs: P.needsFrom({ planStep: '挖点黏土' }) }).label, '黏土');
+    check('★ 缺树时石头 → 不发（只发真正缺的那类）',
+      worthTelling({ kind: 'stone', name: 'stone' }, { needs: P.needsFrom({ planStep: '砍点树' }) }).tell, false);
+    check('★ 没开过的野外箱子 → 发', worthTelling({ kind: 'container', name: 'chest', opened: false }, { needs: [] }).why, 'container');
+    check('★ 开过的箱子 → 不发', worthTelling({ kind: 'container', name: 'chest', opened: true }, { needs: [] }).tell, false);
+
+    check('★ 原地没动 + 刚扫过 → 不重扫', shouldRescan({ sinceMs: 5000, moveDist: 2, busy: false, occupied: false }, cfg.perception).scan, false);
+    check('★ 动过 10 格 → 重扫', shouldRescan({ sinceMs: 5000, moveDist: 10, busy: false, occupied: false }, cfg.perception).scan, true);
+    check('★ 没动但过了 60 秒 → 重扫', shouldRescan({ sinceMs: 61000, moveDist: 2, busy: false, occupied: false }, cfg.perception).scan, true);
+    check('★ 上一轮没跑完 → 不叠', shouldRescan({ sinceMs: 99000, moveDist: 30, busy: true }, cfg.perception).scan, false);
+    check('★ 忙着（走路）时间隔变长', shouldRescan({ sinceMs: 6000, moveDist: 10, occupied: true }, cfg.perception).scan, false);
+
+    check('★ 没变化 → 不写盘', shouldSave({ changed: false, sinceSaveMs: 99999 }, cfg.perception).write, false);
+    check('★ 有变化但刚写过 → 攒着', shouldSave({ changed: true, sinceSaveMs: 1000 }, cfg.perception).write, false);
+    check('★ 有变化且过了间隔 → 写', shouldSave({ changed: true, sinceSaveMs: 40000 }, cfg.perception).write, true);
   }],
 ];
 register('core', __sections);

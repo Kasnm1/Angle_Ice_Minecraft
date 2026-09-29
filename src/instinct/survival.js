@@ -266,19 +266,133 @@ function pickShore (cells = [], self) {
 }
 
 /**
+ * 「从这个高度摔到这上面，原版会扣几点血」—— **伤害模型只此一处**。
+ *
+ * 2026-09-29 实机修的根因：老的 `mlgStep` 只看"落差 > 3.5 格"，于是她从 **5 格**高掉下来
+ * 就倒水（主人："為什麼他在把家裡放了水？"）。原版摔落伤害是 `落差 − 3`：
+ * 5 格 = 2 点 = 1 颗心，根本不值得倒水。
+ *
+ * 规则（原版 1.20.1）：
+ *   · `落差 ≤ 3` → 0（少 3 格不摔）；
+ *   · 落点是**不该摔伤的方块** → 0（水 / 干草块 / 黏液块 / 蜂蜜块 / 粉雪 / 蜘蛛网，
+ *     以及任何带 `fall_damage_resetting` 标签的方块 —— 由调用方传 `landSafe` 说明）；
+ *   · `缓降（SlowFalling）` → 0；`摔落保护（FeatherFalling）` 每级减 `落差 × 12%`。
+ *
+ * ⚠️ 估算用**原始落差**，不减去落点判定的那 3 格 —— 保守一点（宁可倒水，不要摔死）。
+ *
+ * @param c.startY  这次离地后到过的最高点
+ * @param c.landY   落点顶面高度（null = 读不到，调用方已经挡掉）
+ * @param c.landName 落点方块名（可省；给了才能判"不摔伤"）
+ * @param c.landSafe 调用方从标签判出来"这块不摔伤"（`fall_damage_resetting`）
+ * @param c.effects 效果名数组（可省）；大小写/下划线不敏感
+ * @returns {{ dmg:number, fall:number, why:string }}
+ */
+function mlgFallDamage ({ startY, landY, landName = null, landSafe = false, effects = [] } = {}) {
+  if (startY == null || landY == null) return { dmg: 0, fall: 0, why: '不知道落差（读不到落点），当不摔伤' };
+  const fall = startY - landY;
+  if (fall <= 3) return { dmg: 0, fall, why: `落差 ${fall.toFixed(1)} 格，原版少 3 格不摔` };
+  if (landSafe) return { dmg: 0, fall, why: `落点是${landName ? bareOfName(landName) : '不该摔伤的方块'}，不摔伤` };
+  if (NOT_FALL_HURT.test(String(landName || ''))) {
+    return { dmg: 0, fall, why: `落点是${bareOfName(landName)}，不摔伤` };
+  }
+  const eff = Array.isArray(effects) ? effects : [];
+  if (eff.some(n => /slow[_ -]?fall/i.test(String(n)))) return { dmg: 0, fall, why: '有缓降效果，不摔伤' };
+  let dmg = fall - 3;
+  const ff = eff.find(n => /feather[_ -]?fall/i.test(String(n)));
+  if (ff) {
+    const lv = effectLevel(ff) || 1;
+    dmg = Math.max(0, dmg - fall * 0.12 * lv);
+    return { dmg, fall, why: `落差 ${fall.toFixed(1)} 格、有摔落保护 ${lv} 级，估扣 ${dmg.toFixed(1)} 点` };
+  }
+  return { dmg, fall, why: `落差 ${fall.toFixed(1)} 格，原版扣 ${dmg.toFixed(1)} 点（${fall.toFixed(1)} − 3）` };
+}
+
+/** 落点长这样就不摔伤（水另有 `blocksWater` 判，这里只列固体） */
+const NOT_FALL_HURT = /(^|:)(hay_block|slime_block|honey_block|powder_snow|cobweb|sweet_berry_bush|vine|scaffolding|bed)$/;
+const bareOfName = (n) => String(n || '').replace(/^.*:/, '');
+/** 从效果名里抠等级（`FeatherFalling` 无等级 = 1；`feather_falling_2` 这种模组写法也认） */
+function effectLevel (name) {
+  const m = String(name || '').match(/(\d+)\s*$/);
+  return m ? +m[1] : 1;
+}
+
+/**
+ * 这一摔**该不该倒水**（阈值只此一处，理由在 `CFG.mlg` 的注释里）。
+ *
+ *   · 家**外**：预估伤害 ≥ 血量的一半，**或** ≥ `hurtAt`(6) 点 → 倒；
+ *   · 家**里**：默认不倒（倒进屋里收不回来会留一滩水），只有"这一下会摔死"（伤害 ≥ 当前血量）才倒。
+ *
+ * 主人 2026-09-29 定的（选 A）：家外按"≥ 血量一半 或 ≥ 6"，家里只在会摔死时倒。
+ *
+ * @param c.startY / c.landY / c.landName / c.landSafe / c.effects  见 `mlgFallDamage`
+ * @param c.hp       当前血量（读不到时调用方给默认 20）
+ * @param c.inHome   在不在家的范围里（`inHome()` 的结果；null/undefined 当"不知道"= 按家外算）
+ * @returns {{ place:boolean, dmg:number, why:string, est:object }}
+ */
+function mlgShouldPlace (c = {}, cfg = CFG.mlg) {
+  const est = mlgFallDamage(c);
+  if (!(est.dmg > 0)) return { place: false, dmg: est.dmg, why: est.why, est };
+  const hp = Number.isFinite(c.hp) ? c.hp : 20;
+  const inHome = c.inHome === true;
+  if (inHome) {
+    if (cfg.homeLethalOnly !== false && est.dmg < hp) {
+      return { place: false, dmg: est.dmg, why: `在家里（估扣 ${est.dmg.toFixed(1)} 点、还有 ${hp} 血，摔不死）不倒水 —— 倒了收不回来会留一滩水`, est };
+    }
+    return { place: true, dmg: est.dmg, why: `在家里但这一下会摔死（估扣 ${est.dmg.toFixed(1)} ≥ 血 ${hp}），保命要紧`, est };
+  }
+  const half = hp * (cfg.hpRatio ?? 0.5);
+  if (est.dmg >= half || est.dmg >= cfg.hurtAt) {
+    return { place: true, dmg: est.dmg, why: `${est.why}，够疼（≥ 血一半 ${half.toFixed(1)} 或 ≥ ${cfg.hurtAt}），倒水`, est };
+  }
+  return { place: false, dmg: est.dmg, why: `${est.why}，不值得倒水（没到血一半 ${half.toFixed(1)}、也没到 ${cfg.hurtAt}）`, est };
+}
+
+/**
  * 落地水：这一拍该做什么。
  * @param c.startY 这次离地后到过的最高点；c.y 现在的脚底高度；c.vy 竖直速度（格/tick，往下是负）
  * @param c.landY  下面第一块实心方块的顶面高度（null = 下面 40 格内没有 / 读不到）；c.landIsWater 落点本来就是水
  * @param c.hasBucket / c.holding（手上是不是水桶）/ c.nether / c.placed（这次已经倒过了）
+ * @param c.hp / c.inHome / c.landName / c.landSafe / c.effects  见 `mlgShouldPlace`（2026-09-29 加）
  * @returns 'equip' | 'place' | null
  */
 function mlgStep (c, cfg = CFG.mlg) {
   const { startY, y, vy, landY, landIsWater = false, hasBucket, holding, nether = false, placed = false } = c;
   if (placed || !hasBucket || nether || landY == null || landIsWater || vy > -0.3) return null;
-  if (startY - landY <= cfg.minFall) return null;   // 摔不伤
+  if (startY - landY <= (cfg.minFall ?? 4.5)) return null;   // 粗筛：明显不疼的不管（真判据在下面）
+  // ★ 2026-09-29：5 格那种"只掉 2 点血"的不倒（老代码只看落差 > 3.5，所以倒了）
+  if (!mlgShouldPlace(c, cfg).place) return null;
   if (!holding) return 'equip';
   if (y - landY <= cfg.placeAt) return 'place';
   return null;
+}
+
+/**
+ * 倒完水怎么收回来。**判据只此一处**（`core.js` 的 `collectWater` 照它跑）。
+ *
+ * 2026-09-29 实机：水倒在家里没收回来。真因是旧 `collectWater` **没有"走到水边"这一步** ——
+ * 落地后她站在水的上面/旁边，`lookAt(水源 + 0.1)` 打出去的射线够不到水面，右键自然装不上水；
+ * 而且整段被 `catch (_) {}` 吞掉，事件只能说"没收回来"，说不清为什么。
+ * 正确套路是 `body/commonsense.js` 的 `fillBucket`：**先走过去（3 格内）**、再对准、再右键。
+ *
+ * @param c.attempts 已经试了几次
+ * @param c.hasWaterBucket 现在身上有没有满的水桶（有了 = 收回来了）
+ * @param c.hasEmptyBucket 有没有空桶（没有就收不了）
+ * @param c.sawSource 走到的位置附近看到水源方块了吗（没看到 = 水流走了/根本不是水源）
+ * @param c.nearEnough 走到水源附近了吗（`cfg.retrieveWalkNear` 以内）
+ * @param c.walked 这一轮有没有成功走过去（走不过去是另一回事，要如实说）
+ * @returns {{ done:boolean, act:'walk'|'aim'|'give_up', why:string }}
+ */
+function waterRetrievePlan (c = {}, cfg = CFG.mlg) {
+  if (c.hasWaterBucket) return { done: true, act: 'give_up', why: '水已经收回来了' };
+  const tries = c.attempts || 0;
+  if (!c.hasEmptyBucket) return { done: true, act: 'give_up', why: '身上没有空桶，收不回来' };
+  if (tries >= (cfg.retrieveRetries ?? 3)) return { done: true, act: 'give_up', why: `试了 ${tries} 次都没收回来` };
+  if (!c.nearEnough) {
+    // 走不过去（被墙挡住 / 水在脚下够不着）：仍然再试一次对准，但要如实说明
+    return { done: false, act: 'walk', why: `还没走到水源 ${cfg.retrieveWalkNear} 格以内` };
+  }
+  if (!c.sawSource) return { done: true, act: 'give_up', why: '到了位置但看不到水源方块（水可能流走了，或者那不是水源）' };
+  return { done: false, act: 'aim', why: `第 ${tries + 1} 次：对准水源方块右键` };
 }
 
 /**
@@ -298,7 +412,7 @@ function pickRecovery (c, cfg = CFG.cmd) {
   return { how: 'walk', dist: Math.round(d) };
 }
 
-module.exports = { bind, blocksWater, breathPlan, columnClear, effectPlan, headInWater, mineShouldStop, mlgStep, needBreath, oxygenNum, pickEat, pickRecovery, pickShore, shoreRingOffsets, underwaterKeep, waterBreathing };
+module.exports = { bind, blocksWater, breathPlan, columnClear, effectPlan, headInWater, mineShouldStop, mlgFallDamage, mlgShouldPlace, mlgStep, needBreath, oxygenNum, pickEat, pickRecovery, pickShore, shoreRingOffsets, underwaterKeep, waterBreathing, waterRetrievePlan };
 
 // ------------------------------------------------------------------ 自测
 // 第 3 步重构：这几节原本挤在 instinct.js 的自测段里（同一个 function selftest 外套）。
@@ -379,7 +493,9 @@ const __sections = [
     const { check, instinctSrc, ns } = t;
     const { mlgStep } = ns;
     // ---- 落地水 ----
-    const F = (o) => mlgStep({ startY: 90, y: 75, vy: -1.2, landY: 70, hasBucket: true, holding: true, ...o });
+    // ⚠️ 2026-09-29 改：落差默认给 20 格（真的会摔疼），因为"该不该倒"现在按**预估伤害**判
+    //    （`mlgShouldPlace`），不是只看落差 > 3.5。"5 格不倒"那一类单独一节测。
+    const F = (o) => mlgStep({ startY: 90, y: 75, vy: -1.2, landY: 70, hasBucket: true, holding: true, hp: 20, ...o });
     check('还在半空（离地 5 格）→ 先不倒', F({}), null);
     check('★ 离地 3 格以内 → 倒水', F({ y: 72.5 }), 'place');
     check('★ 会摔伤、手上还没拿水桶 → 先换上', F({ holding: false }), 'equip');
@@ -389,6 +505,71 @@ const __sections = [
     check('没有水桶 → 什么都做不了', F({ y: 72.5, hasBucket: false }), null);
     check('这次已经倒过 → 不再倒', F({ y: 72.5, placed: true }), null);
     check('只是跳一下（速度小）→ 不管', F({ y: 72.5, vy: -0.1 }), null);
+  }],
+  // ---- 2026-09-29 实机：主人"為什麼他在把家裡放了水？"（5 格高就倒水、还收不回来）------
+  // 测的是**跑的那份**判据（survival.js 的实现），不另抄一份。
+  ['落地水：只在该倒时倒（2026-09-29 实机修）', async (t) => {
+    const { check, ns } = t;
+    const { mlgFallDamage, mlgShouldPlace, mlgStep } = ns;
+    const CFG_ = { hurtAt: 6, hpRatio: 0.5, homeLethalOnly: true, minFall: 4.5, placeAt: 3.0 };
+    const S = (o) => mlgShouldPlace({ hp: 20, ...o }, CFG_);
+    // ---- 伤害模型：原版 落差 − 3 ----
+    check('★ 5 格落差 → 原版只扣 2 点', mlgFallDamage({ startY: 65, landY: 60 }).dmg, 2);
+    check('落差 3 格 → 0（少 3 格不摔）', mlgFallDamage({ startY: 63, landY: 60 }).dmg, 0);
+    check('落差 4 格 → 扣 1 点', mlgFallDamage({ startY: 64, landY: 60 }).dmg, 1);
+    check('★ 25 格落差 → 扣 22 点', mlgFallDamage({ startY: 85, landY: 60 }).dmg, 22);
+    check('理由写清了算式', /22\.0/.test(mlgFallDamage({ startY: 85, landY: 60 }).why), true);
+    // ---- 落点不摔伤 ----
+    check('★ 落点是干草块 → 不摔伤', mlgFallDamage({ startY: 85, landY: 60, landName: 'minecraft:hay_block' }).dmg, 0);
+    check('落点是黏液块 → 不摔伤', mlgFallDamage({ startY: 85, landY: 60, landName: 'minecraft:slime_block' }).dmg, 0);
+    check('★ 落点是蜘蛛网 → 不摔伤', mlgFallDamage({ startY: 85, landY: 60, landName: 'minecraft:cobweb' }).dmg, 0);
+    check('落点带 fall_damage_resetting 标签（调用方说 safe）→ 不摔伤',
+      mlgFallDamage({ startY: 85, landY: 60, landSafe: true }).dmg, 0);
+    check('普通地面（石头）→ 照常摔', mlgFallDamage({ startY: 85, landY: 60, landName: 'minecraft:stone' }).dmg, 22);
+    // ---- 效果 ----
+    check('★ 有缓降（SlowFalling）→ 不摔伤', mlgFallDamage({ startY: 85, landY: 60, effects: ['SlowFalling'] }).dmg, 0);
+    check('★ 摔落保护 4 级 → 大减', mlgFallDamage({ startY: 85, landY: 60, effects: ['FeatherFalling_4'] }).dmg < 22, true);
+    check('效果名大小写/写法不敏感', mlgFallDamage({ startY: 85, landY: 60, effects: ['slow_falling'] }).dmg, 0);
+    check('读不到落差 → 当不摔伤（不猜）', mlgFallDamage({ startY: null, landY: 60 }).dmg, 0);
+    // ---- 阈值：家外 ----
+    check('★★ 5 格落差、血 20 → 不倒水（实机那个 bug）', S({ startY: 65, landY: 60 }).place, false);
+    check('5 格不倒的理由点明"不值得"', /不值得倒水/.test(S({ startY: 65, landY: 60 }).why), true);
+    check('★★ 25 格落差、血 20 → 倒', S({ startY: 85, landY: 60 }).place, true);
+    check('血 20、落差 12（扣 9）→ 倒（≥ 血一半 10 差一点，但 ≥ 6）', S({ startY: 72, landY: 60 }).place, true);
+    check('血 20、落差 8（扣 5）→ 不倒（没到 10 也没到 6）', S({ startY: 68, landY: 60 }).place, false);
+    check('血 6、落差 8（扣 5）→ 倒（≥ 血一半 3）', S({ hp: 6, startY: 68, landY: 60 }).place, true);
+    // ---- 阈值：家里（主人 2026-09-29 选 A）----
+    check('★★ 在家里、12 格（扣 9、血 20，摔不死）→ 不倒', S({ startY: 72, landY: 60, inHome: true }).place, false);
+    check('家里不倒的理由点明"会留一滩水"', /留一滩水/.test(S({ startY: 72, landY: 60, inHome: true }).why), true);
+    check('★★ 在家里、会摔死（扣 22 ≥ 血 20）→ 倒（保命）', S({ startY: 85, landY: 60, inHome: true }).place, true);
+    check('在家里、血 30、扣 22（摔不死）→ 不倒', S({ hp: 30, startY: 85, landY: 60, inHome: true }).place, false);
+    check('在家、落点不摔伤 → 不倒', S({ startY: 85, landY: 60, inHome: true, landName: 'minecraft:hay_block' }).place, false);
+    // ---- 端到端：mlgStep 用上新判据 ----
+    const G = (o) => mlgStep({ startY: 65, y: 62, vy: -1.2, landY: 60, hasBucket: true, holding: true, hp: 20, ...o });
+    check('★★ mlgStep：5 格落差 → 不倒（实机那个 bug）', G({}), null);
+    check('★★ mlgStep：25 格落差 → 到点了就倒', G({ startY: 85, y: 61.5 }), 'place');
+    check('★ mlgStep：家里 12 格 → 不倒', G({ startY: 72, y: 61.5, inHome: true }), null);
+    check('★ mlgStep：家里会摔死 → 倒', mlgStep({ startY: 85, y: 61.5, vy: -1.2, landY: 60, hasBucket: true, holding: true, hp: 12, inHome: true }, CFG_), 'place');
+    check('★ mlgStep：落点是干草块 → 不倒', mlgStep({ startY: 85, y: 61.5, vy: -1.2, landY: 60, hasBucket: true, holding: true, hp: 20, landName: 'minecraft:hay_block' }, CFG_), null);
+  }],
+  // ---- 收水（2026-09-29 实机：倒了水没收回来，水留在家裡）------
+  ['落地水：倒了一定要收回来', async (t) => {
+    const { check, ns } = t;
+    const { waterRetrievePlan } = ns;
+    const CFG_ = { retrieveRetries: 3, retrieveWalkNear: 3 };
+    const P = (o) => waterRetrievePlan({ hasEmptyBucket: true, ...o }, CFG_);
+    check('★ 已经收回来了 → 收工', P({ hasWaterBucket: true }).done, true);
+    check('…理由说清"已经收回来了"', /已经收回来/.test(P({ hasWaterBucket: true }).why), true);
+    check('★ 没有空桶 → 收不了，如实说', P({ hasEmptyBucket: false }).done, true);
+    check('…理由说清"没有空桶"', /没有空桶/.test(P({ hasEmptyBucket: false }).why), true);
+    check('★ 没走到水源附近 → 先走过去（不是直接右键）', P({ attempts: 0, nearEnough: false }).act, 'walk');
+    check('★ 走到了、看得到水源 → 对准右键', P({ attempts: 0, nearEnough: true, sawSource: true }).act, 'aim');
+    check('★ 到了位置却看不到水源 → 放弃并说明（水可能流走了）', P({ attempts: 1, nearEnough: true, sawSource: false }).done, true);
+    check('…理由点明"看不到水源方块"', /看不到水源方块/.test(P({ attempts: 1, nearEnough: true, sawSource: false }).why), true);
+    check('★ 试到上限 → 放弃', P({ attempts: 3, nearEnough: true, sawSource: true }).done, true);
+    check('…理由报出试了几次', /试了 3 次/.test(P({ attempts: 3, nearEnough: true, sawSource: true }).why), true);
+    check('★ 第 2 次还在试 → 继续', P({ attempts: 2, nearEnough: true, sawSource: true }).done, false);
+    check('…第几次也报出来（便于查日志）', /第 3 次/.test(P({ attempts: 2, nearEnough: true, sawSource: true }).why), true);
   }],
   // ---- 2026-09-29 实机：在水底挖沙子差点淹死 ----------------------------------
   // 测的是**跑的那份**判据（survival.js 里的实现），不另抄一份。

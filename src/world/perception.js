@@ -169,6 +169,33 @@ const AIRY = /(^|:)(air|cave_air|void_air|light|moving_piston|structure_void)$/;
 const bareOf = (n) => String(n || '').replace(/^.*:/, '');
 
 /**
+ * 方块的中文名（`knowledge/item-names.json`，15535 条，整合包真值）。
+ *
+ * 为什么要它：主人的计划是中文的（"合成铁镐"/"去挖点铁矿"），而方块名是英文 id
+ * （`iron_ore`）——只靠英文 id 的尾词匹配**永远对不上中文计划**，
+ * 于是"缺什么"判断形同虚设（2026-09-29 实机核对发现）。有了中文名，
+ * "缺铁"就能对上"铁矿石"（包含关系），也不用另编一份中文名单（判据只此一处）。
+ *
+ * 读不到就返回空表（"读不到" ≠ "没有"：匹配退化成只用 id，不会误报）。
+ */
+let __zhNames = null;
+function zhNameOf (name) {
+  if (__zhNames === null) {
+    try {
+      __zhNames = require(path.join(paths.KNOWLEDGE, 'item-names.json')).item || {};
+    } catch (_) { __zhNames = {}; }
+  }
+  const full = String(name || '').includes(':') ? String(name) : `minecraft:${name}`;
+  return __zhNames[full] || __zhNames[bareOf(name)] || '';
+}
+
+/** 事件/日志里念出来的名字：有中文名就用中文名，没有就用 id 尾词（`iron_ore` → `iron ore`）。 */
+function displayName (it) {
+  if (!it) return '';
+  return zhNameOf(it.name) || bareOf(it.name).replace(/_/g, ' ') || (KIND[it.kind]?.zh || '资源');
+}
+
+/**
  * 这块方块属于哪一类。
  *
  * @param name    方块全名（`minecraft:oak_log` 或 `oak_log` 都行）
@@ -234,6 +261,25 @@ function classifyBlock (name, ctx = {}) {
  *          —— 名字取"片内出现最多的那个"（代表名字）
  */
 function cluster (pts = [], { gap = 3 } = {}) {
+  const g = clusterSteps(pts, { gap });
+  for (;;) { const { done, value } = g.next(); if (done) return value; }
+}
+
+/**
+ * `cluster` 的**生成器内核** —— 连通块的判据（`near` / chain 扩张 / 代表名字）只在这里有一份。
+ *
+ * 为什么要有（2026-09-29 实机"走得很亂"）：`cluster` 是 O(n²) 的 `while` + `splice`，
+ * 本地实测 4000 点 **49.6ms**（`scanAround` 的 `cap` 正好是 4000），每 5 秒一次
+ * 就把事件循环堵住 —— 物理 tick 跑不动，她走路就一顿一顿的。
+ * 拆成生成器之后：
+ *   · `cluster()`（同步）抽干它 —— 自测里的精确条数断言一字不改；
+ *   · `clusterAsync()` 在让出点交出事件循环 —— **上线跑的是这条**。
+ * 两份**共用这一个内核**，不存在"同一判据写两遍"（AGENTS.md §5-4）。
+ *
+ * 让出点：每聚完一个连通块 `yield` 一次（块内是紧循环切不动 —— 但块内没有 `await`，
+ * 半成品 `group` 不会被别的代码看到，所以块与块之间让出是安全的）。
+ */
+function * clusterSteps (pts = [], { gap = 3 } = {}) {
   const left = pts.map((p, i) => ({ ...p, __i: i })).filter(p => p && p.pos);
   const out = [];
   const near = (a, b) => Math.max(
@@ -270,8 +316,29 @@ function cluster (pts = [], { gap = 3 } = {}) {
       tier: tiers.length ? Math.max(...tiers) : null,
       samples: group.slice(0, 6).map(p => p.pos),
     });
+    yield null;
   }
   return out;
+}
+
+/**
+ * 分批版聚片 —— **上线跑的就是这条**。
+ *
+ * 每聚完一个连通块检查一次"这一轮已经花了多久"，超过 `sliceMs` 就让出事件循环。
+ * 一个连通块（一棵树、一片黏土）的点数是几十的量级，所以最坏的单块耗时远小于 30ms；
+ * 让出的间隔由 `sliceMs` 兜住。
+ *
+ * @returns 和 `cluster()` 一模一样的数组
+ */
+async function clusterAsync (pts = [], { gap = 3, yieldFn = null, sliceMs = 12 } = {}) {
+  const yielder = yieldFn || (() => new Promise(res => setImmediate(res)));
+  const g = clusterSteps(pts, { gap });
+  let t0 = Date.now();
+  for (;;) {
+    const { done, value } = g.next();
+    if (done) return value;
+    if (Date.now() - t0 >= sliceMs) { await yielder(); t0 = Date.now(); }
+  }
 }
 
 // ------------------------------------------------------------------ 排序
@@ -296,6 +363,154 @@ function directionOf (from, to) {
 }
 
 /**
+ * needs → 关键词集合。**`rank` 和 `worthTelling` 共用这一份**（同一判据不写两遍）。
+ * @param needs ['黏土', 'wood', ...] 或 [{ kind|name|zh }]
+ */
+function needKeysOf (needs = []) {
+  const needKeys = new Set();
+  for (const n of needs || []) {
+    if (!n) continue;
+    if (typeof n === 'string') needKeys.add(n.toLowerCase());
+    else for (const v of [n.kind, n.name, n.zh, bareOf(n.name)]) if (v) needKeys.add(String(v).toLowerCase());
+  }
+  return needKeys;
+}
+
+/**
+ * 这一片的名字/类别**命中"她现在缺的"了吗** —— 判据只此一处。
+ *
+ * ⚠️ `kind` 一律不参与命中判断（2026-09-29 实机）：`needsFrom` 会把长期计划文本里的
+ * **每一个**类别中文名塞成关键词（"矿""树"…），于是裸 kind 命中会把**所有**矿都算成"缺的"，
+ * 事件就挂着"（你现在正缺这个）"发出去 —— 缺的是哪种矿根本没说清（任务书点名要修）。
+ * 改成只认**具体名字 / 类别中文**（中文仍然宽松匹配，因为是"缺铁"对上"铁矿"这种）。
+ *
+ * ⚠️ 命中分**两档**（2026-09-29 实机，事件文本"缺去挖点铁矿"那种）：
+ *   ① **紧匹配**（相等 / id 尾词互相包含）→ 回带命中的那个词（`iron`）；
+ *   ② **松匹配**（中文包含：`zh.includes(k) || k.includes(zh)`）→ 回带 `'*'` 哨兵，
+ *      意思是"确实缺这一类，但关键词是整句话，别拿它当名字" → `niceLabel` 用这一片自己的名字。
+ *   中间还有个特例：`k` 和 `zh` 相等（"缺黏土"里的"黏土"）算**紧匹配**（它就是名字）。
+ *
+ * @returns 命中信息 `{ key:string, loose:boolean }` | null
+ */
+function nameHitsNeedDetail (it, needKeys) {
+  if (!needKeys || !needKeys.size) return null;
+  const zh = (KIND[it.kind]?.zh || '').toLowerCase();
+  const name = String(it.name || '').toLowerCase();
+  const bare = bareOf(name);
+  const zhName = zhNameOf(it.name).toLowerCase();          // 这一片的中文名（"铁矿石" / "黏土"）
+  // ⚠️ 有一类"裸类别名"**不算具体命中**：`needsFrom` 会把自由文本里的类别中文切成关键词，
+  //    于是缺"矿"会让**每一种**矿都挂"（你现在正缺这个）"，而缺的是哪种矿根本没说清
+  //    （任务书点名："缺的是哪种矿要说清楚，不是所有矿都缺"）。
+  //    只有 `ore` 这一类有"类别 ≠ 具体东西"的问题（矿下面有铁/煤/钻石…几十种）。
+  //    黏土/花/树这种，类别名本身就指一样东西，说"缺黏土"就是真缺黏土 —— 照旧命中。
+  const usable = [];
+  for (const k of needKeys) {
+    if (k === it.kind) continue;                                // 裸 kind（"ore"）不算
+    if (it.kind === 'ore' && k === zh) continue;                // 只有"矿"这个类别名不算
+    usable.push(k);
+  }
+  // ① 紧匹配（id / 中文名 相等，或 id 尾词互相包含）
+  for (const k of usable) {
+    if (k === name || k === bare) return { key: k, loose: false };
+    if (k === zh || (zhName && k === zhName)) return { key: k, loose: false };
+    if (bare && (bare.includes(k) || k.includes(bare))) return { key: k, loose: false };
+  }
+  // ② 松匹配（中文包含：关键词往往是整句话）
+  //    ⚠️ `ore` 特例：只跟**类别名**重叠的整句（"去挖点矿"只共享一个"矿"）**不算**
+  //       —— 任务书点名"不是所有矿都缺"。要么和这一片的**中文名**重叠（"去挖点铁矿" ∩ "铁矿石" = "铁"），
+  //       要么根本不松匹配。
+  for (const k of usable) {
+    if (!zh && !zhName) continue;
+    if (zhName && k.length > 1 && (zhName.includes(k) || k.includes(zhName))) return { key: k, loose: true };
+    if (it.kind === 'ore') {
+      // 矿只认"和中文名有交集、且交集不只是'矿'这个字"的（"铁矿" ∩ "铁矿石" = "铁"）
+      if (!zhName) continue;
+      const shared = zhName.split('').filter(ch => ch !== zh[0] && k.includes(ch)).length;
+      if (shared > 0) return { key: k, loose: true };
+      continue;
+    }
+    if (zh && (zh.includes(k) || k.includes(zh))) return { key: k, loose: true };
+  }
+  return null;
+}
+
+/** 只要"命中没命中 + 命中的词"的老接口（`rank` 用）—— 判据还是上面那一处 */
+function nameHitsNeed (it, needKeys) {
+  const d = nameHitsNeedDetail(it, needKeys);
+  return d ? d.key : null;
+}
+
+/**
+ * 这一片**值不值得打断 mind** —— 判据只此一处（2026-09-29 实机修"事件刷屏"）。
+ *
+ * 主人原话：「只发用得上的：缺的、值钱的、容器」。
+ * 实机症状：`resource_seen 余光扫到：花 / 砂砾 / 树…` 几秒一批，花、砂砾这种她不缺的也在发。
+ *
+ * 只发三类：
+ *   ① **她现在缺的** —— 名字命中 needs（具体名字，不是类别；见 `nameHitsNeed`）；
+ *   ② **值钱的矿** —— `kind === 'ore'` 且矿表 `value === 'high'`（值钱与否查现成的矿表，不另编名单）；
+ *   ③ **没开过的野外容器** —— `kind === 'container'` 且 `opened !== true`（"野外的"由调用方先筛）。
+ * 其余（花 / 砂砾 / 普通树 / 石头 / 沙 / 黏土 / 作物，且没被点名缺）→ **不发事件**
+ * （照样进【附近看得见的】那一行和资源记忆，只是不打断她）。
+ *
+ * @param it  聚好的片（含 `kind` / `name` / `opened` / `value`）
+ * @param needs 同 `rank`
+ * @returns {{ tell:boolean, why:'need'|'valuable'|'container'|null, label:string|null }}
+ *          `label` = **要报给主人的那个具体名字**（用来写"缺的是哪种"）：
+ *          有中文名就用中文名（`iron_ore` → "铁矿石"）；松匹配（关键词是整句）也用它，
+ *          免得事件里出现"缺去挖点铁矿"这种句子。
+ */
+function worthTelling (it, { needs = [] } = {}) {
+  if (!it) return { tell: false, why: null, label: null };
+  const d = nameHitsNeedDetail(it, needKeysOf(needs));
+  if (d) return { tell: true, why: 'need', label: niceLabel(d, it) };
+  if (it.kind === 'ore' && it.value === 'high') return { tell: true, why: 'valuable', label: null };
+  if (it.kind === 'container' && it.opened !== true) return { tell: true, why: 'container', label: null };
+  return { tell: false, why: null, label: null };
+}
+
+/**
+ * 命中信息 → "能直接念出来"的名字。
+ *
+ * 优先用**中文名**（`knowledge/item-names.json`，主人看得懂的就是这个）；
+ * 没有中文名才退回 id 尾词 / 命中的那个关键词。
+ * ⚠️ 松匹配（关键词是整句计划）时**绝不**回带关键词 —— 事件里不能出现"缺去挖点铁矿"。
+ */
+function niceLabel (d, it) {
+  const zhName = zhNameOf(it?.name);
+  if (zhName) return zhName;
+  if (d.loose) return String(it?.name || '').replace(/^.*:/, '') || null;
+  return d.key || null;
+}
+
+/**
+ * 该不该重扫 —— 判据只此一处（2026-09-29 实机修"走路很乱"里"少扫"那一条）。
+ *
+ *   · 没怎么移动（离上次扫描中心 < `minMoveBlocks`）**且**上次扫描 < `minRescanMs` → 不重扫
+ *     （原地站着重扫，扫到的几乎全是同一批方块，白发一次 cluster）；
+ *   · 上一次还没跑完（`busy`）→ 不重扫（防叠）；
+ *   · 她在走路 / 打架 / 开着界面 → 放慢到 `busyEveryMs`（物理 tick 优先，走路稳最要紧）。
+ *
+ * @param p.sinceMs   距上次扫描多久
+ * @param p.moveDist  离上次扫描中心多远（读不到位置时给 null = 按"动过"算，宁可多扫一次）
+ * @param p.busy      上一次还没跑完
+ * @param p.occupied  在走路 / 打架 / 开着界面
+ * @returns {{ scan:boolean, everyMs:number, why:string }}
+ */
+function shouldRescan ({ sinceMs = Infinity, moveDist = null, busy = false, occupied = false } = {}, cfg = {}) {
+  const idleEvery = cfg.everyMs ?? 5000;
+  const busyEvery = cfg.busyEveryMs ?? idleEvery * 4;
+  const everyMs = occupied ? busyEvery : idleEvery;
+  if (busy) return { scan: false, everyMs, why: '上一轮还没跑完（防叠）' };
+  if (sinceMs < everyMs) return { scan: false, everyMs, why: `还没到间隔（${Math.round(sinceMs)} < ${everyMs}ms${occupied ? '，她在忙，放慢了' : ''}）` };
+  const moved = moveDist == null || moveDist >= (cfg.minMoveBlocks ?? 8);
+  if (!moved && sinceMs < (cfg.minRescanMs ?? 60000)) {
+    return { scan: false, everyMs, why: `没怎么动（${Math.round(moveDist)} 格 < ${cfg.minMoveBlocks ?? 8}）且距上次不到 ${Math.round((cfg.minRescanMs ?? 60000) / 1000)} 秒` };
+  }
+  return { scan: true, everyMs, why: moved ? '动过了' : '虽然没动，但距上次够久了' };
+}
+
+/**
  * 按"她现在缺什么"排序，最多 `max` 项。
  *
  * 规则（任务书 + 主人原话）：
@@ -310,28 +525,11 @@ function directionOf (from, to) {
  * @returns 排好序的（最多 max 个）
  */
 function rank (items = [], needs = [], { max = 6 } = {}) {
-  const needKeys = new Set();
-  for (const n of needs || []) {
-    if (!n) continue;
-    if (typeof n === 'string') needKeys.add(n.toLowerCase());
-    else for (const v of [n.kind, n.name, n.zh, bareOf(n.name)]) if (v) needKeys.add(String(v).toLowerCase());
-  }
-  const hit = (it) => {
-    if (!needKeys.size) return false;
-    const zh = (KIND[it.kind]?.zh || '').toLowerCase();
-    const name = String(it.name || '').toLowerCase();
-    const bare = bareOf(name);
-    for (const k of needKeys) {
-      if (k === it.kind || k === zh || k === name || k === bare) return true;
-      if (bare && (bare.includes(k) || k.includes(bare))) return true;
-      if (zh && (zh.includes(k) || k.includes(zh))) return true;
-    }
-    return false;
-  };
+  const needKeys = needKeysOf(needs);
   const scored = items.map(it => {
     const useful = KIND[it.kind]?.useful ?? 1;
     const d = Number.isFinite(it.distance) ? it.distance : 999;
-    return { it, need: hit(it), score: useful * 10 - d * 0.2 + Math.min(it.count || 1, 20) * 0.5 };
+    return { it, need: nameHitsNeed(it, needKeys) ? true : false, score: useful * 10 - d * 0.2 + Math.min(it.count || 1, 20) * 0.5 };
   });
   // ① 野外没开过的容器钉在前两位
   const fresh = scored.filter(x => x.it.kind === 'container' && x.it.opened !== true && x.it.outdoor !== false)
@@ -372,6 +570,44 @@ function save (store, file = FILE()) {
 }
 
 /**
+ * 异步原子写 —— **上线跑的是这条**（2026-09-29 修"走路很乱"）。
+ *
+ * 为什么要异步：`save()` 用 `fs.writeFileSync`，实测 2000 条 2.9ms —— 本身不慢，
+ * 但它是**同步**的，写在每 5 秒一轮的扫描里就是白白堵一下事件循环。
+ * 语义与 `save()` **完全一致**（先 `.tmp` 再 `rename`，失败如实返回 false）——
+ * 同步的 `save()` 留着给自测（自测要的是确定性），两条都只写这一个文件。
+ */
+async function saveAsync (store, file = FILE()) {
+  try {
+    await fs.promises.mkdir(path.dirname(file), { recursive: true });
+    const tmp = `${file}.tmp`;
+    const text = JSON.stringify(store);
+    await fs.promises.writeFile(tmp, text);
+    try { await fs.promises.rename(tmp, file); }
+    catch (_) { await fs.promises.writeFile(file, text); try { await fs.promises.unlink(tmp); } catch (__) {} }
+    return true;
+  } catch (_) { return false; }   // 存不下去如实返回 false（"读不到"和"没有"分开）
+}
+
+/**
+ * 这一轮**要不要写盘** —— 判据只此一处（2026-09-29：不是每轮都写）。
+ *
+ * 有变化（`added/refreshed/decayed/gone` 加起来 > 0 或条数变了）**且**距上次写超过
+ * `saveMinIntervalMs` 才写。理由：她站着一动不动时每 5 秒写一次完全一样的文件没意义，
+ * 写盘是同步 IO，攒着写能把"每轮一次"摊成"最多半分钟一次"。
+ *
+ * @returns {{ write:boolean, why:string }}
+ */
+function shouldSave ({ changed = false, sinceSaveMs = Infinity, sig = null, lastSig = null } = {}, cfg = {}) {
+  const changedNow = changed || (sig != null && lastSig != null && sig !== lastSig);
+  if (!changedNow) return { write: false, why: '这一轮记忆没变化，不写' };
+  if (sinceSaveMs < (cfg.saveMinIntervalMs ?? 30000)) {
+    return { write: false, why: `有变化，但距上次写不到 ${Math.round((cfg.saveMinIntervalMs ?? 30000) / 1000)} 秒，攒着` };
+  }
+  return { write: true, why: '有变化且过了写盘间隔' };
+}
+
+/**
  * 把这一轮扫到的片并进记忆。
  *
  * · 同类别、中心距离 ≤ `mergeDist` → **同一条**（刷新 count 取较大、seenAt / confirmedAt 刷新、权重回满）；
@@ -401,12 +637,22 @@ function merge (store, found = [], now = Date.now(), { dim = null, mergeDist = 6
       same.weight = 1;
       same.underwater = !!f.underwater;
       if (f.tier != null) same.tier = f.tier;
+      // ★ 2026-09-29 修：`direction` / `distance` 也一起刷新。
+      //   它们是 `scanAround` 算好的（方向判据只在 `directionOf` 一处）；
+      //   以前这里不拷，`m.added` 拿到的记录就没有 direction →
+      //   事件文字里插值出字面量 `undefined`（"余光扫到：矿（undefined 15 格）"）。
+      if (f.direction != null) same.direction = f.direction;
+      if (Number.isFinite(f.distance)) same.distance = f.distance;
       refreshed.push(same);
     } else {
       const rec = {
         kind: f.kind, name: f.name, center: { ...f.center },
         count: f.count || 1, underwater: !!f.underwater,
         dim: f.dim || dim, seenAt: now, confirmedAt: now, weight: 1,
+        // ★ 2026-09-29 修（上面那段的同一件事）：**不能丢这两个字段**。
+        //   调用方（core.js）拿 `added` 直接发事件，缺了就是 "undefined 方向"。
+        direction: f.direction ?? null,
+        distance: Number.isFinite(f.distance) ? f.distance : null,
       };
       if (f.tier != null) rec.tier = f.tier;
       st.places.push(rec);
@@ -462,7 +708,13 @@ function needsFrom ({ planStep = '', ambition = '', craftMissing = [], extra = [
     const t = String(s);
     // 中文类别名直接当关键词；英文 id 的"尾词"也塞进去（oak_log → log / wood）
     for (const k of Object.keys(KIND)) if (t.includes(KIND[k].zh)) out.push(k);
-    for (const m of t.matchAll(/[a-z_]+/g)) out.push(m[0]);
+    for (const m of t.matchAll(/[a-z_]+/g)) {
+      out.push(m[0]);
+      // ⚠️ 复合 id 要**切开**（2026-09-29 实机）：`craftMissing` 给的是 `raw_iron` / `oak_log`
+      //    这种带下划线的 id，`[a-z_]+` 会把整串当一个词 → **永远匹配不上** `iron_ore` / `oak_log`。
+      //    补上分段词（raw / iron），"缺铁矿"才真能命中铁矿。
+      for (const p of m[0].split('_')) if (p) out.push(p);
+    }
     out.push(t);
   }
   return [...new Set(out.filter(Boolean))];
@@ -522,6 +774,7 @@ const doorKeyOf = (p) => `(${Math.round(p.center.x)}, ${Math.round(p.center.y)},
 async function scanAround ({
   bot, radius = 32, oreIds = null, scanIn, tagOf = null, tagIds = null, yieldFn = null,
   dy = 16, cap = 4000, batchColumns = 8,
+  idBuildBatch = 500, clusterSliceMs = 12,
 } = {}) {
   const t0 = Date.now();
   const self = bot.entity?.position;
@@ -534,7 +787,11 @@ async function scanAround ({
   // 要扫哪些方块 id：把 SPECS 里出现过的标签展开成 id（**用真实标签**，不写死名单）
   const ids = new Set();
   const idOf = (n) => (registry.blocksByName[n] || registry.blocksByName[bareOf(n)])?.id;
+  // 逐阶段耗时（任务书要求"看��出是哪一段慢"，GET /instinct 的 diagnostics 也带）
+  const phase = {};
+  const mark = (name, t0ns) => { phase[name] = +(Number(process.hrtime.bigint() - t0ns) / 1e6).toFixed(1); };
   // 矿表的方块（tier / value 从表里来）
+  const tLoad = process.hrtime.bigint();
   const tables = fs.existsSync(path.join(paths.KNOWLEDGE, 'ores.json'))
     ? JSON.parse(fs.readFileSync(path.join(paths.KNOWLEDGE, 'ores.json'), 'utf8')) : [];
   const oreByName = new Map();
@@ -542,22 +799,36 @@ async function scanAround ({
     const id = idOf(o.name);
     if (id != null) { ids.add(id); oreByName.set(id, o); }
   }
+  mark('oresTable', tLoad);
   // ★ 2026-09-29 Claude 复核：只靠"矿表 + 标签展开"凑 id，**只有名字兜底的**（黏土、南瓜、西瓜、甘蔗、岩浆……
   //   整合包里这些没有标签）永远进不了扫描清单 —— 分类写得再对也扫不到。自测靠假 tagIds 把黏土塞进去才绿。
   //   改为：整份方块注册表每个名字都过一遍 classifyBlock（判据仍只此一处），判得出类别的都扫。
-  //   2 万多个方块，每份 registry 只算一次，缓存在 registry 对象上。
+  //
+  // ★ 2026-09-29 实机（"走路很乱"）：**实机**注册表是 21579 个方块（`registry/minecraft-block.json`，
+  //   `minecraft-data` 那 1003 个不是实机规模），整份同步过一遍实测 **30.1ms** —— 正好顶在
+  //   "任何同步段 < 30ms"的红线上。现在**分批让出**（每 `idBuildBatch` 个一次），
+  //   并把结果缓存到 `registry.__perceptionIds`（每份 registry 只算一次；
+  //   自测里断言"第二次不重建"，别让缓存悄悄失效又变回每次 30ms）。
   if (registry && Array.isArray(registry.blocksArray)) {
     const key = '__perceptionIds';
-    if (!registry[key]) {
+    const tBuild = process.hrtime.bigint();
+    const built = !registry[key];
+    if (built) {
       const all = new Set();
-      for (const b of registry.blocksArray) {
+      const batch = Math.max(1, idBuildBatch | 0);
+      for (let i = 0; i < registry.blocksArray.length; i++) {
+        const b = registry.blocksArray[i];
         // 石头、水到处都是：扫它们会把 cap 名额占满、挤掉真正要找的东西（分类照旧，只是不进扫描清单）
         try { const k = classifyBlock(b.name, { tagOf, type: b.id, oreByName: oreByName.size ? oreByName : null })?.kind; if (k && !SCAN_SKIP_KINDS.has(k)) all.add(b.id); } catch (_) {}
+        if (i && i % batch === 0) await yielder();
       }
       Object.defineProperty(registry, key, { value: all, enumerable: false, configurable: true });
     }
     for (const id of registry[key]) ids.add(id);
-  }
+    mark('idBuild', tBuild);
+    phase.idBuildBuilt = built;          // true = 这一轮真建了清单；false = 走的缓存
+    phase.idBuildSize = registry[key].size;
+  } else { phase.idBuild = 0; phase.idBuildBuilt = null; }
   // 标签展开：调用方给 `tagIds(tag) → [方块名]`（由 knowledge 的 tags Set 转 registry id）
   if (typeof tagIds === 'function') {
     for (const spec of SPECS) for (const tag of (SCAN_SKIP_KINDS.has(spec.kind) ? [] : spec.tags || [])) {
@@ -566,12 +837,15 @@ async function scanAround ({
   }
 
   const c = new Vec3(Math.floor(self.x), Math.floor(self.y), Math.floor(self.z));
+  const tScan = process.hrtime.bigint();
   const r = await scanIn({
     world: bot.world, registry, c, ids: [...ids], maxDist: radius, cap,
     opts: { dy, label: 'perception.scanAround' }, yieldFn: yielder,
   });
+  mark('scan', tScan);
 
   // 扫出来的坐标 → 分类 → 聚片。读方块按批让出（每 200 个一次）
+  const tCls = process.hrtime.bigint();
   const pts = [];
   let readFail = 0;
   for (let i = 0; i < r.pts.length; i++) {
@@ -597,8 +871,13 @@ async function scanAround ({
     }
     if ((i + 1) % 200 === 0) await yielder();
   }
-  const items = cluster(pts, { gap: 3 });
+  mark('classify', tCls);
+  // ★ 分批聚片（上线跑这条）：老的同步 `cluster` 4000 点 49.6ms，每 5 秒堵一次事件循环。
+  const tCluster = process.hrtime.bigint();
+  const items = await clusterAsync(pts, { gap: 3, yieldFn: yielder, sliceMs: clusterSliceMs });
+  mark('cluster', tCluster);
   // 距离 / 方向（她"看"这一刻要的是"东北 20 格"）
+  // ⚠️ 这两个字段必须在 `merge` 里保住 —— 事件文字直接用它（2026-09-29 修 undefined 方向）
   for (const it of items) {
     it.distance = +Math.hypot(it.center.x - self.x, it.center.z - self.z).toFixed(1);
     it.direction = directionOf({ x: self.x, z: self.z }, it.center);
@@ -615,6 +894,8 @@ async function scanAround ({
       batches: Math.ceil(columns / Math.max(1, batchColumns)),
       scannedPts: r.pts.length, classified: pts.length, readFail,
       unloadedColumns: r.unloaded || 0,
+      // 逐阶段同步耗时（ms）—— 任务书："slow 日志保留，但要看得出是哪一段慢"
+      phases: { ...phase },
     },
   };
 }
@@ -880,13 +1161,166 @@ async function selftest () {
   console.log(`  [性能] scanAround(radius=16) 总 ${scan2.perf.ms}ms，单柱最长 ${scan2.perf.worstMs}ms，`
     + `柱 ${scan2.perf.columns}，分类命中 ${scan2.perf.classified}/${scan2.perf.scannedPts}`);
 
+  // ================================================================ 2026-09-29 实机修（B/C）
+  // 这一段测的是**跑的那份**判据：分批后的 scanAround / clusterAsync / worthTelling / shouldRescan。
+  // 起因（实机）：`slow perception.scanAround` 0.5–5 秒、`scheduler.maxLagMs: 908` ——
+  //   事件循环被同步代码堵住，物理 tick 跑不动，她走路一顿一顿。
+  const { monitorEventLoopDelay } = require('perf_hooks');
+  const nowT = 1_700_000_000_000;
+
+  // ---- ① 分批聚片：和同步 cluster **结果必须一致**（同一内核，不是两套实现）----
+  {
+    const big = [];
+    for (let i = 0; i < 3000; i++) {
+      big.push({ kind: 'log', name: 'oak_log', pos: { x: (i * 7) % 120 - 60, y: 64 + (i % 5), z: (i * 11) % 120 - 60 }, underwater: false });
+    }
+    const syncOut = cluster(big, { gap: 3 });
+    let yields = 0;
+    const asyncOut = await clusterAsync(big, {
+      gap: 3, sliceMs: 2,
+      yieldFn: () => { yields++; return new Promise(res => setImmediate(res)); },
+    });
+    check('★ clusterAsync 与同步 cluster **结果一致**（同一内核）', JSON.stringify(asyncOut) === JSON.stringify(syncOut), true);
+    check('…真的让出过（不是一次跑完）', yields > 0, true);
+    console.log(`  [性能] cluster 3000 点：同步 ${JSON.stringify(syncOut).length} 字节结果，clusterAsync 让出 ${yields} 次`);
+  }
+
+  // ---- ② 用**真实 1.20.1 注册表**跑一遍建清单 + 一次 scanAround，量事件循环最大延迟 ----
+  // 注册表用 minecraft-data 的（自测环境没有实机那 21579 个；这里如实说明规模，数字一起打出来）
+  {
+    const reg = mcData;
+    delete reg.__perceptionIds;                       // 先清掉，让这一轮真建
+    const h = monitorEventLoopDelay({ resolution: 20 });
+    h.enable();
+    const tA = Date.now();
+    const first = await scanAround({
+      bot: fakeBot, radius: 16, tagIds: () => ['grass_block', 'stone', 'clay', 'sand', 'oak_log'],
+      tagOf: flatTagOf, scanIn: scanColumnsIn, yieldFn: () => new Promise(res => setImmediate(res)), cap: 2000,
+      idBuildBatch: 100, clusterSliceMs: 4,
+    });
+    const msA = Date.now() - tA;
+    const maxNs = h.max;
+    h.disable();
+    const maxMs = +(maxNs / 1e6).toFixed(1);
+    console.log(`  [性能] 真实注册表 ${reg.blocksArray.length} 块：第一次 scanAround ${msA}ms，`
+      + `建清单 ${first.perf.phases.idBuild}ms（建了=${first.perf.phases.idBuildBuilt}），`
+      + `cluster ${first.perf.phases.cluster}ms，**事件循环最大延迟 ${maxMs}ms**`);
+    check('★ 事件循环最大延迟 < 50ms（量出来的数字在上面）', maxMs < 50, true);
+    check('…第一次真建了扫描清单', first.perf.phases.idBuildBuilt, true);
+    check('…perf 里带了逐阶段耗时（看得出是哪一段慢）', typeof first.perf.phases.cluster === 'number', true);
+
+    // 第二次：**不重建清单**（缓存真的生效）
+    const tB = Date.now();
+    const second = await scanAround({
+      bot: fakeBot, radius: 16, tagIds: () => ['grass_block', 'stone', 'clay', 'sand', 'oak_log'],
+      tagOf: flatTagOf, scanIn: scanColumnsIn, yieldFn: () => new Promise(res => setImmediate(res)), cap: 2000,
+      idBuildBatch: 100, clusterSliceMs: 4,
+    });
+    console.log(`  [性能] 第二次 scanAround ${Date.now() - tB}ms，建清单 ${second.perf.phases.idBuild}ms（建了=${second.perf.phases.idBuildBuilt}）`);
+    check('★★ 第二次扫描**不重建**清单（走的缓存）', second.perf.phases.idBuildBuilt, false);
+    check('…两次扫出来的一样（缓存没改变行为）', second.items.length, first.items.length);
+  }
+
+  // ---- ③ shouldRescan：没移动 + 60 秒内 → 不重扫 ----
+  {
+    const cfg = { everyMs: 5000, busyEveryMs: 20000, minMoveBlocks: 8, minRescanMs: 60000 };
+    check('★ 没怎么动（2 格）+ 距上次 10 秒 → 不重扫', shouldRescan({ sinceMs: 10000, moveDist: 2 }, cfg).scan, false);
+    check('…理由说清"没怎么动"', /没怎么动/.test(shouldRescan({ sinceMs: 10000, moveDist: 2 }, cfg).why), true);
+    check('★ 动过了（20 格）→ 重扫', shouldRescan({ sinceMs: 6000, moveDist: 20 }, cfg).scan, true);
+    check('★ 没动但距上次超过 60 秒 → 也重扫（东西会变）', shouldRescan({ sinceMs: 70000, moveDist: 2 }, cfg).scan, true);
+    check('★ 上一轮还没跑完 → 不重扫（防叠）', shouldRescan({ sinceMs: 999999, moveDist: 99, busy: true }, cfg).scan, false);
+    check('走路/打架/开界面 → 放慢到 busyEveryMs', shouldRescan({ sinceMs: 6000, moveDist: 99, occupied: true }, cfg).everyMs, 20000);
+    check('…闲着时用 everyMs', shouldRescan({ sinceMs: 6000, moveDist: 99, occupied: false }, cfg).everyMs, 5000);
+    check('★ 忙的时候 6 秒还不到 20 秒 → 先不扫', shouldRescan({ sinceMs: 6000, moveDist: 99, occupied: true }, cfg).scan, false);
+  }
+
+  // ---- ④ 事件过滤：只发用得上的（缺的 / 值钱的矿 / 没开过的野外容器）----
+  {
+    const batch = [
+      { kind: 'flower', name: 'minecraft:poppy', center: { x: 1, y: 64, z: 1 }, count: 3, distance: 2, direction: '东' },
+      { kind: 'gravel', name: 'minecraft:gravel', center: { x: 2, y: 64, z: 2 }, count: 5, distance: 3, direction: '东' },
+      { kind: 'log', name: 'minecraft:oak_log', center: { x: 3, y: 64, z: 3 }, count: 9, distance: 4, direction: '东南' },
+      { kind: 'ore', name: 'minecraft:iron_ore', center: { x: 4, y: 59, z: 4 }, count: 2, distance: 5, direction: '南', value: 'high' },
+      { kind: 'ore', name: 'minecraft:coal_ore', center: { x: 5, y: 59, z: 5 }, count: 4, distance: 6, direction: '西南', value: 'low' },
+      { kind: 'container', name: 'minecraft:chest', center: { x: 6, y: 64, z: 6 }, count: 1, distance: 7, direction: '西', opened: false },
+    ];
+    const tell = (it, needs) => worthTelling(it, { needs }).tell;
+    check('★ 花 → 不发事件（她不需要）', tell(batch[0], []), false);
+    check('★ 砂砾 → 不发事件', tell(batch[1], []), false);
+    check('★ 普通树 → 不发事件', tell(batch[2], []), false);
+    check('★★ 没缺铁矿、不是值钱类别 → 不发', tell(batch[4], []), false);
+    check('★ 值钱的矿（iron_ore value=high）→ 发', tell(batch[3], []), true);
+    check('…理由标了 valuable', worthTelling(batch[3], { needs: [] }).why, 'valuable');
+    check('★ 没开过的箱子 → 发', tell(batch[5], []), true);
+    check('…理由标了 container', worthTelling(batch[5], { needs: [] }).why, 'container');
+    check('★ 开过的箱子 → 不发（不是新发现了）', tell({ ...batch[5], opened: true }, []), false);
+    // needs 命中要**具体**：缺铁 → 铁矿发、"矿"这个大类不发另一条矿
+    check('★★ 缺铁矿（needs 有 iron）→ 铁矿发', tell(batch[3], ['iron']), true);
+    check('…理由标了 need', worthTelling(batch[3], { needs: ['iron'] }).why, 'need');
+    check('★ 缺铁时**另一条**矿（煤，名字不沾 iron）→ 不发', tell(batch[4], ['iron']), false);
+    check('★ 缺黏土 → 黏土发', tell({ kind: 'clay', name: 'minecraft:clay', center: { x: 0, y: 60, z: 0 }, count: 12 }, ['黏土']), true);
+    // ⚠️ 老 bug：needsFrom 会把**裸类别名**（"矿"）塞进关键词，于是所有矿都算"缺的"，
+    //    事件挂"（你现在正缺这个）"却不说缺的是哪种 —— 这条锁住它不再犯。
+    check('★★ 裸的类别中文"矿"**不算**具体命中某一条矿（缺的是哪种要说清）',
+      nameHitsNeed(batch[4], needKeysOf(['矿'])), null);
+    check('…值钱的矿仍然照发（"缺矿"没命中，但它是 valuable）', tell(batch[3], ['矿']), true);
+    check('★★ 缺铁 → label 是"具体是何物"（用中文名，主人看得懂），不是泛泛的类别',
+      worthTelling(batch[3], { needs: ['iron'] }).label, '铁矿石');
+    check('★ …绝不把裸类别名"矿"当 label 回带', worthTelling(batch[3], { needs: ['iron'] }).label === '矿', false);
+    // 整句计划当 needs 时，label 必须是"这一片自己的名字"，不能是那句话
+    check('★★ 计划写"去挖点铁矿"→ label 仍是个名字，不是整句',
+      worthTelling(batch[3], { needs: needsFrom({ planStep: '去挖点铁矿' }) }).label, '铁矿石');
+    check('★ …计划只说"挖点矿"（没说是哪种）→ 这条矿**不发**',
+      tell(batch[4], needsFrom({ planStep: '挖点矿' })), false);
+    check('★ 点名缺花 → 花也发（"缺了就发"这一条留了口子）',
+      tell(batch[0], ['poppy']), true);
+    // 方向不是 undefined（C3 回归：merge 曾经把 direction 丢掉）
+    const mg = merge(emptyStore(), [{
+      kind: 'ore', name: 'minecraft:iron_ore', center: { x: 4, y: 59, z: 4 }, count: 2,
+      underwater: false, dim: 'overworld', direction: '南', distance: 5,
+    }], nowT, { dim: 'overworld' });
+    check('★★ merge 出来的新片带着 direction（曾经丢了 → 事件里打出 undefined）', mg.added[0].direction, '南');
+    check('★ …也带着 distance', mg.added[0].distance, 5);
+    // 又看见一次：刷新分支也要保住
+    const mg2 = merge(mg.store, [{
+      kind: 'ore', name: 'minecraft:iron_ore', center: { x: 4, y: 59, z: 4 }, count: 3,
+      underwater: false, dim: 'overworld', direction: '南', distance: 4,
+    }], nowT + 1000, { dim: 'overworld' });
+    check('★ merge 刷新分支也保住 direction', mg2.refreshed[0].direction, '南');
+    check('…刷新时 distance 一起更新', mg2.refreshed[0].distance, 4);
+    // 方向名本身（判据在 directionOf 一处）
+    check('★ 方向判据：正南', directionOf({ x: 0, z: 0 }, { x: 0, z: 5 }), '南');
+    check('★ 方向判据：原地 → 脚下', directionOf({ x: 0, z: 0 }, { x: 0, z: 0 }), '脚下');
+  }
+
+  // ---- ⑤ 写盘节流（改前：每轮无条件 writeFileSync）----
+  {
+    const cfgSave = { saveMinIntervalMs: 30000 };
+    check('★ 没变化 → 不写', shouldSave({ changed: false, sinceSaveMs: 999999 }, cfgSave).write, false);
+    check('…理由说清"没变化"', /没变化/.test(shouldSave({ changed: false, sinceSaveMs: 999999 }, cfgSave).why), true);
+    check('★ 有变化但刚写过 5 秒 → 攒着不写', shouldSave({ changed: true, sinceSaveMs: 5000 }, cfgSave).write, false);
+    check('★ 有变化且过了 30 秒 → 写', shouldSave({ changed: true, sinceSaveMs: 31000 }, cfgSave).write, true);
+    check('★ 签名变了也算"有变化"', shouldSave({ sig: 'b', lastSig: 'a', sinceSaveMs: 99000 }, cfgSave).write, true);
+    check('…签名没变不算', shouldSave({ sig: 'a', lastSig: 'a', sinceSaveMs: 99000 }, cfgSave).write, false);
+    // saveAsync 与同步 save 写出来**一样**（同语义，只是异步）
+    const f1 = path.join(require('os').tmpdir(), `perc-async-${process.pid}.json`);
+    const storeT = { at: nowT, dim: 'overworld', places: [{ kind: 'log', name: 'oak_log', center: { x: 1, y: 2, z: 3 }, count: 1 }] };
+    const wrote = await saveAsync(storeT, f1);
+    check('★ saveAsync 写成功', wrote, true);
+    const back = load(f1);
+    check('…读回来一致（kind）', back.places[0].kind, 'log');
+    check('★ saveAsync 是**异步**的（返回 Promise）', typeof saveAsync(storeT, f1).then === 'function', true);
+    try { fs.unlinkSync(f1); } catch (_) {}
+  }
+
   console.log(`\n${pass} passed, ${fail} failed`);
   return fail ? 1 : 0;
 }
 
 module.exports = {
-  KIND, SPECS, classifyBlock, cluster, directionOf, rank, renderLine,
-  load, save, emptyStore, merge, forget, needsFrom, containerTargets, placeKey, FILE,
+  KIND, SPECS, classifyBlock, cluster, clusterAsync, clusterSteps, directionOf, rank, renderLine,
+  load, save, saveAsync, shouldSave, emptyStore, merge, forget, needsFrom, containerTargets, placeKey, FILE,
+  needKeysOf, nameHitsNeed, worthTelling, shouldRescan, zhNameOf, displayName,
   scanAround, selftest,
 };
 
