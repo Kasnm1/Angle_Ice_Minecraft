@@ -121,6 +121,7 @@ angleice/
 
 ### 本次第 5 步顺手修的 3 个 bug（跟重构同一批发现）
 
-1. **家范围漏了高度**：`body/movement.js` 与 `instinct/core.js` 各自内联的"在不在家"没有 `|Δy| ≤ 16`，家里正上方/正下方会被误判在家。两处都改调正主 `body/util.js` 的 `inHomeArea`（判据只此一份）。
+1. **家范围漏了高度**：`body/movement.js` 挑床时内联的"在不在家"没有 `|Δy| ≤ 16`，改调正主 `body/util.js` 的 `inHomeArea`（判据只此一份）。
+   `instinct/core.js` 的 `caveBoundary` **故意**只看水平距离（保护房子正下方的地底不被自主探洞），**不是 bug、不改**（WorkBuddy 一度改掉并把守它的测试翻了，Claude 复核时还原，代码里写了"别修"）。
 2. **`/attack` 认不出模组怪**：`bridge/routes/body.js` 的本地 `HOSTILE` Set 只认 22 个原版名字。改用正主 `world/entity-registry.js` 的 `isHostileEntity`，并加 `isBossEntity` 把 Boss 排除在**自动挑怪**之外（明确指定目标不受影响）。
 3. **`inventoryCount` 把"读不到"兜成 0**：违反 AGENTS.md §5-1。改返回 `null`，11 处调用点逐个处理（`bridge/util.js` 的 `sweepUpDrops`、`routes/mine.js` 的 `countDelta`、`routes/inspect.js`），读不到时如实报 `unreadable` / `inventoryUnreadable`。
