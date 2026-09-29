@@ -23,6 +23,7 @@ const { ALL, kindOf, GROUP_CUES, groupsFromBody, pickSpecs, activeGroups } = req
 const { SYSTEM } = require('./prompt');
 const { DELEGATES, ASKS_BACK, DECIDE_NUDGE, ASKS_WHERE, LOOK_NUDGE, SAY_NUDGE, ACTION_NUDGE, isBareAffirmative, QUIET_MS, RECENT_CLAIM_MS, PLAYER_MOVE_TOOLS, PLAYER_MOVE_RE, TASK_ASK_RE, taskDoneAllowed, HONEST_NUDGE, isOverAsking, lastProactiveUnanswered, liveFails, unbackedClaim, REPORT_NUDGE, ASK_TOO_MUCH_NUDGE } = require('./gates');
 const wiring = require('./wiring');
+const paths = require('../../paths');   // knowledge/ 路径（查任务书章名·任务名用，见 questLabel）
 // 工具表在 tools.js —— 延迟取同一份（tools 也会回头用本文件的 buildNow，见 wiring.js）
 const MIND_TOOLS = new Proxy({}, { get: (_, k) => wiring.tools().MIND_TOOLS[k], has: (_, k) => k in wiring.tools().MIND_TOOLS, ownKeys: () => Reflect.ownKeys(wiring.tools().MIND_TOOLS), getOwnPropertyDescriptor: (_, k) => Object.getOwnPropertyDescriptor(wiring.tools().MIND_TOOLS, k) });
 
@@ -85,12 +86,32 @@ function planExtras () {
     const c = ambition.candidates({ inventory: W.state?.items || [], knownStations: knownStations(), limit: 2 });
     if (c?.length) out.push({ text: `心愿：做一道没做过的菜（比如 ${c.map(x => knowledge.label(x.id).replace(/\(.*\)$/, '')).join('、')}）`, why: `做遍食物的心愿 ${ambition.progress().made}/${ambition.progress().total}` });
   } catch (_) {}
-  // 游玩路线（knowledge/campaign.json）：跟着这个整合包的节奏玩，前置都做完的头几个
+  // 游玩路线（knowledge/campaign.json）：跟着这个整合包的节奏玩，前置都做完的头几个。
+  // 传任务书进度（W.ftbq）：没有 done 物品标志的目标也能按"任务书里做完了没"判，不再永远"不知道"。
+  // 带任务书编号的目标：why 后面补「（任务书：章名·任务名）」，让她知道去任务书哪儿点（查不到就不补）。
+  const route = [];
   try {
-    for (const g of plan.campaignStatus({ items: [...(W.state?.items || []), ...homeStockItems()] }).next.slice(0, 2)) out.push({ text: `路线：${g.title}`, why: g.hint || '' });
+    for (const g of plan.campaignStatus({ items: [...(W.state?.items || []), ...homeStockItems()], completed: W.ftbq || null }).next.slice(0, 2)) {
+      const label = g.quests?.length ? questLabel(g.quests[0]) : null;
+      route.push({ text: `路线：${g.title}`, why: (g.hint || '') + (label ? `（任务书：${label}）` : '') });
+    }
   } catch (_) {}
-  return out.slice(0, 9);   // 路线排在工程 / 布置 / 心愿之后，只补 2 条
+  // 路线那 2 条不被前面截掉：前面的先截到 7 条，再把路线接上
+  return [...out.slice(0, 7), ...route].slice(0, 9);
 }
+
+/** 任务书里的「章名·任务名」（查不到返回 null，不硬编） */
+function questLabel (qid) {
+  try {
+    if (!QL) {
+      const q = JSON.parse(require('fs').readFileSync(require('path').join(paths.KNOWLEDGE, 'quests.json'), 'utf8'));
+      QL = new Map(q.chapters.flatMap(ch => (ch.quests || []).map(x => [x.id, { title: x.title, chapter: ch.title }])));
+    }
+    const e = QL.get(qid);
+    return e ? `${e.chapter}·${e.title}` : null;
+  } catch (_) { return null; }
+}
+let QL = null;
 
 /**
  * 【长期计划】：平时一行（目标 + 正在做的一步）；闲着的时候完整给（现状 + 可以做的），让她接着做 / 改计划。
@@ -766,6 +787,6 @@ function startControl () {
 
 // ------------------------------------------------------------------ 主程序
 
-module.exports = { historyChars, bodyNow, knownStations, shortName, homeStockItems, planFacts, planExtras,
+module.exports = { historyChars, bodyNow, knownStations, shortName, homeStockItems, planFacts, planExtras, questLabel,
   planLine, buildNow, repetitionHint, PARTICLES, particleHint, idleGate, compactLastNow, think,
   clipText, repairHistory, trimDangling, sleepAndSort, sortMemories, autopilot, holdBody, startControl };

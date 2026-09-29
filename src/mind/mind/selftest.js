@@ -25,7 +25,7 @@ const { MIND_TOOLS, ALL, SPECS, GROUPS, TOOL_GROUPS, UNGROUPED, GROUP_ROUNDS, GR
 const { startJob, runTool, fmtArgs, toolResultLine, celebrate, learnFromDoing,
   instinctEat, NAME_RE, FAST, matchFast, fastPath } = require('./actions');
 const { historyChars, bodyNow, knownStations, shortName, homeStockItems, planFacts, planExtras,
-  planLine, buildNow, repetitionHint, PARTICLES, particleHint, idleGate, compactLastNow, think,
+  planLine, questLabel, buildNow, repetitionHint, PARTICLES, particleHint, idleGate, compactLastNow, think,
   clipText, repairHistory, trimDangling, sleepAndSort, sortMemories, autopilot, holdBody,
   startControl } = require('./think');
 const { isBareAffirmative, taskDoneAllowed, isOverAsking, lastProactiveUnanswered, claimState,
@@ -996,6 +996,42 @@ async function selftest () {
     W.ftbq = new Set(['362E2399F791D149']);   // 做完了"致富之路"
     check('★ 读到任务书进度 → 主线下一个出现在候选里（白手起家）', /主线：白手起家/.test(planLine('idle')), planLine('idle'));
     W.ftbq = null;
+    // 游玩路线：任务书编号带出来、why 末尾补「（任务书：章名·任务名）」、路线那两条不被截掉
+    {
+      plan._reset();
+      plan.setPlan({ goal: 'x', steps: ['一步'] });
+      const baseState = W.state;
+      W.state = { ...W.state, items: [] };
+      // 读不到任务书：路线里会出现「打开任务书…看完」（g2-open-quest，无 done，靠任务书判）
+      W.ftbq = null;
+      const idleNo = planLine('idle');
+      const routeBefore = (idleNo.match(/· 路线：[^\n]*/g) || []);
+      check('★ 读不到任务书 → 无 done 的路线目标不挡路（冒得出来）', routeBefore.length === 2, routeBefore);
+      // 读到任务书且「新手小屋」做完 → g2-open-quest 算做完，不再出现在路线里
+      W.ftbq = new Set(['7FAC7B71B61AFF81']);
+      const idleQ = planLine('idle');
+      check('★ 任务书进度接进路线：做完的任务不再冒出来', !/打开任务书，把【新手礼包and游玩须知】看完/.test(idleQ), (idleQ.match(/· 路线：[^\n]*/g) || []));
+      check('★ 任务书编号 → 「章名·任务名」查得出来', questLabel('7FAC7B71B61AFF81') === '新手礼包and游玩须知·新手小屋', questLabel('7FAC7B71B61AFF81'));
+      check('…查不到的 id 返回 null（不硬编）', questLabel('FFFFFFFFFFFFFFFF') === null, questLabel('FFFFFFFFFFFFFFFF'));
+      // 把无 quests 的生存开场目标用背包判掉 → 剩下的 start 候选全带任务书编号，
+      // 这样无论 30 分钟窗口轮到哪个，路线那两条的 why 末尾都该有「（任务书：…）」
+      W.state = { ...W.state, items: [{ name: 'minecraft:oak_log', count: 8 }, { name: 'minecraft:dirt', count: 8 }, { name: 'minecraft:oak_planks', count: 16 }] };
+      const idleLab = planLine('idle');
+      const routeLab = (idleLab.match(/· 路线：[^\n]*/g) || []);
+      check('★ 带任务书编号的路线候选，why 末尾带「（任务书：章名·任务名）」', routeLab.length === 2 && routeLab.every(l => /（任务书：[^）]+·[^）]+）/.test(l)), routeLab);
+      W.state = baseState;
+      W.ftbq = null;
+    }
+    // 工程 / 布置 / 心愿很多时，路线那 2 条不被 slice 截掉
+    {
+      plan._reset();
+      plan.setPlan({ goal: 'x', steps: ['一步'] });
+      W.projects = Array.from({ length: 6 }, (_, i) => ({ id: 'p' + i, name: '工程' + i, done: '10%', missing: {} }));
+      W.layouts = [{ id: 'L1', name: '家', done: 3, total: 6, canPlaceNow: ['furnace', 'chest'], stale: ['仓库'] }];
+      const idleMany = planLine('idle');
+      check('★ 前面候选很多时，路线那两条仍在（不被截掉）', (idleMany.match(/· 路线：/g) || []).length === 2, (idleMany.match(/· 路线：[^\n]*/g) || []));
+      W.projects = []; W.layouts = [];
+    }
     // 工程、布置、心愿都进计划的候选（只有计划一个声音在说"接下来做什么"）
     W.projects = [{ id: 'p1', name: '门口小仓库', done: '40%', toDig: 3, toPlace: 12, missing: { cobblestone: 9 } }];
     W.layouts = [{ id: 'L1', name: '家', done: 3, total: 6, stillWant: { furnace: 1 }, canPlaceNow: ['furnace'], stale: ['仓库'] }];

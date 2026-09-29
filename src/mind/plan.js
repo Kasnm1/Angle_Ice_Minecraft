@@ -177,8 +177,12 @@ function mainlineStatus ({ completed = null, items = [] } = {}, data = mainline(
 //
 // 主人 2026-09-29：目标要"正常玩、符合本整合包的体验"。campaign.json 是一条自然游玩路线的 132 个目标
 // （WorkBuddy 起草、Claude 复核；来源见文件头）。和 mainline 同一个思路：只给"下一步可以做什么"，顺序她自己定。
-// 做没做完：有 done.have 的看背包；没有的（GUI / 击败 Boss / 认知类）读不到就算"不知道"，
-// 且**不挡后面的路**（查不到，不猜成"没做"）。
+//
+// 2026-09-29 复核修正（TASK.md）：接入时把任务书编号（quests）丢了，只看背包 → 没有 done 物品标志的目标
+// 永远"不知道"、永远排在最前。现在读得到任务书进度（W.ftbq）就按任务书判，且**能判断的就按真实结果挡路**：
+//   做完 = done.have 达成，**或** completed 读到了且它的 quests 全在里面；
+//   前置 = 做完了算过；**既没 done、又没法用任务书判断**（completed 为 null，或它没有 quests）才"查不到不挡路"。
+// 另外 next 要轮换（同阶段优先不同 track、按 now 分窗），免得永远只推同样两条。
 
 let CP = null;
 function campaign () {
@@ -187,11 +191,21 @@ function campaign () {
   return CP;
 }
 
-/** @returns { done, total, autoTotal, next:[{id,title,hint,stage,track,feasible}] } —— next 只含前置已做完（或前置查不到）、自己还没做的，按阶段排 */
-function campaignStatus ({ items = [] } = {}, data = campaign()) {
+/**
+ * @param completed  FTB 已完成的 id（Set）；null = 没读到任务书进度
+ * @param now        轮换基准时间（默认 Date.now()，自测可注入）
+ * @returns { done, total, autoTotal, next:[{id,title,hint,stage,track,feasible,quests}] }
+ *          next 只含前置已过、自己还没做的，按"最早的有候选的 stage"排；同阶段轮换。
+ */
+function campaignStatus ({ items = [], completed = null, now = Date.now() } = {}, data = campaign()) {
   const gs = data.goals || [];
   const byId = new Map(gs.map(g => [g.id, g]));
-  const own = (g) => !!g.done && doneBy(g.done, items);
+  // 任务书里能不能判断这个目标：读到了进度，且它挂着任务书编号
+  const byQuests = (g) => !!completed && Array.isArray(g.quests) && g.quests.length > 0;
+  const questsDone = (g) => byQuests(g) && g.quests.every(id => completed.has(id));
+  const own = (g) => (!!g.done && doneBy(g.done, items)) || questsDone(g);
+  // 能判断吗：有 done 标志（看背包），或用得上任务书（读到了 + 有 quests）
+  const judgeable = (g) => !!g.done || byQuests(g);
   // 超前了：后面的目标做成了，它依赖的前置（一路往上）就当作做过 —— 不然直接拿到铁镐的人还会被叫去做石镐
   const doneMemo = new Map();
   const isDone = (g) => {
@@ -200,20 +214,37 @@ function campaignStatus ({ items = [] } = {}, data = campaign()) {
     doneMemo.set(g.id, d);
     return d;
   };
-  // 前置：做完了算过；没有标志的（查不到）不挡路，但它自己的前置还得过 —— 不然后面的目标会越过它提前冒出来
+  // 前置：做完了算过；**能判断但没做完**的就挡路；判断不了的（查不到）不挡路，但它自己的前置还得过
   const memo = new Map();
   const depOk = (id) => {
     if (memo.has(id)) return memo.get(id);
     memo.set(id, false);   // 防环
     const d = byId.get(id);
-    const ok = !d || isDone(d) || (!d.done && (d.deps || []).every(depOk));
+    const ok = !d || isDone(d) || (!judgeable(d) && (d.deps || []).every(depOk));
     memo.set(id, ok);
     return ok;
   };
   const ORDER = ['start', 'early', 'mid', 'late', 'end'];
-  const next = gs.filter(g => !isDone(g) && g.feasible !== 'no' && (g.deps || []).every(depOk))
-    .sort((a, b) => ORDER.indexOf(a.stage) - ORDER.indexOf(b.stage))
-    .map(g => ({ id: g.id, title: g.title, hint: g.hint, stage: g.stage, track: g.track, feasible: g.feasible }));
+  const cand = gs.filter(g => !isDone(g) && g.feasible !== 'no' && (g.deps || []).every(depOk))
+    .sort((a, b) => ORDER.indexOf(a.stage) - ORDER.indexOf(b.stage) || gs.indexOf(a) - gs.indexOf(b));
+  // 轮换：按 stage 分组（最早的排前面），每组内先挪起点（now 每 30 分钟一格）、
+  // 再把"和组内第一个轨道不同"的项尽量提前 —— 这样消费者取前两个时，总是最早的有候选 stage、
+  // 且尽量换着轨道，不会永远卡同样两条。
+  const out = [];
+  let i = 0;
+  while (i < cand.length) {
+    const stage = cand[i].stage;
+    const group = [];
+    for (; i < cand.length && cand[i].stage === stage; i++) group.push(cand[i]);
+    const start = Math.floor(Math.max(0, now) / 1800000) % group.length;
+    const rot = group.slice(start).concat(group.slice(0, start));
+    const head = rot[0];
+    const rest = rot.slice(1);
+    const diffIdx = rest.findIndex(g => g.track !== head.track);
+    if (diffIdx > 0) rest.unshift(rest.splice(diffIdx, 1)[0]);   // 换轨道的提前，保证前两个不同 track
+    out.push(head, ...rest);
+  }
+  const next = out.map(g => ({ id: g.id, title: g.title, hint: g.hint, stage: g.stage, track: g.track, feasible: g.feasible, quests: g.quests || [] }));
   return { done: gs.filter(isDone).length, total: gs.length, autoTotal: gs.filter(g => g.done).length, next };
 }
 
@@ -393,6 +424,48 @@ function selftest () {
   check('★ 超前：直接有床 → 前置（砍树/工作台/小屋）都不再列', cs.next.length, 0);
   check('…前置也算做完了（a,b,d 三个有标志里 2 个 + 床 = 计入）', cs.done >= 3, true);
   check('★ 真实 campaign.json 读得出来且有目标', campaign().goals.length > 100, true);
+
+  // 游玩路线 · 任务书进度（2026-09-29 复核）
+  const Q = { goals: [
+    { id: 'q1', title: '读须知', stage: 'start', track: 'mainline', deps: [], quests: ['Q1'] },   // 无 done，靠任务书判
+    { id: 'q2', title: '领小屋', stage: 'start', track: 'home', deps: ['q1'], quests: ['Q2'] },     // 无 done，靠任务书判
+    { id: 'q3', title: '砍树', stage: 'start', track: 'survival', deps: [], done: { have: { log: 3 } } },
+  ] };
+  // 任务书读到 → 无 done 的目标按任务书判：Q1 做完 → 不再列
+  cs = campaignStatus({ items: [], completed: new Set(['Q1']), now: 0 }, Q);
+  check('★ 任务书读到：做完了 Q1 → 它不再出现', cs.next.some(g => g.id === 'q1'), false);
+  check('…Q1 做完 → Q2 的前置过了，冒出来', cs.next.some(g => g.id === 'q2'), true);
+  // 任务书读到且没做完 → 挡住后面
+  cs = campaignStatus({ items: [], completed: new Set(), now: 0 }, Q);
+  check('★ 任务书读到、Q1 没做完 → 挡住 Q2', cs.next.some(g => g.id === 'q2'), false);
+  check('…Q1 / q3 都能做', cs.next.map(g => g.id).sort().join(','), 'q1,q3');
+  // 读不到 → 退回旧行为（无 done 的不挡路）
+  cs = campaignStatus({ items: [], completed: null, now: 0 }, Q);
+  check('★ 任务书读不到 → 无 done 的目标不挡路（Q1,Q2 都在候选里）', cs.next.map(g => g.id).sort().join(','), 'q1,q2,q3');
+  check('…读不到时 q3 没做（没木头）也在候选里', cs.next.some(g => g.id === 'q3'), true);
+  // next 每项带 quests
+  check('★ next 带上 quests', JSON.stringify(cs.next.find(g => g.id === 'q1').quests), '["Q1"]');
+  // 同 stage 优先挑不同 track
+  const T = { goals: [
+    { id: 't1', title: '甲', stage: 'start', track: 'mainline', deps: [] },
+    { id: 't2', title: '乙', stage: 'start', track: 'mainline', deps: [] },
+    { id: 't3', title: '丙', stage: 'start', track: 'home', deps: [] },
+    { id: 't4', title: '丁', stage: 'start', track: 'home', deps: [] },
+  ] };
+  cs = campaignStatus({ items: [], completed: new Set(), now: 0 }, T);
+  check('★ 同 stage 挑不同 track（两项轨道不同）', new Set(cs.next.map(g => g.track)).size, 2);
+  const now0 = campaignStatus({ items: [], completed: new Set(), now: 0 }, T).next.map(g => g.id).join(',');
+  const now1 = campaignStatus({ items: [], completed: new Set(), now: 1800000 }, T).next.map(g => g.id).join(',');
+  check('★ now 变了 → 轮换（同一段里换人）', now0 !== now1, true);
+  check('…轮换窗口 30 分钟：同一窗口内不变', campaignStatus({ items: [], completed: new Set(), now: 60000 }, T).next.map(g => g.id).join(','), now0);
+  check('…轮换后依然挑不同 track', new Set(campaignStatus({ items: [], completed: new Set(), now: 1800000 }, T).next.map(g => g.track)).size, 2);
+  // 最早的有候选 stage 优先（end 阶段的不抢前两个）
+  const S = { goals: [
+    { id: 's1', title: '起点', stage: 'start', track: 'mainline', deps: [] },
+    { id: 's0', title: '起点二', stage: 'start', track: 'survival', deps: [] },
+    { id: 's2', title: '终点', stage: 'end', track: 'boss', deps: [] },
+  ] };
+  check('★ 前两个来自最早的 start 阶段（end 的不抢位）', campaignStatus({ items: [], completed: new Set(), now: 0 }, S).next.slice(0, 2).map(g => g.id).sort().join(','), 's0,s1');
 
   let threw = false; try { setPlan({}); } catch (_) { threw = true; }
   check('没目标 → 报错', threw, true);

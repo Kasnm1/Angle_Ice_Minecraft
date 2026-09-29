@@ -115,7 +115,7 @@ $NODE --check src/bridge/server.js                             # ⚠️ 这个**
 # ② 寻路
 $NODE src/world/pathing.js --selftest; $NODE src/world/place.js --selftest
 # ③ 意识
-$NODE src/mind/mind.js --selftest; $NODE src/mind/memory-store.js --selftest
+$NODE mind.js --selftest; $NODE src/mind/memory-store.js --selftest
 $NODE src/mind/night.js --selftest; $NODE src/mind/plan.js --selftest; $NODE src/mind/speech.js --selftest; $NODE src/mind/ambition.js --selftest; $NODE src/mind/self-review.js --selftest; $NODE --check src/mind/body.js
 $NODE src/mind/llm-codex.js --selftest; $NODE src/mind/llm-workbuddy.js --selftest   # --live 会真调一次（花额度）
 # ④ 知识
