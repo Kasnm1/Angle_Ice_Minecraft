@@ -22,9 +22,9 @@
 
 | 层 | 文件 | 干什么 |
 |---|---|---|
-| **手 + 眼 + 本能** | `bridge-server.js`（+ `hands.js` `commonsense.js` …） | 在 `127.0.0.1:3001` 暴露 HTTP 接口：读状态、做动作（走 / 挖 / 放 / 合成 / 开箱子 / 种地 / 任务书 / 命令 …） |
-| ↑ 本能 | `instinct.js`（bridge 进程内） | 身体自己会的反射：打有仇恨的怪、捡东西、收庄稼、挖看得见的矿、开宝箱、逛洞、搭路、落地水、睡觉、换护甲、整理随身物品、暗处提醒 …；任何命令一到就让出身体（只有战斗反过来叫停命令） |
-| **意识** | `mind.js` + `body.js`（`127.0.0.1:3003`） | LLM 持续经历流：她自己决定做什么、说什么、记什么；长期计划 `plan.js` 以香草纪元通关主线为骨干 |
+| **手 + 眼 + 本能** | `bridge-server.js`（+ `src/bridge/` `src/body/` …） | 在 `127.0.0.1:3001` 暴露 HTTP 接口：读状态、做动作（走 / 挖 / 放 / 合成 / 开箱子 / 种地 / 任务书 / 命令 …） |
+| ↑ 本能 | `src/instinct/instinct.js`（bridge 进程内） | 身体自己会的反射：打有仇恨的怪、捡东西、收庄稼、挖看得见的矿、开宝箱、逛洞、搭路、落地水、睡觉、换护甲、整理随身物品、暗处提醒 …；任何命令一到就让出身体（只有战斗反过来叫停命令） |
+| **意识** | `mind.js` + `src/mind/body.js`（`127.0.0.1:3003`） | LLM 持续经历流：她自己决定做什么、说什么、记什么；长期计划 `src/mind/plan.js` 以香草纪元通关主线为骨干 |
 | **人** | `PERSONA.md` + `memory/` | 人格与持久记忆，跨会话、跨 agent 都还是同一个人 |
 
 > 早期的自主层 `autopilot.js`（脑干，:3002，规则打分循环）与 `brain.js`（快脑/主脑双模型）
@@ -80,16 +80,17 @@ node mind.js                         # 意识           → 127.0.0.1:3003
 
 ## 目录结构
 
-代码按功能**分区放在 [`src/`](src/) 下**（第 2 步重构，2026-09-28；完整路由表见
-[`AGENTS.md`](AGENTS.md) 第二节）；根目录只剩 `bridge-server.js` / `mind.js` 两个
-**一行转发的入口**（Windows 的 `scripts/win/angel.ps1` 起的就是它们）：
+代码按功能**分区放在 [`src/`](src/) 下**（第 2 步重构，2026-09-28；第 3–4 步把几个巨石
+拆成子目录，2026-09-29；完整路由表见 [`AGENTS.md`](AGENTS.md) 第二节）；根目录只剩
+`bridge-server.js` / `mind.js` 两个**一行转发的入口**（Windows 的 `scripts/win/angel.ps1`
+起的就是它们）：
 
 | 分区 | 文件（`src/` 下） |
 |---|---|
-| 共用 | `paths.js`（数据路径唯一来源）`log-stamp.js` |
-| ① 桥 / 协议 / 注册表（手+眼） | `bridge/server.js` `bridge/body-command-lock.js` `bridge/reconnect.js` `body/hands.js` `body/commonsense.js` `body/equip-policy.js` `body/storage-policy.js` `body/inventory-ledger.js` `body/ftbq-sync.js` `instinct/instinct.js` `world/fml-handshake.js` `world/registry-probe.js` `world/block-palette.js` `world/palette-registry.js` `world/item-registry.js` `world/entity-registry.js` |
-| ② 寻路 / 放置 | `world/pathing.js` `world/place.js` |
-| ③ 意识 / 人格 | `mind/mind.js` `mind/body.js` `mind/memory-store.js` `mind/speech.js` `mind/ambition.js` `mind/plan.js` `mind/night.js` `mind/self-review.js` `mind/llm-*.js` `mind/events-reader.js` + `PERSONA.md` |
+| 共用 | `paths.js`（数据路径唯一来源）`log-stamp.js` `util/`（`env` `ids` `inventory` `time`） |
+| ① 桥 / 协议 / 注册表（手+眼） | `bridge/server.js`（汇总）`bridge/{config,state,util,goto,connect,http,reconnect,body-command-lock}.js` `bridge/routes/{body,inspect,diag,palette,scan,gather,move,mine,pickup,place}.js` `body/hands.js`（汇总 → `index.js` + 8 个子文件）`body/{containers,craft,movement,mining,farming,kit,tool-choice,build,util}.js` `body/{commonsense,equip-policy,storage-policy,inventory-ledger,ftbq-sync}.js` `instinct/instinct.js`（汇总 + 8 个子文件）`world/fml-handshake.js` `world/registry-probe.js` `world/block-palette.js` `world/palette-registry.js` `world/item-registry.js` `world/entity-registry.js` |
+| ② 寻路 / 放置 | `world/pathing.js`（转发壳 → `pathing/`）`world/pathing/{movements,doors,ladders,unknown-blocks,fluid,probe,collect,budget,selftest,index}.js` `world/place.js` `world/perception.js` |
+| ③ 意识 / 人格 | `mind/mind.js`（汇总壳，161 行 → `mind/mind/`）`mind/mind/{state,prompt,runtime,scene,look,gates,tools,actions,think,selftest,wiring}.js` `mind/body.js` `mind/memory-store.js` `mind/speech.js` `mind/ambition.js` `mind/plan.js` `mind/night.js` `mind/self-review.js` `mind/llm-*.js` `mind/events-reader.js` + `PERSONA.md` |
 | ④ 知识库 | `knowledge/knowledge.js` + `knowledge/`（配方、标签、掉落、任务书、矿表、作物表、通关主线，从包体自动提取） |
 | ⑤ 运维 / 诊断 | `scripts/` `logs/` `memory/field-log.md`（实机问题台帐） |
 
@@ -98,6 +99,8 @@ node mind.js                         # 意识           → 127.0.0.1:3003
 其余目录：`registry/`（注册表快照、调色板、KubeJS dump）、`references/`（API 规格、Forge 握手、排错）。
 
 > `src/mind/events-reader.js` 只读 `memory/events.jsonl`（旧脑干留下的决策留痕，历史证据）。
+> 巨石拆分后的入口一律是**普通文件转发**（`hands.js` / `instinct.js` / `pathing.js` /
+> `mind.js`），**不用符号链接** —— Windows 的 git 默认签出成纯文本，`require` 会炸。
 
 ---
 
@@ -152,7 +155,7 @@ node mind.js                         # 意识           → 127.0.0.1:3003
 | [`SKILL.md`](SKILL.md) | **完整技术手册**，比这份 README 深得多（方块/物品认知、输入层三层墙、调色板三道闸、寻路安全、本能机制） |
 | [`registry/README.md`](registry/README.md) | 注册表快照 / 方块调色板 / 物品表 / KubeJS dump 全流程与四铁律 |
 | [`PERSONA.md`](PERSONA.md) | 她的人格正文 —— 替她说话前必读 |
-| [`references/`](references/) | API 规格、Forge 握手说明、依赖指南、排错 |
+| [`references/`](references/) | API 规格（[`api-spec.md`](references/api-spec.md)，由 `scripts/gen-api-spec.js` 从路由快照自动生成）、Forge 握手说明、依赖指南、排错 |
 | [`knowledge/`](knowledge/) | 整合包知识库（含 `lookup.py` 查询脚本） |
 | [`AGENTS.md`](AGENTS.md) | **开发入口**：分区路由、自测、硬规矩、现状与待办 |
 | [`memory/field-log.md`](memory/field-log.md) | 实机问题台帐（P1 起，带命令和真实输出） |

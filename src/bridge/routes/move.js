@@ -22,10 +22,10 @@ function withTimeout (...a) { return __ns.withTimeout.apply(null, a); }
 
 /**
  * 本文件负责的路由（4 条）：
- *   POST /drop
- *   POST /unstick
- *   POST /command
- *   POST /move
+ *   POST /drop                   —— 丢出手上的东西（可丢给某个玩家）
+ *   POST /unstick                —— 卡住时脱困
+ *   POST /command                —— 转发一条斜杠命令（注意权限）
+ *   POST /move                   —— 走到指定坐标
  *
  * ⚠️ 上面的清单只是**说明**；真正的键名在下面 routes 对象里，与原 server.js 逐字一致。
  */

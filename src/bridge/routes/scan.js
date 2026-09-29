@@ -21,10 +21,8 @@ function isPlayerBuilt (...a) { return __ns.isPlayerBuilt.apply(null, a); }
 
 /**
  * 本文件负责的路由（2 条）：
- *   GET /scan
- *   GET /surroundings   —— 她的"余光"（2026-09-29 新加）：周围约 32 格**看得见的**
- *                          资源（树 / 矿 / 黏土 / 沙 / 作物 / 花 / 水 / 危险 / 容器），
- *                          分类 + 聚片 + 按"她现在缺什么"排好序，给 mind 直接读。
+ *   GET /scan                    —— 扫附近方块 / 实体，按名字汇总数量
+ *   GET /surroundings            —— 她的"余光"：周围约 32 格看得见的资源，分类 + 聚片 + 按"她现在缺什么"排好序
  *
  * ⚠️ 上面的清单只是**说明**；真正的键名在下面 routes 对象里，与原 server.js 逐字一致。
  */

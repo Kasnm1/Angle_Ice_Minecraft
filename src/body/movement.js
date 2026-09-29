@@ -21,6 +21,9 @@ function commandWords (...a) { return __ns.commandWords.apply(null, a); }
 function doorBase (...a) { return __ns.doorBase.apply(null, a); }
 function doorKey (...a) { return __ns.doorKey.apply(null, a); }
 function doorKind (...a) { return __ns.doorKind.apply(null, a); }
+// 第 5 步修 bug（2026-09-29）：本地这份 `inHome` 少了 `|Δy| ≤ 16`，家里正上方/正下方会被误判"在家"。
+// `home` 的判据只此一份 —— 直接用 `body/util.js` 的正主（同目录 `./util`，不成环），不走 `__ns` 转发壳。
+const { inHomeArea: inHomeAreaShared } = require('./util');
 function ensureFiller (...a) { return __ns.ensureFiller.apply(null, a); }
 function eyeDist (...a) { return __ns.eyeDist.apply(null, a); }
 function give (...a) { return __ns.give.apply(null, a); }
@@ -1064,7 +1067,9 @@ async function sleepInBed (bot, state, { home = null, abort } = {}) {
     .filter(b => /(^|_|:)bed$/.test(b.name) && !/bedrock|flower_bed|seabed|riverbed|maid|pet_|dog_|cat_|kennel|nest/.test(b.name)).map(b => b.id);
   const beds = bot.findBlocks({ matching: ids, maxDistance: 48, count: 20 }).map(p => bot.blockAt(p)).filter(Boolean);
   if (!beds.length) throw new Error('附近 48 格内没有床');
-  const inHome = (p) => home && Math.hypot(p.x - home.center.x, p.z - home.center.z) <= home.radius;
+  // 第 5 步修 bug（2026-09-29）：原为本地内联（只有水平距离、漏了 `|Δy| ≤ 16`）——
+  // 改调 `body/util.js` 的正主 `inHomeArea`（判据只此一份）。
+  const inHome = (p) => inHomeAreaShared(home, p) ? 1 : 0;
   beds.sort((a, b) => (inHome(b.position) - inHome(a.position)) || (bot.entity.position.distanceTo(a.position) - bot.entity.position.distanceTo(b.position)));
   const why = [];
   for (const bed of beds.slice(0, 4)) {

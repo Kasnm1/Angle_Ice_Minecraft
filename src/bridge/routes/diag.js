@@ -31,18 +31,18 @@ function withTimeout (...a) { return __ns.withTimeout.apply(null, a); }
 
 /**
  * 本文件负责的路由（12 条）：
- *   GET /debug/registries
- *   GET /debug/registry
- *   GET /debug/packets
- *   POST /jump
- *   POST /flee
- *   GET /inventory/ledger
- *   GET /ftbq/completed
- *   GET /instinct
- *   GET /instinct/events
+ *   GET /debug/registries        —— 已落盘的注册表清单
+ *   GET /debug/registry          —— 查一张已落盘的注册表
+ *   GET /debug/packets           —— 最近的原始包类型统计
+ *   POST /jump                   —— 跳一下（浮上水面 / 越过一格）
+ *   POST /flee                   —— 血量低时撤退
+ *   GET /inventory/ledger        —— 物品账（背包每次进出记了什么）
+ *   GET /ftbq/completed          —— 任务书哪些做完了
+ *   GET /instinct                —— 本能层状态与诊断
+ *   GET /instinct/events         —— 本能最近的事件流
  *   GET /resources        —— 资源记忆原文（2026-09-29）：她"看过的"野外资源
- *   POST /instinct
- *   POST /stop
+ *   POST /instinct               —— 配置本能（告诉它“家在哪”等）
+ *   POST /stop                   —— 停下当前动作（hold=true 是“站着别动”）
  *
  * ⚠️ 上面的清单只是**说明**；真正的键名在下面 routes 对象里，与原 server.js 逐字一致。
  */

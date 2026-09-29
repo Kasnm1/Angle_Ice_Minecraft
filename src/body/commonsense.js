@@ -371,10 +371,15 @@ async function ride (bot, { action = 'mount', kind = null, x, z, seconds = 20, r
 function routes ({ state }) {
   const bot = () => state.bot;
   return {
+    // 装水 / 倒水（`mode:'pour'` 是倒，否则装）
     'POST /bucket': async (b = {}) => (b.mode === 'pour' ? pourWater(bot(), b) : fillBucket(bot(), b)),
+    // 锄地（把泥土/草方块变成耕地）
     'POST /till': async (b = {}) => till(bot(), b),
+    // 钓鱼（甩竿 → 等咬钩 → 收竿）
     'POST /fish': async (b = {}) => fish(bot(), b),
+    // 对动物动手：喂 / 繁殖 / 剪毛 / 挤奶 / 骑
     'POST /animal': async (b = {}) => animal(bot(), b),
+    // 上载具 / 下船（船、矿车、马…）
     'POST /ride': async (b = {}) => ride(bot(), b),
   };
 }

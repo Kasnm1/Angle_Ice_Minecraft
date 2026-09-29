@@ -20,11 +20,11 @@ function paletteCandidates (...a) { return __ns.paletteCandidates.apply(null, a)
 
 /**
  * 本文件负责的路由（5 条）：
- *   GET /palette
- *   POST /registry/import-palette
- *   GET /palette/state
- *   GET /palette/block
- *   GET /palette/climbable
+ *   GET /palette                 —— 当前调色板加载情况
+ *   POST /registry/import-palette —— 导入服务端方块调色板
+ *   GET /palette/state           —— 查一个 state id 对应的方块
+ *   GET /palette/block           —— 查一个方块名对应的 state id
+ *   GET /palette/climbable       —— 可攀爬方块名单（梯子 / 藤蔓…）
  *
  * ⚠️ 上面的清单只是**说明**；真正的键名在下面 routes 对象里，与原 server.js 逐字一致。
  */

@@ -28,7 +28,7 @@ function withTimeout (...a) { return __ns.withTimeout.apply(null, a); }
 
 /**
  * 本文件负责的路由（1 条）：
- *   POST /pickup
+ *   POST /pickup                 —— 捡附近掉落物（走得到才捡，预算内）
  *
  * ⚠️ 上面的清单只是**说明**；真正的键名在下面 routes 对象里，与原 server.js 逐字一致。
  */

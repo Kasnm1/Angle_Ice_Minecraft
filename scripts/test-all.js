@@ -46,7 +46,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
-const { spawn } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
 
 const ROOT = path.join(__dirname, '..');
 const NODE = process.execPath;                 // 不写死路径：用当前 node 可执行文件
@@ -529,6 +529,19 @@ function checkMindExports () {
   return PROBLEMS;
 }
 
+// ---- api-spec 与路由快照一致（第 5 步文档）----------------------------------
+//
+// `references/api-spec.md` 由 `scripts/gen-api-spec.js` 从 `references/routes.json` 生成。
+// 路由有增减时，如果忘了重新生成，文档就偷偷过期了 —— 这里把"生成一遍 = 现在这份"钉住。
+// 生成器**不 require 任何 bridge 模块**（只读文件 + 正则），所以跑它零风险（不碰 3001 / 不连服）。
+function checkApiSpec () {
+  const gen = path.join(__dirname, 'gen-api-spec.js');
+  const r = spawnSync(NODE, [gen, '--check'], { cwd: ROOT, encoding: 'utf8' });
+  const out = `${r.stdout || ''}${r.stderr || ''}`.trim();
+  if (r.status === 0) return [];
+  return out.split('\n').map(l => l.replace(/^\s+/, '')).filter(Boolean);
+}
+
 // ---- 主流程 ----------------------------------------------------------------
 async function main () {
   let plan = buildPlan();
@@ -687,18 +700,29 @@ async function main () {
     console.log('\n  [exports] mind.js 的 36 个导出名与顺序和快照一致');
   }
 
+  // ---- api-spec 与路由快照一致 -------------------------------------------------
+  // 第 5 步文档的防线：路由增减后忘了重新生成 api-spec → 文档静默过期。
+  const apiSpecProblems = checkApiSpec();
+  if (apiSpecProblems.length) {
+    console.log('\n  ✗ references/api-spec.md 与路由快照不一致（路由有增减，或忘了重新生成）：');
+    for (const p of apiSpecProblems) console.log(`      ${p}`);
+  } else {
+    console.log('\n  [api-spec] references/api-spec.md 与路由快照一致（140 条路由）');
+  }
+
   // ---- 总判定 ---------------------------------------------------------------
   const passed = rows.filter(r => r.kind === 'pass').length;
   console.log('');
   console.log(`  合计：${passed} 通过 · ${known.length} 已知失败 · ${newFails.length} 新失败 · 总用时 ${elapsed.toFixed(1)}s`);
 
-  if (pathProblems.length || exportProblems.length || instinctProblems.length || pathingProblems.length || bridgeProblems.length || mindProblems.length || newFails.length) {
+  if (pathProblems.length || exportProblems.length || instinctProblems.length || pathingProblems.length || bridgeProblems.length || mindProblems.length || apiSpecProblems.length || newFails.length) {
     if (newFails.length) console.log('  ✗ 有非已知失败，退出码 1');
     else if (pathProblems.length) console.log('  ✗ paths.js 数据路径检查失败，退出码 1');
     else if (exportProblems.length) console.log('  ✗ hands.js 导出快照对不上，退出码 1');
     else if (instinctProblems.length) console.log('  ✗ instinct.js 导出快照对不上，退出码 1');
     else if (pathingProblems.length) console.log('  ✗ pathing.js 导出快照对不上，退出码 1');
     else if (mindProblems.length) console.log('  ✗ mind.js 导出快照对不上，退出码 1');
+    else if (apiSpecProblems.length) console.log('  ✗ references/api-spec.md 过期，退出码 1');
     else console.log('  ✗ bridge-server 接口快照对不上，退出码 1');
     process.exit(1);
   }

@@ -214,7 +214,12 @@ async function sweepUpDrops (bot, around, opts = {}) {
   //    服务端要几十到几百毫秒才把物品塞进背包。
   //    实测：`walked: 1` 但 `picked: 0`，而**几秒后**背包确实多了一件。
   //    所以核对也要"等一下再读"，不能走完立刻读。
+  //
+  // ⚠️ 第 5 步修 bug（2026-09-29）：`inventoryCount` 读不到时返回 `null`（AGENTS §5-1）。
+  //    这里**先判可读**：读不到就不报"捡到了几件"，而是如实报 `pickedKnown: false`
+  //    （`picked` 保持 0，但配一个明确的 `unreadable` 标记，绝不假装"读到了 0 件"）。
   const invBefore = inventoryCount(bot);
+  const canReadInv = invBefore !== null;
   const deadline = Date.now() + budgetMs;
   let walkedTo = 0;
   // ⚠️ 她当前站的高度，整个循环里算一次就够（掉落物距离都很近，她不会在这期间上下大落差）。
@@ -299,28 +304,46 @@ async function sweepUpDrops (bot, around, opts = {}) {
   const settleMs = opts.settleMs ?? 1200;
   const settleDeadline = Date.now() + settleMs;
   const hadCandidates = drops.length > 0;
-  let gained = inventoryCount(bot) - invBefore;
+  // 背包读不到时无法用差值判"捡到没有" —— 不做减法（`null - null` 会算成 0），
+  // 也不再等背包稳定（没有可比的数）。picked 保持 0，由 `unreadable` 说明原因。
+  let gained = canReadInv ? inventoryCount(bot) - invBefore : null;
   let lastGained = gained;
-  while (hadCandidates && Date.now() < settleDeadline) {
+  while (hadCandidates && canReadInv && Date.now() < settleDeadline) {
     await sleep(150);
     gained = inventoryCount(bot) - invBefore;
     if (gained > 0 && gained === lastGained) break;   // 已经稳定：拿完了
     lastGained = gained;
   }
 
-  out.picked = Math.max(0, gained);
+  out.picked = gained === null ? 0 : Math.max(0, gained);
   // `walked` 与 `picked` **分开报**：差值有信息量 ——
   // walked > picked 就是"走过去了但没进包"（被抢/够不到/掉落物已消失）。
   // 只报一个 `picked` 的话，这种摩擦永远看不出来。
   out.walked = walkedTo;
+  // 背包读数不可信时单独报 —— 否则 `picked: 0` 会被当成"她一件都没捡到"。
+  if (!canReadInv) out.unreadable = '背包读不到，picked 不可信（不是"没捡到"）';
   return out;
 }
 
+/**
+ * 全背包总件数。**读不到时返回 `null`，不返回 0**（AGENTS.md §5-1：没有 ≠ 读不到）。
+ *
+ * "背包里一件都没有"（空包，合法）和"背包读不出来"（bot 还没连上 / inventory 崩了）
+ * 是两回事 —— 以前 `catch { return 0 }` 把两者混成一句，于是
+ * `inventoryCount(bot) - invBefore` 在**两次都读不到**时会算出 `0`，
+ * 被下游当成"背包没变化 = 一件都没捡到"，而这只是**没读到**。
+ *
+ * 所有调用方都必须显式处理 `null`（见各自调用点的注释）：
+ * 拿它做差值时先判可读，读不到就**如实报"读不到"**，不要报 0。
+ */
 function inventoryCount (bot) {
   try {
-    const items = bot?.inventory?.items() || [];
+    const inv = bot?.inventory;
+    if (!inv || typeof inv.items !== 'function') return null;   // 没有背包对象 = 读不到
+    const items = inv.items();
+    if (!Array.isArray(items)) return null;
     return items.reduce((sum, it) => sum + (Number(it?.count) || 0), 0);
-  } catch (_) { return 0; }
+  } catch (_) { return null; }   // 读不到 —— 不兜成 0
 }
 
 function resolveBlocksForItem (bot, itemName) {

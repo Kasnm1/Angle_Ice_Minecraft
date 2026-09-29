@@ -109,7 +109,7 @@ $NODE --check src/bridge/server.js                       # 唯一的语法检查
 for f in src/bridge/*.js src/bridge/routes/*.js; do $NODE --check $f || echo BAD $f; done
 $NODE src/bridge/body-command-lock.js --selftest; $NODE src/bridge/reconnect.js --selftest
 $NODE scripts/bridge-reload-test.js # 各文件在 loadDependencies() 之后读得到 Vec3 / goals / 插件（真跑一遍，不连服）
-$NODE scripts/routes-test.js        # 路由清单契约（138 条）+ bridge 路由键序
+$NODE scripts/routes-test.js        # 路由清单契约（140 条：bridge 60 / hands 75 / commonsense 5）+ bridge 路由键序
 $NODE scripts/test-all.js           # 全套；含 checkBridgeExports（13 导出名 + 58 路由键序）
 ```
 

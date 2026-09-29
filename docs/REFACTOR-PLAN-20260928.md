@@ -76,3 +76,51 @@ angleice/
 ## 主人的决定（2026-09-28）
 - 旧脑干、HANDOVER / STATUS / skill-card：**没必要保存**，直接删（git 历史可查）。
 - 目录方案按上面的 `src/` 走；挪完把 AGENTS.md 里"不要为了整齐挪文件"改成"按 src/ 分区放"。
+
+---
+
+## 完成情况（2026-09-29）
+
+分支 `refactor/structure`。第 0–4 步全部落地；第 5 步（文档）本次收尾。
+
+| 步 | 内容 | 提交 |
+|---|---|---|
+| 0 | 安全网：`test-all.js` / 冒烟入库 / bridge 可无连接 require / 路由快照 / `check-moved.js` | `ebb70c9`（计划）+ 后续各步 `npm test` 全绿 |
+| 1 | 删旧脑干（`autopilot` `reflex` `journal` `brain` `decision`）+ 旧文档；`pickAutoEquip` 原样留 | `59c63b0` |
+| 2 | 代码挪进 `src/`（bridge / body / instinct / world / mind / knowledge），根只留两个转发入口 | `aefabb8` |
+| 3-1 | `hands.js` 5598 行 → `src/body/` 9 个子文件 + `index.js` | `02f203a` |
+| 3-2 | `bridge/server.js` 6872 行 → `bridge/` 6 个文件 + `routes/` 10 个文件 | `c090020` |
+| 3-3 | `instinct.js` 3561 行 → 8 个子文件 + 汇总 | `0d919c8` |
+| 3-4 | `mind.js` 3250 行 → `src/mind/mind/` 11 个子文件 + 汇总壳 | `b346fe7` / `2c15f9c` |
+| 3-5 | `pathing.js` 3798 行 → `src/world/pathing/` 10 个文件 + 转发壳 | `29c10c6` / `6c6f6a0` |
+| 4 | 去重：小工具收进 `src/util/`（`time` / `ids` / `inventory` / `env`），同一判据只留一份 | `274b51e` |
+| 5 | 文档（本次）：各 `AGENTS.md` / `README.md` 按现状重写 + `references/api-spec.md` 自动生成 | 本次 |
+
+### 上线后暴露的拆分遗漏（都已修，防它们的工具见下）
+
+拆巨石"只搬不改"最容易漏的不是函数体，而是**函数体之外的接线**：
+
+1. **漏搬的顶层语句** —— `http.js` 的 `main()` 用 `BRIDGE_VERSION`，拆开后那个 `const` 没跟着搬，一上线就 `ReferenceError`（`0999e49`）。
+   → 现在由 `scripts/refactor/check-toplevel.py` 守：比对拆前拆后的顶层语句集合，少了就报。
+2. **接线错误：函数名指向不存在的东西 / 作用域没接上** —— 实机"开背包 / 开箱子"报 `summarizeWindow is not defined`（`98a9bfa`）。
+   → `scripts/refactor/check-scope.js`：扫出"用到但没拿到的名字"（含模板字符串 / 展开）。
+   → `scripts/split-wiring-test.js`（812 条）：专门验转发壳指向的名字**真的存在**、`bind()` 回填后不是 `undefined`。
+3. **访问器装错对象 / 转发壳指向不存在的名字** —— `thinkTimer` 这类模块级 `let` 被复制成多份，或壳子 `require` 一个拆掉后不存在的路径。
+   → 约定写在 `src/mind/AGENTS.md`（拆环三招）与各 `AGENTS.md`「循环依赖」小节；`check-scope` + `split-wiring-test` 一起守。
+4. **路径从 `__dirname` 拼的运行时目录** —— 文件挪进 `src/` 后必须从项目根算。
+   → 统一走 `src/paths.js`（唯一来源）；`bridge-boot-test.js` / `bridge-reload-test.js` 在真起进程的层面上守。
+
+### 现在守着的网（每步都跑）
+
+- `scripts/test-all.js`（`npm test`）：全部 `--selftest` / `--check` / `scripts/*-test.js` / 冒烟 + **api-spec 是否过期**；已知红的两项单列，不许新增。
+- `scripts/refactor/check-moved.js`：拆前拆后函数体逐字比对（第 2、3 步验收用）。
+- `scripts/refactor/check-toplevel.py` / `check-scope.js`：上面第 1、2 条遗漏的专门防线。
+- `scripts/split-wiring-test.js`（812）/ `bridge-boot-test.js`（6）/ `bridge-reload-test.js`（25）：转发壳 / 启动 / 热重载三条接线防线。
+- `scripts/routes-test.js`：路由快照 `references/routes.json` 比对（140 条：bridge 60 / hands 75 / commonsense 5）。
+- `scripts/gen-api-spec.js --check`：`references/api-spec.md` 从快照重新生成后比对，路由变了没重生成就报红。
+
+### 本次第 5 步顺手修的 3 个 bug（跟重构同一批发现）
+
+1. **家范围漏了高度**：`body/movement.js` 与 `instinct/core.js` 各自内联的"在不在家"没有 `|Δy| ≤ 16`，家里正上方/正下方会被误判在家。两处都改调正主 `body/util.js` 的 `inHomeArea`（判据只此一份）。
+2. **`/attack` 认不出模组怪**：`bridge/routes/body.js` 的本地 `HOSTILE` Set 只认 22 个原版名字。改用正主 `world/entity-registry.js` 的 `isHostileEntity`，并加 `isBossEntity` 把 Boss 排除在**自动挑怪**之外（明确指定目标不受影响）。
+3. **`inventoryCount` 把"读不到"兜成 0**：违反 AGENTS.md §5-1。改返回 `null`，11 处调用点逐个处理（`bridge/util.js` 的 `sweepUpDrops`、`routes/mine.js` 的 `countDelta`、`routes/inspect.js`），读不到时如实报 `unreadable` / `inventoryUnreadable`。

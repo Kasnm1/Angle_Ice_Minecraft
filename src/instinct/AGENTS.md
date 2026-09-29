@@ -205,14 +205,14 @@ mind 侧提示词对应的一小段也已改成"小伤不用每次都问，真�
 ## 自测
 
 ```bash
-$NODE src/instinct/instinct.js --selftest        # 全部小节 —— 条数以实际输出为准
-$NODE src/instinct/core.js --selftest            # 单个子文件也能跑（config/testkit 没有小节，不写开关分支）
-$NODE src/instinct/survival.js --selftest        # 水下判据（憋气/氧气归一/水下方块/头顶）+ **落地水**（该不该倒 / 收到哪一步）
-$NODE src/world/perception.js --selftest         # 分类/聚片（含事件过滤 worthTelling、少扫 shouldRescan、写盘 shouldSave）；带**性能断言**（真实注册表的事件循环延迟）
-$NODE scripts/smoke/smoke-install.js             # 假 bot 驱动真实的 install()，跑 6 秒不崩
-$NODE scripts/smoke/smoke-eat.js                 # 吃东西冒烟
-$NODE scripts/smoke/smoke-surface.js             # 上岸冒烟
-$NODE scripts/instinct-scheduling-test.js        # 调度/计时器（含"氧气事件立即上浮"）
+$NODE src/instinct/instinct.js --selftest        # 全部小节（571 条）
+$NODE src/instinct/core.js --selftest            # 单个子文件也能跑（160 条；config/testkit 没有小节，不写开关分支）
+$NODE src/instinct/survival.js --selftest        # 水下判据（憋气/氧气归一/水下方块/头顶）+ **落地水**（该不该倒 / 收到哪一步）（165 条）
+$NODE src/world/perception.js --selftest         # 分类/聚片（含事件过滤 worthTelling、少扫 shouldRescan、写盘 shouldSave）；带**性能断言**（124 条）
+$NODE scripts/smoke/smoke-install.js             # 假 bot 驱动真实的 install()，跑 6 秒不崩（8 条）
+$NODE scripts/smoke/smoke-eat.js                 # 吃东西冒烟（5 条）
+$NODE scripts/smoke/smoke-surface.js             # 上岸冒烟（5 条）
+$NODE scripts/instinct-scheduling-test.js        # 调度/计时器（含"氧气事件立即上浮"）（38 条）
 ```
 
 `--selftest` 测的是**纯函数**，真正上线跑的是 `install()` —— 冒烟脚本补的就是这条缝。

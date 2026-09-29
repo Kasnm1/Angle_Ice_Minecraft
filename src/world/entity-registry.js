@@ -200,6 +200,50 @@ function isHostileEntity (entity, aggroOf = null) {
   return false;
 }
 
+// ------------------------------------------------------------------ ②c Boss（只此一份）
+//
+// 用途：`POST /attack` **不带目标**时的自动挑怪，要把 Boss 排除在外
+// （主人 2026-09-29 决定 —— 自动挑到 warden / wither 就是送死）。
+// **明确点名**打的（带了 target id / 名字）不受这个排除影响：那是主人/她自己的意志。
+//
+// 判据只写这一处。怎么认 Boss：
+//   1. `entity.type === 'boss'` —— 服务端实体注册表若给了类别就用它（原版注册表不带，
+//      但模组可以）；`entity.boss === true` 也认（mineflayer / 模组若标了 boss 位）。
+//   2. 血量阈值 `BOSS_HEALTH` —— **只有明确知道血量的活物**才算数（掉落物、方块、玩家都不算），
+//      免得"读不到血量"被当成"血量很高"（AGENTS §5-1）。
+//   3. 名字规则 `BOSS_NAMES`（兜底）—— 原版 4 个 + 整合包里认得出的模组 Boss。
+//      名字比较一律走 `normName`（剥任意命名空间），和 `isHostileEntity` 同一套。
+const BOSS_HEALTH = 100;
+const BOSS_NAMES = new Set([
+  // ---- 原版 ----
+  'warden', 'wither', 'ender_dragon', 'elder_guardian',
+  // ---- 整合包模组 Boss（按名字认得出的；名字改了的话靠上面的血量阈值兜）----
+  'ignis', 'maledictus', 'netherite_monstrosity', 'ender_golem', 'harbinger',
+  'the_harbinger', 'ender_guardian', 'gauntlet_of_bulwark', 'void_worm',
+  'leviathan', 'ancient_remnant', 'scylla', 'hydra', 'minoshroom', 'naga',
+  'snow_queen', 'alpha_yeti', 'ur_ghast', 'lich', 'death_tome', 'kobolediator',
+  'wadjet', 'hippogryph', 'ferrous_wroughtnaut', 'frostmaw', 'umvuthi',
+  'mutant_zombie', 'mutant_skeleton', 'mutant_creeper', 'mutant_enderman',
+  'void_blossom', 'obsidilith', 'knight_phantom', 'night_lich', 'priest_phantom',
+]);
+
+/**
+ * 它是不是"Boss"—— 自动挑目标时要绕开的。
+ *
+ * @param entity 实体（mineflayer entity 或已补名的模组实体）
+ * @returns {boolean}
+ *
+ * 保守为 false：认不出就说不是 Boss。`isHostileEntity` 仍然是**独立**的判据 ——
+ * 本函数不做敌对判断，调用方要的是"敌对且不是 Boss"。
+ */
+function isBossEntity (entity) {
+  if (!entity) return false;
+  if (entity.type === 'boss' || entity.boss === true) return true;
+  // 血量阈值：只认"明确读到血量"的活物（number 才算，undefined/null 一律不算）。
+  if (typeof entity.health === 'number' && entity.health >= BOSS_HEALTH) return true;
+  return BOSS_NAMES.has(normName(entity.name || '').toLowerCase());
+}
+
 /**
  * 它的头朝向与"它 → 目标"方向的夹角（度）。
  * mineflayer 的 yaw 约定（conv.fromNotchianYaw = 180° - notch）：朝向向量 = (-sin yaw, -cos yaw)，yaw=0 朝北(-z)。
@@ -396,6 +440,36 @@ function selftest () {
       return e.name;
     })(), 'zombie');
 
+  // ---- ②c Boss 判据（只此一份；`POST /attack` 自动挑目标时用来排除）----
+  // 自测按任务书给的三组：能挑的（zombie / 模组怪）、不能挑的（warden / wither）、点名照打（由路由层保证）。
+  check('★ 僵尸 → 不是 Boss', isBossEntity({ name: 'zombie', type: 'hostile' }), false);
+  check('★ 模组怪（cataclysm:ignis）→ 是 Boss', isBossEntity({ name: 'cataclysm:ignis', type: 'other' }), true);
+  check('★ warden → 是 Boss', isBossEntity({ name: 'warden', type: 'hostile' }), true);
+  check('★ wither → 是 Boss', isBossEntity({ name: 'wither', type: 'hostile' }), true);
+  check('★ ender_dragon → 是 Boss', isBossEntity({ name: 'ender_dragon', type: 'hostile' }), true);
+  check('★ elder_guardian → 是 Boss', isBossEntity({ name: 'elder_guardian', type: 'hostile' }), true);
+  check('带命名空间的 wither（minecraft:wither）也认', isBossEntity({ name: 'minecraft:wither', type: 'other' }), true);
+  check('模组命名空间的 Boss（mod:wither）也认', isBossEntity({ name: 'mod:wither', type: 'other' }), true);
+  check('★ 血量 ≥ 阈值 → 是 Boss（名字认不出的模组 Boss）',
+    isBossEntity({ name: 'unknown_boss', type: 'other', health: BOSS_HEALTH }), true);
+  check('血量 < 阈值 → 不是 Boss', isBossEntity({ name: 'unknown_boss', type: 'other', health: 20 }), false);
+  // "读不到血量" ≠ "血量很高"（AGENTS §5-1）：必须靠名字，不能靠猜。
+  check('★ 血量读不到（undefined）→ 不按血量判 Boss',
+    isBossEntity({ name: 'some_mod_mob', type: 'other', health: undefined }), false);
+  check('★ 血量是 null → 不按血量判 Boss', isBossEntity({ name: 'some_mod_mob', type: 'other', health: null }), false);
+  check('type=boss → 是 Boss', isBossEntity({ name: 'whatever', type: 'boss' }), true);
+  check('boss=true 标记 → 是 Boss', isBossEntity({ name: 'whatever', type: 'other', boss: true }), true);
+  check('被动动物（牛）→ 不是 Boss', isBossEntity({ name: 'cow', type: 'animal' }), false);
+  check('普通原版敌对怪（skeleton）→ 不是 Boss', isBossEntity({ name: 'skeleton', type: 'hostile' }), false);
+  check('null → 不是 Boss', isBossEntity(null), false);
+  check('空对象 → 不是 Boss', isBossEntity({}), false);
+  // "敌对 + 不是 Boss" 才是自动挑目标要的，两个判据互相独立。
+  // （`check` 是严格相等，不能比数组/对象 —— 拆成单个布尔断言。）
+  check('warden 既是敌对又是 Boss（所以自动挑目标要排掉）',
+    isHostileEntity({ name: 'warden', type: 'hostile' }) && isBossEntity({ name: 'warden', type: 'hostile' }), true);
+  check('僵尸是敌对但不是 Boss（可以自动挑）',
+    isHostileEntity({ name: 'zombie', type: 'hostile' }) && !isBossEntity({ name: 'zombie', type: 'hostile' }), true);
+
   console.log(`\n${pass} passed, ${fail} failed`);
   return fail ? 1 : 0;
 }
@@ -409,6 +483,9 @@ module.exports = {
   isAggressive,
   HOSTILE_NAMES,
   isHostileEntity,
+  BOSS_NAMES,
+  BOSS_HEALTH,
+  isBossEntity,
   facingAngleDeg,
   createAggroTracker,
   selftest,

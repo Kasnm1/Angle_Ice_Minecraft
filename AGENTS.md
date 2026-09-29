@@ -45,34 +45,37 @@ Minecraft 陪伴型 AI。游戏内 ID 固定 **`Angle_ICE`**，跑在 Forge 1.20
 第 2 步重构（2026-09-28）后，代码按功能**分区放在 [`src/`](src/) 下**；
 数据目录（`memory/` `knowledge/` `registry/` `logs/`）与 `config.json` `.env` **留在根**，
 路径一律走 [`src/paths.js`](src/paths.js)。根目录只留两个一行转发的入口。
+**第 3 步（2026-09-28/29）把五个巨石各拆成了子目录**：`body/`（hands 拆成 8 个领域文件）、
+`instinct/`（7 个本能文件）、`bridge/`（`routes/` 10 个路由文件 + 连接/状态/HTTP）、
+`mind/mind/`（意识 11 个文件）、`world/pathing/`（寻路 10 个文件）；小工具收进 `util/`。
 按功能分成 5 区，每区有一个专属 subagent（`.claude/agents/`）：
 
 | 分区 | 文件（`src/` 下） | 相关目录 | Subagent |
 |---|---|---|---|
-| **① 桥 / 协议 / 注册表**（手+眼） | `bridge/server.js` `bridge/body-command-lock.js` `bridge/reconnect.js` `body/hands.js` `body/commonsense.js` `body/equip-policy.js` `body/storage-policy.js` `body/inventory-ledger.js` `body/ftbq-sync.js` `instinct/instinct.js` `world/fml-handshake.js` `world/registry-probe.js` `world/block-palette.js` `world/palette-registry.js` `world/item-registry.js` `world/entity-registry.js` | [`registry/`](registry/) [`references/`](references/) | `mc-bridge` |
-| **② 寻路 / 放置 / 站位**（几何） | `world/pathing.js` `world/place.js` | — | `mc-pathing` |
-| **③ 意识 / 人格**（LLM 层） | `mind/mind.js` `mind/body.js` `mind/memory-store.js` `mind/speech.js` `mind/ambition.js` `mind/self-review.js` `mind/llm-codex.js` `mind/llm-workbuddy.js` `mind/night.js` `mind/plan.js` `mind/events-reader.js` `PERSONA.md` | [`memory/`](memory/) | `mc-mind` |
+| **① 桥 / 协议 / 注册表**（手+眼） | `bridge/server.js` `bridge/state.js` `bridge/http.js` `bridge/connect.js` `bridge/config.js` `bridge/util.js` `bridge/goto.js` `bridge/body-command-lock.js` `bridge/reconnect.js` `bridge/routes/{inspect,scan,pickup,body,place,move,mine,gather,palette,diag}.js` `body/hands.js`（→`body/index.js` + 8 个领域文件）`body/commonsense.js` `body/equip-policy.js` `body/storage-policy.js` `body/inventory-ledger.js` `body/ftbq-sync.js` `instinct/instinct.js`（→ `instinct/` 7 个文件）`world/fml-handshake.js` `world/registry-probe.js` `world/block-palette.js` `world/palette-registry.js` `world/item-registry.js` `world/entity-registry.js` `world/perception.js` | [`registry/`](registry/) [`references/`](references/) | `mc-bridge` |
+| **② 寻路 / 放置 / 站位**（几何） | `world/pathing.js`（→ `world/pathing/` 10 个文件）`world/place.js` | — | `mc-pathing` |
+| **③ 意识 / 人格**（LLM 层） | `mind/mind.js`（→ `mind/mind/` 11 个文件）`mind/body.js` `mind/memory-store.js` `mind/speech.js` `mind/ambition.js` `mind/self-review.js` `mind/llm-codex.js` `mind/llm-workbuddy.js` `mind/night.js` `mind/plan.js` `mind/events-reader.js` `PERSONA.md` | [`memory/`](memory/) | `mc-mind` |
 | **④ 知识库**（整合包真值） | `knowledge/knowledge.js` | [`knowledge/`](knowledge/) | `mc-knowledge` |
 | **⑤ 运维 / 诊断 / 台账** | `scripts/start.sh` `stop.sh`（一次性诊断脚本在 `scripts/_attic/`） | [`scripts/`](scripts/) `logs/` [`memory/field-log.md`](memory/field-log.md) | 主会话自己做 |
 
-共用（`src/` 根）：`paths.js`（数据路径唯一来源）、`log-stamp.js`（console 打墙钟时间）。
+共用（`src/` 根）：`paths.js`（数据路径唯一来源）、`log-stamp.js`（console 打墙钟时间）、`util/`（跨区小工具 `time`/`ids`/`env`/`inventory`）。
+每个子目录（`body/` `instinct/` `bridge/` `world/` `mind/` `mind/mind/` `knowledge/`）都有自己的 `AGENTS.md`，进目录工作会自动加载。
 
 依赖方向（改动时注意下游）：
 ```
 bridge ← body/{hands, commonsense, equip-policy, inventory-ledger, storage-policy, ftbq-sync},
-         world/{pathing, place, fml-handshake, registry-probe, block-palette,
+         world/{pathing, place, perception, fml-handshake, registry-probe, block-palette,
                 palette-registry, item-registry, entity-registry},
          instinct/instinct, mind/night, knowledge/knowledge
-mind   ← mind/{body, memory-store, speech, ambition, night, plan, self-review},
+mind   ← mind/mind/*, mind/{body, memory-store, speech, ambition, night, plan, self-review},
          knowledge/knowledge, body/inventory-ledger(只用 render), body/storage-policy
 mind/body ← knowledge/knowledge, mind/{speech, memory-store}, body/storage-policy
 hands / ambition ← knowledge/knowledge, mind/memory-store
-instinct ← body/equip-policy（打怪前挑武器）
+instinct ← body/equip-policy（打怪前挑武器）、world/entity-registry（敌对/Boss 判据）
+body/containers、instinct/core ← body/util 的 inHomeArea（家范围判据只此一份）
 ```
 ⚠️ `body/equip-policy.js` 同时被 `bridge/server.js`（`POST /equip` 的 auto 分支）和
 `instinct/instinct.js`（`deps.pickAutoEquip`）引用 —— 改它要两边都测。
-
-每个区有自己的 `AGENTS.md`（进入该目录工作时会自动加载）；`src/AGENTS.md` 是分区总览。
 
 ---
 
@@ -101,31 +104,41 @@ NODE=/Users/starwish/.workbuddy-ai/binaries/node/versions/22.22.2-2/bin/node
 ```bash
 # ① 桥
 $NODE src/world/item-registry.js --selftest;  $NODE src/world/block-palette.js --selftest
-$NODE src/world/entity-registry.js --selftest                         # 模组生物补名 + 仇恨判据
-$NODE src/instinct/instinct.js --selftest; $NODE src/body/inventory-ledger.js --selftest   # 本能（拾取 / 让出身体）；物品账
-$NODE src/body/commonsense.js --selftest; $NODE src/body/ftbq-sync.js --selftest      # 装水倒水锄地、钓鱼、动物、载具；任务书进度包（按反编译格式造包读回）
-$NODE src/world/palette-registry.js --selftest; $NODE src/bridge/reconnect.js --selftest
-$NODE src/body/equip-policy.js --selftest                            # 该换什么到手上来（空手 / 拿错东西）
+$NODE src/world/entity-registry.js --selftest                         # 模组生物补名 + 仇恨 + Boss 判据
+$NODE src/world/palette-registry.js --selftest; $NODE src/world/perception.js --selftest
+$NODE src/bridge/body-command-lock.js --selftest; $NODE src/bridge/reconnect.js --selftest
+$NODE --check src/bridge/util.js; $NODE --check src/bridge/config.js       # 无 selftest 的只做 --check
+for f in src/bridge/routes/*.js; do $NODE --check $f || echo BAD $f; done  # 路由文件没有 --selftest
+$NODE scripts/routes-test.js; $NODE scripts/bridge-reload-test.js     # 路由快照（140 条）+ 热重载接线
+$NODE src/instinct/instinct.js --selftest                            # 本能（拾取 / 让出身体 / 战斗 / 憋气…）
+$NODE src/body/hands.js --selftest                                   # 假 bot 驱动真实的手（汇总跑 8 个领域文件）
+$NODE src/body/{util,containers,craft,movement,mining,farming,kit,tool-choice,build}.js --selftest
+$NODE src/body/commonsense.js --selftest; $NODE src/body/inventory-ledger.js --selftest
+$NODE src/body/equip-policy.js --selftest; $NODE src/body/ftbq-sync.js --selftest
 $NODE src/mind/events-reader.js --selftest                           # 读 memory/events.jsonl（旧脑干留痕的历史证据）
 $NODE scripts/fml-snapshot-test.js; $NODE scripts/palette-guard-test.js
 $NODE scripts/angelpal-to-palette.js --selftest
 $NODE scripts/angelpal-encoder-parity-test.js               # KubeJS 侧与 Node 侧的形状编码必须逐字节一致
-$NODE src/body/hands.js --selftest                                  # 假 bot 驱动真实的 startFollow / go
 $NODE --check src/bridge/server.js                             # ⚠️ 这个**只能 --check**
 # ② 寻路
 $NODE src/world/pathing.js --selftest; $NODE src/world/place.js --selftest
 # ③ 意识
 $NODE mind.js --selftest; $NODE src/mind/memory-store.js --selftest
-$NODE src/mind/night.js --selftest; $NODE src/mind/plan.js --selftest; $NODE src/mind/speech.js --selftest; $NODE src/mind/ambition.js --selftest; $NODE src/mind/self-review.js --selftest; $NODE --check src/mind/body.js
+$NODE src/mind/night.js --selftest; $NODE src/mind/plan.js --selftest; $NODE src/mind/speech.js --selftest; $NODE src/mind/ambition.js --selftest; $NODE src/mind/self-review.js --selftest
 $NODE src/mind/llm-codex.js --selftest; $NODE src/mind/llm-workbuddy.js --selftest   # --live 会真调一次（花额度）
 # ④ 知识
 $NODE src/knowledge/knowledge.js --selftest
+# ⑤ 跨区工具（第 4 步去重的产物）
+$NODE src/util/time.js --selftest; $NODE src/util/ids.js --selftest; $NODE src/util/env.js --selftest; $NODE src/util/inventory.js --selftest
 ```
 
 - 全套一起跑用 `npm test`（`scripts/test-all.js`）：自动发现 `src/` 下带 `--selftest` 的文件 +
   根目录两个入口与 `src/` 下无 selftest 的走 `--check` + `scripts/*-test.js` + 冒烟，
-  汇总成一张表，已知失败单列且**不许新增**；另核对 `src/paths.js` 的数据路径都真实存在。
+  汇总成一张表，已知失败单列且**不许新增**；另核对 `src/paths.js` 的数据路径都真实存在、
+  各汇总文件导出快照、以及 `references/api-spec.md` 与路由快照一致。
 - 根目录入口也能跑：`node mind.js --selftest`（`bridge-server.js` 仍**只能** `--check`）。
+  ⚠️ `mind.js` 现在是**一行转发到 `src/mind/mind.js`**：自测必须从根目录 `$NODE mind.js --selftest` 跑
+  （`src/mind/mind.js` 自己不启动 cli，直接 node 它一条断言都不跑）。
 
 - ⚠️ **`src/bridge/server.js` 绝不能 `--selftest`**：一 `require` 就去连服务器、抢 3001 端口。只能 `--check`。
 - 自测红了，**先怀疑断言**（`check` 是严格相等，不能比对象）—— 项目里多次差点去改正确的代码。
@@ -163,6 +176,9 @@ $NODE src/knowledge/knowledge.js --selftest
 |---|---|
 | **重构第 1 步：删除旧脑干** | ✅ 已完成（2026-09-28，分支 `refactor/structure`）：`autopilot.js` `reflex.js` `journal.js` `brain.js` `decision.js` `events.js` 与 `HANDOVER.md` `STATUS.md` `skill-card.md` 已删（git 历史可查）；`pickAutoEquip` 原样搬到 `equip-policy.js`；`events.jsonl` 留只读的 `events-reader.js`。详见 `docs/REFACTOR-PLAN-20260928.md` |
 | **重构第 2 步：代码挪进 `src/`** | ✅ 已完成（2026-09-28，分支 `refactor/structure`）：31 个根 `.js` 按区挪进 `src/`（只挪位置、只改 require/paths）；新增 [`src/paths.js`](src/paths.js) 作数据路径唯一来源；根目录剩 `bridge-server.js` / `mind.js` 两个一行转发入口（Windows 脚本不变）。`npm test` 41 通过 · 2 已知失败，各文件断言数与挪前一致；`check-moved` 897 函数一致、19 处仅路径行改动。见 [`src/AGENTS.md`](src/AGENTS.md) |
+| **重构第 3 步：拆巨石** | ✅ 已完成（2026-09-28/29，分支 `refactor/structure`）：五个巨石各拆成子目录 —— `hands.js`→`body/`（8 领域文件 + `index.js`）、`instinct.js`→`instinct/`（7 文件）、`bridge-server.js`→`bridge/`（`routes/` 10 文件 + state/http/connect/config/util/goto）、`mind.js`→`mind/mind/`（11 文件）、`pathing.js`→`world/pathing/`（10 文件）。汇总文件导出名与顺序、58 个路由键序均与快照一致；`split-wiring-test` 812/812、`bridge-boot-test` 6/6。详见 `docs/REFACTOR-PLAN-20260928.md` 末尾「完成情况」 |
+| **重构第 4 步：去重** | ✅ 已完成（2026-09-29）：统一小工具收进 [`src/util/`](src/util/)（`time`/`ids`/`env`/`inventory`）；7 组合并 + 1 组取消（水平距离本就不重复）。行为不变由"逐字相同直接合 / 有差别参数化保留（`bareId` vs `bareMinecraft`、env 三派）"保证。详见 `modpack-study/p4-dedup/report.md` |
+| **重构第 5 步：文档** | ✅ 已完成（2026-09-29）：根 `AGENTS.md` 分区表/依赖方向/自测按现目录重写；`src/AGENTS.md` 与各区 `AGENTS.md` 与实际文件对齐；`README.md` 目录结构更新；[`references/api-spec.md`](references/api-spec.md) 改由 [`scripts/gen-api-spec.js`](scripts/gen-api-spec.js) 从路由快照生成（`test-all` 检查是否过期）；同时修掉第 4 步盘点发现的 3 个 bug（家范围漏高度、`/attack` 认不出模组怪、`inventoryCount` 把读不到兜成 0） |
 | **P48** 不会持续发育（缺工具链目标：采木→木镐→石→石镐/剑→打猎） | ✅ 由 `plan.js` 长期计划解决（部署只起 bridge + mind；不另写第二个声音）。实机未验 |
 | **本能层**（`src/instinct/instinct.js`） | 战斗、拾取、收获、采矿、睡觉、换护甲、危险方块退开、**转头看人**（2026-09-29 改为"一次互动只看一眼 + 平滑转"：`CFG.gaze.selfTalkMs=0` 她自己说话不再转头、`lookPerWindow=1` 每窗一眼、`turnSteps=6` 不传 `force` 平滑转 —— 主人反馈"不要总突然看玩家"）、工具快坏提醒 **已写完、离线自测全绿，未上实机，未推送**（2026-09-27）。**走路类命令打架时要玩家标记**（2026-09-29）：`/go` `/move` `/follow` `/wear` 若不带 `urgent:'player'`，打架时会被 `yieldBody` 拒（防 mind 顺手走路叫停战斗），`/flee` `/self_rescue` `/stop{hold}` 不受限。战斗锚点：跟人时=人，自己干活时=开打位置，leash 12（主人 2026-09-27 确认）。另有随身物品/背包、开宝箱、洞穴、搭路、落地水、寻路挖天然地形、家范围自动扩大、指令本能。2026-09-27 晚又加：饿了就吃（饥饿 ≤16）、憋气上浮、中毒凋零（喝牛奶）、天气、玩家挨打提醒、家里暗处提醒 |
 | **P50** / **P53** 站在草上被判"位置被占"；写死的名单认不出草方块和模组土石 | ✅ 已修（2026-09-27）：可替换方块按 `minecraft:replaceable` 标签；搭脚方块、天然地面、锄地按整合包标签。离线自测全绿，实机未验 |

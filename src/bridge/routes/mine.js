@@ -73,6 +73,13 @@ function oreTable () {
 
 function gotoWithBudget (...a) { return __ns.gotoWithBudget.apply(null, a); }
 function inventoryCount (...a) { return __ns.inventoryCount.apply(null, a); }
+// 第 5 步修 bug（2026-09-29）：`inventoryCount` 读不到时返回 `null`（AGENTS §5-1）。
+// 两个 `null` 相减会算成 0（被当成"一件都没到手"），所以差值一律走这里：
+// 任一侧读不到 → 返回 0 并把 `unreadable` 置位，由调用方在返回值里如实说明。
+function countDelta (after, before) {
+  if (after === null || before === null) { invUnreadable = true; return 0; }
+  return after - before;
+}
 function isDropEntity (...a) { return __ns.isDropEntity.apply(null, a); }
 function isPlayerBuilt (...a) { return __ns.isPlayerBuilt.apply(null, a); }
 function resolveBlocksForItem (...a) { return __ns.resolveBlocksForItem.apply(null, a); }
@@ -82,7 +89,7 @@ function withTimeout (...a) { return __ns.withTimeout.apply(null, a); }
 
 /**
  * 本文件负责的路由（1 条）：
- *   POST /mine
+ *   POST /mine                   —— 挖指定方块（可只挖看得见的 / 不挖水下）
  *
  * ⚠️ 上面的清单只是**说明**；真正的键名在下面 routes 对象里，与原 server.js 逐字一致。
  */
@@ -146,6 +153,7 @@ const routes = {
     let sweep = 1;
     let radius = ladder[0];
     let dropsPicked = 0;   // 真正进背包的件数（由背包增量判定，不是"走过去过"）
+    let invUnreadable = false;   // 背包读数是否不可信（第 5 步：inventoryCount 读不到 → null）
     // 掉落物"最后落在哪儿"的坐标集合 —— 用于挖完之后**统一清扫一次**。
     // 见下方 "批量清扫" 段：逐块等待既慢又会互相错位（P10 第二轮）。
     const dropAnchors = [];
@@ -154,6 +162,10 @@ const routes = {
     // 以前直接查方块表，隔着几十格石头也知道哪有铁 —— 主人说"这不就是矿物透视吗"（2026-09-27）。找矿用 POST /delve
     const vein = new Set();
     const invBefore = inventoryCount(state.bot);
+    // ⚠️ 第 5 步修 bug（2026-09-29）：`inventoryCount` 读不到时返回 `null`（AGENTS §5-1）。
+    //    这里记下"读得到没有" —— 读不到时下面所有差值都按 0 报，并在 `inventoryUnreadable` 里说明，
+    //    绝不把"读不到"渲染成"背包没变化"。
+    if (invBefore === null) invUnreadable = true;
     let mineSeen = null;   // 最后一轮的筛选统计（挖不到时拿来说原因）
     // 水下的惜命记录（第 1/2 条）。**必须暴露** —— "她没挖水下的"和"规则把她拦住了"
     // 是两种完全不同的结果，混在一起只能看到"没挖到"。
@@ -426,7 +438,11 @@ const routes = {
           }
         }
 
-        const gained = inventoryCount(state.bot) - before;
+        // 第 5 步修 bug：`inventoryCount` 读不到时返回 `null` —— 两个 null 相减会算成 0，
+        // 那会被 isProductiveSweep 当成"一件都没到手"。先判可读，读不到就报 0 + 标记，不猜。
+        const after = inventoryCount(state.bot);
+        if (after === null) invUnreadable = true;
+        const gained = (after === null || before === null) ? 0 : after - before;
         // ⚠️ 判据用"真正到手几件"，不是"挖了几格"。见 pathing.isProductiveSweep 的说明。
         //    `inventoryFull` 是 2026-09-25 补的：P1 那次 8 轮 reason 全是同一句话，
         //    而"背包满"和"没回头捡"的处理方式完全不同，不该共用一句文案。
@@ -578,14 +594,14 @@ const routes = {
           pathing.clearPathfinderGoal(state.bot.pathfinder);
           // 等背包稳定（与 sweepUpDrops 同款判据）
           await sleep(600);
-          got = inventoryCount(state.bot) - beforeRound;
+          got = countDelta(inventoryCount(state.bot), beforeRound);
           residueRounds.push({ round, targets: left.length, got });
           if (got > 0) dropsPicked += got;
           else break;   // 这轮一个都没拿到 → 再试也是白试
         }
         if (residueRounds.length) bulkSweep.residueRounds = residueRounds;
 
-        bulkSweep.gainedAtBulk = inventoryCount(state.bot) - beforeBulk;
+        bulkSweep.gainedAtBulk = countDelta(inventoryCount(state.bot), beforeBulk);
       } catch (e) {
         bulkSweep = { error: e.message };
       }
@@ -644,7 +660,10 @@ const routes = {
       bulkSweep: bulkSweep || undefined,
       // ⚠️ `mined` 与 `dropsPicked` 都**不等于**"进背包几件"。
       //    拾取是服务端判定的，客户端只能"走过去"。要确认真正到手，查 /inventory。
-      inventoryDelta: inventoryCount(state.bot) - invBefore,
+      inventoryDelta: countDelta(inventoryCount(state.bot), invBefore),
+      // ⚠️ 第 5 步修 bug（2026-09-29）：背包读数不可信时**必须明说** ——
+      //    否则上面那些 `*Delta / gained* / picked` 的 0 会被当成"确实一件都没到手"。
+      inventoryUnreadable: invUnreadable || undefined,
       // dig 空转了几次（动作声称成功、世界没变）。
       // 与"挖不动"是两回事：前者是**我们的动作没生效**，后者是工具/硬度不够。
       // 分开报，运维才不会去查错方向。

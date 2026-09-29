@@ -11,6 +11,10 @@ const hands = require('../../body/hands.js');
 const instinct = require('../../instinct/instinct.js');
 const pathing = require('../../world/pathing');
 const { pickAutoEquip } = require('../../body/equip-policy.js');   // 拆分时漏搬（原 server.js:48），2026-09-29 补
+// 第 5 步修 bug（2026-09-29）：`/attack` 自动挑目标的敌对判据改用正主 `isHostileEntity`，
+// 并排除 Boss（`isBossEntity`）—— 两个判据都只此一份，在 `world/entity-registry.js`。
+// 原来的本地 `HOSTILE` Set 只认 22 个原版名字、不剥命名空间，模组怪一律认不出。
+const { isHostileEntity, isBossEntity } = require('../../world/entity-registry.js');
 
 /** 跨文件符号表：由汇总文件 server.js 在两阶段装配时注入（见本文件末尾 bind）。 */
 // 第 4 步去重：原为转发壳（转发到兄弟文件的 sleep/sleepMs），现直接引用唯一一份
@@ -31,12 +35,12 @@ function sameItem (...a) { return __ns.sameItem.apply(null, a); }
 
 /**
  * 本文件负责的路由（6 条）：
- *   GET /plugins
- *   GET /entities
- *   POST /look
- *   POST /attack
- *   POST /equip
- *   POST /chat
+ *   GET /plugins                 —— 装了哪些 mineflayer 插件
+ *   GET /entities                —— 附近实体原始列表
+ *   POST /look                   —— 转头看玩家或坐标
+ *   POST /attack                 —— 近战攻击（不带目标时自动挑敌对怪，排除 Boss）
+ *   POST /equip                  —— 穿装备（auto 时按判据自己挑）
+ *   POST /chat                   —— 在游戏里说一句话
  *
  * ⚠️ 上面的清单只是**说明**；真正的键名在下面 routes 对象里，与原 server.js 逐字一致。
  */
@@ -172,16 +176,17 @@ const routes = {
   // 语言却说“追过去”——动作记录与事实不一致，也会被服务器的宽松校验掩盖。
   'POST /attack': async ({ target, radius = 4 }) => {
     radius = Math.min(Math.max(1, +radius), 16);
-    const HOSTILE = new Set([
-      'skeleton', 'zombie', 'spider', 'creeper', 'witch', 'enderman', 'husk', 'stray',
-      'drowned', 'phantom', 'pillager', 'vindicator', 'ravager', 'slime', 'magma_cube',
-      'blaze', 'ghast', 'wither_skeleton', 'zombified_piglin', 'piglin', 'hoglin', 'zoglin',
-    ]);
+    // 第 5 步修 bug（2026-09-29）：自动挑目标的判据改成**两份正主判据的组合** ——
+    //   · `isHostileEntity(e, state.aggroOf)`（`world/entity-registry.js`）—— 认名字（剥任意命名空间）、
+    //     认 `type==='hostile'`、认仇恨证据；模组怪才挑得出来。传 `state.aggroOf`
+    //     与 `body/containers.js` 的 `threatNear` 同一份（补名后 `type` 仍是 'other' 的只能靠行为证据认）。
+    //   · `isBossEntity`（同一文件）—— 自动挑目标**排除 Boss**（warden / wither / 整合包 Boss）。
+    //   ⚠️ **明确点名**打的（带了 target）不受 Boss 排除影响：那是主人/她自己的意志，照打。
     const self = state.bot.entity;
     const candidates = Object.values(state.bot.entities)
       .filter(e => e !== self && e.position && e.isValid !== false)
       .filter(e => e.position.distanceTo(self.position) <= radius)
-      .filter(e => (target ? e.name === target : HOSTILE.has(e.name)))
+      .filter(e => (target ? e.name === target : (isHostileEntity(e, state.aggroOf) && !isBossEntity(e))))
       .sort((a, b) => a.position.distanceTo(self.position) - b.position.distanceTo(self.position));
 
     if (!candidates.length) {

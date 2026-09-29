@@ -55,27 +55,27 @@ function shapeStatsOf (...a) { return __ns.shapeStatsOf.apply(null, a); }
 
 /**
  * 本文件负责的路由（21 条）：
- *   GET /config
- *   GET /debug/shelter-probe
- *   GET /debug/pathfinder
- *   GET /debug/route
- *   GET /status
- *   POST /reconnect
- *   GET /inventory
- *   GET /recipes
- *   GET /item
- *   GET /position
- *   GET /health
- *   GET /nearby
- *   GET /players
- *   GET /block
- *   GET /chatlog
- *   GET /memory
- *   GET /state
- *   POST /memory
- *   GET /knowledge
- *   GET /knowledge/search
- *   POST /knowledge/search
+ *   GET /config                    —— 生效的配置（不含密钥），离线也可读
+ *   GET /debug/shelter-probe       —— 避难所探测的中间数组
+ *   GET /debug/pathfinder          —— 寻路器当前的 goal / movements / 状态
+ *   GET /debug/route               —— 上一次寻路算出来的路线
+ *   GET /status                    —— 连接状态 + 天色 / 遮挡
+ *   POST /reconnect                —— 手动重连（自动重试放弃后用）
+ *   GET /inventory                 —— 背包里有什么
+ *   GET /recipes                   —— 查一条配方在整合包里怎么做
+ *   GET /item                      —— 物品注册表注入报告 / 查询
+ *   GET /position                  —— 她的坐标与朝向
+ *   GET /health                    —— 血量 / 饥饿 / 氧气
+ *   GET /nearby                    —— 附近实体与掉落物（按敌对分类）
+ *   GET /players                   —— 在线玩家与距离
+ *   GET /block                     —— 读一个方块（单格或整列）
+ *   GET /chatlog                   —— 最近收到的聊天 / 系统消息
+ *   GET /memory                    —— 读她的记忆（journal + 状态快照）
+ *   GET /state                     —— 上一次缓存的状态快照
+ *   POST /memory                   —— 往记忆里写一条（note / chat / plan…）
+ *   GET /knowledge                 —— 整合包知识库概览
+ *   GET /knowledge/search          —— 查知识库（关键词）
+ *   POST /knowledge/search         —— 查知识库（POST 形式，关键词可含非 ASCII）
  *
  * ⚠️ 上面的清单只是**说明**；真正的键名在下面 routes 对象里，与原 server.js 逐字一致。
  */
@@ -327,7 +327,13 @@ const routes = {
     phase: night.phaseOf(state.bot?.time?.timeOfDay),
     exposure: (() => { try { return exposureOf(state.bot); } catch (_) { return null; } })(),
     isSleeping: !!state.bot?.isSleeping,
-    inventoryCount: state.bot?.inventory?.items()?.length ?? 0,
+    // 背包**占用格数**（不是件数）。第 5 步修 bug（2026-09-29）：`?? 0` 会把"读不到"报成 0
+    // （AGENTS §5-1）—— 改用 `inventoryCount` 的读数判可读：它返回 null 就是读不到，字段也报 null。
+    inventoryCount: (() => {
+      const n = inventoryCount(state.bot);
+      if (n === null) return null;
+      try { return state.bot.inventory.items().length; } catch (_) { return null; }
+    })(),
     currentAction: state.currentAction,
     // 载具 / 是否开着界面：mind 的"场景自动激活"（groupsFromBody）要能看见这两个身体状态，
     // 否则"骑着船"和"开着箱子"她认不出来（codex R-fix4-6）。

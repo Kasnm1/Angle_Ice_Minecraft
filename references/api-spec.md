@@ -1,1013 +1,159 @@
-# Minecraft Bridge API Specification
-
-Base URL: `http://127.0.0.1:${MC_BRIDGE_PORT:-3001}`
-Content-Type: `application/json`
-Authentication: none (bound to `127.0.0.1` only)
-
-> On Windows / proxied environments always call with `curl --noproxy '*'`, otherwise the
-> proxy intercepts localhost and you get `upstream connect failed` / `os error 10061`.
-
----
-
-## Response Format
-
-### Success
-```json
-{"success": true, "...": "data"}
-```
-
-### Failure
-```json
-{"success": false, "error": "message"}
-```
-
-### Bot Offline (503)
-```json
-{"error": "Bot not connected", "hint": "Open Minecraft and check MC_HOST/MC_PORT"}
-```
-
-The following endpoints work **even while the bot is offline** (they are exempt from the
-connection guard) and are the right place to start when diagnosing:
-
-| Endpoint | Why it still works offline |
-|---|---|
-| `GET /status` | reports `connected: false` |
-| `GET /config` | shows the effective target/identity — no bot needed |
-| `GET /knowledge`, `GET\|POST /knowledge/search` | reads the on-disk modpack knowledge base |
-| `GET /memory` | reads the on-disk journal + state snapshot |
-| `GET /state` | reads the last cached state snapshot |
-
----
-
-## GET /config
-
-The configuration actually in effect (after env-var / `config.json` / default resolution).
-Read this first so you never have to guess which server or identity is live.
-
-```json
-{
-  "success": true,
-  "identity": "Angel_ICE",
-  "identityIsDefault": true,
-  "host": "127.0.0.1",
-  "port": 25565,
-  "version": "1.20.1",
-  "auth": "offline",
-  "forge": true,
-  "bridgePort": 3001,
-  "skillDir": ".../skills/minecraft-bridge",
-  "configFile": ".../skills/minecraft-bridge/config.json",
-  "pathfinder": {
-    "canDig": true,
-    "digCost": 16,
-    "placeCost": 12,
-    "liquidCost": 6,
-    "allow1by1towers": false,
-    "allowParkour": true,
-    "allowSprinting": true,
-    "scafoldingBlocks": 0,
-    "policy": {
-      "canDig": true,
-      "digCost": 16,
-      "protectedCount": 613,
-      "protectedSample": ["oak_planks", "gold_ore", "oak_log", "glass"]
-    },
-    "registryProbe": {"checked": 6, "ok": 6, "mismatched": []}
-  }
-}
-```
-
-`identityIsDefault: false` means `MC_BOT_USERNAME` was overridden somewhere — worth
-noticing, since the persona is tied to `Angel_ICE`.
-
-### `pathfinder` — the movement-policy self-check
-
-`null` while the bot has not spawned yet (the policy needs `bot.registry.blocksByName`).
-Once online, **read `digCost` and `policy.protectedCount` together — not `canDig` alone.**
-
-`mineflayer-pathfinder` ships `canDig = true` **and `digCost = 1`**. Reading
-`lib/movements.js` gives the scale that the readme omits: walking one block costs `1`, and
-breaking one dirt block costs `(1 + 3*digTime/1000) * digCost ≈ 1.45`. So by default
-**breaking a block is barely more expensive than walking one block** — the pathfinder
-treats a wall as a road. Combined with "follow the player", that silently turns into
-demolishing the player's house.
-
-> ⚠️ Disabling `canDig` outright is the **wrong** fix — it removes the last resort, so
-> places that genuinely must be tunnelled through report `No path to the goal!` instead.
-> `canDig` is therefore `true` and the protection is carried by two other things:
-
-| Field | Meaning |
-|---|---|
-| `digCost` | multiplier on digging (default **16** → one dirt block ≈ walking 23 blocks). Soft layer: detours win, but digging still happens when there is no detour |
-| `policy.protectedCount` | how many block IDs were added to `blocksCantBreak` (building materials: wool, planks, glass, doors, stairs, chests, ores…). Hard layer: **never** broken while pathing |
-| `policy.protectedSample` | the first dozen names that matched, so you can sanity-check the patterns |
-| `registryProbe` | `name → id → name` round-trip for six well-known blocks. The hard layer is keyed by **name**, and names are not fully trustworthy on this 470-mod server — **if `mismatched` is non-empty, only the soft layer is doing real work** |
-
-A useful side effect of the `cost > 100` cutoff inside `movements.js`: a bare-handed stone
-dig computes to ≈376 and is discarded, so **without a pickaxe she cannot tunnel stone** —
-which is what a real player experiences too.
-
-Costs are tunable: `MC_DIG_COST`, `MC_PLACE_COST`, `MC_LIQUID_COST`. The policy itself
-lives in `pathing.js` (`node src/world/pathing.js --selftest`, 87 cases).
-
-Known trade-off: **doors are protected** and `canOpenDoors` is off, so a closed door locks
-her out. Deliberate — better to be unable to enter than to remove the player's door.
-
-Related: every `bot.dig` is wrapped for audit. A dig that happens while `currentAction`
-is not a mining task is appended to `memory/journal.md` as
-`⚠️ 非挖掘动作中拆掉了 <block> @ x,y,z`. That line appearing = something is pathfinding
-through the world again. Note that `POST /mine` calls `bot.dig` directly and never consults
-`blocksCantBreak`, so the hard ban does **not** interfere with explicit mining.
-
----
-
-## GET /status
-
-Check bridge health and bot connection state.
-
-### Response fields
-
-| Field | Type | Meaning |
-|---|---|---|
-| connected | boolean | Whether the bot is connected |
-| username | string | Bot username |
-| position | `{x,y,z}` or null | Current position |
-| health | number or null | Health (0–20) |
-| food | number or null | Hunger (0–20) |
-| saturation | number or null | Food saturation |
-| gameTime | number or null | In-game time (0–24000) |
-| isDay | boolean | Convenience day/night flag |
-| inventoryCount | number | Count of non-empty inventory stacks |
-| currentAction | string or null | Current action |
-| bridgeVersion | string | Bridge version |
-
----
-
-## GET /memory?limit=40
-
-**Her memory.** Returns the recent journal lines plus a fresh state snapshot.
-Call this *before* speaking so continuity is preserved.
-
-Parameters:
-- `limit`: number of journal lines to return from the tail, default 40, max 500
-
-Example:
-```json
-{
-  "success": true,
-  "journalFile": ".../memory/journal.md",
-  "stateFile": ".../memory/state.json",
-  "journalTotal": 128,
-  "journal": [
-    "- [2026-09-22 23:41:07] (player-join) Ka_sum1 上线了",
-    "- [2026-09-22 23:41:12] (chat) <Ka_sum1> 你来啦",
-    "- [2026-09-22 23:42:30] (promise) 和你说好下次一起去看日落"
-  ],
-  "state": {
-    "savedAt": "2026-09-22 23:45:00",
-    "identity": "Angel_ICE",
-    "server": "127.0.0.1:25565",
-    "connected": true,
-    "position": {"x": 128, "y": 64, "z": -47},
-    "dimension": "minecraft:overworld",
-    "health": 18,
-    "food": 17,
-    "gameTime": 6000,
-    "isDay": true,
-    "inventory": ["iron_orex3", "stone_pickaxex1"],
-    "playersOnline": ["Angel_ICE", "Ka_sum1"],
-    "currentAction": null
-  }
-}
-```
-
-Journal line format: `- [YYYY-MM-DD HH:MM:SS] (type) text`
-
-Auto-written types: `spawn`, `disconnect`, `death`, `respawn`, `hurt`, `chat`,
-`event`, `player-join`, `player-leave`.
-Agent-written types (suggested): `note`, `promise`, `plan`, `feeling`, `gift`,
-`discovery`.
-
----
-
-## GET /state
-
-The last cached state snapshot, read straight from disk without refreshing it. Cheaper
-than `/memory` when you only need "where is she right now".
-
-```json
-{"success": true, "cached": true, "savedAt": "...", "position": {...}, "...": "..."}
-```
-
-`cached: false` means the file didn't exist yet and the response is a fresh snapshot.
-
----
-
-## POST /memory
-
-Write a memory line. Use this for anything that should survive a restart: promises,
-plans, discoveries, feelings, things the player said.
-
-Request:
-```json
-{"text": "和你说好下次一起去看日落", "type": "promise"}
-```
-
-`type` defaults to `note`.
-
-Response:
-```json
-{"success": true, "written": "- [2026-09-22 23:42:30] (promise) 和你说好下次一起去看日落", "journalFile": ".../memory/journal.md"}
-```
-
-Write it in **first person, in her voice** — she will read it back later.
-
----
-
-## GET /knowledge
-
-List the game knowledge base (the modpack's quest book, item names, mods, tips).
-Works **while the bot is offline**.
-
-```json
-{
-  "success": true,
-  "dir": ".../skills/minecraft-bridge/knowledge",
-  "available": ["README.md", "pack-overview.md", "main-quest.md", "chapters.md",
-                "tooltips.md", "mods.md", "quests.json", "item-names.json", "lookup.py"],
-  "hint": "GET /knowledge/search?type=quest|item|chapter|tip|mod&q=<关键词>",
-  "files": {
-    "pack-overview.md": "整合包总览 + 核心机制（必读）",
-    "main-quest.md": "主线任务路线图",
-    "chapters.md": "61 章全部任务标题",
-    "tooltips.md": "物品提示（怎么获得/怎么用）",
-    "mods.md": "467 个模组清单"
-  }
-}
-```
-
----
-
-## GET /knowledge/search
-## POST /knowledge/search
-
-Query the knowledge base. **This is how she answers game questions without asking
-the player basic things.**
-
-Both verbs take the same parameters. Use POST when the keyword contains non-ASCII
-characters (see the warning below).
-
-### Parameters
-
-| Param | Meaning |
-|---|---|
-| `type` | `quest` \| `item` \| `chapter` \| `tip` \| `mod` \| `raw` (default `quest`) |
-| `q` | keyword (required unless `type=raw`) |
-| `file` | for `type=raw`: a `.md` filename inside the knowledge dir |
-| `limit` | for `type=raw`: max lines (default 400); for others: max output chars (default 6000) |
-
-With POST, send the same fields as a JSON body; body values win over query-string
-values, so you can mix them.
-
-### ⚠️ Non-ASCII keywords must be URL-encoded
-
-Node's HTTP parser rejects non-ASCII bytes in the request line with a bare
-`400 Bad Request` **and an empty body**. So this looks like "no results" but
-never reaches the handler:
-
-```bash
-curl --noproxy '*' "http://127.0.0.1:3001/knowledge/search?type=quest&q=末影龙"   # ✗ 400, empty
-```
-
-Use either of these instead:
-
-```bash
-# ✓ let curl percent-encode it
-curl --noproxy '*' -G --data-urlencode "type=quest" --data-urlencode "q=末影龙" \
-     "http://127.0.0.1:3001/knowledge/search"
-
-# ✓ or put it in a JSON body (no encoding concerns at all)
-curl --noproxy '*' -X POST -H "Content-Type: application/json" \
-     -d '{"type":"quest","q":"末影龙"}' "http://127.0.0.1:3001/knowledge/search"
-```
-
-### Examples
-
-```bash
-# 搜任务（标题 / 说明 / 需求物品 / 图标）
-curl --noproxy '*' -G --data-urlencode "type=quest" --data-urlencode "q=末影龙" \
-     "http://127.0.0.1:3001/knowledge/search"
-
-# 物品名 → modid:item，或反过来（纯 ASCII 的可以直接拼）
-curl --noproxy '*' -G --data-urlencode "type=item" --data-urlencode "q=棱彩解药桶" \
-     "http://127.0.0.1:3001/knowledge/search"
-curl --noproxy '*' "http://127.0.0.1:3001/knowledge/search?type=item&q=terramity:"
-
-# 找章节
-curl --noproxy '*' -G --data-urlencode "type=chapter" --data-urlencode "q=蜜蜂" \
-     "http://127.0.0.1:3001/knowledge/search"
-
-# 物品提示
-curl --noproxy '*' -G --data-urlencode "type=tip" --data-urlencode "q=大鳄龟" \
-     "http://127.0.0.1:3001/knowledge/search"
-
-# 模组
-curl --noproxy '*' "http://127.0.0.1:3001/knowledge/search?type=mod&q=terramity"
-
-# 读整个文件（如核心机制总览）
-curl --noproxy '*' "http://127.0.0.1:3001/knowledge/search?type=raw&file=pack-overview.md"
-```
-
-### Response
-
-```json
-{
-  "success": true,
-  "type": "quest",
-  "q": "末影龙",
-  "result": {
-    "output": "找到 12 个任务包含「末影龙」\n\n[冒险之旅 › 末地涉险]\n  任务：末地的主宰\n    需求：击杀 末影龙 x1\n    ...",
-    "truncated": false
-  }
-}
-```
-
-When `result.truncated` is `true`, use a more specific keyword.
-
-### Requirements
-
-Querying spawns `python` (or `python3`) to run `knowledge/lookup.py`. If neither is
-on `PATH`, set `MC_PYTHON` to an absolute interpreter path, e.g.:
-
-```json
-{ "MC_PYTHON": "C:\\Python313\\python.exe" }
-```
-
-Errors mention this explicitly if the interpreter can't be found.
-
----
-
-## GET /inventory
-
-Return all carried items.
-
-Example:
-```json
-{
-  "success": true,
-  "items": [
-    {
-      "name": "iron_ore",
-      "displayName": "Iron Ore",
-      "count": 24,
-      "slot": 36,
-      "durability": null
-    }
-  ],
-  "totalStacks": 3
-}
-```
-
----
-
-## GET /position
-
-Return position and facing.
-
-Example:
-```json
-{
-  "success": true,
-  "x": -142,
-  "y": 64,
-  "z": 88,
-  "yaw": 1.57,
-  "pitch": 0.0
-}
-```
-
----
-
-## GET /health
-
-Return health and hunger state.
-
-Example:
-```json
-{
-  "success": true,
-  "health": 18.0,
-  "food": 14,
-  "saturation": 5.0,
-  "isDead": false
-}
-```
-
----
-
-## GET /nearby?radius=16
-
-Return nearby entities.
-
-Parameters:
-- `radius`: detection radius in blocks, default 16, practical upper bound ~32
-
-Example:
-```json
-{
-  "success": true,
-  "entities": [
-    {
-      "name": "Zombie",
-      "type": "mob",
-      "distance": 8,
-      "position": {"x": -150, "y": 64, "z": 88}
-    }
-  ],
-  "radius": 16
-}
-```
-
-实际每条还带（2026-09-27 起）：
-
-- `kind`：`hostile` / `mob` / `player` / `drop` / `other`。`hostile` = 原版敌对类别，**或者有仇恨证据**（模组怪没有类别，只能靠这个）。
-- `aggro`：`null`，或 `{ "on": "me" | "<玩家名>", "evidence": "hurt" | "aggressive" }`。
-  `hurt` = 30 秒内打过她 / 玩家（`damage_event` 的攻击者）；`aggressive` = `mob_flags` 攻击位亮着且脸朝着她 / 玩家。
-  `null` 只说明"没看到它找麻烦"，不等于友好。
-- `named: true`：名字是按服务端 `minecraft:entity_type` 快照补的（模组生物）。补不上的仍是 `unknown`。
-- 列表按距离**先排序再截 20 条**。
-
----
-
-## GET /status —— 天色与遮挡（2026-09-27 起）
-
-- `phase`：`day` / `dusk`（12000 起）/ `night`（13000 起）/ `dawn`（23000 起）；读不到时间为 `null`。
-- `exposure`：`{ skyLight, roofAt, solidAbove, noData, kind }`，`kind` = `open` / `partial` / `sheltered` / `underground` / `unknown`（见 `night.js`）。
-
----
-
-## GET /inventory/ledger?since=<seq>
-
-物品账：背包每次进出、以及原因（见 `inventory-ledger.js`）。按 `seq` 往后读。
-
-```json
-{ "seq": 42, "entries": [ { "seq": 42, "t": 1790000000000,
-    "parts": [ { "sign": "-", "verb": "stored", "where": "chest@12,64,-3", "items": { "iron_ingot": 8 } } ] } ],
-  "lines": [ "放进 chest@12,64,-3：iron_ingot×8" ] }
-```
-
-`verb`：`picked` `got` `mined` `harvested` `crafted` `smelted` `took` `took_off` `reward` `received` /
-`stored` `used` `furnace` `ate` `placed` `planted` `gave` `dropped` `wore` `submitted` `broke` `died` `lost`（不知道怎么没的）。
-
----
-
-## GET /instinct · POST /instinct · GET /instinct/events
-
-本能层现状与开关（见 `instinct.js`）。`GET /instinct` 给各本能配置、`home`、正在做什么（`running`、`combatNow`）、
-最近一次判断（`last` 里每个本能为什么做 / 为什么没做）、最近 10 条记录、`lastCancel`（战斗本能上次叫停了什么命令）。
-
-调度诊断（2026-09-27）：`diagnostics` 分别记录 combat / breathe / eat / hazard 的检查时间、触发来源
-（timer / event）、是否执行中、跳过原因和耗时。耗时包含整个动作，**不等于发现敌人的延迟**。
-`scheduler` 给出普通循环的最近/最大定时器延迟 `lagMs` / `maxLagMs` 及本轮占用时长 `busyForMs`；
-`sleepState` 给出姿态、睡眠缓存和床位，姿态缺失为 null；`sleepCorrections` 是睡眠缓存纠正次数。
-`urgent` 表示紧急动作已预留身体，即使尚在等待旧动作收尾也会阻止普通命令抢占。
-
-`POST /instinct`：`{ pickup?, harvest?, mine?, sleep?, armor?, gaze?, combat?: true|false, radius?, followRadius?, home?: {center:{x,y,z}, radius} | null }`。
-关掉正在做的那个会立刻打断它。`home` 由 mind 每分钟告诉一次（收获只收家里的地、睡觉只在家里睡）。
-
-`GET /instinct/events?since=<seq>` → `{ seq, events:[{ seq, t, kind, text, ... }] }`：本能做成了什么、看见什么没做成
-（`harvest` `mine` `ore_lacking_tool` `sleep` `sleep_failed` `armor` `tool_worn` `combat` `combat_retreat` `hazard_stuck`）。mind 读成"🫳 …"。
-`cave` 事件只陈述当前位置像洞穴，`entryMethod:unknown` 表示没有进入方式记录；`cave_move` 在寻路确认到达时记录起点和终点。家的水平范围覆盖地下任意深度，自动探洞本能在此范围内关闭；明确的下矿工具调用不受此规则影响。
-
-**战斗时**：除 `/flee` `/follow` `/go` `/move` `/self_rescue` 和 `/stop {hold:true}` 外，会动身体的命令直接回 `{ ok:false, error:'在打架…' }`。
-战斗本能开打时会叫停正在跑的命令（路由给每个命令注入了 `abort()`）。
-危险方块退开和上浮也会预留身体、取消普通动作；上浮可以中断正在执行的战斗。
-`POST /sleep` 与 `POST /jump` 已接入取消链；明确的停止/逃离/移动命令仍可中止紧急动作。
-
-会动身体的 POST（除 `/chat` `/instinct` `/look` `/memory` 等只读或不动身体的）执行前都会先让本能让出身体。
-`POST /stop { "hold": true }` = 站住，之后 20 秒本能也不动；不带 `hold` 的 `/stop` 只是"停下换件事"。
-同一时刻只执行一个会动身体的 HTTP 命令。重叠请求返回 `success:false`、`busy` 与当前命令，且不会替换正在执行的寻路目标；`POST /stop` 可越过此互斥立即急停。
-
-`POST /pickup` 新增 `ids`（只捡这几个实体 id）。
-
----
-
-## GET /ftbq/completed[?refresh=1]
-
-FTB 任务书的队伍进度（`ftbq-sync.js`）：`{ known:true, count, completed:[16 位十六进制 id], team, at }`。
-`known:false` = 还没收到服务器发来的进度（不是"一个都没做"）；`refresh=1` 先发 `ftbquests:request_team_data` 要一份。
-id 和 `knowledge/quests.json` 里的一样，长期计划（`plan.mainlineStatus`）拿它判断主线做到哪了。
-
----
-
-## 布置规划（现用现定）
-
-`POST /layout/save`：新格式只存分区 `{ name, zones:[{ name, purpose, wants:{物品:数量}, area:{x,y,z,r} }] }`，不定格子；旧的带 `slots` 的格式照样能存。
-`GET /layout/status`：每个区 `zoneDetail`（想要 / 已有 / 还想要 / 手上能摆 / 空地格数 / `stale` 要重新想的原因）。
-`POST /layout/zone { id?, zone, stale:true|false, why }`：标一个区"要重新想"（`place_nicely` 在区里放不下时自动标）。
-
-## 工程
-
-`POST /project/save` 可带 `asked:true`（主人要盖的）。`POST /project/work`：没开过工、不是 asked、材料不到七成 → `{ ok:false, notStarted:true, cover }`，不先挖坑。
-
-## POST /place 的 chest
-
-放箱子时 `chest:'merge'`（默认）：旁边有同种单箱子就合成大箱子 —— 先按玩家做法站到旧箱子正面、面向空地放；站不到才潜行点旧箱子侧面。
-`chest:'single'`：潜行点地面，一定不合。返回 `chest:'double'|'single'`（放完核对的），想合没合上带 `mergeNote`。
-依附的方块能右键打开（箱子、熔炉、工作台…）时，放的那一下会潜行。
-
-## POST /bucket · POST /till（常识动作，`commonsense.js`）
-
-`POST /bucket { mode:'fill' }`：空桶去最近的**水源**装水；`{ mode:'pour', x,y,z }`：往那一格倒水（下界倒不了）。
-`POST /till { x?, z?, radius=4, count=9, allowDry=false }`：锄地开耕地，默认只锄 4 格内有水的。
-
----
-
-## GET /block
-
-Query blocks. **Always probe before moving** — the bot can walk off a cliff or into lava
-otherwise, because the pathfinder does not always know about unloaded terrain.
-
-### Single block — `?x=&y=&z=`
-
-```json
-{
-  "success": true,
-  "position": {"x": -142, "y": 63, "z": 88},
-  "block": "grass_block",
-  "solid": true,
-  "diggable": true,
-  "stateId": 9
-}
-```
-
-Three things `block` can be — **they are not interchangeable**:
-
-| `block` | Meaning |
-|---|---|
-| a name | a block mineflayer recognises |
-| `null` + `note: "chunk not loaded"` | the chunk isn't in the client's view |
-| `""` + `note: "unmapped block state …"` | **a real block whose state has no name** in mineflayer's registry |
-
-> ⚠️ **`""` is not air.** It means "there is a block here and I can't name it", which is
-> common on modded servers. Treating it as air will have you reason about an empty space
-> that is actually occupied.
->
-> ⚠️ **On modded servers the names themselves can be wrong.** Measured on a 1.20.1 Forge
-> pack: placing `white_wool` made that coordinate read back as `fire`, before/after on the
-> same position. `stateId` is the server's raw value and is the more trustworthy identity
-> for "is this the same block as before" — but do not use any of it to confirm a
-> placement; confirm via `GET /inventory` instead.
-
-### Vertical column — no parameters
-
-Returns the column around the bot's feet (`dy` from `+2` down to `-4`) plus `onGround`:
-
-```json
-{
-  "success": true,
-  "at": {"x": -142, "y": 64, "z": 88},
-  "onGround": true,
-  "column": [
-    {"dy": 2, "block": "air", "solid": false},
-    {"dy": 1, "block": "air", "solid": false},
-    {"dy": 0, "block": "fire", "solid": false},
-    {"dy": -1, "block": "stone", "solid": true},
-    {"dy": -2, "block": "stone", "solid": true},
-    {"dy": -3, "block": "stone", "solid": true},
-    {"dy": -4, "block": "stone", "solid": true}
-  ]
-}
-```
-
-A long run of `solid: false` below `dy: -1` means a drop.
-
----
-
-## POST /chat
-
-Send an in-game chat message.
-
-Request:
-```json
-{"message": "Hello world!"}
-```
-
-Response:
-```json
-{"success": true, "sent": "Hello world!"}
-```
-
----
-
-## POST /command
-
-Send a slash command through the bot.
-
-Request:
-```json
-{"command": "give Angel_ICE diamond 64"}
-```
-
-Notes:
-- Leading `/` is optional
-- This is potentially high risk if the bot has elevated permissions
-- Prefer `minecraft-server-admin` for server-administration tasks
-
----
-
-## POST /move
-
-门路径（2026-09-27）：木门纳入寻路，经过时自动开门；她自己开的门，离开后会关回去。门口卡住时从当前格换路。只读诊断 `GET /debug/route?x=21&y=123&z=12` 返回规划的格子序列；`path[].open=true` 表示该步会右键开门。它只预览，不移动身体。`GET /config` 的 `pathfinder.openDoors.stats` 包含门板方向拒绝和停滞换路计数。
-
-Pathfind to target coordinates.
-
-Request:
-```json
-{"x": -100, "y": 64, "z": 200}
-```
-
-If `y` is omitted, the bridge uses an XZ goal and lets the pathfinder determine height.
-
-Success example:
-```json
-{"success": true, "arrived": {"x": -100, "y": 64, "z": 200}}
-```
-
-Failure example:
-```json
-{"success": false, "error": "No path found"}
-```
-
----
-
-## POST /mine
-
-Mine the nearest matching block(s).
-
-Request:
-```json
-{"blockName": "iron_ore", "count": 5}
-```
-
-Response:
-```json
-{"success": true, "blockName": "iron_ore", "requested": 5, "mined": 4}
-```
-
-`mined` may be lower than `requested` if there are not enough matching blocks nearby.
-
-> ⚠️ **On modded servers this endpoint is unreliable, in two separate ways.**
->
-> **1. The name you ask for may not be the name the bot sees.** Measured: asking for
-> `white_wool` returned `mined: 0` — the bot's registry calls that block `fire`, so
-> `findBlock` matched nothing. It reports no error; it just quietly mines nothing. This is
-> the same palette mismatch described under `GET /block`.
->
-> **2. It throws instead of reporting partial progress.** Mining 1 of 2 and then failing
-> yields `{"success": false, "error": "No path to the goal!"}` with **no `mined` count**,
-> even though the dig happened. `GoalLookAtBlock` fails this way fairly often in tight
-> interiors, and more often when digging was banned outright; restoring digging at a high
-> `digCost` walks that back but does not eliminate it.
->
-> **Confirm with `GET /inventory`, never with this response.** Retry after repositioning.
-
----
-
-## POST /collect
-
-Collect dropped ground items.
-
-Request:
-```json
-{"itemName": "iron_ingot", "count": 10}
-```
-
----
-
-## POST /craft
-
-Craft an item, using a nearby crafting table when required.
-
-Request:
-```json
-{"itemName": "iron_pickaxe", "count": 1}
-```
-
-Common failure reasons:
-- no valid recipe
-- missing crafting table
-- missing materials
-
----
-
-## POST /follow
-
-Follow a player continuously until `/stop`.
-
-Request:
-```json
-{"playerName": "Steve"}
-```
-
----
-
-## POST /stop
-
-Cancel the current movement/mining/follow action.
-
-Response:
-```json
-{"success": true, "stopped": true}
-```
-
----
-
-## GET /players
-
-List known players. mineflayer's player table contains every player the server has
-told us about, but `position` is only filled in once that player's entity is inside
-the client's view distance — `distance: null` means "online but not visible".
-
-Example:
-```json
-{
-  "success": true,
-  "count": 2,
-  "players": [
-    {
-      "username": "Steve",
-      "uuid": "069a79f4-44e9-4726-a5be-fca90e38aaf5",
-      "ping": 42,
-      "gamemode": 0,
-      "isSelf": false,
-      "position": {"x": -140, "y": 64, "z": 90},
-      "distance": 12
-    },
-    {
-      "username": "Angel_ICE",
-      "uuid": "f25ba722-7bc5-3d6e-8abf-53e88520b123",
-      "ping": 26,
-      "gamemode": 0,
-      "isSelf": true,
-      "position": {"x": -142, "y": 64, "z": 88},
-      "distance": 0
-    }
-  ]
-}
-```
-
-Sorted by distance, self last.
-
----
-
-## GET /chatlog?limit=30
-
-Return recently received chat / system messages (ring buffer, last 200 kept).
-
-**This is how you read the output of `POST /command`** — e.g. `/list` or `/msg` replies
-land here, they are not returned by the command endpoint itself.
-
-Example:
-```json
-{
-  "success": true,
-  "buffered": 3,
-  "messages": [
-    {"t": 1790096341496, "text": "* Angel_ICE 加入了游戏", "position": "bridge"},
-    {"t": 1790096341841, "text": "Custom harness creation is currently only available in single-player mode.", "position": "system"},
-    {"t": 1790096397678, "text": "There are 1 of a max of 20 players online: Angel_ICE", "position": "system"}
-  ]
-}
-```
-
-`position` is `"chat"` | `"system"` | `"game_info"` | `"bridge"` (the last one is
-synthesised by the bridge for join/leave events).
-
-> ⚠️ **The speaker is embedded in `text`, there is no `username` field.**
-> Player lines arrive as `{"t":..., "position":"chat", "text":"<Ka_sum1> 你好"}`.
-> Code that reads `m.username` gets `undefined` for every player message and will
-> silently conclude "nobody is talking to me". Parse the `<Name>` prefix out of
-> `text` instead.
-
----
-
-## POST /look
-
-Turn the bot's head toward a player or a coordinate.
-
-Request (player):
-```json
-{"playerName": "Steve"}
-```
-
-Request (coordinate):
-```json
-{"x": -140, "y": 65, "z": 90}
-```
-
-Response:
-```json
-{"success": true, "lookingAt": "Steve"}
-```
-
----
-
-## POST /attack
-
-Melee attack. Defaults to the nearest hostile mob; pass `target` to name a specific
-entity type. `radius` is a search radius, not attack reach. The bot approaches the
-nearest matching entity and only swings at 3 blocks or closer. Chasing never places
-scaffolding blocks; an unreachable target returns an honest failure.
-
-Request:
-```json
-{"radius": 4}
-```
-```json
-{"target": "skeleton", "radius": 6}
-```
-
-Response:
-```json
-{"success": true, "attacked": 2, "targets": ["skeleton"], "approached": true,
- "startDistance": 8.4, "targetGone": true, "failures": []}
-```
-
-`radius` is clamped to 1–16. One nearest target is handled per call, with up to 6
-cooldown-paced swings. If nothing matches:
-```json
-{"success": false, "attacked": 0, "message": "no hostile mob within 4"}
-```
-
-Built-in hostile list: skeleton, zombie, spider, creeper, witch, enderman, husk,
-stray, drowned, phantom, pillager, vindicator, ravager, slime, magma_cube, blaze,
-ghast, wither_skeleton, zombified_piglin, piglin, hoglin, zoglin.
-
----
-
-## POST /equip
-
-Equip an item from the inventory.
-
-Request:
-```json
-{"itemName": "stone_sword", "destination": "hand"}
-```
-
-`destination`: `hand` (default) | `off-hand` | `head` | `torso` | `legs` | `feet`
-
-Response:
-```json
-{"success": true, "equipped": "stone_sword", "destination": "hand"}
-```
-
-Fails with `Not carrying <itemName>` if the item isn't in the inventory.
-
----
-
-## POST /place
-
-Put a block from the inventory down at a world coordinate. Before this existed the bridge
-could dig but not build — so a bot that knocked a hole in someone's wall could apologise
-but never repair it.
-
-Request:
-```json
-{"itemName": "white_wool", "x": 35, "y": 74, "z": -135}
-```
-
-`itemName` is optional — omit it to place whatever is currently held.
-`confirmMs` is optional (default 1500, clamped 200–5000) — how long to wait for the server's
-`blockUpdate` before giving up on confirmation.
-
-Response:
-```json
-{
-  "success": true,
-  "placed": "white_wool",
-  "at": {"x": 35, "y": 74, "z": -135},
-  "via": "below",
-  "distance": 1.97,
-  "confirmed": true,
-  "facesTried": 1
-}
-```
-
-| Field | Meaning |
-|---|---|
-| `via` | which neighbour face was used — `below` / `above` / `west` / `east` / `north` / `south` |
-| `distance` | eye-to-contact-point distance in blocks (must be < 4.5) |
-| `confirmed` | `true` = the server pushed a `blockUpdate` for that cell. **`false` does not mean failure** — it may just be latency, or a ghost block. Re-check with `GET /inventory`. |
-| `facesTried` | how many faces were attempted before one worked |
-
-### The four hard conditions
-
-Placement fails *silently* if any of these is violated, which is why they are enforced here
-rather than left to `placeBlock` to sort out:
-
-| # | Condition | Why |
-|---|---|---|
-| ① | a solid neighbour exists to place against | you cannot place into open air |
-| ② | the chosen face is lookable / unobstructed | needs raycast; the handler uses `lookAt`'s result |
-| ③ | **eye**-to-contact-point distance < 4.5 blocks | out of reach means the server ignores it, surfacing as a timeout rather than an error |
-| ④ | the bot's own hitbox does not occupy the target cell | otherwise she places a block inside herself |
-
-The body is also brought to a stop (`pathfinder.setGoal(null)` + `clearControlStates()`)
-before placing — a drifting body places the block into the neighbouring cell.
-
-①③④ are pure geometry and live in **`place.js`**, which `bridge-server.js` requires directly
-(`node src/world/place.js --selftest`, 23 cases). Condition ② needs a live raycast, so it is the only
-one handled in the handler.
-
-Errors — each names the offending face so the caller knows what to fix:
-
-| Error | Meaning |
-|---|---|
-| `Refusing to overwrite <block> at x,y,z` | the target holds something non-replaceable — it will not clobber the player's build |
-| `Target cell is occupied by my own body (x,y,z) — step aside first` | condition ④ — she is standing in the target cell |
-| `Target out of reach (need < 4.5 blocks from eyes) — walk closer first. Faces: below:too-far(7.6), …` | condition ③ — **walk closer** |
-| `No solid neighbour to place against at x,y,z. Faces: below:not-solid(air), …` | condition ① — **pick a different spot** |
-| `All N geometrically valid faces failed at x,y,z (last: …)` | conditions passed but every face failed at execution (blocked view / server refusal) |
-| `Not carrying <itemName>` | not in the inventory |
-| `Nothing in hand (pass itemName)` | no `itemName` given and the hand is empty |
-
-> ⚠️ **Success means the item left the inventory — verify that way.** On modded servers
-> `GET /block` may report a completely different name for what you just placed (measured:
-> `white_wool` reads back as `fire`). `confirmed: true` only tells you *a* block appeared,
-> never *which* — do not use the read-back to confirm the placement.
-
----
-
-## POST /drop
-
-Toss an item on the ground, or hand it to a player.
-
-Request:
-```json
-{"itemName": "white_wool", "count": 2, "playerName": "Ka_sum1"}
-```
-
-All fields optional. `count` defaults to the whole stack; `playerName` makes the bot look
-at them first so the item lands in their direction.
-
-Response:
-```json
-{"success": true, "dropped": "white_wool", "count": 2, "to": "Ka_sum1"}
-```
-
-Fails with `Player not visible: <name>` if that player isn't in range, or
-`Not carrying <itemName>`.
-
----
-
-## Common `blockName` Values
-
-| Block | `blockName` |
-|---|---|
-| Stone | `stone` |
-| Cobblestone | `cobblestone` |
-| Dirt | `dirt` |
-| Sand | `sand` |
-| Gravel | `gravel` |
-| Oak Log | `oak_log` |
-| Coal Ore | `coal_ore` |
-| Iron Ore | `iron_ore` |
-| Gold Ore | `gold_ore` |
-| Diamond Ore | `diamond_ore` |
-| Deepslate Diamond Ore | `deepslate_diamond_ore` |
-| Redstone Ore | `redstone_ore` |
-| Crafting Table | `crafting_table` |
-| Furnace | `furnace` |
-| Chest | `chest` |
-
----
-
-# Autopilot Control Plane — REMOVED 2026-09-28
-
-> ⚠️ **This entire section is historical.** The second API surface on port `3002`, served by
-> `autopilot.js` (the perceive → decide → act loop), **no longer exists** — `autopilot.js`
-> and its decision backend `decision.js` were deleted on 2026-09-28. So were:
->
-> `GET /autopilot` · `GET /autopilot/events` · `GET /autopilot/stats` ·
-> `POST /autopilot/task` · `POST /autopilot/say` · `POST /autopilot/config` ·
-> `POST /autopilot/forget` · `POST /autopilot/stop`
->
-> **Everything above this line** (port 3001, `bridge-server.js`) and the mind
-> (`mind.js`, port 3003) is still live. Nothing calls port 3002 any more.
->
-> What replaced the autopilot: the **instinct layer** (`instinct.js`, in-process with the
-> bridge — inspect it with `GET :3001/instinct` and `POST :3001/instinct`) and the **mind**
-> (`mind.js` + `body.js`, :3003).
->
-> **Two endpoints' worth of behaviour survived**, because something else still needed it:
->
-> - `pickAutoEquip` (used by `POST /equip {auto:true, want:…}` and by the instinct before a
->   fight) moved verbatim to `equip-policy.js`.
-> - the read side of the decision trail moved to `events-reader.js` — offline only, no route:
->   `node src/mind/events-reader.js --tail 30`. The trail itself (`memory/events.jsonl`) is frozen; the
->   write side is gone, so the aggregate `--stats` view was not carried over.
->
-> See `docs/REFACTOR-PLAN-20260928.md` (step 1) for the full list of what was deleted and why.
->
-> The rationale below is retained for reference only. **Do not build against it.**
+# Minecraft Bridge API 规格（自动生成）
+
+> ⚠️ **本文件由 `scripts/gen-api-spec.js` 生成，不要手改。**
+> 事实来源是路由快照 [`routes.json`](routes.json)（由 `scripts/routes-test.js` 守着）
+> + 各路由文件里的说明注释。路由有增减时跑 `node scripts/gen-api-spec.js` 重新生成；
+> `scripts/test-all.js` 会检查本文件与快照一致（过期即报错）。
+
+Base URL：`http://127.0.0.1:${MC_BRIDGE_PORT:-3001}` · `Content-Type: application/json` · 无鉴权（只绑 `127.0.0.1`）
+
+> Windows / 有代理的环境一律 `curl --noproxy '*'` —— 代理会劫持 localhost。
+
+## 路由总表
+
+共 140 条（bridge 60 · hands 75 · commonsense 5）。
+
+| 方法 | 路径 | 文件 | 用途 | 主要参数 |
+|---|---|---|---|---|
+| `GET` | `/block` | `src/bridge/routes/inspect.js` | 读一个方块（单格或整列） | — |
+| `GET` | `/chatlog` | `src/bridge/routes/inspect.js` | 最近收到的聊天 / 系统消息 | — |
+| `GET` | `/chests/unseen` | `src/body/index.js` | 附近没开过的箱子 | — |
+| `GET` | `/commands` | `src/body/index.js` | 服务端认得的命令（含可用的传送类） | — |
+| `GET` | `/config` | `src/bridge/routes/inspect.js` | 生效的配置（不含密钥），离线也可读 | — |
+| `GET` | `/container` | `src/body/index.js` | 当前界面里有什么 | — |
+| `GET` | `/containers/seen` | `src/body/index.js` | 最近看过的箱子里有什么 | — |
+| `GET` | `/curios` | `src/body/index.js` | 饰品栏里有什么 | — |
+| `GET` | `/debug/craftgrid` | `src/body/index.js` | 合成台 / 背包格子的原始快照 | — |
+| `GET` | `/debug/follow` | `src/body/index.js` | 跟随循环的状态与上次为什么停 | — |
+| `GET` | `/debug/mvblock` | `src/body/index.js` | &y&z 寻路器眼里这一格是什么 | — |
+| `GET` | `/debug/packets` | `src/bridge/routes/diag.js` | 最近的原始包类型统计 | — |
+| `GET` | `/debug/pathfinder` | `src/bridge/routes/inspect.js` | 寻路器当前的 goal / movements / 状态 | — |
+| `GET` | `/debug/payloads` | `src/body/index.js` | 最近收到的模组原始包 | — |
+| `GET` | `/debug/registries` | `src/bridge/routes/diag.js` | 已落盘的注册表清单 | — |
+| `GET` | `/debug/registry` | `src/bridge/routes/diag.js` | 查一张已落盘的注册表 | — |
+| `GET` | `/debug/route` | `src/bridge/routes/inspect.js` | 上一次寻路算出来的路线 | — |
+| `GET` | `/debug/shape-fixes` | `src/body/index.js` | 碰撞箱兜底修了几次 | — |
+| `GET` | `/debug/shelter-probe` | `src/bridge/routes/inspect.js` | 避难所探测的中间数组 | — |
+| `GET` | `/debug/soph` | `src/body/index.js` | 精妙背包最后一次同步 | — |
+| `GET` | `/doors` | `src/body/index.js` | 附近的门与"我开过还开着的" | — |
+| `GET` | `/entities` | `src/bridge/routes/body.js` | 附近实体原始列表 | `limit` |
+| `GET` | `/equipment` | `src/body/index.js` | 装备 / 饥饿 / 饰品 / 背包 | — |
+| `GET` | `/ftbq/completed` | `src/bridge/routes/diag.js` | 任务书哪些做完了 | — |
+| `GET` | `/ftbq/recent` | `src/body/index.js` | 最近的任务书进度包 | — |
+| `GET` | `/health` | `src/bridge/routes/inspect.js` | 血量 / 饥饿 / 氧气 | — |
+| `GET` | `/instinct` | `src/bridge/routes/diag.js` | 本能层状态与诊断 | — |
+| `GET` | `/instinct/events` | `src/bridge/routes/diag.js` | 本能最近的事件流 | `since` |
+| `GET` | `/inventory` | `src/bridge/routes/inspect.js` | 背包里有什么 | — |
+| `GET` | `/inventory/ledger` | `src/bridge/routes/diag.js` | 物品账（背包每次进出记了什么） | `since` |
+| `GET` | `/item` | `src/bridge/routes/inspect.js` | 物品注册表注入报告 / 查询 | — |
+| `GET` | `/knowledge` | `src/bridge/routes/inspect.js` | 整合包知识库概览 | — |
+| `GET` | `/knowledge/search` | `src/bridge/routes/inspect.js` | 查知识库（关键词） | — |
+| `GET` | `/landmarks` | `src/body/index.js` | 看得见的地标：传送石碑 / 村庄 | — |
+| `GET` | `/layout/status` | `src/body/index.js` | 布局摆到哪了 | — |
+| `GET` | `/light` | `src/body/index.js` | 这里多亮 / 要不要插火把 | — |
+| `GET` | `/look_around` | `src/body/index.js` | &below&above 转一圈看看（把看得见的方块报回来） | — |
+| `GET` | `/memory` | `src/bridge/routes/inspect.js` | 读她的记忆（journal + 状态快照） | — |
+| `GET` | `/nearby` | `src/bridge/routes/inspect.js` | 附近实体与掉落物（按敌对分类） | — |
+| `GET` | `/palette` | `src/bridge/routes/palette.js` | 当前调色板加载情况 | — |
+| `GET` | `/palette/block` | `src/bridge/routes/palette.js` | 查一个方块名对应的 state id | — |
+| `GET` | `/palette/climbable` | `src/bridge/routes/palette.js` | 可攀爬方块名单（梯子 / 藤蔓…） | — |
+| `GET` | `/palette/state` | `src/bridge/routes/palette.js` | 查一个 state id 对应的方块 | — |
+| `GET` | `/players` | `src/bridge/routes/inspect.js` | 在线玩家与距离 | — |
+| `GET` | `/plugins` | `src/bridge/routes/body.js` | 装了哪些 mineflayer 插件 | — |
+| `GET` | `/position` | `src/bridge/routes/inspect.js` | 她的坐标与朝向 | — |
+| `GET` | `/project/status` | `src/body/index.js` | 工程施工进度 | — |
+| `GET` | `/recipes` | `src/bridge/routes/inspect.js` | 查一条配方在整合包里怎么做 | — |
+| `GET` | `/resources` | `src/bridge/routes/diag.js` | 资源记忆原文（2026-09-29）：她"看过的"野外资源 | — |
+| `GET` | `/scan` | `src/bridge/routes/scan.js` | 扫附近方块 / 实体，按名字汇总数量 | — |
+| `GET` | `/state` | `src/bridge/routes/inspect.js` | 上一次缓存的状态快照 | — |
+| `GET` | `/status` | `src/bridge/routes/inspect.js` | 连接状态 + 天色 / 遮挡 | — |
+| `GET` | `/surroundings` | `src/bridge/routes/scan.js` | 她的"余光"：周围约 32 格看得见的资源，分类 + 聚片 + 按"她现在缺什么"排好序 | — |
+| `GET` | `/survey` | `src/body/index.js` | 地形普查（脚下这一圈是什么） | — |
+| `POST` | `/activate` | `src/bridge/routes/gather.js` | 右键一个方块（按钮 / 拉杆…） | `x, y, z, face, passableAfter` |
+| `POST` | `/animal` | `src/body/commonsense.js` | 喂 / 繁殖 / 剪羊毛 / 挤奶：右键动物，核对（小崽多了、羊毛多了、奶桶多了） | — |
+| `POST` | `/attack` | `src/bridge/routes/body.js` | 近战攻击（不带目标时自动挑敌对怪，排除 Boss） | `target, radius` |
+| `POST` | `/backpack/open` | `src/body/index.js` | 打开精妙背包 | — |
+| `POST` | `/backpack/tidy` | `src/body/index.js` | 整理精妙背包 | — |
+| `POST` | `/bucket` | `src/body/commonsense.js` | 空桶去装水：找最近的**水源**（流动的水装不了），右键装满（cs-32） | — |
+| `POST` | `/chat` | `src/bridge/routes/body.js` | 在游戏里说一句话 | `message, messages, gapMs` |
+| `POST` | `/chests/check` | `src/body/index.js` | 去把没开过的箱子开一遍 | — |
+| `POST` | `/climb` | `src/bridge/routes/gather.js` | 攀爬（上 / 下） | `x, y, z, maxMs, stepMs, autoOpen` |
+| `POST` | `/climb_down` | `src/body/index.js` | 爬梯子 / 藤蔓往下 | — |
+| `POST` | `/climb_up` | `src/body/index.js` | 爬梯子 / 藤蔓往上 | — |
+| `POST` | `/cmd` | `src/body/index.js` | 跑一条斜杠命令（管理员命令要玩家原话） | — |
+| `POST` | `/collect` | `src/bridge/routes/gather.js` | 去捡地上的某种掉落物 | `itemName, count` |
+| `POST` | `/command` | `src/bridge/routes/move.js` | 转发一条斜杠命令（注意权限） | `command` |
+| `POST` | `/container/close` | `src/body/index.js` | 关上当前打开的界面 | — |
+| `POST` | `/container/deposit` | `src/body/index.js` | 往打开的容器里存东西 | — |
+| `POST` | `/container/open` | `src/body/index.js` | 右键打开任意方块的界面 | — |
+| `POST` | `/container/put` | `src/body/index.js` | 放进某一格 | — |
+| `POST` | `/container/sort` | `src/body/index.js` | 整理打开的容器 | — |
+| `POST` | `/container/take` | `src/body/index.js` | 从某一格拿出来 | — |
+| `POST` | `/container/withdraw` | `src/body/index.js` | 从打开的容器里取东西 | — |
+| `POST` | `/control` | `src/bridge/routes/gather.js` | 直接给移动马达（前后左右） | `durationMs` |
+| `POST` | `/cook_pot` | `src/body/index.js` | 用厨锅做菜 | — |
+| `POST` | `/craft` | `src/bridge/routes/gather.js` | 原版配方合成 | `itemName, count` |
+| `POST` | `/craft2` | `src/body/index.js` | 按**整合包真实配方**合成 | — |
+| `POST` | `/curios/equip` | `src/body/index.js` | 戴上饰品 | — |
+| `POST` | `/curios/unequip` | `src/body/index.js` | 摘下饰品 | — |
+| `POST` | `/debug/click` | `src/body/index.js` | 原样点一个窗口格子（逆向用） | — |
+| `POST` | `/debug/payload` | `src/body/index.js` | 原样发一个模组消息（逆向用） | — |
+| `POST` | `/debug/returngrid` | `src/body/index.js` | 把合成格里的东西放回背包 | — |
+| `POST` | `/debug/seq` | `src/body/index.js` | 连续点一串格子并记录服务端回包 | — |
+| `POST` | `/delve` | `src/body/index.js` | 往下挖矿道（带火把、记"下过矿"） | — |
+| `POST` | `/door` | `src/body/index.js` | 开 / 关门（她会随手关回自己开的门） | — |
+| `POST` | `/doors/forget-left-open` | `src/body/index.js` | 忘掉"我开过还开着的门"清单 | — |
+| `POST` | `/drop` | `src/bridge/routes/move.js` | 丢出手上的东西（可丢给某个玩家） | `itemName, count, playerName` |
+| `POST` | `/eat` | `src/body/index.js` | 吃（不给名字自己挑） | — |
+| `POST` | `/equip` | `src/bridge/routes/body.js` | 穿装备（auto 时按判据自己挑） | `itemName, destination, auto, want` |
+| `POST` | `/farm` | `src/body/index.js` | 收成熟作物并补种 | — |
+| `POST` | `/fish` | `src/body/commonsense.js` | 钓鱼：找露天的水面，甩竿等咬钩（mineflayer bot.fish 听"钓鱼粒子"），核对背包真的多了东西 | — |
+| `POST` | `/flee` | `src/bridge/routes/diag.js` | 血量低时撤退 | `distance, fromX, fromY` |
+| `POST` | `/follow` | `src/bridge/routes/gather.js` | 跟着某个玩家走 | `playerName` |
+| `POST` | `/ftbq/claim` | `src/body/index.js` | 领任务奖励 | — |
+| `POST` | `/ftbq/claim_all` | `src/body/index.js` | 一键全领 | — |
+| `POST` | `/ftbq/claim_choice` | `src/body/index.js` | 多选一奖励 | — |
+| `POST` | `/ftbq/submit` | `src/body/index.js` | 交任务书任务 | — |
+| `POST` | `/give` | `src/body/index.js` | 给她东西（服务端 /give，走管理员命令白名单） | — |
+| `POST` | `/go` | `src/body/index.js` | 走过去（寻路；返回 arrived 与走了多远） | — |
+| `POST` | `/instinct` | `src/bridge/routes/diag.js` | 配置本能（告诉它“家在哪”等） | — |
+| `POST` | `/inventory/sort` | `src/body/index.js` | 整理自己的背包 | — |
+| `POST` | `/jump` | `src/bridge/routes/diag.js` | 跳一下（浮上水面 / 越过一格） | `durationMs, stopAtOxygen` |
+| `POST` | `/knowledge/search` | `src/bridge/routes/inspect.js` | 查知识库（POST 形式，关键词可含非 ASCII） | — |
+| `POST` | `/layout/cancel` | `src/body/index.js` | 取消一份布局 | — |
+| `POST` | `/layout/furnish` | `src/body/index.js` | 按布局摆家具 | — |
+| `POST` | `/layout/save` | `src/body/index.js` | 存一份家具布局 | — |
+| `POST` | `/layout/zone` | `src/body/index.js` | 标一个区"要重新想" | — |
+| `POST` | `/light_up` | `src/body/index.js` | 插火把（手上没有就先补 16 根） | — |
+| `POST` | `/look` | `src/bridge/routes/body.js` | 转头看玩家或坐标 | `playerName, x, y, z` |
+| `POST` | `/make_torches` | `src/body/index.js` | 做火把 | — |
+| `POST` | `/memory` | `src/bridge/routes/inspect.js` | 往记忆里写一条（note / chat / plan…） | `text, type` |
+| `POST` | `/mine` | `src/bridge/routes/mine.js` | 挖指定方块（可只挖看得见的 / 不挖水下） | `blockName, byItem, count, maxRadius, allowUnderwater, abort` |
+| `POST` | `/motor` | `src/body/index.js` | 直接给移动马达（左右键按住） | — |
+| `POST` | `/move` | `src/bridge/routes/move.js` | 走到指定坐标 | `x, y, z` |
+| `POST` | `/nudge` | `src/body/index.js` | 朝某个方向小挪一下（卡住时脱困） | — |
+| `POST` | `/pickup` | `src/bridge/routes/pickup.js` | 捡附近掉落物（走得到才捡，预算内） | `radius, count, timeoutMs, budgetMs, ids` |
+| `POST` | `/place` | `src/bridge/routes/place.js` | 在指定位置放一个方块 | `itemName, x, y, z, confirmMs, mount` |
+| `POST` | `/place_structure` | `src/body/index.js` | 放一个结构（建筑） | — |
+| `POST` | `/project/cancel` | `src/body/index.js` | 取消工程 | — |
+| `POST` | `/project/save` | `src/body/index.js` | 存一份工程 | — |
+| `POST` | `/project/work` | `src/body/index.js` | 推进工程（放方块） | — |
+| `POST` | `/reconnect` | `src/bridge/routes/inspect.js` | 手动重连（自动重试放弃后用） | — |
+| `POST` | `/registry/import-palette` | `src/bridge/routes/palette.js` | 导入服务端方块调色板 | — |
+| `POST` | `/ride` | `src/body/commonsense.js` | 上下载具；矿车往前推；坐船直线开过水面（实验：见 boatTo） | — |
+| `POST` | `/self_rescue` | `src/body/index.js` | 自救（卡住 / 掉坑时脱困） | — |
+| `POST` | `/shelter` | `src/bridge/routes/place.js` | 逐格套用 `/place` 已有的几何判定去放。 | `itemName, blocks` |
+| `POST` | `/sleep` | `src/body/index.js` | 去睡觉（就近找床） | — |
+| `POST` | `/smelt` | `src/body/index.js` | 熔炉 / 烟熏炉 / 高炉 | — |
+| `POST` | `/stop` | `src/bridge/routes/diag.js` | 停下当前动作（hold=true 是“站着别动”） | — |
+| `POST` | `/storage/loot` | `src/body/index.js` | 去开没开过的野外箱子并拿走 | — |
+| `POST` | `/storage/organize` | `src/body/index.js` | 整理家里的仓库（含精妙背包倒出来归位） | — |
+| `POST` | `/till` | `src/body/commonsense.js` | 锄地开新地：泥土/草方块 → 耕地（cs-31）。默认只锄 4 格内有水的（没水会退化回泥土，cs-04） | — |
+| `POST` | `/unequip` | `src/body/index.js` | 脱下装备 | `slot` |
+| `POST` | `/unstick` | `src/bridge/routes/move.js` | 卡住时脱困 | `x, y, z, reason, timeoutMs` |
+| `POST` | `/use` | `src/body/index.js` | 右键 | — |
+| `POST` | `/wake` | `src/body/index.js` | 醒来 | — |
+| `POST` | `/wear` | `src/body/index.js` | 穿戴（盔甲 / 模组装备 / 饰品） | — |
+| `POST` | `/wiggle` | `src/body/index.js` | 原地小幅抖动（挣脱碰撞箱 / 卡角） | — |
+
+<!-- END GENERATED -->

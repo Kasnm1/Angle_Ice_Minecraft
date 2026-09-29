@@ -26,21 +26,21 @@
 
 ## 自测
 
-拆开后**每个文件能自己跑**，断言总数不变（236 = 21+33+65+31+54+32+21+…，2026-09-29 因问题 1/2/3/5 各自加了断言；问题 3 给 craft.js 加了 13 条）：
+拆开后**每个文件能自己跑**，断言总数不变（242 = 21+39+65+31+54+32+21+…，2026-09-29 因问题 1/2/3/5 各自加了断言；问题 3 给 craft.js 加了 13 条）：
 
 ```bash
-$NODE src/body/hands.js --selftest                       # 汇总：把 8 个子文件的自测依次跑一遍（236 条）
-$NODE src/body/containers.js --selftest                  # 33 条（含"整理时把精妙背包倒进箱子"）
+$NODE src/body/hands.js --selftest                       # 汇总：把 8 个子文件的自测依次跑一遍（242 条）
+$NODE src/body/containers.js --selftest                  # 39 条（含"整理时把精妙背包倒进箱子"）
 $NODE src/body/craft.js --selftest                       # 65 条（含"缺料看背包""缺工作台自己放"、[0f] wear 已穿→alreadyWorn）
 $NODE src/body/movement.js --selftest                    # 31 条（假 bot 驱动真实的 startFollow / go）
 $NODE src/body/kit.js --selftest                         # 54 条（含铲）
 $NODE src/body/tool-choice.js --selftest                 # 32 条（挖之前挑工具，真 1.20.1 方块）
 $NODE src/body/build.js --selftest                       # 21 条
-$NODE src/body/commonsense.js --selftest
-$NODE src/body/equip-policy.js --selftest                # 该换什么到手上来（空手 / 拿错东西）
-$NODE src/body/storage-policy.js --selftest
-$NODE src/body/inventory-ledger.js --selftest
-$NODE src/body/ftbq-sync.js --selftest
+$NODE src/body/commonsense.js --selftest                 # 21 条
+$NODE src/body/equip-policy.js --selftest                # 21 条（该换什么到手上来：空手 / 拿错东西）
+$NODE src/body/storage-policy.js --selftest              # 5 条
+$NODE src/body/inventory-ledger.js --selftest            # 22 条
+$NODE src/body/ftbq-sync.js --selftest                   # 10 条
 $NODE --check src/bridge/server.js                       # hands 的路由挂在 bridge 上，跨区改动要一起看
 $NODE scripts/test-all.js                                # 全绿：含 [exports] hands 47 个导出名/顺序快照
 ```

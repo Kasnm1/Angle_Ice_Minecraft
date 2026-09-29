@@ -28,12 +28,12 @@ function withTimeout (...a) { return __ns.withTimeout.apply(null, a); }
 
 /**
  * 本文件负责的路由（6 条）：
- *   POST /collect
- *   POST /craft
- *   POST /follow
- *   POST /control
- *   POST /climb
- *   POST /activate
+ *   POST /collect                —— 去捡地上的某种掉落物
+ *   POST /craft                  —— 原版配方合成
+ *   POST /follow                 —— 跟着某个玩家走
+ *   POST /control                —— 直接给移动马达（前后左右）
+ *   POST /climb                  —— 攀爬（上 / 下）
+ *   POST /activate               —— 右键一个方块（按钮 / 拉杆…）
  *
  * ⚠️ 上面的清单只是**说明**；真正的键名在下面 routes 对象里，与原 server.js 逐字一致。
  */

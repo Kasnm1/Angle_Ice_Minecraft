@@ -8,7 +8,7 @@
 
 | 文件 | 职责 |
 |---|---|
-| `mind.js` | `:3003`。**汇总入口**（第 3 步 e 之后只剩 160 行，普通文件不是符号链接）：`require('./mind/*')` 后按原顺序 `module.exports`，导出名与顺序钉在 `references/exports-mind.json`；`main()` / `sim()` / `cli(argv)`（`--selftest` / `--sim` / 直接跑）也在这里。正文按下面 `mind/` 子表拆开 |
+| `mind.js` | `:3003`。**汇总入口**（第 3 步 e 之后只剩 161 行，普通文件不是符号链接）：`require('./mind/*')` 后按原顺序 `module.exports`，导出名与顺序钉在 `references/exports-mind.json`；`main()` / `sim()` / `cli(argv)`（`--selftest` / `--sim` / 直接跑）也在这里。正文按下面 `mind/` 子表拆开。**仓库根的 `mind.js` 只有 22 行**，是 Windows 脚本用的转发壳（`require('./src/mind/mind.js')` + 转调 `cli`） |
 | `body.js` | "能做什么"：`TOOLS`（bridge 动作 + 查书）、`bridge` 客户端、模型调用（主/备线路、重试）、读 `.env`。**不放任何"该怎么做"的判断**。`personalInventory`（`inventory` 工具，2026-09-29 问题 4）：背包快照太旧/从没看过时**自己 `POST /backpack/open` 刷新一次**，不再让 LLM 先 `open_backpack`；刷不动就如实报"读不到"，绝不说"没有" |
 | `memory-store.js` | `memory/mind.json`：`people` / `memories` / `journal` / `episodes` / `skills` / `ambition` / `homes`。强化、遗忘（半衰期 14 天）、按此刻涉及的人/物 `recall` |
 | `speech.js` | 发送前把一段话拆成 2–4 条短消息；**只拆不改字**（保真校验）；危险提示不拆；括号小动作不发 |
@@ -21,7 +21,7 @@
 
 ### `mind/`（第 3 步 e 从 `mind.js` 拆出，只搬移不改逻辑）
 
-原 `mind.js` 3250 行 → 汇总壳 160 行 + 下列子文件。**`W` 是进程内唯一一份可变状态**，
+原 `mind.js` 3250 行 → 汇总壳 161 行 + 下列子文件。**`W` 是进程内唯一一份可变状态**，
 只有 `state.js` 持有，其余文件 `require('./state')` 取同一份，绝不复制。
 
 | 文件 | 行数 | 职责 |
@@ -34,8 +34,8 @@
 | `mind/gates.js` | 167 | 说话/汇报/提问的判据表：`REPORT_NUDGE` / `ASK_TOO_MUCH_NUDGE` / `HONEST_NUDGE` / `FACT_CLAIMS` / `claimState` / `liveFails` / `taskDoneAllowed` / `isOverAsking` / `lastProactiveUnanswered` … |
 | `mind/tools.js` | 328 | `MIND_TOOLS` 工具表与分组：`SPECS` / `GROUPS` / `TOOL_GROUPS` / `GROUP_CUES` / `pickSpecs` / `groupsFromBody` / `activateGroup` / `activeGroups`；仓库位 `knownStations` / `homeStockItems` / `shortName` |
 | `mind/actions.js` | 214 | 把"想"变成"做"：`startJob` / `runTool` / `toolResultLine` / `fmtArgs` / `celebrate` / `learnFromDoing`；反射级 `instinctEat` / `NAME_RE` / `FAST` / `matchFast` / `fastPath`。`MIND_TOOLS` 经 Proxy 延迟取（见下） |
-| `mind/think.js` | 771 | `think()` 多轮调模型主循环 + 上下文压实：`historyChars` / `bodyNow` / `planExtras` / `planLine` / `buildNow` / `repetitionHint` / `idleGate` / `compactLastNow` / `clipText` / `trimDangling` / `sleepAndSort` / `sortMemories` / `holdBody` / `startControl` … |
-| `mind/selftest.js` | 1071 | `selftest()`（243 条）与 `mockBridge()`。**>900 行**（原样搬移，未拆）——下一步可选再分 |
+| `mind/think.js` | 792 | `think()` 多轮调模型主循环 + 上下文压实：`historyChars` / `bodyNow` / `planExtras` / `planLine` / `buildNow` / `repetitionHint` / `idleGate` / `compactLastNow` / `clipText` / `trimDangling` / `sleepAndSort` / `sortMemories` / `holdBody` / `startControl` … |
+| `mind/selftest.js` | 1107 | `selftest()`（249 条）与 `mockBridge()`。**>900 行**（原样搬移，未拆）——下一步可选再分 |
 | `mind/wiring.js` | 41 | **拆环中枢**：`think ↔ runtime`、`tools ↔ actions` 互相调用，只能延迟取。每个导出是 `() => require('./x')`，首次调用才加载 |
 
 **循环依赖怎么办**（拆环的三招，改名前先看这里）：
@@ -68,7 +68,7 @@
 ## 自测
 
 ```bash
-# mind.js 拆开后（第 3 步 e）：根入口跑 --selftest（243 条）；
+# mind.js 拆开后（第 3 步 e）：根入口跑 --selftest（249 条）；
 # 子文件都没有 --selftest 分支（跑了是空操作），只做 --check。
 $NODE mind.js --selftest
 for f in src/mind/mind/*.js; do $NODE --check $f || echo BAD $f; done

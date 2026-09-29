@@ -30,7 +30,75 @@ const { Vec3 } = require('vec3');   // 拆分时漏搬的顶层语句，2026-09-
  *   GET  /container                                       当前界面里有什么
  *   POST /container/put    {slot, itemName, count}        放进某一格
  *   POST /container/take   {slot, count?}                 从某一格拿出来
- *   POST /container/close
+ *   POST /container/close                                关上当前打开的界面
+ *
+ * ## 路由索引（`references/api-spec.md` 由这些行生成说明；改路由时这里要同步补）
+ *
+ *   POST /give            {itemName, count}               给她东西（服务端 /give，走管理员命令白名单）
+ *   POST /climb_up        {x,y,z}                         爬梯子 / 藤蔓往上
+ *   POST /climb_down      {x,y,z}                         爬梯子 / 藤蔓往下
+ *   POST /go              {x,y,z, range, maxMs}           走过去（寻路；返回 arrived 与走了多远）
+ *   GET  /look_around     ?r&below&above                  转一圈看看（把看得见的方块报回来）
+ *   POST /motor           {forward, backward, left, right} 直接给移动马达（左右键按住）
+ *   POST /nudge           {dx,dz,ms}                      朝某个方向小挪一下（卡住时脱困）
+ *   POST /wiggle          {ms}                            原地小幅抖动（挣脱碰撞箱 / 卡角）
+ *   GET  /doors           ?radius                         附近的门与"我开过还开着的"
+ *   POST /door            {x,y,z, open, keepOpen}         开 / 关门（她会随手关回自己开的门）
+ *   POST /doors/forget-left-open                          忘掉"我开过还开着的门"清单
+ *   POST /container/deposit   {itemName, count?}          往打开的容器里存东西
+ *   POST /container/withdraw  {itemName, count?}          从打开的容器里取东西
+ *   POST /container/sort                                  整理打开的容器
+ *   GET  /containers/seen ?since                          最近看过的箱子里有什么
+ *   POST /storage/organize {radius}                       整理家里的仓库（含精妙背包倒出来归位）
+ *   POST /backpack/tidy                                   整理精妙背包
+ *   POST /storage/loot    {radius}                        去开没开过的野外箱子并拿走
+ *   POST /delve           {x,y,z}                         往下挖矿道（带火把、记"下过矿"）
+ *   GET  /debug/craftgrid                                 合成台 / 背包格子的原始快照
+ *   POST /debug/click     {slot, button, mode}            原样点一个窗口格子（逆向用）
+ *   POST /debug/seq       {clicks, gap}                   连续点一串格子并记录服务端回包
+ *   POST /debug/returngrid                                把合成格里的东西放回背包
+ *   GET  /commands                                        服务端认得的命令（含可用的传送类）
+ *   POST /cmd             {cmd, because}                  跑一条斜杠命令（管理员命令要玩家原话）
+ *   GET  /survey          ?r                              地形普查（脚下这一圈是什么）
+ *   GET  /landmarks                                       看得见的地标：传送石碑 / 村庄
+ *   POST /layout/save     {id, ...}                       存一份家具布局
+ *   GET  /layout/status   ?id                             布局摆到哪了
+ *   POST /layout/furnish  {id}                            按布局摆家具
+ *   POST /layout/zone     {id, zone}                      标一个区"要重新想"
+ *   POST /layout/cancel   {id}                            取消一份布局
+ *   POST /project/save    {id, ...}                       存一份工程
+ *   GET  /project/status  ?id                             工程施工进度
+ *   POST /project/work    {id}                            推进工程（放方块）
+ *   POST /project/cancel  {id}                            取消工程
+ *   GET  /light                                    这里多亮 / 要不要插火把
+ *   POST /light_up        {max, force}             插火把（手上没有就先补 16 根）
+ *   POST /make_torches    {count}                  做火把
+ *   POST /self_rescue     {}                       自救（卡住 / 掉坑时脱困）
+ *   GET  /chests/unseen   ?radius                  附近没开过的箱子
+ *   POST /chests/check    {radius}                 去把没开过的箱子开一遍
+ *   POST /sleep           {home}                   去睡觉（就近找床）
+ *   POST /farm            {only, abort}            收成熟作物并补种
+ *   POST /cook_pot        {x,y,z}                  用厨锅做菜
+ *   POST /wake                                     醒来
+ *   POST /inventory/sort                           整理自己的背包
+ *   GET  /debug/payloads                           最近收到的模组原始包
+ *   POST /unequip         {slot, itemName}         脱下装备
+ *   GET  /debug/shape-fixes                        碰撞箱兜底修了几次
+ *   GET  /curios                                   饰品栏里有什么
+ *   POST /curios/equip    {itemName, slot}         戴上饰品
+ *   POST /curios/unequip  {itemName, slot}         摘下饰品
+ *   POST /backpack/open                            打开精妙背包
+ *   POST /ftbq/submit     {taskId}                 交任务书任务
+ *   POST /ftbq/claim      {rewardId, notify}       领任务奖励
+ *   POST /ftbq/claim_all                           一键全领
+ *   POST /ftbq/claim_choice {rewardId, index}      多选一奖励
+ *   POST /place_structure {x,y,z, ...}             放一个结构（建筑）
+ *   GET  /ftbq/recent                              最近的任务书进度包
+ *   POST /debug/payload   {channel, hex, waitMs}   原样发一个模组消息（逆向用）
+ *   GET  /debug/mvblock   ?x&y&z                   寻路器眼里这一格是什么
+ *   GET  /debug/follow                             跟随循环的状态与上次为什么停
+ *   GET  /debug/soph                               精妙背包最后一次同步
+ *   GET  /equipment                                装备 / 饥饿 / 饰品 / 背包
  */
 
 // ------------------------------------------------------------------ 汇总（第 3 步重构，2026-09-28）

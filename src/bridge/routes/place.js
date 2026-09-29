@@ -29,7 +29,7 @@ function withTimeout (...a) { return __ns.withTimeout.apply(null, a); }
 
 /**
  * 本文件负责的路由（2 条）：
- *   POST /place
+ *   POST /place                  —— 在指定位置放一个方块
  *   POST /shelter
  *
  * ⚠️ 上面的清单只是**说明**；真正的键名在下面 routes 对象里，与原 server.js 逐字一致。

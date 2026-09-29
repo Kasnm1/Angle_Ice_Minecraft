@@ -257,6 +257,11 @@ function syncSleepState (bot, sleepAnchor = null, { sleptAt = 0, staleMs = 48000
 
 function caveBoundary (self, home) {
   if (!home?.center || !Number.isFinite(home.radius)) return '家的范围未知，暂不自动探洞';
+  // ⚠️ **故意只看水平距离、不看高度**（别"修"成 inHomeArea）：这里保护的是**房子正下方的地底** ——
+  //    她自己探洞时不许从家底下挖过去（塌房、挖穿地板、把怪引进家）。inHomeArea 的 |Δy| ≤ 16 是
+  //    "人在不在家里"的判据，用在这里会让住宅下方 17 格以下变成可以自主探洞。
+  //    守它的测试：scripts/instinct-scheduling-test.js「住宅下32格仍在自动探洞禁区」。
+  //    （2026-09-29 第 5 步 WorkBuddy 把它当 bug 改掉、还把测试翻了，Claude 复核时改回。）
   if (Math.hypot(self.x - home.center.x, self.z - home.center.z) <= home.radius) return '家范围内不自动探洞，等明确下矿指令';
   return null;
 }
