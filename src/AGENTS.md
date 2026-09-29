@@ -26,8 +26,14 @@ fs.readFileSync(path.join(paths.MEMORY, 'mind.json'));
 | [`world/`](world/) | `pathing.js` `place.js` `entity-registry.js` `palette-registry.js` `block-palette.js` `item-registry.js` `fml-handshake.js` `registry-probe.js` | 寻路/放置几何 + 方块/物品/实体注册表 + Forge 握手 | [`world/AGENTS.md`](world/AGENTS.md) |
 | [`mind/`](mind/) | `mind.js` `body.js` `memory-store.js` `speech.js` `ambition.js` `plan.js` `night.js` `self-review.js` `llm-codex.js` `llm-workbuddy.js` `events-reader.js` | `:3003` 意识层（LLM 经历流、记忆、说话、计划） | [`mind/AGENTS.md`](mind/AGENTS.md) |
 | [`knowledge/`](knowledge/) | `knowledge.js` | 整合包知识库查询（数据目录 `../knowledge/` 不动） | [`knowledge/AGENTS.md`](knowledge/AGENTS.md) |
+| [`util/`](util/) | `time.js` `ids.js` `env.js` `inventory.js` | **共用小工具**（第 4 步去重的产物）：`sleep`/`sleepMs`；`fullId`/`bareId`/`bareMinecraft`/`stripPrefix`（id 命名空间）；`envBool`/`envOn`/`envTrue`/`envOne`（env 布尔）；`countById`（按数字 id 数件数）。各文件从 `require('..[/..]/util/x')` 取，不再各写一份 | — |
 
-共用：`paths.js`（数据路径）、`log-stamp.js`（给 console 打墙钟时间）。
+共用：`paths.js`（数据路径）、`log-stamp.js`（给 console 打墙钟时间）、`util/`（跨区小工具）。
+
+> `util/` 里只放**真的被两处以上用**的东西，且每个文件都能 `node src/util/<file>.js --selftest`。
+> 同一件事**语义不同**的写法（例如 `envBool` 的三派、`bareId` 与 `bareMinecraft` 对 null 的处理）
+> **要参数化保留差别，不许悄悄统一** —— 见各文件头的说明与自测。
+
 
 ## 自测
 

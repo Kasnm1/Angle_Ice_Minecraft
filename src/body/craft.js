@@ -11,6 +11,8 @@
 
 const { Vec3 } = require('vec3');   // 原 hands.js 顶层的那个导入，函数体里直接用了 Vec3
 
+// 第 4 步去重：原为转发壳（转发到兄弟文件的 sleep/sleepMs），现直接引用唯一一份
+const { sleep } = require('../util/time');
 const __ns = {};
 
 // HSTATE 的唯一一份在汇总 index.js；这里只接一个 getter，避免变成副本。
@@ -42,7 +44,6 @@ function go (...a) { return __ns.go.apply(null, a); }
 function invCounts (...a) { return __ns.invCounts.apply(null, a); }
 function nearestBlock (...a) { return __ns.nearestBlock.apply(null, a); }
 function noteSeen (...a) { return __ns.noteSeen.apply(null, a); }
-function sleep (...a) { return __ns.sleep.apply(null, a); }
 function slotByName (...a) { return __ns.slotByName.apply(null, a); }
 function stackIdentity (...a) { return __ns.stackIdentity.apply(null, a); }
 function summarizeWindow (...a) { return __ns.summarizeWindow.apply(null, a); }

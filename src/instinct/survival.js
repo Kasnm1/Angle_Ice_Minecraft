@@ -309,7 +309,9 @@ function mlgFallDamage ({ startY, landY, landName = null, landSafe = false, effe
 
 /** 落点长这样就不摔伤（水另有 `blocksWater` 判，这里只列固体） */
 const NOT_FALL_HURT = /(^|:)(hay_block|slime_block|honey_block|powder_snow|cobweb|sweet_berry_bush|vine|scaffolding|bed)$/;
-const bareOfName = (n) => String(n || '').replace(/^.*:/, '');
+// 第 4 步去重：原为本文件本地定义，与 world/perception.js:169 的 `bareOf`、mind/plan.js:49 的
+// `bare` 逐字重复（三份同一件事）—— 唯一一份在 src/util/ids.js。保留本地名 `bareOfName`。
+const { stripPrefix: bareOfName } = require('../util/ids');
 /** 从效果名里抠等级（`FeatherFalling` 无等级 = 1；`feather_falling_2` 这种模组写法也认） */
 function effectLevel (name) {
   const m = String(name || '').match(/(\d+)\s*$/);

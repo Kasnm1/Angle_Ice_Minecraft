@@ -79,7 +79,9 @@ const saidRecently = [];   // 她最近 3 分钟说过的话（say 去重用）
 // 字符串原样当结果回给她（战斗本能在打时用它挡掉抢手，见 mind.js）。
 const hooks = { onSay: () => {}, beforeSay: async () => {}, beforeAttack: () => '' };
 
-const fullItemId = (name) => String(name || '').includes(':') ? String(name) : `minecraft:${name}`;
+// 第 4 步去重：原来是本文件自己的 `fullItemId`（与 src/body/util.js:25 的 `fullId` 是同一件事
+// —— 两份在所有输入下输出相同，见 src/util/ids.js 的自测）。改成引用唯一一份。
+const { fullId: fullItemId } = require('../util/ids');
 
 /**
  * “我身上的东西”必须同时包含原版物品栏和穿戴的精妙背包。

@@ -42,7 +42,9 @@ const needTier = (tier) => (tier && TIER[tier] != null ? TIER[tier] : TIER.iron)
  * @returns {{ names:string[], source:'carried'|'carried+backpack', readable:boolean }}
  */
 // instinct 里的裸名（去 minecraft: 前缀）—— 和 loadTables 的 bareName 同一规则
-const bareNameOf = (n) => String(n).replace(/^minecraft:/, '');
+// 第 4 步去重：原为本文件本地定义，与 instinct/core.js:676 的 `bareName` 逐字重复 ——
+// 唯一一份在 src/util/ids.js（`String(n)` 版）。保留本地名 `bareNameOf` 不动调用点。
+const { bareMinecraft: bareNameOf } = require('../util/ids');
 
 /**
  * 挖哪条矿。

@@ -166,7 +166,9 @@ const SPECS = [
 /** 纯空气/可替换的：整片空气不是"资源"，也不算进记忆 */
 const AIRY = /(^|:)(air|cave_air|void_air|light|moving_piston|structure_void)$/;
 
-const bareOf = (n) => String(n || '').replace(/^.*:/, '');
+// 第 4 步去重：原为本文件本地定义，与 instinct/survival.js:312、mind/plan.js:49 逐字重复
+// （三份同一件事）—— 唯一一份在 src/util/ids.js。保留本地名 `bareOf` 不动调用点。
+const { stripPrefix: bareOf } = require('../util/ids');
 
 /**
  * 方块的中文名（`knowledge/item-names.json`，15535 条，整合包真值）。

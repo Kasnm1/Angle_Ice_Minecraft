@@ -41,7 +41,9 @@
  *        `process.env`** —— 写在 config.json 里的 `MC_PASSABLE_STATE_IDS` 会被静默忽略，
  *        只有**真正的环境变量**才生效。（与 `MC_ALLOW_DIG` 是同一个坑。）
  */
-const UNKNOWN_BLOCK_SOLID = (process.env.MC_UNKNOWN_BLOCK_SOLID ?? 'true') !== 'false';
+// 第 4 步去重：`(process.env.X ?? 'true') !== 'false'` → util/env.js 的 A 派（逐字等价）
+const { envOn } = require('../../util/env');
+const UNKNOWN_BLOCK_SOLID = envOn('MC_UNKNOWN_BLOCK_SOLID');
 // ⚠️ 拆文件（第 3 步，2026-09-29）之后这里**不能是 const 立即求值**：
 //    原来 `parseIdList` 和这一行在**同一个作用域**里（原文件 210 行 vs 727 行，先定义后用），
 //    拆开后 `parseIdList` 在 ladders.js，靠汇总 `index.js` 的 `bind()` 回填 ——
@@ -96,7 +98,7 @@ const EMPTY_SHAPES = [];
  *
  * 关掉它：`MC_THIN_BLOCK_PASSABLE=false`（退回"所有模组方块一律实心"的老行为）。
  */
-const THIN_BLOCK_PASSABLE = (process.env.MC_THIN_BLOCK_PASSABLE ?? 'true') !== 'false';
+const THIN_BLOCK_PASSABLE = envOn('MC_THIN_BLOCK_PASSABLE');
 
 /**
  * 薄方块名后缀。匹配的是**去掉命名空间之后**的末段，且要求前面是 `_` 或行首。

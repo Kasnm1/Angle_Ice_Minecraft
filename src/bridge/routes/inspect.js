@@ -17,6 +17,7 @@ const night = require('../../mind/night.js');
 const path = require('path');
 const pathing = require('../../world/pathing');
 const paths = require('../../paths');
+const { countById } = require('../../util/inventory');   // 第 4 步去重：原为本文件里的 countOf 闭包
 
 /** 跨文件符号表：由汇总文件 server.js 在两阶段装配时注入（见本文件末尾 bind）。 */
 const __ns = {};
@@ -446,7 +447,8 @@ const routes = {
 
     // 逐条算"还差什么"：delta 里 count<0 的是消耗项
     const inv = bot.inventory?.items?.() || [];
-    const countOf = (id) => inv.filter(i => i.id === id).reduce((n, i) => n + i.count, 0);
+    // 第 4 步去重：原为本文件内的闭包，与 gather.js:103 一字不差 —— 唯一一份在 src/util/inventory.js
+    const countOf = (id) => countById(inv, id);
     const missing = [];
     for (const r of allRecipes) {
       const need = [];

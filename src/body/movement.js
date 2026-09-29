@@ -11,6 +11,8 @@
 
 const { Vec3 } = require('vec3');   // 原 hands.js 顶层的那个导入，函数体里直接用了 Vec3
 
+// 第 4 步去重：原为转发壳（转发到兄弟文件的 sleep/sleepMs），现直接引用唯一一份
+const { sleep } = require('../util/time');
 const __ns = {};
 let REACH;   // 常量：load 完成后由 bind() 回填
 function airish (...a) { return __ns.airish.apply(null, a); }
@@ -28,7 +30,6 @@ function isOpen (...a) { return __ns.isOpen.apply(null, a); }
 function lightUp (...a) { return __ns.lightUp.apply(null, a); }
 function passable (...a) { return __ns.passable.apply(null, a); }
 function placeFiller (...a) { return __ns.placeFiller.apply(null, a); }
-function sleep (...a) { return __ns.sleep.apply(null, a); }
 function solidUnder (...a) { return __ns.solidUnder.apply(null, a); }
 function bind (ns) { Object.assign(__ns, ns); REACH = ns.REACH; }
 

@@ -18,11 +18,12 @@ let FOOD_RE, NOT_FOOD_RE, NOT_STORAGE_RE, STORAGE_RE, TIERS;   // 常量：load 
 function use (...a) { return __ns.use.apply(null, a); }
 function bind (ns) { Object.assign(__ns, ns); FOOD_RE = ns.FOOD_RE; NOT_FOOD_RE = ns.NOT_FOOD_RE; NOT_STORAGE_RE = ns.NOT_STORAGE_RE; STORAGE_RE = ns.STORAGE_RE; TIERS = ns.TIERS; }
 
-const sleep = (ms) => new Promise(r => setTimeout(r, ms));
-
-const botName = (id) => (String(id).startsWith('minecraft:') ? String(id).slice(10) : String(id));
-
-const fullId = (name) => (String(name).includes(':') ? String(name) : `minecraft:${name}`);
+// 第 4 步去重：原来是本地定义，现在全项目唯一一份在 src/util/time.js
+const { sleep } = require('../util/time');
+// 第 4 步去重：`fullId` / `bareId` / `botName` 三份本地定义都搬进 src/util/ids.js
+// （body 内 92 处 fullId 等调用不变，仍经本文件的导出 / __ns 拿到同一个函数）。
+// `botName` 与 ids.js 的 `bareMinecraft` 在所有输入下输出相同（见 ids.js 自测）。
+const { fullId, bareId, bareMinecraft: botName } = require('../util/ids');
 
 function findItem (bot, name) {
   if (!name) return null;
@@ -211,8 +212,6 @@ function surveyChar (b, dyn) {
   }
   return dyn.get(b.name);
 }
-
-const bareId = (id) => String(id || '').replace(/^minecraft:/, '');
 
 const tierOf = (name) => { const i = TIERS.findIndex(t => name.includes(t)); return i < 0 ? 3.5 : i; };
 

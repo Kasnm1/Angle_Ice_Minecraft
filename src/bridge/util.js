@@ -59,9 +59,10 @@ function json(res, code, body) {
   res.end(JSON.stringify(body));
 }
 
-function sleep (ms) {
-  return new Promise(r => setTimeout(r, ms));
-}
+// 第 4 步去重：这两份（sleep 的 function 形式、sleepMs）原来是本地定义，
+// 与 body/util.js、commonsense.js、instinct/core.js 逐字重复 —— 现在唯一一份在 src/util/time.js。
+// 两个名字都从那里来（同一个函数对象）。
+const { sleep, sleepMs } = require('../util/time');
 
 const DBG_PATH = cfg('MC_PATH_DEBUG', 'true') !== 'false';
 
@@ -75,8 +76,6 @@ function withTimeout(promise, ms = CFG.bridge.actionTimeout) {
     new Promise((_, rej) => setTimeout(() => rej(new Error('Action timed out')), ms)),
   ]);
 }
-
-const sleepMs = ms => new Promise(r => setTimeout(r, ms));
 
 function guardPathfinderCrash (bot, state, before = []) {
   const beforeSet = new Set(Array.isArray(before) ? before : []);

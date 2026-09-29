@@ -19,13 +19,14 @@ const perception = require('../../world/perception.js');
 const storagePolicy = require('../../body/storage-policy.js');
 
 /** 跨文件符号表：由汇总文件 server.js 在两阶段装配时注入（见本文件末尾 bind）。 */
+// 第 4 步去重：原为转发壳（转发到兄弟文件的 sleep/sleepMs），现直接引用唯一一份
+const { sleep } = require('../../util/time');
 const __ns = {};
 
 let REGISTRY_DIR;
 let state;
 let goals;
 
-function sleep (...a) { return __ns.sleep.apply(null, a); }
 function withTimeout (...a) { return __ns.withTimeout.apply(null, a); }
 
 /**
@@ -394,7 +395,7 @@ const routes = {
 function bind (ns) {
   for (const k of Object.keys(ns)) if (!(k in __ns)) __ns[k] = ns[k];
   if (ns.REGISTRY_DIR !== undefined) REGISTRY_DIR = ns.REGISTRY_DIR;
-  if (ns.sleep !== undefined) sleep = ns.sleep;
+  // 第 4 步去重：sleep/sleepMs 已改为 require 的 const，这句 bind 重赋值会报常量赋值错误 —— 删掉。
   if (ns.state !== undefined) state = ns.state;
   if (ns.withTimeout !== undefined) withTimeout = ns.withTimeout;
 }

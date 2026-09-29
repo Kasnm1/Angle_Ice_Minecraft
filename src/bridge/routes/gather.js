@@ -10,6 +10,9 @@
 const hands = require('../../body/hands.js');
 
 /** 跨文件符号表：由汇总文件 server.js 在两阶段装配时注入（见本文件末尾 bind）。 */
+// 第 4 步去重：原为转发壳（转发到兄弟文件的 sleep/sleepMs），现直接引用唯一一份
+const { sleepMs } = require('../../util/time');
+const { countById } = require('../../util/inventory');   // 第 4 步去重：原为本文件里的 countOf 闭包
 const __ns = {};
 
 let CFG;
@@ -20,7 +23,6 @@ let goals;
 function botPosExact (...a) { return __ns.botPosExact.apply(null, a); }
 function gotoWithBudget (...a) { return __ns.gotoWithBudget.apply(null, a); }
 function isDropEntity (...a) { return __ns.isDropEntity.apply(null, a); }
-function sleepMs (...a) { return __ns.sleepMs.apply(null, a); }
 function useBlockAt (...a) { return __ns.useBlockAt.apply(null, a); }
 function withTimeout (...a) { return __ns.withTimeout.apply(null, a); }
 
@@ -100,7 +102,8 @@ const routes = {
           + (tableBlock ? '' : '（附近 5 格内也没有工作台，3×3 配方需要它）'));
       }
       const inv = state.bot.inventory?.items?.() || [];
-      const countOf = (id) => inv.filter(i => i.id === id).reduce((n, i) => n + i.count, 0);
+      // 第 4 步去重：原为本文件内的闭包，与 inspect.js:449 一字不差 —— 唯一一份在 src/util/inventory.js
+      const countOf = (id) => countById(inv, id);
       const needLines = [];
       for (const r of all) {
         const gap = (r.delta || []).filter(d => d.count < 0)
@@ -366,7 +369,7 @@ function bind (ns) {
   if (ns.botPosExact !== undefined) botPosExact = ns.botPosExact;
   if (ns.gotoWithBudget !== undefined) gotoWithBudget = ns.gotoWithBudget;
   if (ns.isDropEntity !== undefined) isDropEntity = ns.isDropEntity;
-  if (ns.sleepMs !== undefined) sleepMs = ns.sleepMs;
+  // 第 4 步去重：sleep/sleepMs 已改为 require 的 const，这句 bind 重赋值会报常量赋值错误 —— 删掉。
   if (ns.state !== undefined) state = ns.state;
   if (ns.useBlockAt !== undefined) useBlockAt = ns.useBlockAt;
   if (ns.withTimeout !== undefined) withTimeout = ns.withTimeout;

@@ -13,6 +13,8 @@ const { Vec3 } = require('vec3');   // 原 hands.js 顶层的那个导入，函�
 const paths = require('../paths');
 const MINES_FILE = require('path').join(paths.MEMORY, 'mines.json');   // 拆分时漏搬的顶层语句，2026-09-29 上线崩溃后补
 
+// 第 4 步去重：原为转发壳（转发到兄弟文件的 sleep/sleepMs），现直接引用唯一一份
+const { sleep } = require('../util/time');
 const __ns = {};
 let N6, REACH;   // 常量：load 完成后由 bind() 回填
 function airish (...a) { return __ns.airish.apply(null, a); }
@@ -31,7 +33,6 @@ function isLiquid (...a) { return __ns.isLiquid.apply(null, a); }
 function pathTo (...a) { return __ns.pathTo.apply(null, a); }
 function plainTimeout (...a) { return __ns.plainTimeout.apply(null, a); }
 function scaffoldIds (...a) { return __ns.scaffoldIds.apply(null, a); }
-function sleep (...a) { return __ns.sleep.apply(null, a); }
 function threatNear (...a) { return __ns.threatNear.apply(null, a); }
 function unseenChests (...a) { return __ns.unseenChests.apply(null, a); }
 // 挖之前挑工具（2026-09-29）：判据在 tool-choice.js，只有那一份

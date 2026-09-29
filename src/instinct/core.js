@@ -12,6 +12,8 @@
 const { monitorEventLoopDelay } = require('perf_hooks');
 const storagePolicy = require('../body/storage-policy');   // 拆分时漏搬的顶层语句，2026-09-29 上线崩溃后补
 const { isHostileEntity } = require('../world/entity-registry.js');   // 拆分时漏搬的顶层语句，2026-09-29 上线崩溃后补
+const { sleepMs } = require('../util/time');   // 第 4 步去重：原为本文件 install() 内的本地定义
+const { bareMinecraft } = require('../util/ids');   // 第 4 步去重：原为本文件几处本地的 bareName/bare
 const __ns = {};
 let CFG, TIER, TIER_NAME, STRUCTURE_SIGNS, COMBAT_YIELD, isPlayerUrgent;   // 跨文件常量：load 完成后由 bind() 回填
 function fillCfg (...a) { return __ns.fillCfg.apply(null, a); }
@@ -673,7 +675,9 @@ function install (bot, state, deps) {
     return tables;
   }
 
-  const bareName = (n) => String(n).replace(/^minecraft:/, '');
+  // 第 4 步去重：原为本函数内的本地定义，与 instinct/mining.js:45 的 `bareNameOf` 逐字重复 ——
+  // 唯一一份在 src/util/ids.js（本文件顶层已 require）。保留本地名 `bareName` 不动调用点。
+  const bareName = bareMinecraft;
   // 矿看不看得见：视线打得到，或者有一面露在空气/水里（矿洞里露出来的）—— 判据在 place.exposedToOpen，只一处
   const oreVisible = (b) => {
     if (!b) return false;
@@ -1895,8 +1899,9 @@ function install (bot, state, deps) {
     } catch (_) {}
   }, CFG.toolWarn.everyMs);
 
+  // 第 4 步去重：原来是本地定义（与 body/util.js、commonsense.js、bridge/util.js 逐字重复），
+  // 现在唯一一份在 src/util/time.js（本文件顶层已 require）。
   // ================================================================ 战斗
-  const sleepMs = (ms) => new Promise(r => setTimeout(r, ms));
   bot.on('entityDead', (e) => { try { if (I.combat?.engaged.has(e.id)) I.combat.killed.push(e.name); } catch (_) {} });
 
   /** 现在有哪些对她 / 对玩家有仇恨的目标（带类别、距离） */

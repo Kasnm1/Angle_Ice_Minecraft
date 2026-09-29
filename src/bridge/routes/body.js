@@ -13,6 +13,8 @@ const pathing = require('../../world/pathing');
 const { pickAutoEquip } = require('../../body/equip-policy.js');   // 拆分时漏搬（原 server.js:48），2026-09-29 补
 
 /** 跨文件符号表：由汇总文件 server.js 在两阶段装配时注入（见本文件末尾 bind）。 */
+// 第 4 步去重：原为转发壳（转发到兄弟文件的 sleep/sleepMs），现直接引用唯一一份
+const { sleepMs } = require('../../util/time');
 const __ns = {};
 
 let MAX_SCAN_BLOCK_POSITIONS;
@@ -26,7 +28,6 @@ let toolPlugin;
 
 function cfg (...a) { return __ns.cfg.apply(null, a); }
 function sameItem (...a) { return __ns.sameItem.apply(null, a); }
-function sleepMs (...a) { return __ns.sleepMs.apply(null, a); }
 
 /**
  * 本文件负责的路由（6 条）：
@@ -331,7 +332,7 @@ function bind (ns) {
   if (ns.cfg !== undefined) cfg = ns.cfg;
   if (ns.handlers !== undefined) handlers = ns.handlers;
   if (ns.sameItem !== undefined) sameItem = ns.sameItem;
-  if (ns.sleepMs !== undefined) sleepMs = ns.sleepMs;
+  // 第 4 步去重：sleep/sleepMs 已改为 require 的 const，这句 bind 重赋值会报常量赋值错误 —— 删掉。
   if (ns.state !== undefined) state = ns.state;
 }
 

@@ -24,7 +24,9 @@
 
 const { Vec3 } = require('vec3');
 
-const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+// 第 4 步去重：sleep 原来是本地定义（与 src/body/util.js、src/bridge/util.js 逐字重复），
+// 现在全项目唯一一份在 src/util/time.js。
+const { sleep } = require('../util/time');
 const bare = (n) => String(n || '').replace(/^minecraft:/, '');
 const count = (bot, name) => bot.inventory.items().filter(i => bare(i.name) === name).reduce((a, i) => a + i.count, 0);
 

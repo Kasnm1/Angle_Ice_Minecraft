@@ -14,6 +14,8 @@ const paths = require('../paths');
 const PROJ_FILE = require('path').join(paths.MEMORY, 'projects.json');   // 拆分时漏搬的顶层语句，2026-09-29 上线崩溃后补
 const LAYOUT_FILE = process.env.MC_LAYOUT_FILE || require('path').join(paths.MEMORY, 'layouts.json');   // MC_LAYOUT_FILE：测试用，别写进真的规划（拆分时漏搬，2026-09-29 补）
 
+// 第 4 步去重：原为转发壳（转发到兄弟文件的 sleep/sleepMs），现直接引用唯一一份
+const { sleep } = require('../util/time');
 const __ns = {};
 let BUILT_RE, FURNITURE_RE, N6;   // 常量：load 完成后由 bind() 回填
 function airish (...a) { return __ns.airish.apply(null, a); }
@@ -22,7 +24,6 @@ function isDoorLike (...a) { return __ns.isDoorLike.apply(null, a); }
 function isLiquid (...a) { return __ns.isLiquid.apply(null, a); }
 function pathTo (...a) { return __ns.pathTo.apply(null, a); }
 function plainTimeout (...a) { return __ns.plainTimeout.apply(null, a); }
-function sleep (...a) { return __ns.sleep.apply(null, a); }
 function surveyChar (...a) { return __ns.surveyChar.apply(null, a); }
 function threatNear (...a) { return __ns.threatNear.apply(null, a); }
 // 挖之前挑工具（2026-09-29）：判据在 tool-choice.js，只有那一份

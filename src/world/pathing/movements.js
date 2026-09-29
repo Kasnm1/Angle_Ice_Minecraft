@@ -151,7 +151,9 @@ const COSTS = {
  *   · `POST /mine` **不受影响**：它走 `bot.dig`，不经过寻路器。
  *     所以"要挖"这件事仍然做得到，只是必须由上层显式发起（将来就是 JEV）。
  */
-const ALLOW_DIG = (process.env.MC_ALLOW_DIG ?? 'false') === 'true';
+// 第 4 步去重：`(process.env.X ?? 'false') === 'true'` → util/env.js 的 B 派（逐字等价）
+const { envTrue } = require('../../util/env');
+const ALLOW_DIG = envTrue('MC_ALLOW_DIG');
 // ------------------------------------------------- 可攀爬方块（梯子识别）
 // ------------------------------------------------ 右键"用"一个方块（选面）
 

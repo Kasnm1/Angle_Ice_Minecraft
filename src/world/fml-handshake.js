@@ -25,6 +25,8 @@
  *      (NetworkEvent.PacketDispatcher.NetworkManagerDispatcher 用收到包的 packetIndex)
  */
 
+// 第 4 步去重：env 布尔读法统一走 util/env.js
+const { envOne } = require('../util/env');
 const WRAPPER_CHANNEL = 'fml:loginwrapper'
 const HANDSHAKE_CHANNEL = 'fml:handshake'
 
@@ -271,7 +273,8 @@ function createHandshake (log = () => {}, onSnapshot = null) {
   }
 
   // 逐行打印的开关。`=1` 才开；`=0` / 空 / 没设都算关。
-  const VERBOSE = () => process.env.MC_FML_VERBOSE === '1'
+  // 第 4 步去重：改走 util/env.js 的 C 派（逐字等价；仍是**延迟读**——函数体里才读 env）。
+  const VERBOSE = () => envOne('MC_FML_VERBOSE')
 
   /**
    * 处理一个内层包，返回要发回的内层字节（null = 不回）。

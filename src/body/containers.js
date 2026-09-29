@@ -11,7 +11,12 @@
 
 const { Vec3 } = require('vec3');   // 原 hands.js 顶层的那个导入，函数体里直接用了 Vec3
 const { isHostileEntity } = require('../world/entity-registry.js');
+// 第 4 步去重：`inHomeArea` 的唯一一份在 body/util.js（同目录→直接 require，不走 __ns 转发壳，
+// 独立 require 下也能拿到）。取个别名 `inHomeAreaShared` 免得和本文件内的局部 `inHomeArea` 撞名。
+const { inHomeArea: inHomeAreaShared } = require('./util');
 
+// 第 4 步去重：原为转发壳（转发到兄弟文件的 sleep/sleepMs），现直接引用唯一一份
+const { sleep } = require('../util/time');
 const __ns = {};
 let REACH;   // 常量：load 完成后由 bind() 回填
 function K (...a) { return __ns.K.apply(null, a); }
@@ -50,7 +55,6 @@ function readVarInt (...a) { return __ns.readVarInt.apply(null, a); }
 function safeToward (...a) { return __ns.safeToward.apply(null, a); }
 function safeTransfer (...a) { return __ns.safeTransfer.apply(null, a); }
 function seenKeys (...a) { return __ns.seenKeys.apply(null, a); }
-function sleep (...a) { return __ns.sleep.apply(null, a); }
 function snapshotContainer (...a) { return __ns.snapshotContainer.apply(null, a); }
 function sortRange (...a) { return __ns.sortRange.apply(null, a); }
 function storageKey (...a) { return __ns.storageKey.apply(null, a); }
@@ -1064,7 +1068,11 @@ async function organizeStorage (bot, state, { radius = 12, assign = {}, loadout 
 }
 
 async function lootNearby (bot, state, { radius = 10, home = null, exclude = [], only = null } = {}) {
-  const inHomeArea = (p) => home && Math.hypot(p.x - home.center.x, p.z - home.center.z) <= home.radius && Math.abs(p.y - home.center.y) <= 16;
+  // 第 4 步去重：原为本文件内联一份（同 `body/util.js` 的 `inHomeArea`）—— 改引用同一份。
+  // 注意：这里只有布尔用法（`!inHomeArea(...)` / `.some(b => inHomeArea(...))`），
+  // 正主返回的 `!!home && ...`（home 为 null 时 false）与原来的 `home && ...`（返回 null）
+  // 在布尔语境下等价（见 report.md M8 的对比表）。
+  const inHomeArea = (p) => inHomeAreaShared(home, p);
   const skip = new Set([].concat(exclude).map(x => String(x).replace(/[()\s]/g, '')));
   const targets = findStorage(bot, radius).filter(b => !inHomeArea(b.position) && !skip.has(doorKey(b.position)))
     .filter(b => !only || only.includes(storageKey(bot, b)) || only.includes(doorKey(b.position)))
@@ -1214,10 +1222,10 @@ function storagePlaces (bot, state, { radius = 32, home = null, dim = null, max 
   const seen = state?.seenContainers instanceof Set ? state.seenContainers : new Set(state?.seenContainers || []);
   const targets = P.containerTargets(store.places, {
     home, seenKeys: seen,
-    // 和 `body/util.js` 的 `inHomeArea` 同一条判据（这里内联：独立 require 下转发壳没接上，
-    // 而且这是本文件自己的职责，不该借别的文件的壳；`util.js` 那份是给别处用的）。
-    isHome: (p) => !!(home && Math.hypot(p.x - home.center.x, p.z - home.center.z) <= home.radius
-      && Math.abs(p.y - home.center.y) <= 16),
+    // 第 4 步去重：原来是内联一份（当时怕"独立 require 下转发壳没接上"）。现在
+    // `body/util.js` 的 `inHomeArea` 用**直接 require**（`./util`，同目录、不成环），
+    // 独立 require 也能拿到 —— 改引用同一份（布尔语境下等价，见 report.md M8）。
+    isHome: (p) => inHomeAreaShared(home, p),
     dim, now,
   });
   const self = bot?.entity?.position;

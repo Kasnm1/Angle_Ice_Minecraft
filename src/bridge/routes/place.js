@@ -13,6 +13,8 @@ const { isStandable } = require('../../world/place');   // 拆分时漏搬（原
 
 /** 跨文件符号表：由汇总文件 server.js 在两阶段装配时注入（见本文件末尾 bind）。 */
 const { DEADLY, findStandY } = require('../../world/place');   // 原 server.js:31 从 place.js 解构；拆分时被错做成 __ns 转发壳（没人导出，DEADLY 还是正则），2026-09-29 改回
+// 第 4 步去重：原为转发壳（转发到兄弟文件的 sleep/sleepMs），现直接引用唯一一份
+const { sleepMs } = require('../../util/time');
 const __ns = {};
 
 let handlers;
@@ -22,7 +24,6 @@ let goals;
 
 function isAiryForPlace (...a) { return __ns.isAiryForPlace.apply(null, a); }
 function sameItem (...a) { return __ns.sameItem.apply(null, a); }
-function sleepMs (...a) { return __ns.sleepMs.apply(null, a); }
 function waitForBlock (...a) { return __ns.waitForBlock.apply(null, a); }
 function withTimeout (...a) { return __ns.withTimeout.apply(null, a); }
 
@@ -602,7 +603,7 @@ function bind (ns) {
   if (ns.handlers !== undefined) handlers = ns.handlers;
   if (ns.isAiryForPlace !== undefined) isAiryForPlace = ns.isAiryForPlace;
   if (ns.sameItem !== undefined) sameItem = ns.sameItem;
-  if (ns.sleepMs !== undefined) sleepMs = ns.sleepMs;
+  // 第 4 步去重：sleep/sleepMs 已改为 require 的 const，这句 bind 重赋值会报常量赋值错误 —— 删掉。
   if (ns.state !== undefined) state = ns.state;
   if (ns.waitForBlock !== undefined) waitForBlock = ns.waitForBlock;
   if (ns.withTimeout !== undefined) withTimeout = ns.withTimeout;

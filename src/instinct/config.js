@@ -10,12 +10,14 @@
  */
 
 const __ns = {};
+// 第 4 步去重：env 布尔读法统一走 ../util/env（A 派 envOn / B 派 envTrue，默认值原样）
+const { envOn, envTrue } = require('../util/env');
 function pickTorchStep (...a) { return __ns.pickTorchStep.apply(null, a); }
 function bind (ns) { Object.assign(__ns, ns);  }
 
 const CFG = {
   pickup: {
-    enabled: process.env.MC_INSTINCT_PICKUP !== 'false',
+    enabled: envOn('MC_INSTINCT_PICKUP'),
     tickMs: 400,
     radius: 8,              // 水平几格内的掉落物才管
     farRadius: 24,          // 闲着时去捡"看得见的"远处掉落物（tick 最后一步；0 = 关掉）—— 2026-09-28 加
@@ -36,14 +38,14 @@ const CFG = {
     budgetMs: 8000,         // 一次 /pickup 总共最多花多久（超了剩下的下一拍再捡）
   },
   harvest: {
-    enabled: process.env.MC_INSTINCT_HARVEST !== 'false',
+    enabled: envOn('MC_INSTINCT_HARVEST'),
     radius: 10,
     maxDy: 3,
     minMature: 3,           // 至少几棵成熟才去
     cooldownMs: 30000,      // 收完一轮歇多久再看
   },
   mine: {
-    enabled: process.env.MC_INSTINCT_MINE !== 'false',
+    enabled: envOn('MC_INSTINCT_MINE'),
     // 2026-09-28 第 8 批 第 3 条：主人说"遇到矿石也不挖"。
     // 12 格只够"脚边顺手"，实机 `有矿但不挖（far=10~22）` 全是 12~22 格里看得见的矿，
     // 她够不着就当成没事 —— 视野里明明有铁矿，却去挖了同一个洞里价值更低的油矿。
@@ -58,10 +60,10 @@ const CFG = {
     // 下一拍身体空了就该接着挖（见 tryMine 的 aborted 分支）。
     resumeMs: 0,
   },
-  sleep: { enabled: process.env.MC_INSTINCT_SLEEP !== 'false', retryMs: 180000 },
-  armor: { enabled: process.env.MC_INSTINCT_ARMOR !== 'false', everyMs: 15000 },
+  sleep: { enabled: envOn('MC_INSTINCT_SLEEP'), retryMs: 180000 },
+  armor: { enabled: envOn('MC_INSTINCT_ARMOR'), everyMs: 15000 },
   gaze: {
-    enabled: process.env.MC_INSTINCT_GAZE !== 'false',
+    enabled: envOn('MC_INSTINCT_GAZE'),
     radius: 6,
     // 主人 2026-09-29 二次反馈："不要總突然看玩家" —— 2026-09-28 那次"只在互动窗口里看"
     // 没解决问题，因为窗口**几乎一直开着**（她说话频繁 → noteSelfSpoke 每句都开 15 秒），
@@ -92,7 +94,7 @@ const CFG = {
   },
   toolWarn: { ratio: 0.1, enchantedRatio: 0.2, everyMs: 10000 },
   combat: {
-    enabled: process.env.MC_INSTINCT_COMBAT !== 'false',
+    enabled: envOn('MC_INSTINCT_COMBAT'),
     detect: 10,             // 多远发现（主人定的 10 格）
     leash: 12,              // 离锚点多远就不追了
     lowHp: 6,               // 血到这个就跑
@@ -108,7 +110,7 @@ const CFG = {
     fightFromBackpackDist: 5,
   },
   tidy: {
-    enabled: process.env.MC_INSTINCT_TIDY !== 'false',
+    enabled: envOn('MC_INSTINCT_TIDY'),
     fullAt: 3,              // 空格 ≤ 这个就算快满
     packMinFree: 4,         // 背包至少剩这么多格才往里装（不知道剩多少 = 试一次）
     packCooldownMs: 120000, // 倒腾一次背包后 2 分钟内不再倒腾
@@ -118,7 +120,7 @@ const CFG = {
     checkMs: 20000,
   },
   loot: {
-    enabled: process.env.MC_INSTINCT_LOOT !== 'false',
+    enabled: envOn('MC_INSTINCT_LOOT'),
     // 2026-09-29（主人："野外的箱子，木桶也要作為重點，看到之后高優先級去獲取內容"）：
     // 24 → 32，**跟感知扫描（CFG.perception.radius）一致**。
     // 24 的时候"余光扫到 32 格有箱子、开箱本能却看不见"—— 两个半径不一致，
@@ -135,7 +137,7 @@ const CFG = {
   // 扫描本身走 `instinct/core.js` 的 `scanColumnsIn`（逐 chunk 列 + 列间让出），
   // **绝不**同步扫大范围（2026-09-28 的 `homeTimer` 同步扫描把进程冻了 14 秒）。
   perception: {
-    enabled: process.env.MC_INSTINCT_PERCEPTION !== 'false',
+    enabled: envOn('MC_INSTINCT_PERCEPTION'),
     // 32 的理由（写在 world/perception.js 的 scanAround 也有一份）：
     //   mind 的 /nearby 是 16、/chests/unseen 是 24 —— 32 明显更远，够"余光"；
     //   32 格 = 2 个区块、25 个 chunk 列，配合每列 yield 单批可控；
@@ -196,7 +198,7 @@ const CFG = {
   cave: {
     // 自动探洞会把“人在洞里”误当成“主人让我探险”。默认关闭；明确下矿走 /delve，
     // 只有运维显式设置 MC_INSTINCT_CAVE=true 时才恢复这项自主行为。
-    enabled: process.env.MC_INSTINCT_CAVE === 'true',
+    enabled: envTrue('MC_INSTINCT_CAVE'),
     scan: 16,               // 往多远找下一步
     minStep: 5,             // 每步至少走这么远（别原地挪）
     maxDrop: 4,             // 下一步比脚下低这么多以内
@@ -207,8 +209,8 @@ const CFG = {
   },
   // 搭路会真实消耗并改变世界。普通赶路、拾取、追动物不应因此自动垫块；
   // 只有显式打开才交给 pathfinder 使用。
-  bridge: { enabled: process.env.MC_INSTINCT_BRIDGE === 'true' },
-  dig: { enabled: process.env.MC_INSTINCT_DIG !== 'false' },
+  bridge: { enabled: envTrue('MC_INSTINCT_BRIDGE') },
+  dig: { enabled: envOn('MC_INSTINCT_DIG') },
   // 家的范围随基地长大（2026-09-28 第 8 批真修后重新打开）：
   // 以前默认关是因为同步大扫描单段 13 秒（`slow home.scanBuilt d=91 13049`），每 5 分钟整个进程冻住。
   // 现在扫描改成**逐 chunk 列**（列间 await setImmediate）+ section palette 预筛，
@@ -216,11 +218,11 @@ const CFG = {
   // modpack-study/fix8-20260928/bench-scanchunks.js）。everyMs 仍是 30 分钟一次。
   // MC_HOME_GROW=false 可以关掉。
   // 家的范围随基地长大：默认关，实机验证逐列扫描不卡之后再打开（MC_HOME_GROW=true）
-  home: { grow: process.env.MC_HOME_GROW === 'true', everyMs: 1800000, gap: 8, margin: 6, cap: 128, near: 32 },
+  home: { grow: envTrue('MC_HOME_GROW'), everyMs: 1800000, gap: 8, margin: 6, cap: 128, near: 32 },
   // 暗处插火把（2026-09-28 第 8 批 第 4 条，新本能，无 LLM）。
   // 判据见 pickTorchStep：地下 + 脚下方块光 ≤ darkMax + 身上有火把 + 7 格内没光源。
   torch: {
-    enabled: process.env.MC_INSTINCT_TORCH !== 'false',
+    enabled: envOn('MC_INSTINCT_TORCH'),
     darkMax: 7,          // 脚下方块光 ≤ 这个就插（原版怪在方块光 0 刷，留余量）
     spacing: 7,          // 这么近有光源就不插（和 hands.lightUp 的 spacing 一致）
     everyBlocks: 6,      // 每走这么多格检查一次（别每拍都点）
@@ -230,7 +232,7 @@ const CFG = {
   follow: { idleMs: 8000, reach: 12 },
   // 接着把 mind 交待的下矿走完（第 5 条）。cave 本能仍默认关；这条只看"mind 明确下过 /delve"。
   delve: {
-    enabled: process.env.MC_INSTINCT_DELVE !== 'false',
+    enabled: envOn('MC_INSTINCT_DELVE'),
     resumeMs: 300000,   // 5 分钟内被打断的，本能自己接着挖
     reach: 96,          // 记录里那个地方在这么近才接着挖（不跨半个地图）
     seconds: 90,        // 每次续挖最多多久（和 mind 下矿的默认时长一致）
@@ -242,7 +244,7 @@ const CFG = {
   // 现在只在"这一摔真会伤到她"时才倒（判据是纯函数 `survival.js` 的 `mlgShouldPlace`，
   // 伤害模型在 `mlgFallDamage` 里，只此一份）：
   mlg: {
-    enabled: process.env.MC_INSTINCT_MLG !== 'false',
+    enabled: envOn('MC_INSTINCT_MLG'),
     // 家**外**：预估伤害 ≥ 血量的一半，**或** ≥ hurtAt 点 → 倒。
     //   理由：一半血挨一下太亏（20 血时 10 点就是 5 颗心）；hurtAt=6（3 颗心）兜住
     //   "血多但掉得也不少"的情形。5 格那种 2 点两条都不满足 → 不倒。
@@ -263,7 +265,7 @@ const CFG = {
     pendingMax: 8,         // 实在收不回来的水点最多记几条，闲时回去收（不写死坐标）
   },
   cmd: {
-    enabled: process.env.MC_INSTINCT_CMD !== 'false',
+    enabled: envOn('MC_INSTINCT_CMD'),
     cmdGapMs: 60000,
     recoverMax: 400,        // 死了走回去捡东西：同一维度这么远以内
     despawnMs: 300000,      // 掉落物 5 分钟消失
@@ -271,7 +273,7 @@ const CFG = {
     panicHp: 4,
   },
   // 吃（主人 2026-09-27：饥饿条掉 2 格就吃 = 饥饿值 ≤16）。身体空着才吃；饿到 urgentAt 以下有命令在跑也吃
-  eat: { enabled: process.env.MC_INSTINCT_EAT !== 'false', at: 16, urgentAt: 6, checkMs: 2000, failCooldownMs: 60000 },
+  eat: { enabled: envOn('MC_INSTINCT_EAT'), at: 16, urgentAt: 6, checkMs: 2000, failCooldownMs: 60000 },
   // 憋气：头在水里、氧气 ≤ at（满 20）→ 叫停命令、一直跳上去换气
   //
   // 2026-09-29 实机（在水底挖沙子差点淹死）：**光往上跳不够** —— 头顶被沙子/坑顶/悬垂盖住时，
@@ -279,7 +281,7 @@ const CFG = {
   // （判据在 survival.js 的 `columnClear` / `breathPlan`）：能上去就跳、旁边有出口就游过去、
   // 全封死才挖头顶。下面这些数字都是那次加的。
   breathe: {
-    enabled: process.env.MC_INSTINCT_BREATHE !== 'false',
+    enabled: envOn('MC_INSTINCT_BREATHE'),
     at: 8,                 // 氧气 ≤ 这个就动手（满 20）。见下面"只汇报不改"的说明：挖水底方块时偏晚，靠 /mine 的 dryOxygenAt 提前拦
     checkMs: 500,
     jumpMs: 6000,
@@ -292,11 +294,11 @@ const CFG = {
     stepRetryMs: 1500,     // 一个办法（跳/游/挖）试完没起色，隔多久换下一个
   },
   // 中毒 / 凋零：告诉 mind；有牛奶且（凋零 或 血 ≤ milkHp）就喝；打架时按"少了几滴血"算，更早撤
-  effects: { enabled: process.env.MC_INSTINCT_EFFECTS !== 'false', milkHp: 10, poisonHpCost: 4, witherHpCost: 6, checkMs: 1000 },
+  effects: { enabled: envOn('MC_INSTINCT_EFFECTS'), milkHp: 10, poisonHpCost: 4, witherHpCost: 6, checkMs: 1000 },
   // 上岸（主人 2026-09-27）：身体空着、泡在水里超过 afterMs（或刚上浮换完气）→ 走到最近能站的陆地
-  shore: { enabled: process.env.MC_INSTINCT_SHORE !== 'false', afterMs: 3000, radius: 12, checkMs: 1000, retryMs: 8000 },
+  shore: { enabled: envOn('MC_INSTINCT_SHORE'), afterMs: 3000, radius: 12, checkMs: 1000, retryMs: 8000 },
   // 天气：下雨 / 打雷 / 雨停告诉 mind；打雷在露天当夜里（白天也刷怪），打雷时在家可以睡
-  weather: { enabled: process.env.MC_INSTINCT_WEATHER !== 'false' },
+  weather: { enabled: envOn('MC_INSTINCT_WEATHER') },
   // 玩家挨打：**只有真的危险才**告诉 mind（主人 2026-09-29 实机：掉一点血她每次都问"你没事吧"）。
   //
   // 原判据是"48 格内玩家挨打就发" + 同一人 20 秒冷却 —— 摔一下、被怪擦一下都算，
@@ -310,7 +312,7 @@ const CFG = {
   // 判定依据见 core.js 的 playerHurtPlan()：**"没有"和"读不到"分开** ——
   // 读不到血量时不许当成满血（漏报）也不许当成危险（误报），只按 ③ 的挨打次数判。
   playerHurt: {
-    enabled: process.env.MC_INSTINCT_PLAYER_HURT !== 'false',
+    enabled: envOn('MC_INSTINCT_PLAYER_HURT'),
     radius: 48,
     quietMs: 180000,   // 同一玩家：发过之后 3 分钟内不再发（原来是 20 秒，实机太吵）
     lowHp: 8,          // 血量 ≤ 这个 = 真的危险（4 颗心）

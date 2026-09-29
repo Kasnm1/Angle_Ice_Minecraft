@@ -13,6 +13,8 @@ const pathing = require('../../world/pathing');
 
 /** 跨文件符号表：由汇总文件 server.js 在两阶段装配时注入（见本文件末尾 bind）。 */
 const { findStandY } = require('../../world/place');   // 原 server.js:31 从 place.js 解构；拆分时被错做成 __ns 转发壳（没人导出，DEADLY 还是正则），2026-09-29 改回
+// 第 4 步去重：原为转发壳（转发到兄弟文件的 sleep/sleepMs），现直接引用唯一一份
+const { sleep } = require('../../util/time');
 const __ns = {};
 
 let state;
@@ -22,7 +24,6 @@ let goals;
 function fingerprintDelta (...a) { return __ns.fingerprintDelta.apply(null, a); }
 function inventoryFingerprint (...a) { return __ns.inventoryFingerprint.apply(null, a); }
 function isDropEntity (...a) { return __ns.isDropEntity.apply(null, a); }
-function sleep (...a) { return __ns.sleep.apply(null, a); }
 function withTimeout (...a) { return __ns.withTimeout.apply(null, a); }
 
 /**
@@ -343,7 +344,7 @@ function bind (ns) {
   if (ns.fingerprintDelta !== undefined) fingerprintDelta = ns.fingerprintDelta;
   if (ns.inventoryFingerprint !== undefined) inventoryFingerprint = ns.inventoryFingerprint;
   if (ns.isDropEntity !== undefined) isDropEntity = ns.isDropEntity;
-  if (ns.sleep !== undefined) sleep = ns.sleep;
+  // 第 4 步去重：sleep/sleepMs 已改为 require 的 const，这句 bind 重赋值会报常量赋值错误 —— 删掉。
   if (ns.state !== undefined) state = ns.state;
   if (ns.withTimeout !== undefined) withTimeout = ns.withTimeout;
 }

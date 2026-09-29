@@ -27,6 +27,8 @@ const { pickAutoEquip } = require('../body/equip-policy.js');   // 拆分时漏�
 const storagePolicy = require('../body/storage-policy.js');
 
 /** 跨文件符号表：由汇总文件 server.js 在两阶段装配时注入（见本文件末尾 bind）。 */
+// 第 4 步去重：原为转发壳（转发到兄弟文件的 sleep/sleepMs），现直接引用唯一一份
+const { sleepMs } = require('../util/time');
 const __ns = {};
 function botPos (...a) { return __ns.botPos.apply(null, a); }   // 拆分时漏了转发壳，2026-09-29 补
 
@@ -43,7 +45,6 @@ function isPlayerBuilt (...a) { return __ns.isPlayerBuilt.apply(null, a); }
 function journal (...a) { return __ns.journal.apply(null, a); }
 function pushChat (...a) { return __ns.pushChat.apply(null, a); }
 function saveState (...a) { return __ns.saveState.apply(null, a); }
-function sleepMs (...a) { return __ns.sleepMs.apply(null, a); }
 
 function installReplaceable () {
   try {
@@ -1155,7 +1156,8 @@ function bind (ns) {
   if (ns.journal !== undefined) journal = ns.journal;
   if (ns.pushChat !== undefined) pushChat = ns.pushChat;
   if (ns.saveState !== undefined) saveState = ns.saveState;
-  if (ns.sleepMs !== undefined) sleepMs = ns.sleepMs;
+  // 第 4 步去重：sleepMs 不再是本文件的模块级可重绑定变量（改成 require('../util/time') 的
+  // const），bind 里这句 `sleepMs = ns.sleepMs` 会报 "Assignment to constant variable" —— 删掉。
   if (ns.state !== undefined) state = ns.state;
 }
 
