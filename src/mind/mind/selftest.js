@@ -447,12 +447,13 @@ async function selftest () {
     check('★ 打架时他喊"快过来" → 走路工具自动带玩家标记（不靠 LLM 填 fromPlayer）', PLAYER_MOVE_RE.test('快过来') && PLAYER_MOVE_RE.test('跟我走') && PLAYER_MOVE_RE.test('别打了 回来') && PLAYER_MOVE_TOOLS.has('come_to'));
     check('闲聊不带标记：「好累」「哈哈」', !PLAYER_MOVE_RE.test('好累') && !PLAYER_MOVE_RE.test('哈哈'));
     { const t = Date.now(); const T = (x) => x;
-      check('★ 他 2 分钟前交代过、"箱子理好了" → 放行（回他，不是播报）', taskDoneAllowed('箱子理好了', { now: t, lastTaskAskedAt: t - 120000 }) === true);
-      check('同一次交代报过了、再说"好了" → 不放行', taskDoneAllowed('好了', { now: t, lastTaskAskedAt: t - 120000, lastTaskDoneSaidAt: t - 60000 }) === false);
-      check('没交代过（只是聊过天）、自己理完箱子 → 不放行（自己的事不播报）', taskDoneAllowed('箱子理好了', { now: t, lastTaskAskedAt: 0 }) === false);
-      check('交代是 20 分钟前 → 不放行', taskDoneAllowed('箱子理好了', { now: t, lastTaskAskedAt: t - 1200000 }) === false);
-      check('"我去插火把"不是完成 → 不放行', taskDoneAllowed('我去插火把', { now: t, lastTaskAskedAt: t - 60000 }) === false);
-      check('做不成也要说一声', taskDoneAllowed('做不了 缺铁', { now: t, lastTaskAskedAt: t - 60000 }) === true);
+      // 任务队列阶段 3 起看任务状态（设计第九节）：taskEnded = 最近收尾的那件主人交代的事（tasks.lastEndedPlayer）
+      check('★ 他交代的那件 2 分钟前做完了、"箱子理好了" → 放行（回他，不是播报）', taskDoneAllowed('箱子理好了', { now: t, taskEnded: { at: t - 120000 } }) === true);
+      check('同一次收尾报过了、再说"好了" → 不放行', taskDoneAllowed('好了', { now: t, taskEnded: { at: t - 120000 }, lastTaskDoneSaidAt: t - 60000 }) === false);
+      check('★ 他交代的没有一件收尾（没交代过 / 还在做）→ 不放行', taskDoneAllowed('箱子理好了', { now: t, taskEnded: null }) === false);
+      check('收尾是 20 分钟前 → 不放行', taskDoneAllowed('箱子理好了', { now: t, taskEnded: { at: t - 1200000 } }) === false);
+      check('"我去插火把"不是完成 → 不放行', taskDoneAllowed('我去插火把', { now: t, taskEnded: { at: t - 60000 } }) === false);
+      check('做不成（那件 failed / dropped）也要说一声', taskDoneAllowed('做不了 缺铁', { now: t, taskEnded: { at: t - 60000 } }) === true);
       check('交代的话认得出：「帮我把箱子理一下」「去砍点木头」「做个铁镐」', ['帮我把箱子理一下', '去砍点木头', '做个铁镐'].every(x => TASK_ASK_RE.test(x)));
       check('闲聊不算交代：「好累」「哈哈哈」「你在干嘛」', !['好累', '哈哈哈', '你在干嘛'].some(x => TASK_ASK_RE.test(x))); T(0); }
     // 2026-09-29 Claude 复核补：实机那句是**下一轮**、而且是在**回他的话**
@@ -1463,9 +1464,9 @@ async function selftest () {
         const said = []; const mb = mockBridge();
         body._setBridge({ get: mb.get, post: async (p, b) => { if (p === '/chat') said.push((b.messages || [b.message]).join('/')); return mb.post(p, b); } });
         body._setLLM(async () => steps.shift() || { content: '', tool_calls: [{ id: `w${Math.random()}`, function: { name: 'wait', arguments: '{}' } }] });
-        // 他 5 分钟没开口、交代是 1 小时前的事（"做完说一声"的 10 分钟窗口早过了）
+        // 他 5 分钟没开口（"少汇报"那道闸管着）
         W.history = []; W.lastNow = null; W.pending = []; W.chatWait = null; W.lastHeardAt = Date.now() - 5 * 60 * 1000;
-        W.lastTaskAskedAt = Date.now() - 60 * 60 * 1000; W.lastAskedAt = 0; W.lastProactive = null;
+        W.lastAskedAt = 0; W.lastProactive = null;
         emit('❌ mine 没做成：附近没有铁矿', { names: [] });
         for (let i = 0; i < 40 && (W.thinking || thinkTimerValue() || W.pending.length); i++) await new Promise(r => setTimeout(r, 100));
         await new Promise(r => setTimeout(r, 200));
@@ -1488,7 +1489,69 @@ async function selftest () {
       check('再说一遍同样的 → 照拦（口子已关）', !s2.some(x => /不做了/.test(x)), s2);
       check('借口子说别的播报 → 照拦（判据只认"不做了 / 做不成 / 找不到"）', dropTellAllowed('我去插火把', { at: Date.now() }) === false && dropTellAllowed(line, { at: Date.now() }) === true && dropTellAllowed(line, { at: Date.now() - 11 * 60 * 1000 }) === false);
       body._setBridge(mockBridge());
-      W.lastHeardAt = 0; W.lastTaskAskedAt = 0;
+      W.lastHeardAt = 0;
+    }
+
+    // ── 11) 阶段 3：说"做好了"联动任务状态 / 计划联动（走真的 think + 工具，假模型）
+    {
+      const runRound = async (steps) => {
+        const said = []; const mb = mockBridge();
+        body._setBridge({ get: mb.get, post: async (p, b) => { if (p === '/chat') said.push((b.messages || [b.message]).join('/')); return mb.post(p, b); } });
+        body._setLLM(async () => steps.shift() || { content: '', tool_calls: [{ id: `w${Math.random()}`, function: { name: 'wait', arguments: '{}' } }] });
+        W.history = []; W.lastNow = null; W.pending = []; W.chatWait = null; W.lastHeardAt = Date.now() - 5 * 60 * 1000;
+        W.lastAskedAt = 0; W.lastProactive = null; W.recentResults = []; W.recentLive = []; W.lastTaskDoneSaidAt = 0;
+        emit('✅ 做完了：craft{"itemName":"iron_pickaxe"} → {"crafted":"minecraft:iron_pickaxe"}', { names: [] });
+        for (let i = 0; i < 40 && (W.thinking || thinkTimerValue() || W.pending.length); i++) await new Promise(r => setTimeout(r, 100));
+        await new Promise(r => setTimeout(r, 200));
+        return said;
+      };
+      resetT();
+      const P = T.create({ title: '帮我做把铁镐', said: '帮我做把铁镐', source: 'player', askedBy: 'Ka_sum1' }).task;
+      T.setRunning(P.id);
+      T.noteEvidence(P.id, 'craft{"itemName":"iron_pickaxe"} → crafted minecraft:iron_pickaxe');
+      const s1 = await runRound([
+        { content: '', tool_calls: [{ id: 'h1', function: { name: 'say', arguments: '{"text":"铁镐做好了"}' } }] },
+        { content: '', tool_calls: [{ id: 'h2', function: { name: 'task_done', arguments: '{"result":"做了一把铁镐"}' } }] },
+        { content: '', tool_calls: [{ id: 'h3', function: { name: 'say', arguments: '{"text":"铁镐做好了"}' } }] },
+      ]);
+      const nudged = W.history.some(m => m.role === 'tool' && /#\d+ 帮我做把铁镐」在你的任务里还没标做完/.test(m.content));
+      check('★ 任务还没标做完就说"铁镐做好了" → 拦下，提示先 task_done', nudged, W.history.filter(m => m.role === 'tool').map(m => m.content.slice(0, 80)));
+      check('★ task_done（有证据）之后再说 → 发出去了（而且只发了一次）', s1.filter(x => /铁镐做好了/.test(x.replace(/\//g, ''))).length === 1 && T.get(P.id).status === 'done', { s1, st: T.get(P.id).status });
+      check('★ 发出去靠的是任务状态：他 5 分钟没开口，"做完说一声"按刚收尾的那件放行', !!T.lastEndedPlayer() && T.lastEndedPlayer().id === P.id && W.lastTaskDoneSaidAt >= T.lastEndedPlayer().at, T.lastEndedPlayer());
+      // 计划联动：task_add(plan_step) → task_done → 计划那一步打勾；计划改过（原文对不上）→ 不打
+      plan._reset();
+      plan.setPlan({ goal: '做铁镐', steps: ['做石镐', '挖铁'] });
+      resetT();
+      const a1 = await runTool('task_add', { title: '做石镐', when: 'now', plan_step: 0 });
+      check('task_add(plan_step) → source=plan、记着那一步的原文', a1.ok && T.get(a1.id).source === 'plan' && T.get(a1.id).planText === '做石镐', { a1, t: T.get(a1.id) });
+      T.noteEvidence(a1.id, 'craft → crafted stone_pickaxe');
+      const d1 = await runTool('task_done', { result: '石镐做好了' });
+      check('★ 计划任务做完 → 计划第 0 步打勾了', d1.ok && /计划第 0 步打勾了/.test(d1.plan || '') && plan.get().steps[0].ok === true, { d1, steps: plan.get().steps });
+      const a2 = await runTool('task_add', { title: '挖铁', when: 'now', plan_step: 1 });
+      plan.updateStep({ index: 1, text: '挖金子' });   // 她后来把计划改了
+      T.noteEvidence(a2.id, 'mine → got raw_iron');
+      const d2 = await runTool('task_done', {});
+      check('★ 计划那一步被改过（原文对不上）→ 任务照样做完，但计划不乱打勾、说清为什么', d2.ok && /计划没打勾：计划第 1 步已经改成「挖金子」了/.test(d2.plan || '') && plan.get().steps[1].ok === false, { d2, steps: plan.get().steps });
+      const bad = await runTool('task_add', { title: '不存在的一步', plan_step: 9 });
+      check('plan_step 越界 → 拒绝（不建一件指向空处的计划任务）', bad.ok === false && /没有第 9 步/.test(bad.error), bad);
+      // 闲着推计划：手上没事、idle 这一轮动手 → 建 source=plan 的任务（不是 auto，一串做完不算做完）
+      resetT(); plan._reset(); plan.setPlan({ goal: '过日子', steps: ['去砍点木头'] });
+      const prevB = { get: bridge.get, post: bridge.post };
+      body._setBridge({ get: prevB.get, post: async (p, b) => (p === '/mine' ? { success: true, mined: 1 } : prevB.post(p, b)) });
+      await startJob([{ tool: 'mine', args: { blockName: 'oak_log' } }], '砍木头', { planStep: plan.current() });
+      const pt = T.all().find(t => t.source === 'plan');
+      check('★ 闲着推计划动手 → 建一件 source=plan 的任务（指回计划那一步），一串做完不自动算做完', pt && pt.planStep === 0 && pt.planText === '去砍点木头' && !pt.auto && pt.status === 'running' && pt.evidence.length === 1, pt);
+      body._setBridge(prevB);
+      // 标志达成（plan.autoCheck 新打勾）→ 对应的计划任务收尾
+      const closed = T.closePlanTasks(['去砍点木头']);
+      check('★ 计划的标志自己达成 → 对应的计划任务一起收尾（按原文对）', closed.length === 1 && T.get(pt.id).status === 'done', T.get(pt.id));
+      // /mind 观测（设计第十节）：当前 + 队列 + 最近 10 件结束的 + 统计
+      const stats = T.taskStats();
+      check('★ 复盘统计：主人交代的数、完成率', stats && typeof stats.interrupted === 'number' && stats.player && 'rate' in stats.player, stats);
+      plan._reset();
+      try { require('fs').unlinkSync(process.env.MC_PLAN_FILE); } catch (_) {}
+      body._setBridge(mockBridge());
+      W.lastHeardAt = 0;
     }
 
     try { require('fs').unlinkSync(tmpT); } catch (_) {}

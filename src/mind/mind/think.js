@@ -21,7 +21,7 @@ const { humanState, combatInstinct, survivalFocus, dropLine, invText, surroundLi
 const { startJob, fmtArgs, runTool, toolResultLine, learnFromDoing } = require('./actions');
 const { ALL, kindOf, GROUP_CUES, groupsFromBody, pickSpecs, activeGroups, groupsFromTasks } = require('./tools');
 const { SYSTEM } = require('./prompt');
-const { DELEGATES, ASKS_BACK, DECIDE_NUDGE, ASKS_WHERE, LOOK_NUDGE, SAY_NUDGE, ACTION_NUDGE, isBareAffirmative, QUIET_MS, RECENT_CLAIM_MS, PLAYER_MOVE_TOOLS, PLAYER_MOVE_RE, TASK_ASK_RE, taskDoneAllowed, HONEST_NUDGE, isOverAsking, lastProactiveUnanswered, liveFails, unbackedClaim, REPORT_NUDGE, ASK_TOO_MUCH_NUDGE, ASK_BACK_NUDGE, torchAskAllowed, dropTellAllowed } = require('./gates');
+const { DELEGATES, ASKS_BACK, DECIDE_NUDGE, ASKS_WHERE, LOOK_NUDGE, SAY_NUDGE, ACTION_NUDGE, isBareAffirmative, QUIET_MS, RECENT_CLAIM_MS, PLAYER_MOVE_TOOLS, PLAYER_MOVE_RE, TASK_ASK_RE, taskDoneAllowed, HONEST_NUDGE, isOverAsking, lastProactiveUnanswered, liveFails, unbackedClaim, REPORT_NUDGE, ASK_TOO_MUCH_NUDGE, ASK_BACK_NUDGE, torchAskAllowed, dropTellAllowed, unfinishedTaskClaim, TASK_HONEST_NUDGE } = require('./gates');
 const wiring = require('./wiring');
 const paths = require('../../paths');   // knowledge/ 路径（查任务书章名·任务名用，见 questLabel）
 // 工具表在 tools.js —— 延迟取同一份（tools 也会回头用本文件的 buildNow，见 wiring.js）
@@ -352,8 +352,7 @@ async function think (why) {
   // 身体刚回报的失败（now.ev 里的 ❌ / ↳ ✗ 行）**每一轮都记下来**，不只在她开口那轮 —— 失败那轮她可能没说话
   { const tNow = Date.now(); W.recentLive = [...(W.recentLive || []).filter(r => tNow - r.t < RECENT_CLAIM_MS), ...liveFails(now.ev).map(r => ({ ...r, t: tNow }))]; }
   const playerSaid = now.ev.filter(e => /说：/.test(e.text)).map(e => e.text.replace(/^[^：]*说：/, '')).join(' ');   // 他这一刻说的话   // 这一轮自己看过周围 / 背包没有（问"X在哪"之前要先看）
-  // 他这句是在交代事情 → 记下时间：之后"做好了 / 做不成"算回他（taskDoneAllowed）
-  if (playerSaid && TASK_ASK_RE.test(playerSaid)) W.lastTaskAskedAt = Date.now();
+  // （原来这里记 W.lastTaskAskedAt 给 taskDoneAllowed 用；阶段 3 起那道闸看任务状态 —— 他交代的事自动进队列，见下）
   // ── 任务队列（阶段 1，设计第四节）───────────────────────────────────────────
   // 他交代的事情**自动进队列**：他这一句命中了说话闸的 `TASK_ASK_RE`（判据只有那一条，这里不重写），
   // 就替他建一件 `source='player'` 的任务 —— 这样"被打断 / 他没再说"都不会丢事。
@@ -474,10 +473,23 @@ async function think (why) {
             W.history.push({ role: 'tool', tool_call_id: c.id, content: JSON.stringify({ ok: false, error: nudgedOnce(honestNudged) ? HONEST_NUDGE(lie) : `（这一条也没发出去：那个没成功 —— ${lie}。照实说，或者别提。）` }) });
             continue;
           }
+          // 说"X 做好了"，任务里 X 那件还没收尾（阶段 3，设计第八节）→ 拦，让她先 task_done（要证据）或照实说。
+          // 判据在 gates.unfinishedTaskClaim（只此一份）；和上面一样不看 heJustSpoke —— "别说没发生的事"任何时候都管。
+          let unDone = null;
+          try { unDone = unfinishedTaskClaim(String(args.text || ''), tasks().all()); } catch (_) {}
+          if (unDone) {
+            honestNudged++;
+            needMore = true;
+            W.history.push({ role: 'tool', tool_call_id: c.id, content: JSON.stringify({ ok: false, error: nudgedOnce(honestNudged) ? TASK_HONEST_NUDGE(unDone) : `（这一条也没发出去：#${unDone.id} 还没标做完。）` }) });
+            continue;
+          }
         }
         // 他交代的事做完了（或做不成）→ 说一声是回他，不是旁白（主人 2026-09-29："箱子理好了这种完成玩家任务的话是可以的"）。
         // 一次交代只放行一次（见 taskDoneAllowed）。
-        const doneOk = name === 'say' && taskDoneAllowed(String(args.text || ''), { lastTaskAskedAt: W.lastTaskAskedAt, lastTaskDoneSaidAt: W.lastTaskDoneSaidAt });
+        // 阶段 3：看任务状态 —— 他交代的某件真的收尾了（done / dropped / failed）才算"回他"（gates.taskDoneAllowed）
+        let taskEnded = null;
+        try { taskEnded = tasks().lastEndedPlayer(); } catch (_) {}
+        const doneOk = name === 'say' && taskDoneAllowed(String(args.text || ''), { lastTaskDoneSaidAt: W.lastTaskDoneSaidAt, taskEnded });
         if (doneOk) W.lastTaskDoneSaidAt = Date.now();
         // 刚用 task_drop 放下了主人交代的事 → "不做了 / 做不成"那一句跟他说一声，只免"少汇报"这道（判据 gates.dropTellAllowed）
         const dropOk = name === 'say' && !doneOk && dropTellAllowed(String(args.text || ''), W.dropTell);
@@ -559,7 +571,12 @@ async function think (why) {
         const why = String(msg.content || talk || now.ev.map(e => e.text.replace(/^\S+\s/, '')).join(' ')).replace(/\s+/g, ' ').slice(0, 60);
         // `heardPlayer` 传下去 → 她动手时若把手上那件打断了，理由是"主人插了别的事"（player）
         // 而不是"自己想换"（self）。判据用在哪、怎么用都在 tasks.interruptKind / pauseWhyFor（只此一份）。
-        startJob(actions, why, { heardPlayer, playerTaskId: askedTaskId });
+        // 闲着、没人找她时动手 = 接着推长期计划（idle 时【长期计划】那段就是这么叫她做的）→ 手上没事的话，
+        // 这串算成"计划的那一步"（tasks.jobPlan 建 source=plan 的任务，阶段 3 设计第九节）
+        // ⚠️ 这里的 `why` 是上面那句"为了什么"（被遮住了），这一轮为什么想要看 `W.thinkWhy`（think 开头记的）
+        let planStep = null;
+        if (W.thinkWhy === 'idle' && !heardPlayer) { try { planStep = plan.current(); } catch (_) {} }
+        startJob(actions, why, { heardPlayer, playerTaskId: askedTaskId, planStep });
       }
       // 动作已经开始了，再等话打完发出去（以前先打字、打完才动 —— 说了"来啦"要好几秒才迈腿）
       for (const { c, args, p, dropOk } of saying) {
@@ -833,7 +850,9 @@ function startControl () {
       let since;
       try { since = q.has('since') ? review.parseSince(q.get('since')) : W.startedAt; } catch (e) { return send(400, { error: e.message }); }
       res.writeHead(200, { 'Content-Type': 'text/markdown; charset=utf-8' });
-      return res.end(review.render(review.read({ since }), { since }));
+      let taskStats = null;
+      try { taskStats = tasks().taskStats(); } catch (_) {}
+      return res.end(review.render(review.read({ since }), { since, taskStats }));
     }
     if (url === '/mind/debug') return send(200, { recentLLM: body.recent, historyTail: W.history.slice(-6) });
     if (url === '/mind' || url === '/brain') {
@@ -848,7 +867,12 @@ function startControl () {
         recentMemories: S.memories.slice(-15),
         // 任务队列（阶段 1，任务书观测项）：她手上 / 排着的都是什么、都到哪一步了。
         // `context` 是此刻拼进上下文的那两行原文 —— 一眼就能看出"她看到的"和"实际有的"对不对得上。
-        tasks: { lines: tasks().contextLines(), open: tasks().open().map(t => ({ id: t.id, title: t.title, source: t.source, status: t.status, pausedWhy: t.pausedWhy })) },
+        // 阶段 3（设计第十节）：当前 + 队列 + 最近 10 件结束的 + 复盘统计（原来 open 里没有手上那件，也看不到结束的）
+        tasks: (() => {
+          const T = tasks(); const row = (t) => ({ id: t.id, title: t.title, source: t.source, status: t.status, pausedWhy: t.pausedWhy, ...(t.parent ? { parent: t.parent } : {}), ...(t.lastFail ? { lastFail: t.lastFail } : {}) });
+          const cur = T.running();
+          return { lines: T.contextLines(), running: cur ? row(cur) : null, open: T.sortOpen(T.open()).map(row), finished: T.finished().slice().sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0)).slice(0, 10).map(row), stats: T.taskStats() };
+        })(),
         log: W.log.slice(-40),
       });
     }

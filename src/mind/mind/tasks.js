@@ -32,7 +32,14 @@
 // - `toolAdd` / `toolNote` / `toolDone` / `toolDrop` / `toolResume`：大模型的 `task_*` 工具的本体（`tools.js` 只转调）。
 // - 过期不静默（`sweepExpired` 攒提醒、`takeNotices` 取一次）；收尾的最多留 `FINISHED_KEEP` 件。
 //
-// ⚠️ **仍不做**（阶段 3）：诚实闸联动任务状态、计划步骤联动、复盘统计。
+// ## 阶段 3（2026-09-30）加了什么
+//
+// - 说话闸要读的：`lastEndedPlayer`（"他交代的事做完说一声"看任务状态，gates.taskDoneAllowed）；
+//   "说做好了但任务没收尾"的判据在 gates.unfinishedTaskClaim（那是说话的判据，放 gates）。
+// - 计划联动：`jobPlan` 收 `planStep`（闲着推计划时建 source=plan 的任务）、`planTick`（做完时计划该不该打勾：
+//   下标和原文都对得上才打）、`closePlanTasks`（计划的标志自己达成 → 对应任务收尾）。**计划本身不改**。
+// - 复盘统计：`stats`（被打断次数、过期件数、主人交代的 asked/done/dropped/failed）累计、跟着文件落盘；
+//   `taskStats` / `statsOf`（self-review 的命令行读文件也走 statsOf，只此一份）。
 
 'use strict';
 
@@ -256,11 +263,19 @@ function store () {
   // 重启后第一件新任务 save() 时会把整个文件覆盖成只剩它，上次没做完的事全丢。
   if (!S.loaded && !S.__loading) { S.__loading = true; try { load(); } finally { S.__loading = false; } }
   S.notices ||= [];
+  S.stats ||= newStats();
   return S;
 }
 
+/**
+ * 复盘用的累计数（阶段 3，设计第十节：被打断次数、过期件数、主人交代的完成率）。
+ * **累计在这里、跟着 tasks.json 落盘** —— 不从任务列表现数：收尾的任务会被修剪（FINISHED_KEEP），
+ * 现数会越跑越少，完成率会被算歪。
+ */
+function newStats () { return { since: Date.now(), interrupted: 0, expired: 0, player: { asked: 0, done: 0, dropped: 0, failed: 0 } }; }
+
 /** 自测用：清空（只动内存） */
-function _reset () { const S = store(); S.seq = 0; S.list = []; S.notices = []; }
+function _reset () { const S = store(); S.seq = 0; S.list = []; S.notices = []; S.stats = newStats(); S.lastEndedId = null; }
 
 function all () { return store().list; }
 
@@ -298,8 +313,18 @@ function setStatus (t, to, { at = Date.now() } = {}) {
   t.status = to;
   t.updatedAt = at;
   if (LOG_FROM.has(from) || LOG_FROM.has(to)) logLine(t, from, to);
+  // 复盘累计（阶段 3）：只在"从没收尾变成收尾"的那一下记一次
+  if (FINISHED.has(to) && !FINISHED.has(from)) {
+    const S = store(); const st = S.stats;
+    if (to === 'expired') st.expired++;
+    if (isPlayerTask(t) && st.player[to] != null) st.player[to]++;
+    // "最近收尾的那件主人交代的事"用明确的标记记（lastEndedPlayer）：两件在同一毫秒收尾时，比 updatedAt 分不出先后
+    if (isPlayerTask(t) && ENDED_PLAYER.has(to)) S.lastEndedId = t.id;
+  }
   return t;
 }
+
+const ENDED_PLAYER = new Set(['done', 'dropped', 'failed']);
 
 const FINISHED = new Set(['done', 'failed', 'dropped', 'expired']);
 
@@ -318,6 +343,7 @@ function create (fields = {}) {
   t.ttlMs = ttlFor(src, fields.ttlMs);
   t.id = ++S.seq;
   S.list.push(t);
+  if (isPlayerTask(t)) S.stats.player.asked++;
   const from = t.status;
   t.status = 'queued';
   t.updatedAt = Date.now();
@@ -346,7 +372,7 @@ function setRunning (id, { at = Date.now() } = {}) {
 function pause (id, why = 'self', { at = Date.now() } = {}) {
   const t = get(id);
   if (!t) return null;
-  if (t.status === 'running') t.interruptions = (t.interruptions || 0) + 1;
+  if (t.status === 'running') { t.interruptions = (t.interruptions || 0) + 1; store().stats.interrupted++; }
   if (t.status === 'paused' && t.pausedWhy === why) return t;   // 没有新信息，不刷日志
   t.pausedWhy = why;
   setStatus(t, 'paused', { at });
@@ -487,7 +513,7 @@ function onInstinct (reason = '') {
  * @returns {{ pause: number|null, pauseWhy: string|null, taskId: number|null, auto: object|null }}
  *   `auto` 非空 = 调用方要 `create(auto)` 再把这串算在它上面（这里不直接建，好让自测只测判据）
  */
-function jobPlan (steps, { taskId = null, heardPlayer = false, playerTaskId = null, why = '' } = {}) {
+function jobPlan (steps, { taskId = null, heardPlayer = false, playerTaskId = null, why = '', planStep = null } = {}) {
   const kind = interruptKind(steps, { heardPlayer });
   const cur = running();
   const out = { kind, pause: null, pauseWhy: null, taskId: null, auto: null };
@@ -504,6 +530,14 @@ function jobPlan (steps, { taskId = null, heardPlayer = false, playerTaskId = nu
     return out;
   }
   if (cur) { out.taskId = cur.id; return out; }
+  // 阶段 3（设计第九节）：没人找她、闲着接着推长期计划时（调用方传 planStep = plan.current()），
+  // 这一串就是"开始做计划的下一步" → 建一件 source=plan 的任务（planStep/planText 指回去）。
+  // 它**不是** auto：计划的一步往往要好几串动作，一串做完就算做完会把计划错打勾；做完要 task_done 或标志达成。
+  // 同一步已经有一件没收尾的（停下了）→ create() 按原文合并，接着做那一件。
+  if (planStep && planStep.text != null && Number.isInteger(+planStep.index)) {
+    out.auto = { title: String(planStep.text), source: 'plan', planStep: +planStep.index, planText: String(planStep.text), auto: false, steps };
+    return out;
+  }
   out.auto = { title: String(why || steps.map(s => s.tool).join('→')), source: 'self', auto: true, steps };
   return out;
 }
@@ -678,6 +712,82 @@ function toolResume ({ id } = {}) {
   return { ok: true, ...brief(t), where: note || '还没开始', ...(t.lastFail ? { lastFail: t.lastFail } : {}), ...(t.said ? { said: t.said } : {}) };
 }
 
+// ------------------------------------------------------------------ 阶段 3：说话闸 / 计划 / 复盘 要读的
+
+/**
+ * 最近一件**收尾了的主人交代的事**（done / dropped / failed）—— 说话闸"他交代的事做完了说一声"看它
+ * （设计第九节：`taskDoneAllowed` 改成看任务状态）。没有 → null。
+ */
+function lastEndedPlayer () {
+  const S = store();
+  const ended = (t) => t && isPlayerTask(t) && ENDED_PLAYER.has(t.status);
+  let best = S.lastEndedId != null && ended(get(S.lastEndedId)) ? get(S.lastEndedId) : null;
+  if (!best) {
+    // 重启后没有那个标记：按收尾时间找；同一毫秒的取后建的那件（id 大）
+    for (const t of all()) {
+      if (!ended(t)) continue;
+      if (!best || (t.updatedAt || 0) > (best.updatedAt || 0) || ((t.updatedAt || 0) === (best.updatedAt || 0) && t.id > best.id)) best = t;
+    }
+  }
+  return best ? { id: best.id, title: best.title, status: best.status, at: best.updatedAt } : null;
+}
+
+/**
+ * 计划任务做完了，计划里那一步该不该打勾（设计第九节：做完时 `plan.updateStep` 打勾，**计划本身不改**）。
+ * 计划可能在这件任务建好之后被她改过（plan_set / plan_step 删了一步，下标就挪了）——
+ * 所以**下标和原文都对得上**才打勾；对不上就不打，说清楚为什么（宁可漏打，不打错）。
+ *
+ * @param {object} t        任务
+ * @param {object|null} pl  `plan.get()`（{ steps:[{text, ok}] }）
+ * @returns {{ index:number }|{ skip:string }}
+ */
+function planTick (t, pl) {
+  if (!t || t.source !== 'plan' || t.planStep == null) return { skip: '不是计划里的一步' };
+  if (!pl || !Array.isArray(pl.steps)) return { skip: '现在没有长期计划' };
+  const s = pl.steps[t.planStep];
+  if (!s) return { skip: `计划里已经没有第 ${t.planStep} 步了` };
+  if (t.planText && s.text !== t.planText) return { skip: `计划第 ${t.planStep} 步已经改成「${s.text}」了，不是这件` };
+  if (s.ok) return { skip: `计划第 ${t.planStep} 步已经打过勾了` };
+  return { index: t.planStep };
+}
+
+/**
+ * 计划的"做成的标志"自己达成了（`plan.autoCheck` 新打勾的那几步）→ 对应的计划任务收尾（阶段 3）。
+ * 这就是那件事做成的证据（背包里有了标志物品），不用她再 task_done。只按**原文**对（下标会挪）。
+ * @returns {object[]} 收尾的任务
+ */
+function closePlanTasks (texts, { at = Date.now() } = {}) {
+  const want = new Set((texts || []).map(String));
+  const out = [];
+  for (const t of all()) {
+    if (t.source !== 'plan' || FINISHED.has(t.status) || !want.has(String(t.planText || ''))) continue;
+    noteEvidence(t.id, `计划的标志达成：${t.planText}`);
+    done(t.id, { at });
+    out.push(t);
+  }
+  return out;
+}
+
+/**
+ * 复盘统计（设计第十节：被打断次数、过期件数、主人交代的完成率）。累计数来自 `W.tasks.stats`（跟着文件落盘）；
+ * `open` 是此刻还没收尾的主人交代的事（现数，不会被修剪影响）。
+ */
+function taskStats () { return statsOf(all(), store().stats); }
+
+/**
+ * 同一份统计的纯函数版（**只此一份**）：mind 在跑时用内存里的，`self-review.js` 的命令行读文件（`readFile`）后也调它。
+ * `stats` 缺（旧文件没有这一段）→ null（"没统计过"，不是 0）。
+ */
+function statsOf (list, stats) {
+  if (!stats) return null;
+  const p = { ...newStats().player, ...(stats.player || {}) };
+  const openPlayer = (list || []).filter(t => isPlayerTask(t) && !FINISHED.has(t.status)).length;
+  return {
+    since: stats.since || null, interrupted: stats.interrupted || 0, expired: stats.expired || 0,
+    player: { ...p, open: openPlayer, rate: p.asked ? Math.round((p.done / p.asked) * 100) / 100 : null },
+  };
+}
+
 // ------------------------------------------------------------------ 持久化（照 memory-store.js 的原子写）
 
 /**
@@ -701,7 +811,7 @@ function save (file = FILE()) {
   prune(S);
   try {
     fs.mkdirSync(path.dirname(file), { recursive: true });
-    const data = JSON.stringify({ version: 1, seq: S.seq, tasks: S.list }, null, 1);
+    const data = JSON.stringify({ version: 1, seq: S.seq, tasks: S.list, stats: S.stats }, null, 1);
     const tmp = file + '.tmp';
     fs.writeFileSync(tmp, data);
     try {
@@ -734,6 +844,9 @@ function load (file = FILE()) {
     const list = Array.isArray(raw?.tasks) ? raw.tasks : [];
     S.list = list.map(t => ({ ...makeTask({ title: t.title, said: t.said, source: t.source }), ...t }));
     S.seq = Math.max(Number(raw?.seq) || 0, ...S.list.map(t => t.id || 0), 0);
+    // 复盘累计（阶段 3）：旧文件没有这一段 → 从 0 数（since 记成现在，报告里写清"从什么时候开始数的"）
+    const rs = raw?.stats;
+    S.stats = rs && typeof rs === 'object' ? { ...newStats(), ...rs, player: { ...newStats().player, ...(rs.player || {}) } } : newStats();
     return { unreadable: false };
   } catch (e) {
     S.unreadable = true;
@@ -1289,6 +1402,61 @@ function selftest () {
     check('★ 重启后：next / parent 还在', n2 && n2.next === true && n2.parent === a.id, n2);
   }
 
+  console.log('\n阶段 3：复盘统计（累计、跟着文件落盘、重启后还在）');
+  {
+    const W0 = require('./state').W;
+    _reset();
+    const { task: p1 } = create({ title: '帮我做把铁镐', said: '帮我做把铁镐', source: 'player' });
+    const { task: p2 } = create({ title: '帮我挖点铁', said: '帮我挖点铁', source: 'player' });
+    const { task: p3 } = create({ title: '帮我把箱子理一下', said: '帮我把箱子理一下', source: 'player' });
+    const { task: s1 } = create({ title: '去看看海边', source: 'self' });
+    setRunning(p1.id); onInstinct('combat'); setRunning(p1.id); noteEvidence(p1.id, 'craft → ok');
+    toolDone({ id: p1.id }); drop(p2.id, { why: '没铁' });
+    s1.createdAt = Date.now() - 21 * 60 * 1000; sweepExpired();
+    const st = taskStats();
+    check('★ 被打断 / 过期 / 主人交代的完成率', st.interrupted === 1 && st.expired === 1 && st.player.asked === 3 && st.player.done === 1 && st.player.dropped === 1 && st.player.open === 1 && st.player.rate === 0.33, st);
+    check('★ 最近收尾的主人交代的事（说话闸看它）', lastEndedPlayer()?.id === p2.id && lastEndedPlayer()?.status === 'dropped', lastEndedPlayer());
+    {
+      // 两件在同一毫秒收尾（例如"都别做了"一次放下好几件）：取后收尾的那件，不看运气（原来比 updatedAt，平手就取了先建的）
+      const same = Date.now();
+      const { task: q1 } = create({ title: '同一毫秒甲', said: '同一毫秒甲', source: 'player' });
+      const { task: q2 } = create({ title: '同一毫秒乙', said: '同一毫秒乙', source: 'player' });
+      done(q2.id, { at: same }); done(q1.id, { at: same });
+      check('★ 同一毫秒收尾 → 取后收尾的那件', lastEndedPlayer()?.id === q1.id, lastEndedPlayer());
+      store().lastEndedId = null;   // 重启后没有标记：同一毫秒取后建的那件
+      check('重启后没有标记、同一毫秒 → 取 id 大的那件（确定，不看运气）', lastEndedPlayer()?.id === q2.id, lastEndedPlayer());
+      store().stats.player.asked -= 2; store().stats.player.done -= 2; save();   // 这两件不算进下面的统计断言（存盘：下面要"重启"读回来）
+    }
+    W0.tasks = undefined;   // 模拟重启：从文件读回来
+    const st2 = taskStats();
+    check('★ 重启后累计数还在（跟着 tasks.json 落盘）', st2.interrupted === 1 && st2.expired === 1 && st2.player.asked === 3 && st2.player.done === 1 && st2.player.open === 1, st2);
+    for (let i = 0; i < FINISHED_KEEP + 5; i++) { const { task } = create({ title: `交代${i}`, said: `交代${i}`, source: 'player' }); done(task.id); }
+    check('★ 收尾的被修剪了，完成率照样按累计算（不会越跑越少）', finished().length === FINISHED_KEEP && taskStats().player.done === 1 + FINISHED_KEEP + 5, { fin: finished().length, st: taskStats().player });
+    check('旧文件没有统计段 → null（"没统计过"，不是 0）', statsOf([], null) === null);
+    void p3;
+  }
+
+  console.log('\n阶段 3：计划联动（下标和原文都对得上才打勾）');
+  _reset();
+  {
+    const pl = { steps: [{ text: '做石镐', ok: false }, { text: '挖铁', ok: false }] };
+    const { task: t0 } = create({ title: '做石镐', source: 'plan', planStep: 0, planText: '做石镐' });
+    check('对得上 → 打第 0 步', planTick(t0, pl).index === 0, planTick(t0, pl));
+    check('★ 计划改过（原文对不上）→ 不打，说清楚', /已经改成「挖铁」/.test(planTick({ ...t0, planStep: 1 }, pl).skip || ''), planTick({ ...t0, planStep: 1 }, pl));
+    check('计划里没那一步了 → 不打', /没有第 5 步/.test(planTick({ ...t0, planStep: 5 }, pl).skip || ''));
+    check('已经打过勾 → 不重打', /已经打过勾/.test(planTick(t0, { steps: [{ text: '做石镐', ok: true }] }).skip || ''));
+    check('不是计划任务 → 不打', !!planTick({ source: 'self' }, pl).skip);
+    const closed = closePlanTasks(['做石镐']);
+    check('★ 标志达成 → 对应的计划任务收尾，证据记着', closed.length === 1 && get(t0.id).status === 'done' && /标志达成/.test(get(t0.id).evidence[0] || ''), get(t0.id));
+    check('原文对不上的不动', closePlanTasks(['别的']).length === 0);
+    const jp = jobPlan([{ tool: 'mine' }], { why: '砍树', planStep: { index: 1, text: '挖铁' } });
+    check('★ 闲着推计划（传了 planStep）、手上没事 → 建 source=plan 的任务，不是 auto', jp.auto && jp.auto.source === 'plan' && jp.auto.planStep === 1 && jp.auto.planText === '挖铁' && jp.auto.auto === false, jp);
+    const { task: pt } = create(jp.auto); setRunning(pt.id);
+    afterJob(pt.id, { ok: true });
+    check('★ 计划那一件：一串做完不自动算做完（计划的一步往往要好几串）', pt.status === 'running', pt.status);
+    check('手上有事时 planStep 不起作用（接着算手上那件）', jobPlan([{ tool: 'mine' }], { planStep: { index: 0, text: '做石镐' } }).taskId === pt.id);
+  }
+
   // 收尾：自测写过的临时文件删掉（原来每跑一次在临时目录留一个 tasks-selftest-<pid>.json）
   for (const p of [tmp, tmp + '.tmp']) { try { fs.unlinkSync(p); } catch (_) {} }
   console.log(`\n  ${pass}/${total} 通过`);
@@ -1311,6 +1479,8 @@ module.exports = {
   // 大模型的工具（阶段 2）
   toolAdd, toolNote, toolDone, toolDrop, toolResume,
   OPEN_CAP, INTERRUPT_WARN, FINISHED_KEEP,
+  // 说话闸 / 计划 / 复盘要读的（阶段 3）
+  lastEndedPlayer, planTick, closePlanTasks, taskStats, statsOf,
   // 持久化
   save, load, restore, readFile,
   // 上下文 + 同点提醒

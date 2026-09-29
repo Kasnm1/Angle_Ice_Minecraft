@@ -62,15 +62,64 @@ const TASK_WINDOW_MS = 10 * 60 * 1000;
 const TASK_ASK_RE = /(帮我|幫我|你去|去把|把.{1,12}(放|理|整理|做|拿|收|挖|砍|烤|煮|种|種|搬)|给我|給我|整理|收拾|做[个個一把]|拿[个個一些点點]|挖[些点點一]|砍[些点點一]|去[拿挖砍找采採种種收]|来一|來一)/;
 const TASK_DONE_RE = /(好了|好啦|做好|弄好|理好|放好|收好|搞定|完成|做完|挖完|收完|到了|拿到了|没做成|做不了|弄不了|找不到)/;
 /**
- * 他交代的事做完 / 做不成，说一声 —— 放行（主人 2026-09-29）。条件：是"完成 / 失败"的话，
- * 他 TASK_WINDOW_MS 内**交代过事**（他的话匹配 TASK_ASK_RE —— 光是说过话不算），而且这次交代之后还没报过（一次交代只报一次）。
+ * 他交代的事做完 / 做不成，说一声 —— 放行（主人 2026-09-29）。
+ *
+ * 任务队列阶段 3 起**看任务状态**（设计第九节：「做完说一声」改成看任务状态）：
+ * 条件是"完成 / 失败"的话、**他交代的某件事真的收尾了**（`taskEnded` = `tasks.lastEndedPlayer()`：
+ * done / dropped / failed）、收尾在 TASK_WINDOW_MS 以内、而且这次收尾之后还没报过（一次收尾只报一次）。
+ * 原来看的是"他 10 分钟内交代过事" —— 交代完 11 分钟才做好的事就说不出去，还没做好的也能说"做好了"。
  * 她自己决定去做的事，做完照旧不播报（REPORT_NUDGE）。
+ *
+ * @param {object|null} o.taskEnded  `{ at }`：最近收尾的那件主人交代的事；没有就是 null
  */
-function taskDoneAllowed (text, { now = Date.now(), lastTaskAskedAt = 0, lastTaskDoneSaidAt = 0 } = {}) {
+function taskDoneAllowed (text, { now = Date.now(), lastTaskDoneSaidAt = 0, taskEnded = null } = {}) {
   if (!TASK_DONE_RE.test(String(text || ''))) return false;
-  if (!lastTaskAskedAt || now - lastTaskAskedAt > TASK_WINDOW_MS) return false;
-  return !(lastTaskDoneSaidAt && lastTaskDoneSaidAt >= lastTaskAskedAt);
+  if (!taskEnded || !taskEnded.at || now - taskEnded.at > TASK_WINDOW_MS) return false;
+  return !(lastTaskDoneSaidAt && lastTaskDoneSaidAt >= taskEnded.at);
 }
+
+/**
+ * 说"X 做好了"，而任务里 X 那件还没标做完 → 拦（任务队列阶段 3，设计第八节"诚实闸联动任务状态"）。
+ *
+ * 和 `unbackedClaim`（看工具结果）是两道：那道管"工具报了失败还说成了"，这道管"事情还挂在队列里没收尾就说好了"。
+ * 同样**宁可不拦，也不冤枉她**：
+ *   · 只认**完成式**（`DONE_CLAIM_RE`；"X 好了"要紧跟着那件东西才算）—— "好了 我去做铁镐"是应声，不是说做完；
+ *   · "还没 / 快 / 马上…好"、问句 → 不算（`NOT_DONE_RE`）；
+ *   · 得说的是**那件东西**：任务原话去掉"帮我 / 做 / 一把…"之后剩下的（铁镐 / 箱子 / 木头），至少两个字对得上；
+ *     只剩一个字的（"帮我挖点铁" → 铁）不拦 —— 一个字太容易撞上别的话；
+ *   · 同一件东西已经有做完的那件（刚 task_done 过）→ 不拦。
+ *
+ * @param {string} text
+ * @param {object[]} list  全部任务（`tasks.all()`）
+ * @returns {object|null}  被说成做完、其实还没收尾的那件
+ */
+const DONE_CLAIM_RE = /(做好|弄好|理好|放好|收好|烤好|煮好|搞定|完成|做完|弄完|挖完|收完|砍完|理完|拿到了)/;
+const NOT_DONE_RE = /(还没|還沒|没有|沒有|没|沒|未|不)[^，,。！!？?]{0,3}(好|完|成|定|到)|(快|马上|馬上|等会|等會|一会|一會|待会|待會|就要|快要|这就|這就)[^，,。！!？?]{0,3}(好|完)|[吗嗎？?]$/;
+const TASK_FILLER_RE = /(帮我|幫我|帮忙|幫忙|你去|去把|给我|給我|麻烦|麻煩|能不能|可以|一下|一点|一點|一些|一个|一個|一把|几个|幾個|[吗嗎吧呀啊哦嘛呢了的把去来來做弄拿搞整理挖砍烤煮收放找采採种種点點些个個先再好])/g;
+function taskObjectKey (t) {
+  return String(t?.said || t?.title || '').replace(/[\s，,。.！!？?～~、：:]/g, '').replace(TASK_FILLER_RE, '');
+}
+function claimAbout (s, t, generic) {
+  const k = taskObjectKey(t);
+  if (k.length < 2) return false;
+  for (let i = 0; i + 2 <= k.length; i++) {
+    const at = s.indexOf(k.slice(i, i + 2));
+    if (at < 0) continue;
+    if (generic) return true;
+    if (/^[^，,。！!？?]{0,3}(好了|好啦)/.test(s.slice(at + 2))) return true;   // "铁镐好了"
+  }
+  return false;
+}
+function unfinishedTaskClaim (text, list) {
+  const s = String(text || '').replace(/\s+/g, '');
+  if (!s || NOT_DONE_RE.test(s)) return null;
+  const generic = DONE_CLAIM_RE.test(s);
+  const live = (list || []).filter(t => ['queued', 'running', 'paused'].includes(t.status) && claimAbout(s, t, generic));
+  if (!live.length) return null;
+  if ((list || []).some(t => t.status === 'done' && claimAbout(s, t, true))) return null;
+  return live[0];
+}
+const TASK_HONEST_NUDGE = (t) => `没发出去：「#${t.id} ${t.title}」在你的任务里还没标做完。真做完了先 task_done（要有做成的记录）再说；没做完就照实说做到哪了。`;
 
 /**
  * 放下主人交代的事时"跟他说一声"那一句（任务队列阶段 2，设计第四节 `task_drop`：主人交代的放弃要跟主人说一声）。
@@ -225,4 +274,5 @@ module.exports = { isBareAffirmative, taskDoneAllowed, isOverAsking, lastProacti
   claimState, liveFails, unbackedClaim, FACT_CLAIMS, REPORT_NUDGE, ASK_TOO_MUCH_NUDGE, ASK_BACK_NUDGE, HONEST_NUDGE,
   QUIET_MS, ASK_COOLDOWN_MS, DELEGATES, ASKS_BACK, DECIDE_NUDGE, ASKS_WHERE, LOOK_NUDGE, SAY_NUDGE,
   ACTION_NUDGE, RECENT_CLAIM_MS, PLAYER_MOVE_TOOLS, PLAYER_MOVE_RE, TASK_WINDOW_MS, TASK_ASK_RE, TASK_DONE_RE,
-  torchAskAllowed, TORCH_ASK_RE, TORCH_ASK_COOLDOWN_MS, DROP_TELL_RE, dropTellAllowed };
+  torchAskAllowed, TORCH_ASK_RE, TORCH_ASK_COOLDOWN_MS, DROP_TELL_RE, dropTellAllowed,
+  DONE_CLAIM_RE, NOT_DONE_RE, taskObjectKey, unfinishedTaskClaim, TASK_HONEST_NUDGE };

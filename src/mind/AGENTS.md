@@ -15,7 +15,7 @@
 | `ambition.js` | 《食录逸闻》食物清单与进度；`candidates()` 只给可能性，不替她决定 |
 | `plan.js` | 长期计划：没人找她时自己推进游戏，以香草纪元通关主线为骨干 |
 | `night.js` | 天黑本能：天色变化的事件 + 今晚怎么安排 |
-| `self-review.js` | 她玩的时候自己察觉 / 程序记下的不对劲（新问题的线索） |
+| `self-review.js` | 她玩的时候自己察觉 / 程序记下的不对劲（新问题的线索）。报告末尾带任务队列的复盘数（被打断、过期、主人交代的完成率；`render(…, { taskStats })`，命令行读 `tasks.json`，"没有"和"读不到"分开报） |
 | `llm-codex.js` / `llm-workbuddy.js` | 中转站全挂时的本机兜底（Codex gpt-6-luna xhigh → WorkBuddy）。对话翻译只在 `llm-workbuddy.js` 里有一份，Codex 复用它 |
 | `events-reader.js` | 只读 `memory/events.jsonl`（旧脑干留下的决策留痕，历史证据；文件已冻结不再新增） |
 
@@ -31,12 +31,12 @@
 | `mind/runtime.js` | 132 | `log` / `hhmmss` / `scene`（此刻场记）/ `emit`（事件入流）/ `chatWaitLeft` / `typingMs` / `chatGate` / `scheduleThink`（debounce）。模块级 `thinkTimer` / `thinkTimerAt` **只在这里**，外部经 `readingThinkTimer()` / `readingThinkTimerAt()` / `clearThinkTimer()` 读改 |
 | `mind/scene.js` | 234 | 情境快照与拼装：`humanState` / `tonight` / `combatInstinct` / `survivalFocus` / `dropsNear` / `invText` / `surroundNeeds` / `pickJoinMood` / `JOIN_MOODS` … |
 | `mind/look.js` | 245 | `look()`：每轮"想"之前看一眼世界（状态/背包/聊天/余光/门/箱/亮度），新东西 `emit()`。**拼"长期计划"那段整块留在这里**，方便与 `feat/campaign-quests` 分支合并 |
-| `mind/gates.js` | 167 | 说话/汇报/提问的判据表：`REPORT_NUDGE` / `ASK_TOO_MUCH_NUDGE` / `ASK_BACK_NUDGE` / `HONEST_NUDGE` / `FACT_CLAIMS` / `claimState` / `liveFails` / `taskDoneAllowed` / `isOverAsking` / `lastProactiveUnanswered` … |
+| `mind/gates.js` | ~260 | 说话/汇报/提问的判据表：`REPORT_NUDGE` / `ASK_TOO_MUCH_NUDGE` / `ASK_BACK_NUDGE` / `HONEST_NUDGE` / `FACT_CLAIMS` / `claimState` / `liveFails` / `taskDoneAllowed` / `isOverAsking` / `lastProactiveUnanswered` …；任务队列联动（2026-09-30）：`taskDoneAllowed` **看任务状态**（他交代的那件真收尾了才算"回他"）、`unfinishedTaskClaim` + `TASK_HONEST_NUDGE`（说"X 做好了"而 X 那件还没收尾 → 拦）、`dropTellAllowed`（`task_drop` 放下主人交代的事后，那句"不做了"只免"少汇报"一道） |
 | `mind/tools.js` | ~390 | `MIND_TOOLS` 工具表与分组：`SPECS` / `GROUPS` / `TOOL_GROUPS` / `GROUP_CUES` / `pickSpecs` / `groupsFromBody` / `groupsFromTasks` / `activateGroup` / `activeGroups`；仓库位 `knownStations` / `homeStockItems` / `shortName`。任务队列工具（阶段 2）：`task_add` 常驻；`task_note` / `task_done` / `task_drop` / `task_resume` 在 `task` 组，**队列里有事就自动带上**（`groupsFromTasks`）—— 常驻组自测钉了上限 62 |
 | `mind/actions.js` | 239 | 把"想"变成"做"：`startJob`（**阶段 1 起先问任务层该不该打断**、busy 有限次重试）/ `runTool`（附"同一目的地"提醒）/ `toolResultLine` / `fmtArgs` / `celebrate` / `learnFromDoing`；反射级 `instinctEat` / `NAME_RE` / `FAST` / `matchFast` / `fastPath`。`MIND_TOOLS` 经 Proxy 延迟取（见下） |
-| `mind/tasks.js` | ~1250 | **任务队列（阶段 1 2026-09-29 / 阶段 2 2026-09-30）**：任务对象 + 队列 + 持久化（`memory/tasks.json`）+ 打断判据 + **一串动作算哪件（`jobPlan`，只此一份）** + "该接着做了"的提醒（`afterJob` / `resumeHint`）+ `task_*` 工具本体（`toolAdd` / `toolNote` / `toolDone` / `toolDrop` / `toolResume`）+ 过期提醒。纯函数 + 显式状态（挂 `W.tasks`），不 require 兄弟文件（诚实判据由 `tools.js` 当参数传进来），可单独 `$NODE src/mind/mind/tasks.js --selftest`。**明确的任务不会因为一串动作做完就自动算做完**（要 `task_done` + 证据），也不因为一步没做成就标 failed |
+| `mind/tasks.js` | ~1250 | **任务队列（阶段 1 2026-09-29 / 阶段 2、3 2026-09-30）**：任务对象 + 队列 + 持久化（`memory/tasks.json`）+ 打断判据 + **一串动作算哪件（`jobPlan`，只此一份）** + "该接着做了"的提醒（`afterJob` / `resumeHint`）+ `task_*` 工具本体（`toolAdd` / `toolNote` / `toolDone` / `toolDrop` / `toolResume`）+ 过期提醒 + 阶段 3 的计划联动（`planTick` / `closePlanTasks`，下标和原文都对得上才替计划打勾）与复盘累计数（`stats` 跟着 tasks.json 落盘，`taskStats` / `statsOf`）。纯函数 + 显式状态（挂 `W.tasks`），不 require 兄弟文件（诚实判据由 `tools.js` 当参数传进来），可单独 `$NODE src/mind/mind/tasks.js --selftest`。**明确的任务不会因为一串动作做完就自动算做完**（要 `task_done` + 证据），也不因为一步没做成就标 failed |
 | `mind/think.js` | 823 | `think()` 多轮调模型主循环 + 上下文压实：`historyChars` / `bodyNow` / `tasksBlock` / `planExtras` / `planLine` / `buildNow` / `repetitionHint` / `idleGate` / `compactLastNow` / `clipText` / `trimDangling` / `sleepAndSort` / `sortMemories` / `holdBody` / `startControl` … |
-| `mind/selftest.js` | 1367 | `selftest()` 与 `mockBridge()`。**>1400 行**（原样搬移 + 任务队列阶段 1、2 那两段）——下一步可选再分 |
+| `mind/selftest.js` | 1367 | `selftest()` 与 `mockBridge()`。**>1400 行**（原样搬移 + 任务队列阶段 1–3 那几段）——下一步可选再分 |
 | `mind/wiring.js` | 43 | **拆环中枢**：`think ↔ runtime`、`tools ↔ actions` 互相调用，只能延迟取。每个导出是 `() => require('./x')`，首次调用才加载。含 `tasks` |
 
 **循环依赖怎么办**（拆环的三招，改名前先看这里）：
@@ -74,7 +74,7 @@
 # mind.js 拆开后（第 3 步 e）：根入口跑 --selftest（条数以实际输出为准）；
 # 子文件都没有 --selftest 分支（跑了是空操作）——例外是 mind/tasks.js（纯函数，自带自测）；其余只做 --check。
 $NODE mind.js --selftest
-$NODE src/mind/mind/tasks.js --selftest          # 任务队列（阶段 1 + 2），可单独跑
+$NODE src/mind/mind/tasks.js --selftest          # 任务队列（阶段 1–3），可单独跑
 for f in src/mind/mind/*.js; do $NODE --check $f || echo BAD $f; done
 $NODE src/mind/memory-store.js --selftest; $NODE src/mind/night.js --selftest
 $NODE src/mind/plan.js --selftest; $NODE src/mind/speech.js --selftest

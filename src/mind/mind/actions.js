@@ -91,13 +91,14 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
  *
  * `busy`（身体被本能占着）→ 有限次重试；重试用完才当失败，**不标任务 failed**。
  */
-async function startJob (steps, why, { skillId = null, taskId = null, heardPlayer = false, playerTaskId = null } = {}) {
+async function startJob (steps, why, { skillId = null, taskId = null, heardPlayer = false, playerTaskId = null, planStep = null } = {}) {
   const T = tasks();
   // ① 打断谁、这串算哪件任务 —— 判据只在 tasks.jobPlan（阶段 2），这里只照做。
   //    阶段 1 在这里"动身体就 pause 手上那件、再把同一件 setRunning 回来"，连着做同一件事也一轮记一次被打断。
+  //    planStep（阶段 3）：闲着推长期计划时 think 传 plan.current() 进来，手上没事就建 source=plan 的任务
   let tid = null;
   try {
-    const p = T.jobPlan(steps, { taskId, heardPlayer, playerTaskId, why });
+    const p = T.jobPlan(steps, { taskId, heardPlayer, playerTaskId, why, planStep });
     if (p.pause) T.pause(p.pause, p.pauseWhy);
     tid = p.auto ? T.create(p.auto).task.id : p.taskId;
     if (tid) T.setRunning(tid);

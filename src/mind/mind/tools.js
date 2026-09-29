@@ -175,10 +175,16 @@ const MIND_TOOLS = {
   //    都是"不动身体"的（tasks.NO_BODY_TOOLS 里早就留了名字），调了不会打断手上的事。
   task_add: {
     kind: 'memory',
-    desc: '记一件要做的事。when: now 现在就做（手上的先停下）/ next 手上这件做完就做 / later 排后面。缺材料要先去弄别的，就把"先去弄"记成子任务（parent 填为了哪件）。',
-    params: { title: { type: 'string' }, when: { type: 'string', enum: ['now', 'next', 'later'] }, parent: { type: 'number' }, why: { type: 'string' } },
+    desc: '记一件要做的事。when: now 现在就做（手上的先停下）/ next 手上这件做完就做 / later 排后面。缺材料要先去弄别的，就把"先去弄"记成子任务（parent 填为了哪件）。做的是长期计划里的一步就填 plan_step（从 0 数），做完会替计划打勾。',
+    params: { title: { type: 'string' }, when: { type: 'string', enum: ['now', 'next', 'later'] }, parent: { type: 'number' }, why: { type: 'string' }, plan_step: { type: 'number' } },
     required: ['title'],
-    run: (a) => tasks().toolAdd({ title: a.title, when: a.when || 'later', parent: a.parent ?? null, why: a.why || null }),
+    run: (a) => {
+      // 计划那一步的原文一起记下（阶段 3）：计划之后被改过、下标挪了，做完时就不会打错勾（tasks.planTick）
+      const ps = a.plan_step != null && a.plan_step !== '' ? +a.plan_step : null;
+      const text = ps != null ? (plan.get()?.steps?.[ps]?.text ?? null) : null;
+      if (ps != null && text == null) return { ok: false, error: `长期计划里没有第 ${ps} 步（plan_view 看看，从 0 数）` };
+      return tasks().toolAdd({ title: a.title, when: a.when || 'later', parent: a.parent ?? null, why: a.why || null, planStep: ps, planText: text });
+    },
   },
   task_note: {
     kind: 'memory',
@@ -190,7 +196,17 @@ const MIND_TOOLS = {
     kind: 'memory',
     desc: '标一件事做完了（不给 id 就是手上那件）。要有这件事做成过的动作记录才标得上；result 写做成了什么，照实写。',
     params: { id: { type: 'number' }, result: { type: 'string' } }, required: [],
-    run: (a) => tasks().toolDone({ id: a.id ?? null, result: a.result || '' }, { check: honestCheck }),
+    run: (a) => {
+      const r = tasks().toolDone({ id: a.id ?? null, result: a.result || '' }, { check: honestCheck });
+      // 计划里的一步做完了 → 替计划打勾（阶段 3，设计第九节：做完时 plan.updateStep，计划本身不改）。
+      // 下标和原文都对得上才打（tasks.planTick）；打不上就说为什么，不硬打。
+      if (r.ok && r.source === 'plan') {
+        const T = tasks(); const tick = T.planTick(T.get(r.id), plan.get());
+        if (tick.index != null) { try { plan.updateStep({ index: tick.index, ok: true }); r.plan = `计划第 ${tick.index} 步打勾了`; } catch (e) { r.plan = `计划没打上勾：${e.message}`; } }
+        else r.plan = `计划没打勾：${tick.skip}`;
+      }
+      return r;
+    },
   },
   task_drop: {
     kind: 'memory',
