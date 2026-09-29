@@ -18,7 +18,7 @@ const fs = require('fs');
 const path = require('path');
 
 const ROOT = path.resolve(__dirname, '..');
-const DIRS = ['src/body', 'src/instinct', 'src/bridge', 'src/bridge/routes', 'src/world/pathing'].map(d => path.join(ROOT, d));
+const DIRS = ['src/body', 'src/instinct', 'src/bridge', 'src/bridge/routes', 'src/world/pathing', 'src/mind/mind'].map(d => path.join(ROOT, d));
 // 这几个目录里不是拆分产物、自己独立的老文件（它们的名字恰好和别人重名也不算）
 const STANDALONE = new Set(['commonsense.js', 'equip-policy.js', 'storage-policy.js', 'inventory-ledger.js', 'ftbq-sync.js', 'body-command-lock.js', 'reconnect.js', 'testkit.js']);
 
