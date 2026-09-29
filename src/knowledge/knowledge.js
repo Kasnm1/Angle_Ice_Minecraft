@@ -754,11 +754,6 @@ function obtain (q) {
 
 // ------------------------------------------------------------------ 材料树
 
-/**
- * 从现有背包出发，做 count 个 id 需要什么。
- * 选配方的原则：能在背包 2×2 / 工作台 / 熔炉做的优先（她做得出来的），原料越少越好，
- * 原料里有背包已有的优先；绕开会成环的配方。没有配方的就是"原材料"，附上怎么弄。
- */
 /** 这一步用哪个动作做：熔炉 / 烟熏炉 / 高炉 / 营火这类烧的，是 smelt（放的是原料）；其余是 craft（报的是成品）。 */
 function howToRun (s) {
   const bare = (x) => (String(x).split(':')[0] === 'minecraft' ? String(x).split(':')[1] : String(x));
@@ -769,45 +764,94 @@ function howToRun (s) {
   return `craft 用 itemName=${bare(s.item)}，count=${s.times}`;
 }
 
+/**
+ * 从现有背包出发，做 count 个 id 需要什么。
+ * 选配方的原则：能在背包 2×2 / 工作台 / 熔炉做的优先（她做得出来的），原料越少越好，
+ * 原料里有背包已有的优先；绕开会成环的配方。没有配方的就是"原材料"，附上怎么弄。
+ *
+ * ⚠️ 2026-09-29 重写（主人报"材料规划有幻影"）。旧实现三个病，都在 `inv` 这一个 Map 上：
+ *
+ *   ① **"背包里能直接用上"混进了"做出来的余料"**。旧实现把 `need()` 的"做多了剩下来的"
+ *      （`extra`）也写回装背包的那张 `inv`，`take()` 又只认 `inv` —— 于是木镐把"3 板 + 2 棍"
+ *      里的 2 根棍留了余料、木棍又把木板留了余料，最后 `used` 里就有木板×1，**空背包也报"能直接用上"**。
+ *      现在账目彻底分开：`have` = 传进来的 `inventory`（途中只减不增），`made` = 做出来的数量。
+ *      `take()` 先吃 `have`、再吃 `made`，并把"从 `have` 吃掉的"单独记进 `used` —— 只有真背包有的才会进那句。
+ *
+ *   ② **同一个中间产物被多处需要时各列一步**。旧实现按需求递归展开，木镐要 3 板列一步、
+ *      木棍要 2 板另列一步（还因为 ① 少算了 1 板）。现在 `need()` 返回 `{out, need}` 并**同一个物品做记忆化**：
+ *      做一次算清全部需求，同一个中间产物**只列一步、数量相加**。
+ *
+ *   ③ **不记账的"原材料"分支会把刚做出来的东西留在账上**。旧实现在"没有配方 / 已到原材料 / 环"
+ *      这三种情况下**直接 return**，根本没动过做好的东西。现在 `need()` 一律先把"做出来的"记进
+ *      `made`（有多余的就退回给父级当 `out`），只有真正的原料才进 `raw`，账目永远自洽。
+ *
+ * @param {string} q         要做什么（名字 / id / 中文名）
+ * @param {number} [count=1] 做几个
+ * @param {Array|null} [inventory] 背包内容 `[{name|item, count}]`。
+ *        **`null` / `undefined` = 读不到背包**（从没查过就传 null）—— 这时不说"有"也不说"没有"，
+ *        会单独写一句"读不到"；传 `[]` = 确实读过、背包是空的。**"没有"和"读不到"必须分开报**（AGENTS.md §5-1）。
+ * @returns {string} 给模型读的中文纯文本
+ */
 function materialTree (q, count = 1, inventory = []) {
   const id = resolveOne(q);
   if (!id) return `没找到「${q}」这个物品。`;
   load();
-  const inv = new Map();
-  for (const it of inventory) {
+  // 背包读不到（null / undefined）≠ 背包是空的（[]）
+  const invReadable = Array.isArray(inventory);
+  const have = new Map();
+  for (const it of invReadable ? inventory : []) {
     const name = (it.name || it.item || '').includes(':') ? (it.name || it.item) : `minecraft:${it.name || it.item}`;
-    inv.set(name, (inv.get(name) || 0) + (it.count || 1));
+    have.set(name, (have.get(name) || 0) + (it.count || 1));
   }
   const steps = []; const raw = new Map(); const used = new Map();
+  const made = new Map();            // 中途做出来的余料（**不是**背包里的，绝不能进"能直接用上"）
   let nodes = 0;
 
-  const have = (item) => inv.get(item) || 0;
+  // take 先吃背包（have，只减不增）、再吃做出来的余料（made）。
+  // 只有从 have 吃掉的那部分才记进 used —— 这就是"能直接用上"的唯一来源。
   const take = (item, n) => {
-    const k = Math.min(have(item), n);
-    if (k) { inv.set(item, have(item) - k); used.set(item, (used.get(item) || 0) + k); }
-    return n - k;
+    let rest = n;
+    const b = Math.min(have.get(item) || 0, rest);
+    if (b) { have.set(item, (have.get(item) || 0) - b); used.set(item, (used.get(item) || 0) + b); rest -= b; }
+    const m = Math.min(made.get(item) || 0, rest);
+    if (m) { made.set(item, (made.get(item) || 0) - m); rest -= m; }
+    return rest;
   };
   const inSlot = (slot, x) => slot.alts.some(a => (a.item ? a.item === x : K.tags.get(`item:${a.tag}`)?.has(x)));
   const pickAlt = (slot) => {
-    // 背包里有的 > 能直接挖到的（原木，不是树皮块）> 原版的 > 有配方/掉落的
-    const owned = [...inv.keys()].filter(x => have(x) > 0 && inSlot(slot, x));
-    if (owned.length) return owned.sort((a, b) => have(b) - have(a))[0];
+    // 背包里**真有的**（have，不是余料）> 能直接挖到的（原木，不是树皮块）> 原版的 > 有配方/掉落的
+    const owned = [...have.keys()].filter(x => (have.get(x) || 0) > 0 && inSlot(slot, x));
+    if (owned.length) return owned.sort((a, b) => (have.get(b) || 0) - (have.get(a) || 0))[0];
     const cands = slot.alts.flatMap(a => (a.item ? [a.item] : [...(K.tags.get(`item:${a.tag}`) || [])].slice(0, 400)));
-    const score = (x) => (have(x) >= slot.count ? 100 : have(x) ? 50 : 0) + (x.startsWith('minecraft:') ? 10 : 0) + (naturalRaw(x) ? 6 : 0)
+    // 基础度（木板这类所有木制品的起点）优先于"能不能直接挖到" —— 和 craft.js 的 rankRecipesFor 同一套理由
+    const basic = (x) => (K.itemTags.get(x) || new Set()).has('minecraft:planks') ? 0
+      : /(^|[_:])(log|stem)([_:]|$)/.test(x) ? 1
+        : !x.startsWith('minecraft:') ? 3
+          : /(^|[_:])wood([_:]|$)|stripped/.test(x) ? 2 : 1;
+    const score = (x) => (basic(x) === 0 ? 100 : 0) + (have.get(x) >= slot.count ? 60 : have.get(x) ? 40 : 0)
+      + (x.startsWith('minecraft:') ? 10 : 0) + (naturalRaw(x) ? 6 : 0)
       + (K.drops.has(x) ? 3 : 0) + (K.byOutput.has(x) ? 2 : 0);
     return cands.sort((a, b) => score(b) - score(a))[0];
   };
+  // 基础度：`#minecraft:planks`（所有木制品的起点）最优，其次原木/菌柄，再次其它原版，去皮木头/模组靠后。
+  // 和 craft.js 的 `rankRecipesFor` 同一套理由（2026-09-29 主人："原版基础材料 > 模组材料"）：
+  // 旧的 `easy()` 让"竹子"（能直接挖到 0.25）压过"木板"（要先做 0.35）—— 做木棍就挑了竹子。
+  const basicTier = (x) => (K.itemTags.get(x) || new Set()).has('minecraft:planks') ? 0
+    : /(^|[_:])(log|stem)([_:]|$)/.test(x) ? 1
+      : !String(x).startsWith('minecraft:') ? 3
+        : /(^|[_:])wood([_:]|$)|stripped/.test(x) ? 2 : 1;
   const rank = (r) => {
     const st = r.station === 'inventory' ? 0 : ['minecraft:crafting_table', 'minecraft:furnace'].includes(r.station) ? 1
       : r.type.startsWith('minecraft:') ? 3 : 6;
-    const haveAll = r.in.every(s => [...inv.keys()].some(x => have(x) > 0 && inSlot(s, x))) ? -2 : 0;
+    const haveAll = r.in.every(s => [...have.keys()].some(x => (have.get(x) || 0) > 0 && inSlot(s, x))) ? -2 : 0;
     // 原料好不好弄：身上有 → 0；能直接挖到 → 0.25；一步就能从原材料做出来（木板←原木）→ 0.35；否则 1
     // 以前只看"在哪做"，铁锭选了"铁块拆 9 个"，往下又选"铁脂鲤合成粗铁"（实测她说"做铁镐得去打铁脂鲤"，2026-09-26）
-    const fromHave = (x) => (K.byOutput.get(x) || []).some(i => K.recipes[i].in.length && K.recipes[i].in.every(s2 => [...inv.keys()].some(y => have(y) > 0 && inSlot(s2, y))));
-    const easy = (x) => have(x) > 0 ? 0 : fromHave(x) ? 0.1 : naturalRaw(x) ? 0.25
+    const fromHave = (x) => (K.byOutput.get(x) || []).some(i => K.recipes[i].in.length && K.recipes[i].in.every(s2 => [...have.keys()].some(y => (have.get(y) || 0) > 0 && inSlot(s2, y))));
+    const easy = (x) => (have.get(x) || 0) > 0 ? 0 : fromHave(x) ? 0.1 : naturalRaw(x) ? 0.25
       : (K.byOutput.get(x) || []).some(i => K.recipes[i].in.length && K.recipes[i].in.every(s2 => s2.alts.some(a => (a.item ? naturalRaw(a.item) : [...(K.tags.get(`item:${a.tag}`) || [])].slice(0, 30).some(naturalRaw))))) ? 0.35 : 1;   // 木板←原木 和 竹子 差不多好弄，别为省一步就去找竹林
+    // 每格取"基础度 + 好不好弄"最小的那个候选：**基础度占整数位**（先比基础度），同基础度再比好不好弄。
     const slotCost = (sl) => Math.min(...sl.alts.map(a => (a.item ? [a.item] : [...(K.tags.get(`item:${a.tag}`) || [])].slice(0, 30)))
-      .flat().map(x => easy(x) + (x.startsWith('minecraft:') || have(x) > 0 ? 0 : 0.75)), 3);   // 身上没有的模组材料略扣分（暮色森林的根须…）
+      .flat().map(x => basicTier(x) + easy(x) + (x.startsWith('minecraft:') || (have.get(x) || 0) > 0 ? 0 : 0.75)), 5);   // 身上没有的模组材料略扣分（暮色森林的根须…）
     const hard = r.in.reduce((a, sl) => a + slotCost(sl), 0);
     // 拆包（方块拆出 9 个锭）不是正经做法 —— 只有"原料本身能用产物合回去"才算拆包（原木→4 木板不算）
     const out0 = r.out[0]?.item;
@@ -816,38 +860,64 @@ function materialTree (q, count = 1, inventory = []) {
     return st + r.in.length * 0.5 + haveAll + hard * 2 + unpack + total * 0.05;
   };
 
+  const memo = new Map();   // 同一个中间产物只算一次（合并各处需求 + 环检测）
+  /**
+   * 做 `n` 个 `item` 还要什么。返回 `{ out, need }`：
+   *   · `out`  = 这条链做出来、**父级用不完**的多余数量（父级可以拿去抵它自己的需求）
+   *   · `need` = 这条链最终还缺的原材料数量（父级按比例折算进 `raw`）
+   * 记忆化保证"同一个中间产物只列一步、数量相加"：第一次来算 `floor(n0/每份产出)` 次，
+   * 再次来就按"每份产出"等比扩到 `n`，只补差额，不另开一步。
+   */
   function need (item, n, depth, stack) {
-    if (++nodes > 300) return;
+    if (n <= 0) return { out: 0, need: 0 };
     const rest = take(item, n);
-    if (!rest) return;
+    if (!rest) return { out: 0, need: 0 };              // 背包 / 余料已经够了
+    // 先看记忆化：算过就按"每份产出"等比扩（不另起一步，避免木板被列两次）
+    const m = memo.get(item);
+    if (m && m.per > 0) {
+      const times = Math.ceil(rest / m.per);
+      if (times <= 0) return { out: 0, need: 0 };
+      const out0 = times * m.per - rest;
+      if (out0 > 0) made.set(item, (made.get(item) || 0) + out0);
+      return { out: out0, need: times * m.perNeed };
+    }
+    if (++nodes > 300) return { out: 0, need: rest };
     const rs = (K.byOutput.get(item) || []).map(i => K.recipes[i])
       .filter(r => !r.in.some(s => s.alts.some(a => a.item && stack.has(a.item))))
       .filter(r => !r.out.some(o => o.chance));
     // 能直接挖到的（粗铁挖铁矿、原木砍树、圆石挖石头、小麦收庄稼）就是原材料，不再往下找配方
     if (!rs.length || depth > 7 || (depth > 0 && naturalRaw(item))) {
       raw.set(item, (raw.get(item) || 0) + rest);
-      return;
+      return { out: 0, need: rest };
     }
     const r = rs.sort((a, b) => rank(a) - rank(b))[0];
     const per = r.out.find(o => o.item === item)?.count || 1;
     const times = Math.ceil(rest / per);
     const next = new Set(stack); next.add(item);
     const chosen = [];
+    let needTotal = 0;
     for (const s of r.in) {
       const pick = pickAlt(s);
       if (!pick) continue;
+      const sub = need(pick, s.count * times, depth + 1, next);
       chosen.push({ item: pick, count: s.count * times });
-      need(pick, s.count * times, depth + 1, next);
+      needTotal += sub.need;
     }
     const st = stationOf(r);
     steps.push({ item, times, makes: per * times, station: r.station === 'inventory' ? 'inventory' : st.id, guess: st.guess, inputs: chosen, tools: r.tools, type: r.type });
     const extra = per * times - rest;
-    if (extra > 0) inv.set(item, have(item) + extra);
+    if (extra > 0) made.set(item, (made.get(item) || 0) + extra);
+    // 记进记忆化：以后再来要这个物品，按"每份产出 / 每份要多少原料"等比扩
+    memo.set(item, { per, perNeed: needTotal / times });
+    return { out: extra, need: needTotal };
   }
   need(id, count, 0, new Set());
 
   const lines = [`要做 ${label(id)}×${count}：`];
+  // "能直接用上"只能来自传进来的 inventory（used 只在 take() 吃到 have 时才涨）
   if (used.size) lines.push(`背包里能直接用上：${[...used].map(([k, v]) => `${nameOf(k)}×${v}`).join('、')}`);
+  else if (invReadable) lines.push('背包里能直接用上：一样都没有');
+  else lines.push('背包里能直接用上：读不到背包（不知道有没有）');
   if (raw.size) {
     lines.push('还缺这些原材料（得去弄）：');
     for (const [k, v] of raw) {
@@ -968,6 +1038,31 @@ function selftest () {
   check('有 3 原木 → 不再缺原材料', !/还缺/.test(t2), t2);
   const t3 = materialTree('minecraft:stone_pickaxe', 1, [{ name: 'cobblestone', count: 3 }, { name: 'stick', count: 2 }]);
   check('有圆石和木棍 → 一步做石镐', /背包里能直接用上/.test(t3) && !/还缺/.test(t3), t3);
+
+  console.log('\n材料树不报"幻影"（2026-09-29 主人：空背包却说"能直接用上：橡木木板×1"）');
+  {
+    const empty = materialTree('minecraft:wooden_pickaxe', 1, []);
+    // ① 空背包 → 一样都不能"直接用上"（旧实现把"做出来的余料"当成了背包里的）
+    check('★ 空背包不说有东西能直接用上', /能直接用上：一样都没有/.test(empty) && !/能直接用上：橡木木板/.test(empty), empty);
+    // ② 同一个中间产物（木板）只列一步、数量相加
+    check('★ 原木→木板只列一次', (empty.match(/→ 橡木木板/g) || []).length, 1);
+    // ③ 数量按真实配方算：木镐 3 板 + 2 棍；2 棍 ← 1 板(出4棍)；共 4 板 ← 1 原木(出4板)
+    check('★ 木镐：缺 1 原木（4 板 = 3 直接 + 1 做棍）', /橡木原木×1/.test(empty) && !/橡木原木×2/.test(empty), empty);
+    check('★ 木镐：1 原木 → 4 木板', /橡木原木×1 → 橡木木板\(minecraft:oak_planks\)×4/.test(empty), empty);
+    check('★ 木镐：2 木板 → 4 木棍（做一次够 2 根）', /橡木木板×2 → 木棍\(minecraft:stick\)×4/.test(empty), empty);
+    // ④ 背包里有 2 板 → 用得上 2、缺口正确
+    const bag2 = materialTree('minecraft:wooden_pickaxe', 1, [{ name: 'oak_planks', count: 2 }]);
+    check('★ 背包含 2 板 → 说用得上 2 板', /能直接用上：橡木木板×2/.test(bag2), bag2);
+    check('★ 背包含 2 板 → 仍缺 1 原木（要再 2 板，1 原木出 4）', /橡木原木×1/.test(bag2) && !/橡木原木×2/.test(bag2), bag2);
+    // ⑤ 木棍单独做也认木板（不被"竹子看起来更好挖"带偏）
+    const stick = materialTree('minecraft:stick', 4, []);
+    check('★ 做木棍选木板，不选竹子', /橡木木板/.test(stick) && !/竹子/.test(stick), stick);
+    check('★ 4 木棍 ← 1 原木（1 板出 4 棍）', /橡木原木×1/.test(stick) && !/橡木原木×2/.test(stick), stick);
+    // ⑥ "读不到背包" 与 "背包是空的" 分开报（AGENTS.md §5-1）
+    const unk = materialTree('minecraft:wooden_pickaxe', 1, null);
+    check('★ 读不到背包 → 说读不到，不说"没有"也不说"有"', /读不到/.test(unk), unk);
+    check('★ 空背包（[]）→ 说一样都没有', /一样都没有/.test(empty), empty);
+  }
 
   console.log('\n天然地面（按标签认模组的土石）');
   check('原版泥土、草方块', isGroundBlock('minecraft:dirt') && isGroundBlock('minecraft:grass_block'));

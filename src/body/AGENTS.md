@@ -11,11 +11,11 @@
 | `index.js` | `hands.js` 的目标：8 个子文件的 `require` + `__ns` 汇总 + `bind()` 回填 + `routes()`（75 条路由）+ 47 个导出。**改路由挂载只动这里** |
 | `util.js` | 分出来 45 项：`Vec3`/注册表小工具、背包计数、可达性（`canUseFrom`/`canUseNow`）、门/梯子判定、NBT/Sophisticated 读写、`inHomeArea`。**共享状态 `knowledge`/`K()` 在这里**。**`lightVerdict`/`blockLightAt`/`DARK_BLOCK_MAX`/`SKY_BRIGHT`（"这一格暗不暗"的唯一判据）也在这里** |
 | `containers.js` | 53 项：箱子 / 背包 / 饰品栏（curios）/ FTBQ / 结构放置，及排序与身份比对（`stackIdentity`/`sameTotals`）。**`HSTATE` 的 getter 在这里**，`backpackChain` 串行队列。**整理仓库（`organizeStorage`）自己会把精妙背包里的倒出来归位**（2026-09-29 问题 1）：`drainBackpackOnePass` 按快照前后差核对真实变化，`backpack` 分项单独报 `unreadable`/`chestsFull`/`drained`/`empty` —— 读不到 ≠ 里面没有 |
-| `craft.js` | 34 项：合成（手搓 / 配方书）、熔炉、吃 / 用 / 穿 / 给、厨锅。**`HSTATE` 的 getter 在这里**。合成/吃饭都先看精妙背包（`topUpFromBackpack`）；缺工作台/熔炉时**自己放下再用完挖回**（`withPlacedStation`，2026-09-29 问题 2b/3）。`wear`（2026-09-29 问题 3）：要穿的那件**已经在它该在的槽位上** → 直接回 `{worn, slot, alreadyWorn:true, via:'already-worn'}`，不报"背包里没有"（`findItem` 看不见身上穿着的，会误判缺货）。判据要**先于** `findItem` 的 null 抛出，用 `slotByName(wantId)` + `equipment()` 比对 |
+| `craft.js` | 34 项：合成（手搓 / 配方书）、熔炉、吃 / 用 / 穿 / 给、厨锅。**`HSTATE` 的 getter 在这里**。合成/吃饭都先看精妙背包（`topUpFromBackpack`）；缺工作台/熔炉时**自己放下再用完挖回**（`withPlacedStation`，2026-09-29 问题 2b/3）。`wear`（2026-09-29 问题 3）：要穿的那件**已经在它该在的槽位上** → 直接回 `{worn, slot, alreadyWorn:true, via:'already-worn'}`，不报"背包里没有"（`findItem` 看不见身上穿着的，会误判缺货）。判据要**先于** `findItem` 的 null 抛出，用 `slotByName(wantId)` + `equipment()` 比对。**挑配方**（2026-09-29 问题 2）：`rankRecipesFor` 的排序档位、`pickSlotSample`、`altLine` 见下 |
 | `movement.js` | 32 项：寻路（`go`/`pathTo`/`followRoute`）、爬梯、开门、跟随（`startFollow`）、`motor`/`nudge`、`/cmd` 白名单、睡觉、自救 |
 | `mining.js` | 24 项：挖矿与下矿（`delve`）、矿脉/亮源注册表缓存、火把（`lightUp` 按 `util.js` 的 `lightVerdict` 判、`spots` 优先照本能报的暗处）、填缝 |
 | `farming.js` | 4 项：作物 / 种子 / 收成 / `farm` |
-| `kit.js` | 9 项：装备清单（`defaultLoadout`/`isLoadoutItem`/`kitShortfall`）、脚手架判定。`scaffoldCache` 缓存。**镐斧铲剑都要有一把**（2026-09-29 问题 5 补上铲：`pickaxe$` 匹配不上 `iron_shovel`，`(^|_)axe$` 也匹配不上，于是挖黏土时工具在背包里也拿不出来）；铲/斧非 `essential`，不会刷 `kit_short` |
+| `kit.js` | 9 项：装备清单（`defaultLoadout`/`isLoadoutItem`/`kitShortfall`）、脚手架判定。`scaffoldCache` 缓存。**镐斧铲剑都要有一把**（2026-09-29 问题 5 补上铲：`pickaxe$` 匹配不上 `iron_shovel`，`(^|_)axe$` 也匹配不上，于是挖黏土时工具在背包里也拿不出来）；铲/斧非 `essential`，不会刷 `kit_short`。**一桶水（落地水）也是非 `essential`**（2026-09-29 问题 3：主人"其实不一定需要"）—— 有就随身带（`isLoadoutItem` 不看 `essential`，整理仓库照旧不收走），没有不报缺、不催。`kit_short` 的发起方 `src/instinct/core.js:1679` 用 `.filter(x => x.essential)` 筛，所以只改这一个标记就够 |
 | `tool-choice.js` | **挖方块前挑工具**（2026-09-29）。`toolKindFor`（该用铲/斧/镐：material → harvestTools → 名字兜底，**判据只此一处**）、`pickDigTool` / `fastestOfKind`（身上挑 digTime 最快的）、`equipDigTool` / `ensureDigTool`（换到手上，身上没有就去精妙背包拿；拿不到就照旧挖）。**不 require 兄弟文件**，名字直接进 `index.js` 的 `__ns` |
 | `build.js` | 23 项：工程 / 家具布局（`project*`/`layout*`）、`placeAt`、`survey` |
 | `commonsense.js` | 常识动作：装水 / 倒水 / 锄地 / 钓鱼 / 动物 / 载具（`routes({ state })`） |
@@ -81,6 +81,29 @@ $NODE scripts/test-all.js                                # 全绿：含 [exports
 - `instinct/mining.js` 的 `pickTorchStep` 走**同一个判据**（真身由 `core.js` 的 `tryTorch()` 经
   `deps.hands.lightVerdict` 注入；`instinct/` 与 `body/` 互不 require，那边留了一份阈值相同的兜底
   `defaultLightVerdict`，形状锁在自测里钉住一致）。它原来那条"7 格内没光源才插"已删。
+
+## 合成挑配方（`craft.js` 的 `rankRecipesFor`，2026-09-29 问题 2）
+
+实机 `craft(count=4 itemName=minecraft:stick)` 报了"还缺竹子 2"，其实木板就能做。旧排序
+`[recipeRank, 缺的种类, 缺的个数, 缺的还得再合成]` 对"竹子"和"任意木板"**四列全平手**，
+稳定排序保留了原始顺序 → 竹子胜出。现在的排序键（从强到弱，`score()` 里逐条可读、可单测）：
+
+1. `recipeRank` —— 背包内 < 工作台/熔炉 < 原版类型 < 模组（挡"箱子 ← 橡木箱子"转换配方）；
+2. **缺的种类数**（0 = 一样不缺；手上 / 背包（`backpackSeen`）/ 家里箱子（`seenContainers`）
+   有的都算"不缺" —— 后两者由 `craft2` 合成一张 `{id: count}` 只读表当 `seen` 传进来，
+   **只判 ok、不当身上数量展示**）；
+3. **缺的总个数**；
+4. **缺的基础度**（`slotEase`）：一格取最好弄的候选，**基础度占整数位、好不好弄占小数位** ——
+   先比基础度（`#minecraft:planks`=0 最基础 > 原木/竹子等原版=1 > 木头/去皮=2 > 模组=3），
+   同基础度再比好不好弄（手上间接能凑 0.1 > 能直接挖 0.25 > 还得再合成一步 0.35 > 都不是 1）。
+   这条就是主人要的"原版基础材料 > 模组材料；能用手上东西再合成出来的 > 要出去找的"。
+   ⚠️ 和 `knowledge.js` 的 `materialTree` 是**两处独立实现**，但基础度都只认 `#minecraft:planks`
+   这一个数据标签，别只改一处。
+5. `r.in.length` 原料格数。
+
+报错只讲**选中的那一条**；另有更好懂的候选时补一句 `altLine`（"另外用 X 也能做"，**最多一条**）。
+说给人听的名字走 `pickSlotSample`（独立纯函数），优先级：身上有的 > 能直接挖到的（圆石不说石头）
+> 标签名里带这个基底名的 > 最"素"最短的原版 > 第一个。
 
 ## 挖方块前挑工具（2026-09-29）
 

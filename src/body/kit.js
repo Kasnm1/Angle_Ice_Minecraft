@@ -51,8 +51,11 @@ function defaultLoadout () {
     { kind: 'food', count: 16, min: 4, label: '吃的', essential: true },
     { kind: 'id', id: 'minecraft:torch', count: 16, label: '火把' },
     { kind: 'any', ids: scaffoldIds(), count: 32, min: 8, label: '搭脚方块', essential: true },
-    // 落地水（主人 2026-09-27）：搭不了路要往下跳时，落地前倒水保命、落地后收回（instinct.js 的反射）
-    { kind: 'id', id: 'minecraft:water_bucket', count: 1, label: '一桶水', essential: true },
+    // 落地水（主人 2026-09-27）：搭不了路要往下跳时，落地前倒水保命、落地后收回（instinct.js 的反射）。
+    // 2026-09-29（主人）：**「其实不一定需要」→ 非 essential**。以前每次上线只要身上没水桶就刷一句
+    // `kit_short 身上没带够：一桶水`。现在：有就随身带着（`isLoadoutItem` 不看 essential，整理仓库时照旧不收走），
+    // 没有就不报缺、不催。`kitShortfall` 仍会把它算进返回值（带 essential:false），由调用方只报 essential 的。
+    { kind: 'id', id: 'minecraft:water_bucket', count: 1, label: '一桶水', essential: false },
   ];
 }
 
@@ -195,7 +198,7 @@ const { register, runSuite } = require('./testkit');
 const __sections = [
   ['[0c] 随身物品：身上有没有 + 没背/读不到要分开报', async (t) => {
     const { check, wait, rig, mkGoBot, TICK, goals, Vec3, handsSrc } = t;
-    const { categoryOf, containerPut, countInBackpackSeen, decideCarry, defaultLoadout, deposit, ensureCarried, foodScore, isLoadoutItem, lookIntoBackpack, resolveCarryId, use, winInvCount } = t.h;
+    const { categoryOf, containerPut, countInBackpackSeen, decideCarry, defaultLoadout, deposit, ensureCarried, foodScore, isLoadoutItem, kitMatch, kitShortfall, lookIntoBackpack, protectLoadout, resolveCarryId, use, winInvCount } = t.h;
       console.log('\n[0c] 随身物品：身上有没有 + 没背/读不到要分开报');
       {
         // ---- 决策纯函数（真跑的那份，不另抄一份实现）
@@ -301,6 +304,28 @@ const __sections = [
           /isLoadoutItem\(bot, it\)[\s\S]{0,120}protectedItems\.push/.test(handsSrc()), true);
         check('★ containerPut（mind 点名塞某格）也拒绝随身装备',
           /isLoadoutItem\(bot, item\)\) throw/.test(handsSrc()), true);
+      }
+
+      // ---- 2026-09-29 问题 3：一桶水改成非 essential（主人"其实不一定需要"），别再每次上线报 kit_short
+      {
+        const kb = { registry: { blocksByName: {}, itemsByName: {} } };
+        const lb = defaultLoadout().find(L => L.id === 'minecraft:water_bucket');
+        check('★ 水桶在装备单里、但已标成非 essential', !!lb && lb.essential === false, true);
+        // 身上没水桶 → 仍然"少 1 件"（如实算），但**不算急事**（essential=false）
+        const short = kitShortfall(kb, []);
+        const water = short.find(x => x.label === '一桶水');
+        check('★ 身上没水桶 → 仍在 shortfall 里但 essential=false', { in: !!water, essential: water?.essential }, { in: true, essential: false });
+        check('★ kit_short 只该报 essential 的（按这条筛：水桶不会进）',
+          short.filter(x => x.essential).every(x => x.label !== '一桶水'), true);
+        check('★ 镐子仍是 essential（真的急事还得报）',
+          short.filter(x => x.essential).some(x => x.label === '最好的镐'), true);
+        // 身上有水桶 → 仍算随身装备（整理仓库时不会被收走）
+        check('★ 身上有水桶 → 仍是随身装备（不会被整理进箱子）', isLoadoutItem(kb, { name: 'minecraft:water_bucket' }), true);
+        check('★ 身上有水桶 → shortfall 里不再有它',
+          kitShortfall(kb, [{ name: 'minecraft:water_bucket', count: 1 }]).some(x => x.label === '一桶水'), false);
+        // protectLoadout 也走同一份判据：点名要存水桶会被留下
+        const kept = protectLoadout(kb, ['minecraft:water_bucket']);
+        check('★ 点名要存水桶 → 被留下（随身装备，判据只此一处）', kept.keptSet.has('minecraft:water_bucket'), true);
       }
   }],
 ];
