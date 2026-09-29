@@ -1387,6 +1387,7 @@ async function selftest () {
       resetT(); W.tasks.loaded = false;
       const bad = T.load(tmpT);
       check('★ 坏 JSON → unreadable=true（不静默）', bad.unreadable === true, bad);
+      try { if (bad.backup) require('fs').unlinkSync(bad.backup); } catch (_) {}   // 坏文件会先备份一份（2026-09-30）
       try { require('fs').unlinkSync(tmpT); } catch (_) {}
     }
 

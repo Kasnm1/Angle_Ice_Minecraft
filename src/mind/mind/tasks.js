@@ -313,7 +313,10 @@ function create (fields = {}) {
 function setRunning (id, { at = Date.now() } = {}) {
   const t = get(id);
   if (!t) return null;
-  for (const o of all()) if (o.status === 'running' && o.id !== t.id) pause(o.id, o.pausedWhy || 'self', { at });
+  // 被换下来的那件理由是 self（她自己换了一件）。原来写的是 `o.pausedWhy || 'self'` —— 但 running 的任务
+  // 身上还挂着**上一次**停下的理由（例如 instinct），换一件时会把旧理由再用一遍（2026-09-30 复核改）。
+  for (const o of all()) if (o.status === 'running' && o.id !== t.id) pause(o.id, 'self', { at });
+  t.pausedWhy = null;
   setStatus(t, 'running', { at });
   save();
   return t;
@@ -427,7 +430,8 @@ function pauseWhyFor (kind, { heardPlayer = false } = {}) {
 function onInstinct (reason = '') {
   const t = running();
   if (!t) return null;
-  t.interruptions = (t.interruptions || 0) + 1;
+  // ⚠️ 不在这里 `interruptions++`：pause() 见到 running 已经加过一次（2026-09-30 复核：原来这里再加一次，
+  //    本能抢一下算成被打断 2 次，设计第七节"被打断 3 次要不要放下"的提醒会提前一倍冒出来）
   return pause(t.id, 'instinct');
 }
 
@@ -435,6 +439,9 @@ function onInstinct (reason = '') {
 
 function save (file = FILE()) {
   const S = store();
+  // 读不出来的旧文件别被盖掉（load 的注释里说好的）。原来只在 restore 里避开了，create() 照样 save() 盖掉它；
+  // 这里兜底：load 时没能备份下来的，就不存（宁可这次记不住，也不毁掉旧记录）。备份成功了照常存。
+  if (S.unreadable && !S.backedUp && file === FILE()) { warn('[tasks] 旧的 tasks.json 读不出来、也没备份成，这次不存（免得把它盖掉）'); return false; }
   try {
     fs.mkdirSync(path.dirname(file), { recursive: true });
     const data = JSON.stringify({ version: 1, seq: S.seq, tasks: S.list }, null, 1);
@@ -462,7 +469,7 @@ function save (file = FILE()) {
  */
 function load (file = FILE()) {
   const S = store();
-  if (S.loaded) return { unreadable: S.unreadable || false };
+  if (S.loaded) return { unreadable: S.unreadable || false, ...(S.unreadable ? { backup: S.backedUp || null } : {}) };
   S.loaded = true;
   if (!fs.existsSync(file)) { S.seq = S.seq || 0; S.list = S.list || []; return { unreadable: false, empty: true }; }
   try {
@@ -473,8 +480,12 @@ function load (file = FILE()) {
     return { unreadable: false };
   } catch (e) {
     S.unreadable = true;
-    warn(`[tasks] 读不出来（${e.message}）—— 当"没有任务"继续，但这次别覆盖旧文件`);
-    return { unreadable: true };
+    // 先把坏文件复制一份留证据（2026-09-30 补），之后才敢照常存 —— 不然这一整轮新记的事都存不下；
+    // 原来这里只说"别覆盖旧文件"，可 create() 第一次 save() 就把它盖了（自测 ★ 坏文件那两条钉着）
+    const bak = `${file}.unreadable-${Date.now()}`;
+    try { fs.copyFileSync(file, bak); S.backedUp = bak; } catch (_) { S.backedUp = null; }
+    warn(`[tasks] 读不出来（${e.message}）—— 当"没有任务"继续${S.backedUp ? `；旧文件备份在 ${path.basename(bak)}` : '，旧文件没备份成，这次不覆盖它'}`);
+    return { unreadable: true, backup: S.backedUp || null };
   }
 }
 
@@ -751,7 +762,31 @@ function selftest () {
     _reset(); store().loaded = false;
     const bad = load(tmp);
     check('★ 坏 JSON → unreadable=true（"读不到"和"没有"分开）', bad.unreadable === true, bad);
+    // 2026-09-30 复核：原来"别覆盖旧文件"只是注释 —— 下一件新任务 create() → save() 就把坏文件盖了
+    check('★ 坏文件先备份一份，备份里是原样', !!bad.backup && fs.readFileSync(bad.backup, 'utf8') === '{ 这不是 JSON', bad);
+    create({ title: '坏文件之后的新事', source: 'self' });
+    check('备份成了 → 照常存（这一轮新记的事不丢）', /坏文件之后的新事/.test(fs.readFileSync(tmp, 'utf8')));
+    try { fs.unlinkSync(bad.backup); } catch (_) {}
+    fs.writeFileSync(tmp, '{ 还是坏的');
+    store().unreadable = true; store().backedUp = null;
+    const kept = save();
+    check('★ 读不出来又没备份成 → 不存（旧文件原样留着）', kept === false && fs.readFileSync(tmp, 'utf8') === '{ 还是坏的', kept);
+    store().unreadable = false; store().backedUp = null;
     for (const p of [tmp, tmp + '.tmp']) { try { fs.unlinkSync(p); } catch (_) {} }
+  }
+
+  console.log('\n复核（2026-09-30）：被打断的计数 / 停下的理由');
+  _reset();
+  {
+    const { task: A } = create({ title: '盖房子', source: 'self' });
+    setRunning(A.id);
+    onInstinct('combat');
+    check('★ 本能抢一下只算被打断 1 次（原来 onInstinct 自己再 +1，算成 2 次）', A.interruptions === 1, A.interruptions);
+    setRunning(A.id);
+    check('重新做的那件：停下的理由清掉', A.pausedWhy === null, A.pausedWhy);
+    const { task: B } = create({ title: '钓鱼', source: 'self' });
+    setRunning(B.id);
+    check('★ 她换做另一件 → 原来那件停下的理由是 self（原来会沿用上一次的 instinct）', A.status === 'paused' && A.pausedWhy === 'self', A);
   }
 
   console.log('\n上下文那两行（设计第六节 1）');
