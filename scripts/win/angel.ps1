@@ -138,6 +138,10 @@ switch ($cmd) {
     # 第 3 步把 src\bridge\server.js 拆成子文件后，这里只加不减：
     # 子文件都没有 --selftest（bridge 的规矩：一跑就连服务器），只做 --check。
     foreach ($f in 'src\bridge\server.js', 'src\bridge\config.js', 'src\bridge\state.js', 'src\bridge\util.js', 'src\bridge\goto.js', 'src\bridge\connect.js', 'src\bridge\http.js', 'src\bridge\routes\inspect.js', 'src\bridge\routes\scan.js', 'src\bridge\routes\pickup.js', 'src\bridge\routes\body.js', 'src\bridge\routes\place.js', 'src\bridge\routes\move.js', 'src\bridge\routes\mine.js', 'src\bridge\routes\gather.js', 'src\bridge\routes\palette.js', 'src\bridge\routes\diag.js', 'src\mind\body.js') { & $Node --check $f; "{0,-34} --check ok" -f $f }
+    # 第 3 步 3d 把 src\world\pathing.js 拆成 src\world\pathing\*.js —— 同样只加不减，
+    # 且**只做 --check**：这些子文件都没有独立的 --selftest 入口（475 条统一从
+    # `src\world\pathing.js --selftest` 进，上面那条已经在跑）。selftest.js 尤其不能单独跑。
+    foreach ($f in 'src\world\pathing.js', 'src\world\pathing\index.js', 'src\world\pathing\movements.js', 'src\world\pathing\doors.js', 'src\world\pathing\ladders.js', 'src\world\pathing\unknown-blocks.js', 'src\world\pathing\fluid.js', 'src\world\pathing\probe.js', 'src\world\pathing\collect.js', 'src\world\pathing\budget.js', 'src\world\pathing\selftest.js') { & $Node --check $f; "{0,-40} --check ok" -f $f }
   }
   'logs' {
     $w = if ($what -eq 'all') { 'mind' } else { $what }

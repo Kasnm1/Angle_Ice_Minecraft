@@ -102,6 +102,22 @@ function hasSelftest (file) {
 /** 根目录两个入口：永远只 `--check`（它们是转发壳，跑起来会起服务）。 */
 const ROOT_ENTRIES = ['bridge-server.js', 'mind.js'];
 
+/**
+ * 这些 `.js` 带 `--selftest` 字样，但**自己一条断言都没有** —— 它们是"跑测试的入口"
+ * 而不是"测试"。按计划里"带 --selftest 就 expectAsserts"的规矩跑，会被下面那条
+ * "没数到断言 = 什么都没测"的防线判成新失败。
+ *
+ * 为什么有（2026-09-29 第 3 步 3d，拆 `src/world/pathing.js`）：
+ *   自测体从 pathing.js 搬进 `src/world/pathing/selftest.js`（`module.exports = run(api)`，
+ *   由汇总 `index.js` 递接口进来）。它里面**没有** `--selftest` 分支，只有文件尾部一句
+ *   `if (!process.argv.includes('--selftest') && require.main === module) throw …` —— 那是
+ *   "别直接跑我"的守卫，不是测试入口。但 `hasSelftest()` 认的就是"代码里出现 --selftest"，
+ *   于是 `collectJs` 递归扫到它、按 `--selftest` 跑一次：退出 0、零断言 → 被误判成新失败。
+ *   真正的 475 条在 `src/world/pathing.js --selftest`（label 里叫 `src/world/pathing.js`）。
+ *   这里把它排除，等价于老 `src/body` 那套"runner 不算测试"的处理（`testkit.js` 在 STANDALONE）。
+ */
+const RUNNER_ONLY = new Set(['src/world/pathing/selftest.js']);
+
 function buildPlan () {
   const plan = [];
 
@@ -110,6 +126,7 @@ function buildPlan () {
   if (fs.existsSync(srcDir)) {
     for (const f of collectJs(srcDir)) {
       const rel = path.relative(ROOT, f).split(path.sep).join('/');
+      if (RUNNER_ONLY.has(rel)) continue;   // 只跑测试的入口，自己不是测试（见上）
       if (hasSelftest(f)) {
         // 有些模块自己不启动（由根入口调 cli()）—— 直接 node 它什么都不跑、还会被算成"通过"。
         // 配置里写了 selftestVia 的，改从根入口跑（2026-09-28：src/mind/mind.js 的 198 条就这样漏了一轮）
@@ -431,6 +448,45 @@ function checkInstinctExports () {
   return PROBLEMS;
 }
 
+/**
+ * pathing.js 对外接口快照（第 3 步拆巨石的防线，照 checkHandsExports）。
+ *
+ * 为什么要有：`src/world/pathing.js` 被拆成 `src/world/pathing/*.js` 之后，它自己变成
+ * 汇总（普通文件，不是符号链接）。`src/world/*.js` 与若干测试照旧 `require('./pathing')` ——
+ * 只要有一个导出名丢了/改名了，那些模块会在**运行到那一条**时才炸（运行时 undefined），
+ * 全套自测未必覆盖得到。
+ * 这里把 `Object.keys(require('.../pathing'))` 钉成快照：名字、**顺序**都要一模一样。
+ */
+function checkPathingExports () {
+  const PROBLEMS = [];
+  const snapFile = path.join(ROOT, 'references', 'exports-pathing.json');
+  let want;
+  try {
+    want = JSON.parse(fs.readFileSync(snapFile, 'utf8'));
+  } catch (e) {
+    return [`references/exports-pathing.json 读不到：${e.message}`];
+  }
+  let pathing;
+  try {
+    pathing = require(path.join(ROOT, 'src', 'world', 'pathing.js'));
+  } catch (e) {
+    return [`src/world/pathing.js 加载失败：${e.message}`];
+  }
+  const got = Object.keys(pathing);
+  if (got.length !== want.length) PROBLEMS.push(`导出个数变了：快照 ${want.length}，现在 ${got.length}`);
+  const missing = want.filter(n => !got.includes(n));
+  const added = got.filter(n => !want.includes(n));
+  if (missing.length) PROBLEMS.push(`快照里有、现在没了：${missing.join(', ')}`);
+  if (added.length) PROBLEMS.push(`快照里没有、现在多了：${added.join(', ')}`);
+  // 顺序也要一致（原来的 module.exports 是什么顺序，现在还得是什么顺序）
+  const sameOrder = want.every((n, i) => got[i] === n);
+  if (!missing.length && !added.length && !sameOrder) {
+    const at = want.findIndex((n, i) => got[i] !== n);
+    PROBLEMS.push(`导出顺序变了（第 ${at + 1} 个：快照 ${want[at]}，现在 ${got[at]}）`);
+  }
+  return PROBLEMS;
+}
+
 // ---- 主流程 ----------------------------------------------------------------
 async function main () {
   let plan = buildPlan();
@@ -569,16 +625,27 @@ async function main () {
     console.log('\n  [exports] bridge-server 的 13 个导出名与顺序、58 个路由键的次序都和快照一致');
   }
 
+  // ---- pathing.js 导出快照 ---------------------------------------------------
+  // 同一条防线，对象是世界寻路层（见 references/exports-pathing.json）。
+  const pathingProblems = checkPathingExports();
+  if (pathingProblems.length) {
+    console.log('\n  ✗ pathing.js 导出快照对不上（world 层与测试的 require 会拿到 undefined）：');
+    for (const p of pathingProblems) console.log(`      ${p}`);
+  } else {
+    console.log('\n  [exports] pathing.js 的 62 个导出名与顺序和快照一致');
+  }
+
   // ---- 总判定 ---------------------------------------------------------------
   const passed = rows.filter(r => r.kind === 'pass').length;
   console.log('');
   console.log(`  合计：${passed} 通过 · ${known.length} 已知失败 · ${newFails.length} 新失败 · 总用时 ${elapsed.toFixed(1)}s`);
 
-  if (pathProblems.length || exportProblems.length || instinctProblems.length || bridgeProblems.length || newFails.length) {
+  if (pathProblems.length || exportProblems.length || instinctProblems.length || pathingProblems.length || bridgeProblems.length || newFails.length) {
     if (newFails.length) console.log('  ✗ 有非已知失败，退出码 1');
     else if (pathProblems.length) console.log('  ✗ paths.js 数据路径检查失败，退出码 1');
     else if (exportProblems.length) console.log('  ✗ hands.js 导出快照对不上，退出码 1');
     else if (instinctProblems.length) console.log('  ✗ instinct.js 导出快照对不上，退出码 1');
+    else if (pathingProblems.length) console.log('  ✗ pathing.js 导出快照对不上，退出码 1');
     else console.log('  ✗ bridge-server 接口快照对不上，退出码 1');
     process.exit(1);
   }
