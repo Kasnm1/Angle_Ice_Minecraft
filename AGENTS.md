@@ -188,7 +188,9 @@ $NODE src/util/time.js --selftest; $NODE src/util/ids.js --selftest; $NODE src/u
 
 | 想知道 | 读 |
 |---|---|
-| **最新交接：本能修复与实机调试（2026-09-28），没做完的清单** | [`HANDOFF-20260928.md`](HANDOFF-20260928.md) |
+| **最新交接：重构完成 + 实机修复 + 任务队列阶段 1（2026-09-30），没做完的清单、踩过的坑** | [`HANDOFF-20260930.md`](HANDOFF-20260930.md) |
+| 下一步改代码时直接用的提示词 | [`docs/PROMPT-NEXT-20260930.md`](docs/PROMPT-NEXT-20260930.md) |
+| 上一份交接：本能修复与实机调试（2026-09-28） | [`HANDOFF-20260928.md`](HANDOFF-20260928.md) |
 | **本能层 / 长期计划 / 物品账 / 天黑 的交接（2026-09-27），以及接下来的路线** | [`HANDOFF-20260927.md`](HANDOFF-20260927.md) |
 | 重构计划（为什么要拆、各阶段、主人 2026-09-28 的决定） | [`docs/REFACTOR-PLAN-20260928.md`](docs/REFACTOR-PLAN-20260928.md) |
 | 某个具体问题的证据与根因（P1–P50） | `memory/field-log.md` |
