@@ -11,7 +11,10 @@
 
 const { Vec3 } = require('vec3');   // 原 hands.js 顶层的那个导入，函数体里直接用了 Vec3
 const paths = require('../paths');
-const PROJ_FILE = require('path').join(paths.MEMORY, 'projects.json');   // 拆分时漏搬的顶层语句，2026-09-29 上线崩溃后补
+// 拆分时漏搬的顶层语句，2026-09-29 上线崩溃后补。
+// 2026-09-30：改成用到时才取、可用 MC_PROJECTS_FILE 覆盖（同下面的 MC_LAYOUT_FILE）—— 原来自测 [9] 的 projectSave
+// 直接写真的 memory/projects.json，而且是整份覆盖（自测的 state 只有"小墙"一件）：本机跑一次 npm test，真的工程就没了。
+const PROJ_FILE = () => process.env.MC_PROJECTS_FILE || require('path').join(paths.MEMORY, 'projects.json');
 const LAYOUT_FILE = process.env.MC_LAYOUT_FILE || require('path').join(paths.MEMORY, 'layouts.json');   // MC_LAYOUT_FILE：测试用，别写进真的规划（拆分时漏搬，2026-09-29 补）
 
 // 第 4 步去重：原为转发壳（转发到兄弟文件的 sleep/sleepMs），现直接引用唯一一份
@@ -31,12 +34,12 @@ function equipDigTool (...a) { return __ns.equipDigTool.apply(null, a); }
 function bind (ns) { Object.assign(__ns, ns); BUILT_RE = ns.BUILT_RE; FURNITURE_RE = ns.FURNITURE_RE; N6 = ns.N6; }
 
 function projects (state) {
-  if (!state.__projects) { try { state.__projects = JSON.parse(require('fs').readFileSync(PROJ_FILE, 'utf8')); } catch (_) { state.__projects = {}; } }
+  if (!state.__projects) { try { state.__projects = JSON.parse(require('fs').readFileSync(PROJ_FILE(), 'utf8')); } catch (_) { state.__projects = {}; } }
   return state.__projects;
 }
 
 function saveProjects (state) {
-  try { const fs = require('fs'); const tmp = PROJ_FILE + '.tmp'; fs.writeFileSync(tmp, JSON.stringify(state.__projects || {}, null, 1)); fs.renameSync(tmp, PROJ_FILE); } catch (_) {}
+  try { const fs = require('fs'); const file = PROJ_FILE(); const tmp = file + '.tmp'; fs.writeFileSync(tmp, JSON.stringify(state.__projects || {}, null, 1)); fs.renameSync(tmp, file); } catch (_) {}
 }
 
 function projectSave (bot, state, bp = {}) {
@@ -461,6 +464,9 @@ const __sections = [
         const mkB = (name, pos) => ({ name, position: pos, boundingBox: name === 'air' ? 'empty' : 'block', diggable: true });
         const fbot = { registry: { blocksByName: { stone: {}, oak_planks: {}, dirt: {}, air: {} } }, blockAt: (p) => mkB(world.get(`${p.x},${p.y},${p.z}`) || 'air', p) };
         const st = { __projects: {} };
+        // projectSave 会落盘：指到临时文件，绝不写真的 memory/projects.json（2026-09-30：原来会整份覆盖真的工程）
+        const projFile = require('path').join(require('os').tmpdir(), `projects-selftest-${process.pid}.json`);
+        const oldProj = process.env.MC_PROJECTS_FILE; process.env.MC_PROJECTS_FILE = projFile;
         let err = null; try { projectSave(fbot, st, { name: 'x', origin: { x: 0, y: 0, z: 0 }, legend: { Q: 'nope:block' }, layers: [{ dy: 0, rows: ['Q'] }] }); } catch (e) { err = e.message; }
         check('图例里不存在的方块会被拒', /不存在/.test(err || ''), true);
         const saved = projectSave(fbot, st, { id: 't1', name: '小墙', origin: { x: 0, y: 0, z: 0 }, legend: { P: 'minecraft:oak_planks', '.': 'air' }, layers: [{ dy: 0, rows: ['PPP'] }, { dy: 1, rows: ['.-P'] }] });
@@ -471,6 +477,9 @@ const __sections = [
         check('其中石头那格挖完还要放', d.dig.filter(c => c.thenPlace).length, 1);
         check('要放 2 格', d.place.length, 2);
         check('已经对 1 格，完成 20%', `${d.ok}/${d.pct}`, '1/20');
+        check('★ 工程存到了临时文件（不碰真的 memory/projects.json）', require('fs').existsSync(projFile), true);
+        for (const p of [projFile, projFile + '.tmp']) { try { require('fs').unlinkSync(p); } catch (_) {} }
+        if (oldProj === undefined) delete process.env.MC_PROJECTS_FILE; else process.env.MC_PROJECTS_FILE = oldProj;
       }
 
       console.log('\n合成缺料说成人话（测跑的那份：rankRecipesFor + shortfallText，用知识库真数据）');
